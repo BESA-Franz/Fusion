@@ -66,8 +66,8 @@ import {
   normalizeColumn, normalizeColumnId,
   TASK_PRIORITIES,
   DEFAULT_TASK_PRIORITY,
-} from "./types/board.js";
-import type { ThinkingLevel, Column, ColumnId, TaskPriority } from "./types/board.js";
+} from "./types/board/board.js";
+import type { ThinkingLevel, Column, ColumnId, TaskPriority } from "./types/board/board.js";
 export {
   THINKING_LEVELS,
   COLUMNS,
@@ -84,7 +84,7 @@ import {
   ACTIVE_WORKFLOW_WORK_ITEM_STATES,
   WORKFLOW_WORK_ITEM_KINDS,
   WORKFLOW_WORK_ITEM_STATES,
-} from "./types/merge-queue.js";
+} from "./types/merge/merge-queue.js";
 import type {
   MergeRequestState,
   WorkflowWorkItemKind,
@@ -102,7 +102,7 @@ import type {
   MergeQueueReleaseOutcome,
   HandoffEvidence,
   HandoffToReviewOptions,
-} from "./types/merge-queue.js";
+} from "./types/merge/merge-queue.js";
 export {
   MERGE_REQUEST_STATES,
   ACTIVE_WORKFLOW_WORK_ITEM_STATES,
@@ -143,7 +143,7 @@ import {
   SUPPORTED_LOCALES,
   DEFAULT_LOCALE,
   isLocale,
-} from "./types/execution-and-ui.js";
+} from "./types/ui/execution-and-ui.js";
 import type {
   ExecutionMode,
   PlannerOversightLevel,
@@ -153,7 +153,7 @@ import type {
   ThemeMode,
   ColorTheme,
   Locale,
-} from "./types/execution-and-ui.js";
+} from "./types/ui/execution-and-ui.js";
 export {
   HIGH_FANOUT_BLOCKER_TODO_THRESHOLD,
   STALE_HIGH_FANOUT_BLOCKER_AGE_THRESHOLD_MS,
@@ -198,7 +198,7 @@ import {
   normalizeMergerMode,
   AUTO_RECOVERY_MODES,
   normalizeAutoRecovery,
-} from "./types/merge-policy.js";
+} from "./types/merge/merge-policy.js";
 import type {
   PrStatus,
   MergeStrategy,
@@ -217,7 +217,7 @@ import type {
   AutoRecoverySettings,
   UnavailableNodePolicy,
   OwningNodeHandoffPolicy,
-} from "./types/merge-policy.js";
+} from "./types/merge/merge-policy.js";
 export {
   __resetLegacyCwdMainWarningForTests,
   normalizeMergeIntegrationWorktreeMode,
@@ -256,7 +256,7 @@ export type {
   OwningNodeHandoffPolicy,
 };
 
-import { NOTIFICATION_EVENTS } from "./types/workflow-steps.js";
+import { NOTIFICATION_EVENTS } from "./types/workflow/workflow-steps.js";
 import type {
   ModelPreset,
   WorkflowStepMode,
@@ -274,7 +274,7 @@ import type {
   WorkflowRunStepInstanceStatus,
   WorkflowRunStepInstance,
   WorkflowStepTemplate,
-} from "./types/workflow-steps.js";
+} from "./types/workflow/workflow-steps.js";
 export { NOTIFICATION_EVENTS };
 export type {
   ModelPreset,
@@ -309,7 +309,7 @@ import type {
   TaskGitLabTracking,
   TaskGithubTracking,
   TaskSourceIssue,
-} from "./types/task-tracking.js";
+} from "./types/task/task-tracking.js";
 export type {
   PrConflictState,
   PrConflictDiagnostics,
@@ -363,7 +363,7 @@ import type {
   SteeringComment,
   TaskComment,
   TaskCommentInput,
-} from "./types/task-log.js";
+} from "./types/task/task-log.js";
 export type {
   StepStatus,
   WorkflowTransitionNotificationKind,
@@ -412,7 +412,7 @@ import type {
   TaskReviewSummary,
   TaskReviewDataItem,
   TaskReviewData,
-} from "./types/task-review.js";
+} from "./types/task/task-review.js";
 export type {
   TaskReviewMode,
   TaskReviewSource,
@@ -456,7 +456,7 @@ import {
   LIVE_DEMO_ARTIFACT_MIME_TYPE,
   DOCUMENT_KEY_RE,
   REPO_OVERRIDE_RE,
-} from "./types/documents-artifacts.js";
+} from "./types/task/documents-artifacts.js";
 export {
   isReviewArtifact,
   parseReviewArtifactsModeOverride,
@@ -493,7 +493,7 @@ import type {
   GoalCitationInput,
   GoalCitation,
   GoalCitationFilter,
-} from "./types/documents-artifacts.js";
+} from "./types/task/documents-artifacts.js";
 export type {
   ArtifactType,
   ReviewArtifactTaskClassification,
@@ -527,7 +527,7 @@ import {
   CheckoutConflictError,
   WorkspaceTaskMergeError,
   DUPLICATE_OF_METADATA_KEY,
-} from "./types/task-core.js";
+} from "./types/task/task-core.js";
 export {
   assertNotWorkspaceTaskMerge,
   isWorkspaceTask,
@@ -577,7 +577,7 @@ import type {
   TaskDetail,
   InboxTask,
   TaskCreateInput,
-} from "./types/task-core.js";
+} from "./types/task/task-core.js";
 export type {
   SourceType,
   TaskBranchGroupSource,
@@ -626,7 +626,7 @@ export type {
 
 import {
   SHARED_STATE_SNAPSHOT_VERSION,
-} from "./types/todo-list.js";
+} from "./types/task/todo-list.js";
 export {
   SHARED_STATE_SNAPSHOT_VERSION,
 };
@@ -639,7 +639,7 @@ import type {
   TodoItemCreateInput,
   TodoItemUpdateInput,
   TodoListWithItems,
-} from "./types/todo-list.js";
+} from "./types/task/todo-list.js";
 export type {
   TodoList,
   TodoItem,
@@ -670,7 +670,7 @@ import {
   sanitizeMcpServers,
   CLI_AGENT_ADAPTER_IDS,
   CLI_AGENT_AUTONOMY_MODES,
-} from "./types/settings-scope.js";
+} from "./types/settings/settings-scope.js";
 export {
   isMcpSecretRef,
   DEFAULT_GLOBAL_SETTINGS,
@@ -740,7 +740,7 @@ import type {
   VoiceInputSettings,
   ProjectSettings,
   Settings,
-} from "./types/settings-scope.js";
+} from "./types/settings/settings-scope.js";
 export type {
   SettingsScope,
   WebSearchBackend,
@@ -800,7 +800,7 @@ import {
   COLUMN_LABELS,
   COLUMN_DESCRIPTIONS,
   VALID_TRANSITIONS,
-} from "./types/board-config.js";
+} from "./types/board/board-config.js";
 export {
   COLUMN_LABELS,
   COLUMN_DESCRIPTIONS,
@@ -824,7 +824,7 @@ import type {
   MergeResult,
   TaskCommitAssociation,
   CommitAssociationDiffBackfillReport,
-} from "./types/board-config.js";
+} from "./types/board/board-config.js";
 export type {
   AutostashOutcome,
   TaskCommitAssociationMatchSource,
@@ -851,7 +851,7 @@ import {
   formatPlanningPlanMd,
   validateDockerNodeConfig,
   sanitizeDockerNodeConfigForResponse,
-} from "./types/archive-planning.js";
+} from "./types/mesh/archive-planning.js";
 export {
   formatPlanningPlanMd,
   validateDockerNodeConfig,
@@ -937,7 +937,7 @@ import type {
   DockerNodeResourceConfig,
   DockerProvisionInput,
   DockerProvisionResult,
-} from "./types/archive-planning.js";
+} from "./types/mesh/archive-planning.js";
 export type {
   PlanningQuestionType,
   IsolationMode,
@@ -1027,8 +1027,8 @@ import {
   AGENT_VALID_TRANSITIONS,
   isEphemeralAgent,
   hasAgentIdentity,
-} from "./types/agent-state.js";
-import type { AgentState } from "./types/agent-state.js";
+} from "./types/agents/agent-state.js";
+import type { AgentState } from "./types/agents/agent-state.js";
 export {
   AGENT_STATES,
   AGENT_VALID_TRANSITIONS,
@@ -1038,7 +1038,7 @@ export {
 export type { AgentState };
 
 /** Heartbeat event/run types peeled into types/agents.ts */
-import type { AgentHeartbeatEvent, AgentHeartbeatRun, HeartbeatInvocationSource } from "./types/agents.js";
+import type { AgentHeartbeatEvent, AgentHeartbeatRun, HeartbeatInvocationSource } from "./types/agents/agents.js";
 export type { AgentHeartbeatEvent, AgentHeartbeatRun, HeartbeatInvocationSource };
 
 /*
@@ -1060,7 +1060,7 @@ export interface BlockedStateSnapshot {
 }
 
 /** Capabilities/roles an agent can have */
-import type { AgentCapability } from "./types/agents.js";
+import type { AgentCapability } from "./types/agents/agents.js";
 export type { AgentCapability };
 
 /** A configurable agent role prompt template. */
@@ -1095,7 +1095,7 @@ export interface AgentPromptsConfig {
 import type {
   PluginActivation,
   PluginActivationInput,
-} from "./types/plugin-activation.js";
+} from "./types/plugins/plugin-activation.js";
 export type {
   PluginActivation,
   PluginActivationInput,
@@ -1110,7 +1110,7 @@ import type {
   RunAuditEventFilter,
   RunAuditEventInput,
   RunAuditMutationType,
-} from "./types/run-audit.js";
+} from "./types/audit/run-audit.js";
 export type {
   RunAuditDomain,
   RunAuditEvent,
@@ -1124,7 +1124,7 @@ export type {
 
 import {
   OVERSEER_INTERVENTION_MUTATION,
-} from "./types/planner-intervention.js";
+} from "./types/audit/planner-intervention.js";
 export {
   OVERSEER_INTERVENTION_MUTATION,
 };
@@ -1134,7 +1134,7 @@ import type {
   PlannerInterventionOutcome,
   PlannerInterventionSourceLink,
   PlannerOversightStage,
-} from "./types/planner-intervention.js";
+} from "./types/audit/planner-intervention.js";
 export type {
   PlannerInterventionAction,
   PlannerInterventionEntry,
@@ -1170,7 +1170,7 @@ import {
   getSafeAgentAssetIdSegment,
   isValidApprovalRequestTransition,
   normalizeApprovalRequestActionCategory,
-} from "./types/agents.js";
+} from "./types/agents/agents.js";
 export {
   AGENT_PERMISSIONS,
   AGENT_PERMISSION_POLICY_ACTION_CATEGORIES,
@@ -1254,7 +1254,7 @@ import type {
   SandboxProvisioningApprovalMode,
   SecretAccessPolicy,
   TaskAssignSource,
-} from "./types/agents.js";
+} from "./types/agents/agents.js";
 export type {
   Agent,
   AgentAccessState,
@@ -1325,7 +1325,7 @@ import type {
   SetupCompletionResult,
   MigrationOptions,
   MigrationResult,
-} from "./types/multiproject-setup.js";
+} from "./types/mesh/multiproject-setup.js";
 export type {
   DetectedProject,
   SetupState,
@@ -1343,7 +1343,7 @@ import {
   DASHBOARD_USER_ID,
   normalizeMessageParticipant,
   resolveEphemeralTaskCreationPolicy,
-} from "./types/messages.js";
+} from "./types/messaging/messages.js";
 export {
   DASHBOARD_USER_ID,
   normalizeMessageParticipant,
@@ -1360,7 +1360,7 @@ import type {
   Message,
   MessageCreateInput,
   MessageFilter,
-} from "./types/messages.js";
+} from "./types/messaging/messages.js";
 export type {
   ParticipantType,
   MessageType,
