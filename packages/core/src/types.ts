@@ -11,34 +11,34 @@
 // resolves only to this file (types.ts), not the package barrel, so the types must
 // be re-exported here (type-only — no engine/runtime code crosses into the browser
 // bundle) rather than requiring dashboard code to import the source module path.
-export type { PlannerOverseerState, PlannerOverseerRuntimeSnapshot } from "./planner-overseer-state.js";
-export type { ExecutorEscalationTarget, InReviewStallCode, InReviewStallSignal, ProviderErrorClassification } from "./in-review-stall.js";
-export type { InReviewStalledCode, InReviewStalledSignal } from "./in-review-stalled.js";
-export type { StalePausedReviewCode, StalePausedReviewSignal } from "./stale-paused-review.js";
-export type { StalePausedTodoCode, StalePausedTodoSignal } from "./stale-paused-todo.js";
-export type { StalledReviewSignal } from "./stalled-review-detector.js";
-export type { TaskAgeStalenessLevel, TaskAgeStalenessSignal } from "./task-age-staleness.js";
+export type { PlannerOverseerState, PlannerOverseerRuntimeSnapshot } from "./planner/planner-overseer-state.js";
+export type { ExecutorEscalationTarget, InReviewStallCode, InReviewStallSignal, ProviderErrorClassification } from "./tasks/in-review-stall.js";
+export type { InReviewStalledCode, InReviewStalledSignal } from "./tasks/in-review-stalled.js";
+export type { StalePausedReviewCode, StalePausedReviewSignal } from "./tasks/stale-paused-review.js";
+export type { StalePausedTodoCode, StalePausedTodoSignal } from "./tasks/stale-paused-todo.js";
+export type { StalledReviewSignal } from "./tasks/stalled-review-detector.js";
+export type { TaskAgeStalenessLevel, TaskAgeStalenessSignal } from "./tasks/task-age-staleness.js";
 // FNXC:UpdateChannels 2026-07-19-12:30: re-export type-only so browser-side
 // dashboard code (whose "@fusion/core" vite alias resolves to types.ts, not the
 // package barrel) can name the update channel union.
-export type { UpdateChannel } from "./app-version.js";
+export type { UpdateChannel } from "./i18n/app-version.js";
 
 export {
   computeCapacityRisk,
   DEFAULT_CAPACITY_RISK_TODO_THRESHOLD,
-} from "./capacity.js";
-export type { CapacityRiskSignal } from "./capacity.js";
+} from "./board/capacity.js";
+export type { CapacityRiskSignal } from "./board/capacity.js";
 
 // FNXC:McpConfig 2026-06-26-02:10: The dashboard Vite build aliases @fusion/core to this browser-safe module, so the pure MCP config helpers are re-exported here for Settings UI import/export, validation, and project-over-global resolution without pulling Node-only stores into the client bundle.
-export { exportMcpServersJson, importMcpServersJson, mapPluginMcpServerContribution, resolveEffectiveMcpServers } from "./mcp-config.js";
+export { exportMcpServersJson, importMcpServersJson, mapPluginMcpServerContribution, resolveEffectiveMcpServers } from "./config/mcp-config.js";
 export {
   DEFAULT_GITLAB_API_BASE_URL,
   DEFAULT_GITLAB_INSTANCE_URL,
   resolveGitlabConfig,
   resolveGitlabEnabled,
-} from "./gitlab-config.js";
-export type { GitlabConfigSettingsSource, ResolvedGitlabConfig, ResolveGitlabConfigInput } from "./gitlab-config.js";
-export { validateMcpServerDefinitionDetailed, validateMcpServerDefinitionsDetailed } from "./settings-validation.js";
+} from "./git/gitlab-config.js";
+export type { GitlabConfigSettingsSource, ResolvedGitlabConfig, ResolveGitlabConfigInput } from "./git/gitlab-config.js";
+export { validateMcpServerDefinitionDetailed, validateMcpServerDefinitionsDetailed } from "./config/settings-validation.js";
 
 /*
  * FNXC:WorkflowDeprecation 2026-07-15-16:35:
@@ -1452,11 +1452,11 @@ export interface Mailbox {
 
 
 // Re-export PROMPT_KEY_CATALOG for backward compatibility with vite alias
-export { PROMPT_KEY_CATALOG } from "./prompt-overrides.js";
+export { PROMPT_KEY_CATALOG } from "./tasks/prompt-overrides.js";
 
 // Re-exported here so the dashboard's `@fusion/core` → types.ts alias resolves
 // client-side consumers (see packages/dashboard/vite.config.ts).
-export { getErrorMessage } from "./error-message.js";
+export { getErrorMessage } from "./process/error-message.js";
 export {
   resolveExecutionSettingsModel,
   resolvePlanningSettingsModel,
@@ -1467,11 +1467,11 @@ export {
   resolveTaskValidatorModel,
   resolveTitleSummarizerSettingsModel,
   resolveValidatorSettingsModel,
-} from "./model-resolution.js";
-export type { ResolvedModelSelection } from "./model-resolution.js";
-export { resolveResearchSettings } from "./research-settings.js";
-export { resolveResearchFindingId } from "./research-types.js";
-export type { ResolvedResearchSettings } from "./research-settings.js";
+} from "./ai/model-resolution.js";
+export type { ResolvedModelSelection } from "./ai/model-resolution.js";
+export { resolveResearchSettings } from "./research/research-settings.js";
+export { resolveResearchFindingId } from "./research/research-types.js";
+export type { ResolvedResearchSettings } from "./research/research-settings.js";
 
 /*
 FNXC:WorkflowLifecycleAutofix 2026-07-12-13:00:
@@ -1481,10 +1481,10 @@ fixes that insert the canonical completion-summary node. Both helpers are
 pure (types + string constants only), so they are safe to re-export through
 this browser-safe alias entry.
 */
-export { analyzeWorkflowLifecycle } from "./workflow-lifecycle-validation.js";
-export type { WorkflowLifecycleWarning, WorkflowLifecycleWarningCode } from "./workflow-lifecycle-validation.js";
+export { analyzeWorkflowLifecycle } from "./workflows/workflow-lifecycle-validation.js";
+export type { WorkflowLifecycleWarning, WorkflowLifecycleWarningCode } from "./workflows/workflow-lifecycle-validation.js";
 export {
   completionSummaryNode,
   isCompletionSummaryNode,
   COMPLETION_SUMMARY_NODE_ID,
-} from "./builtin-completion-summary-node.js";
+} from "./workflows/builtin-completion-summary-node.js";
