@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createTerminalSession, killPtyTerminalSession, listTerminalSessions } from "../api";
-import { fetchSystemInfo } from "../api/system-panel";
+/*
+FNXC:CodeOrganization 2026-07-26-07:30:
+Wave17 moved system-panel under api/system/. useTerminalSessions must import the nested path so Vite/tsc resolve after the domain peel (PR #2398 CI).
+*/
+import { fetchSystemInfo } from "../api/system/system-panel";
 import { getScopedItem, setScopedItem } from "../utils/projectStorage";
 
 const STORAGE_KEY = "kb-terminal-tabs";

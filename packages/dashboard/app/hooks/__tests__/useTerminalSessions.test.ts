@@ -4,7 +4,7 @@ import { renderHook, waitFor, act } from "@testing-library/react";
 import { useTerminalSessions, __resetServerPlatformProbeForTests } from "../useTerminalSessions";
 import { scopedKey } from "../../utils/projectStorage";
 import * as apiModule from "../../api";
-import * as systemPanelModule from "../../api/system-panel";
+import * as systemPanelModule from "../../api/system/system-panel";
 
 // Mock API
 vi.mock("../../api", () => ({
@@ -15,7 +15,7 @@ vi.mock("../../api", () => ({
 
 // FNXC:Terminal 2026-07-23-22:40: Windows-UA clients probe the server platform
 // (GET /api/system/info) before deciding whether auto-create is skipped.
-vi.mock("../../api/system-panel", () => ({
+vi.mock("../../api/system/system-panel", () => ({
   fetchSystemInfo: vi.fn(),
 }));
 
