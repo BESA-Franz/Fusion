@@ -49,8 +49,11 @@ FNXC:TaskWedgeNotifications 2026-10-19-00:00:
 Advance the PostgreSQL schema ceiling for the durable wedge episode column. The
 forward migration must run before TaskStore writes the new field on fresh and
 upgraded databases.
+
+FNXC:MissionTaskPrefix 2026-07-26-12:00:
+SCHEMA_BASELINE_VERSION advances to 0037 for optional per-mission task_prefix.
 */
-export const SCHEMA_BASELINE_VERSION = "0036";
+export const SCHEMA_BASELINE_VERSION = "0037";
 /** FNXC:SymbolLock 2026-07-31-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -152,6 +155,8 @@ export const MILESTONE_ASSERTION_PROVENANCE_VERSION = "0034";
 export const MISSION_LINEAGE_STOP_VERSION = "0035";
 /** FNXC:ChatTags 2026-08-05-10:55: existing clusters need normalized project-scoped Direct conversation tags. */
 export const CHAT_SESSION_TAGS_VERSION = "0036";
+/** FNXC:MissionTaskPrefix 2026-07-26-12:00: upgraded projects need the optional mission prefix before mission reads and triage task creation use it. */
+export const MISSION_TASK_PREFIX_VERSION = "0037";
 
 /** SECURITY DEFINER helper that only inserts LEGACY_ADOPTION_DRAINED_MARKER. */
 export const LEGACY_ADOPTION_DRAINED_MARKER_FUNCTION = "fusion_mark_legacy_adoption_drained";
@@ -362,6 +367,7 @@ const MILESTONE_ASSERTION_PROVENANCE_MIGRATION_PATH = join(
 );
 const MISSION_LINEAGE_STOP_MIGRATION_PATH = join(MIGRATIONS_DIR, "0035_fn_8543_mission_lineage_stop.sql");
 const CHAT_SESSION_TAGS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0036_chat_session_tags.sql");
+const MISSION_TASK_PREFIX_MIGRATION_PATH = join(MIGRATIONS_DIR, "0037_mission_task_prefix.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -468,6 +474,7 @@ export async function applySchemaBaseline(
     const milestoneAssertionProvenanceAlreadyApplied = applied.includes(MILESTONE_ASSERTION_PROVENANCE_VERSION);
     const missionLineageStopAlreadyApplied = applied.includes(MISSION_LINEAGE_STOP_VERSION);
     const chatSessionTagsAlreadyApplied = applied.includes(CHAT_SESSION_TAGS_VERSION);
+    const missionTaskPrefixAlreadyApplied = applied.includes(MISSION_TASK_PREFIX_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -986,6 +993,18 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(CHAT_SESSION_TAGS_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${CHAT_SESSION_TAGS_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+
+    /*
+    FNXC:MissionTaskPrefix 2026-07-26-12:00:
+    Apply missions.task_prefix independently so databases that already recorded
+    0036 gain the optional mission namespace before mission reads or task minting.
+    */
+    if (!missionTaskPrefixAlreadyApplied) {
+      const migrationSql = await readFile(MISSION_TASK_PREFIX_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${MISSION_TASK_PREFIX_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
 
