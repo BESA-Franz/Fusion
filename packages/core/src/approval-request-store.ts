@@ -5,6 +5,10 @@ import { fromJson, toJsonNullable } from "./db.js";
 import type { AsyncDataLayer } from "./postgres/data-layer.js";
 import * as asyncApprovalRequestStore from "./async-approval-request-store.js";
 import * as schema from "./postgres/schema/index.js";
+// FNXC:ApprovalLifecycleSecurity 2026-07-26-12:15:
+// isApprovalRequestExpired is imported from types/agents.js directly because the types.ts pass-through
+// barrel re-exports names explicitly (no `export *`); the barrel is out of this change's file scope.
+import { isApprovalRequestExpired } from "./types/agents.js";
 import {
   isValidApprovalRequestTransition,
   normalizeApprovalRequestActionCategory,
@@ -338,21 +342,40 @@ export class ApprovalRequestStore {
     if (this.backendMode) {
       return asyncApprovalRequestStore.decideApprovalRequest(this.asyncLayer!, requestId, status, input);
     }
-    const existing = await this.get(requestId);
-    if (!existing) {
-      throw new Error(`Approval request ${requestId} not found`);
-    }
-    if (!isValidApprovalRequestTransition(existing.status, status)) {
-      throw new Error(`Invalid approval request transition: ${existing.status} -> ${status}`);
-    }
 
+    /*
+    FNXC:ApprovalLifecycleSecurity 2026-07-26-12:20:
+    Read-validate-update must be atomic. The previous shape read the row OUTSIDE the transaction, so
+    concurrent approve+deny both validated against "pending" and the last write won, silently rewriting the
+    decision. Fix: re-read + re-validate INSIDE the transaction callback (synchronous prepared statements —
+    this.get() is async and unusable here), then a guarded UPDATE (`WHERE id = ? AND status = ?`) whose
+    changes count proves nobody raced between the read and the write. 0 changes -> invalid-transition error
+    (dashboard maps that message to HTTP 409). Expired pending rows are rejected here too (lazy TTL, no
+    schema change).
+    */
     const now = new Date().toISOString();
     this.syncDb().transaction(() => {
-      this.syncDb().prepare(`
+      const row = this.syncDb().prepare(`SELECT * FROM approval_requests WHERE id = ?`).get(requestId) as
+        | ApprovalRequestRow
+        | undefined;
+      if (!row) {
+        throw new Error(`Approval request ${requestId} not found`);
+      }
+      const current = this.rowToRequest(row);
+      if (!isValidApprovalRequestTransition(current.status, status)) {
+        throw new Error(`Invalid approval request transition: ${current.status} -> ${status}`);
+      }
+      if (current.status === "pending" && isApprovalRequestExpired(current)) {
+        throw new Error(`Approval request ${requestId} expired`);
+      }
+      const result = this.syncDb().prepare(`
         UPDATE approval_requests
         SET status = ?, decidedAt = ?, updatedAt = ?
-        WHERE id = ?
-      `).run(status, now, now, requestId);
+        WHERE id = ? AND status = ?
+      `).run(status, now, now, requestId, current.status);
+      if (Number(result.changes) === 0) {
+        throw new Error(`Invalid approval request transition: ${current.status} -> ${status}`);
+      }
       this.appendAuditEvent(requestId, status, input.actor, now, input.note);
     });
 
@@ -368,21 +391,45 @@ export class ApprovalRequestStore {
     if (this.backendMode) {
       return asyncApprovalRequestStore.markApprovalRequestCompleted(this.asyncLayer!, requestId, input);
     }
-    const existing = await this.get(requestId);
-    if (!existing) {
-      throw new Error(`Approval request ${requestId} not found`);
-    }
-    if (!isValidApprovalRequestTransition(existing.status, "completed")) {
-      throw new Error(`Invalid approval request transition: ${existing.status} -> completed`);
-    }
 
+    /*
+    FNXC:ApprovalLifecycleSecurity 2026-07-26-12:20:
+    Same atomic read-validate-update shape as decide(): re-read + validate inside the transaction, guarded
+    UPDATE on the observed status, 0 changes -> conflict. Additionally:
+    - Ownership: when expectedRequesterActorId is provided it must match the row's requester actorId —
+      previously any runtime holding a request id could burn another agent's approval.
+    - Expiry: an approved grant is redeemable only within APPROVAL_REQUEST_GRANT_TTL_MS of decidedAt
+      (live DB had 17 approved / 0 completed grants redeemable forever).
+    */
     const now = new Date().toISOString();
     this.syncDb().transaction(() => {
-      this.syncDb().prepare(`
+      const row = this.syncDb().prepare(`SELECT * FROM approval_requests WHERE id = ?`).get(requestId) as
+        | ApprovalRequestRow
+        | undefined;
+      if (!row) {
+        throw new Error(`Approval request ${requestId} not found`);
+      }
+      const current = this.rowToRequest(row);
+      if (!isValidApprovalRequestTransition(current.status, "completed")) {
+        throw new Error(`Invalid approval request transition: ${current.status} -> completed`);
+      }
+      if (
+        input.expectedRequesterActorId !== undefined &&
+        input.expectedRequesterActorId !== current.requester.actorId
+      ) {
+        throw new Error(`Approval request ${requestId} requester mismatch`);
+      }
+      if (current.status === "approved" && isApprovalRequestExpired(current)) {
+        throw new Error(`Approval request ${requestId} expired`);
+      }
+      const result = this.syncDb().prepare(`
         UPDATE approval_requests
         SET status = 'completed', completedAt = ?, updatedAt = ?
-        WHERE id = ?
-      `).run(now, now, requestId);
+        WHERE id = ? AND status = ?
+      `).run(now, now, requestId, current.status);
+      if (Number(result.changes) === 0) {
+        throw new Error(`Invalid approval request transition: ${current.status} -> completed`);
+      }
       this.appendAuditEvent(requestId, "completed", input.actor, now, input.note);
     });
 
