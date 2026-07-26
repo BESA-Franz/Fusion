@@ -148,9 +148,14 @@ export async function waitForSettingsModalReady() {
   Full Suite shard 4 failed when mockFetchSettings was called but the modal still showed
   Loading… on the next paint (OAuth incomplete-toast test). Wait for Loading to clear so
   Authentication/section clicks do not race the initial settings fetch.
+
+  FNXC:DashboardTests 2026-07-25-10:50:
+  Collapse the two sequential waitFor polls into one assertion body so each SettingsModal
+  test pays a single microtask loop for "fetch started + Loading cleared" rather than two
+  independent waitFor timeouts. Assertions unchanged; no timeout/worker knobs raised.
   */
-  await waitFor(() => expect(mockFetchSettings).toHaveBeenCalled());
   await waitFor(() => {
+    expect(mockFetchSettings).toHaveBeenCalled();
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
   });
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Task } from "@fusion/core";
@@ -35,7 +35,24 @@ describe("reliability interaction: starved refinement x triage poll", () => {
       FNXC:EngineTests 2026-07-26-20:55:
       Recovery requires updatedAt older than STARVED_REFINEMENT_ESCALATION_COOLDOWN_MS (40m).
       Keep createdAt/updatedAt well below the fake now (11:00) so grace + cooldown pass.
+
+      FNXC:EngineTests 2026-07-25-10:30:
+      Peer todo tasks establish the starved-refinement peer-progress threshold only.
+      They must ship a real PROMPT.md so discoverReadyPlanningTasks does not re-admit
+      them as unplanned (ENOENT) and steal maxConcurrent=1 slots ahead of FN-R1.
+      Without prompts, localeCompare orders FN-P* before FN-R1 and 7 polls never
+      reach the refinement — the always-red full-suite failure on shard 3/4.
       */
+      for (const peerId of ["FN-P1", "FN-P2", "FN-P3"] as const) {
+        const peerDir = join(root, ".fusion", "tasks", peerId);
+        await mkdir(peerDir, { recursive: true });
+        await writeFile(
+          join(peerDir, "PROMPT.md"),
+          `# ${peerId}\n\n## File Scope\n- packages/engine/src/triage.ts\n`,
+          "utf-8",
+        );
+      }
+
       const tasks: Task[] = [
         triageTask({
           id: "FN-R1",
@@ -83,6 +100,10 @@ describe("reliability interaction: starved refinement x triage poll", () => {
       longer reorders admission. The surviving reliability invariant is FIFO fairness:
       with maxConcurrent=1 and 6 older backlog tasks, the starved refinement must be
       admitted within 7 bounded polls (one admission per poll).
+
+      FNXC:EngineTests 2026-07-25-10:30:
+      Peer progress todos are planned (PROMPT present) so they do not join the FIFO queue;
+      only the 6 older triage backlog tasks sit ahead of FN-R1.
       */
       for (let i = 0; i < 7; i++) {
         await (triage as any).poll();
