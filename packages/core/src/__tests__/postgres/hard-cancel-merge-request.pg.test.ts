@@ -7,8 +7,14 @@
  * moveTask path on AsyncDataLayer so full-suite no longer carries a silent red.
  *
  * Surface enumeration:
- * - user moveSource cancels queued merge-request + clears handoff marker
+ * - user moveSource cancels queued merge-request + clears handoff marker and lands column=todo
  * - engine moveSource does not cancel (rebound path preserves merge state)
+ *
+ * FNXC:EngineTests 2026-07-26-07:20:
+ * Review P2: include this file in packages/core `test:pg-gate` so the merge-blocking
+ * PG gate fails on hard-cancel regressions rather than only full-suite.
+ * Also assert persisted column=todo so side-effect-only assertions cannot pass while
+ * the task remains in-review.
  */
 
 import { beforeAll, beforeEach, afterEach, afterAll, expect, it } from "vitest";
@@ -47,6 +53,8 @@ pgDescribe("FN-5743 hard-cancel merge-request cutover (PostgreSQL)", () => {
 
     await store.moveTask(taskId, "todo", { moveSource: "user" });
 
+    // FNXC:EngineTests 2026-07-26-07:20: assert column transition, not only MR/marker side effects
+    expect((await store.getTask(taskId)).column).toBe("todo");
     expect((await store.getMergeRequestRecordAsync(taskId))?.state).toBe("cancelled");
     expect(await store.getCompletionHandoffAcceptedMarker(taskId)).toBeNull();
   });
@@ -56,6 +64,7 @@ pgDescribe("FN-5743 hard-cancel merge-request cutover (PostgreSQL)", () => {
 
     await store.moveTask(taskId, "todo", { moveSource: "engine" as "user" });
 
+    expect((await store.getTask(taskId)).column).toBe("todo");
     expect((await store.getMergeRequestRecordAsync(taskId))?.state).toBe("queued");
     expect(await store.getCompletionHandoffAcceptedMarker(taskId)).not.toBeNull();
   });
