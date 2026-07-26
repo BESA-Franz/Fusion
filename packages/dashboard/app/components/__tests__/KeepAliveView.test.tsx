@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { KeepAliveView } from "../KeepAliveView";
+/*
+FNXC:DashboardTests 2026-07-26-07:25:
+Gate check-no-cwd-relative-dashboard-test-reads rejects process.cwd()/bare app/ reads under packages/dashboard/app/__tests__. Load KeepAliveView.css via the module-relative cssFixture helper so root-launched Vitest does not ENOENT.
+*/
+import { loadComponentCss } from "../../test/cssFixture";
 
 /*
 FNXC:KeepAlive 2026-07-22-12:35:
@@ -45,7 +48,7 @@ describe("KeepAliveView", () => {
   });
 
   it("hides via out-of-flow visibility, never display:none", () => {
-    const css = readFileSync(resolve(process.cwd(), "app/components/KeepAliveView.css"), "utf8");
+    const css = loadComponentCss("KeepAliveView.css");
     const hiddenRuleStart = css.indexOf(".keep-alive-view--hidden");
     expect(hiddenRuleStart).toBeGreaterThanOrEqual(0);
     const hiddenRule = css.slice(hiddenRuleStart, css.indexOf("}", hiddenRuleStart));
