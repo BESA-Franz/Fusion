@@ -53,8 +53,18 @@ export async function startWork(input: AgentActionInput, deps: AgentActionDeps):
   if ((task.column !== "triage" && task.column !== "todo") || START_WORK_BLOCKED_STATUSES.has(String(task.status))) {
     conflict("start-work", task);
   }
+  /*
+  FNXC:GlassesAgentActions 2026-07-26-12:40:
+  Glasses actions are human gestures, so board moves must carry `moveSource: "user"`
+  (matching the dashboard move route). Defaulting to the engine source misattributed
+  the move actor and skipped user-move semantics in the store's move pipeline.
+  Exceptions below: returnToAgent/retryTask intentionally keep the default source
+  because a user-source move to todo parks the task userPaused, which would defeat
+  those actions' requeue-for-execution intent (dashboard rebound/retry routes use the
+  default source for the same reason).
+  */
   // Intentional v1 limitation: plugin cannot import engine allocator, so moveTask runs without allocateWorktree.
-  await deps.taskStore.moveTask(taskId, "in-progress");
+  await deps.taskStore.moveTask(taskId, "in-progress", { moveSource: "user" });
   return toResult(deps.taskStore, taskId);
 }
 
@@ -64,7 +74,8 @@ export async function requestReview(input: AgentActionInput, deps: AgentActionDe
   if (task.column !== "in-progress") {
     conflict("request-review", task);
   }
-  await deps.taskStore.moveTask(taskId, "in-review");
+  // FNXC:GlassesAgentActions 2026-07-26-12:40: human gesture — user source (see startWork).
+  await deps.taskStore.moveTask(taskId, "in-review", { moveSource: "user" });
   return toResult(deps.taskStore, taskId);
 }
 
@@ -74,7 +85,9 @@ export async function approvePlan(input: AgentActionInput, deps: AgentActionDeps
   if (task.column !== "triage" || task.status !== "awaiting-approval") {
     conflict("approve-plan", task);
   }
-  await deps.taskStore.moveTask(taskId, "todo");
+  // FNXC:GlassesAgentActions 2026-07-26-12:40: human gesture — user source (see startWork).
+  // triage → todo is outside the reopen set, so no userPaused park is applied here.
+  await deps.taskStore.moveTask(taskId, "todo", { moveSource: "user" });
   await deps.taskStore.updateTask(taskId, { status: undefined });
   return toResult(deps.taskStore, taskId);
 }
@@ -100,6 +113,9 @@ export async function returnToAgent(input: AgentActionInput, deps: AgentActionDe
     status: null,
     assignedAgentId: null,
   });
+  // FNXC:GlassesAgentActions 2026-07-26-12:40: intentionally default (engine) source:
+  // a user-source in-review → todo move sets userPaused and would park the task
+  // instead of returning it to the agent (mirrors dashboard rebound routes).
   await deps.taskStore.moveTask(taskId, "todo");
   return toResult(deps.taskStore, taskId);
 }
@@ -145,6 +161,8 @@ export async function retryTask(input: AgentActionInput, deps: AgentActionDeps):
       recoveryRetryCount: null,
       nextRecoveryAt: null,
     });
+    // FNXC:GlassesAgentActions 2026-07-26-12:40: intentionally default (engine) source:
+    // retry requeues for execution; user source would userPaused-park the row (see returnToAgent).
     await deps.taskStore.moveTask(taskId, "todo");
     return toResult(deps.taskStore, taskId);
   }
