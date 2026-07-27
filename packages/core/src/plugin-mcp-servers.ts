@@ -1,6 +1,6 @@
 import { resolve as resolvePath } from "node:path";
-import { PluginLoader } from "./plugin-loader.js";
-import type { PluginMcpServerContribution } from "./plugin-types.js";
+import { PluginLoader } from "./plugins/plugin-loader.js";
+import type { PluginMcpServerContribution } from "./plugins/plugin-types.js";
 
 export type PluginMcpServerEntry = { pluginId: string; server: PluginMcpServerContribution };
 
@@ -52,8 +52,14 @@ export function createProjectScopedPluginMcpProvider(options: ProjectScopedPlugi
       }
 
       const enabledIds = new Set(enabled.map((plugin) => plugin.id));
+      /*
+      FNXC:PluginMcpServers 2026-07-23-12:00:
+      FN-8596 requires other-root discovery to use an isolated loader: it may
+      read enabled MCP contributions and run private teardown, but must never
+      join or mutate shared lifecycle state or persist runtime transitions.
+      */
       // Same-root callers reuse their active loader. Other roots load only their
-      // own enabled plugins and never persist lifecycle state during discovery.
+      // own enabled plugins through the caller's isolated construction seam.
       if (root === normalizedHostRoot) {
         const entries = options.hostLoader.getPluginMcpServers().filter((entry) => enabledIds.has(entry.pluginId));
         cache.set(root, { enabledKey, entries });

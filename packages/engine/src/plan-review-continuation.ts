@@ -8,7 +8,7 @@ import {
   type WorkflowIr,
   type WorkflowWorkItem,
 } from "@fusion/core";
-import { resolvePreReleasePlanReviewNode } from "./hold-release.js";
+import { resolvePreReleasePlanReviewNode } from "./execution/hold-release.js";
 
 export type StrandedHoldContinuationReason =
   | "not-hold-column" | "no-pre-release-review" | "active-continuation"

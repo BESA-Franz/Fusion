@@ -105,6 +105,15 @@ export type {
   RankAssignedTasksForWakeDeltaResult,
 } from "./agents/assigned-task-ranking.js";
 export { MAX_TASK_LIST_TEXT_CHARS, clampTaskListText, formatTaskListText } from "./tasks/task-list-format.js";
+export {
+  DEFAULT_TOOL_OUTPUT_MAX_CHARS,
+  TOOL_OUTPUT_UNLIMITED_SETTING_VALUE,
+  buildToolOutputTruncationMarker,
+  clampToolOutputText,
+  clampToolOutputBlocks,
+  resolveAgentToolOutputMaxChars,
+  resolveToolOutputBudget,
+} from "./tool-output-budget.js";
 export { MOCK_PROVIDER_ID } from "./ai/mock-provider-constants.js";
 export type { MockProviderId, MockSessionPurpose } from "./ai/mock-provider-constants.js";
 export {
@@ -251,6 +260,8 @@ export type {
 export { BUILTIN_CODING_WORKFLOW_IR } from "./workflows/builtin-coding-workflow-ir.js";
 export { PLAN_REVIEW_GROUP_ID } from "./workflows/builtin-plan-review-group.js";
 export { BUILTIN_MARKETING_WORKFLOW_IR } from "./workflows/builtin-marketing-workflow-ir.js";
+export { evaluateForeachMergeProof } from "./workflow-merge-proof.js";
+export type { ForeachMergeProof, ForeachMergeProofInput } from "./workflow-merge-proof.js";
 export {
   resolveWorkflowOptionalSteps,
   resolveDefaultOnOptionalGroupIds,
@@ -716,6 +727,7 @@ export {
 } from "./duplicates/near-duplicate.js";
 export { getTaskDuplicateLineage } from "./duplicates/duplicate-lineage.js";
 export {
+  parseDuplicateMarkerFromSessionText,
   parseExplicitDuplicateMarker,
   type ExplicitDuplicateMarker,
 } from "./duplicates/explicit-duplicate-marker.js";

@@ -1,3 +1,6 @@
+import { createLogger } from "../process/logger.js";
+
+const severityAuditLog = createLogger("core-comments-ops");
 /**
  * comments-ops operations.
  *
@@ -7,11 +10,10 @@
  * instance as its first parameter and performs byte-identical work.
  */
 import {TaskStore, storeLog} from "../store.js";
-import {randomUUID} from "node:crypto";
 import {readFile} from "node:fs/promises";
 import {join} from "node:path";
 import {existsSync} from "node:fs";
-import type {ArchivedTaskDocumentAdditionInput, ArchivedTaskDocumentAdditionResult, Task, Column, TaskDocument, TaskDocumentCreateInput, TaskLogEntry, RunMutationContext} from "../types.js";
+import type {ArchivedTaskDocumentAdditionInput, ArchivedTaskDocumentAdditionResult, Task, TaskDocument, TaskDocumentCreateInput, TaskLogEntry, RunMutationContext} from "../types.js";
 import {validateDocumentKey} from "../types.js";
 import {ArchivedTaskDocumentPublicationRejectedError, validateArchivedTaskDocumentAddition, validateTaskDocumentPreconditions} from "../task-document-concurrency.js";
 import "../builtin-traits.js";
@@ -21,7 +23,7 @@ import {getLiveTaskColumn, publishArchivedTaskDocumentAddition as publishArchive
 import type {TaskDocumentRow} from "../task-store/row-types.js";
 
 export async function addCommentImpl(store: TaskStore, id: string, text: string, author: string = "user", options?: { skipRefinement?: boolean; source?: "user" | "agent" | "github-review" | "github-review-comment"; externalId?: string; reviewState?: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED"; }, runContext?: RunMutationContext,): Promise<Task> {
-    if (store.backendMode) {
+    {
       const layer = store.asyncLayer!;
       const state = await getLiveTaskColumn(layer.db, id, layer.projectId);
       if (state === "archived") throw new Error(`Task ${id} is archived — comments are read-only`);
@@ -242,110 +244,10 @@ export async function upsertTaskDocumentImpl(store: TaskStore, taskId: string, i
     // Backend mode: delegate the core upsert (revision archive + update) to
     // upsertTaskDocumentAsync. The citation scanning and task:updated emission
     // happen after (best-effort, same as the SQLite path).
-    if (store.backendMode) {
-      const layer = store.asyncLayer!;
-      const document = await upsertTaskDocumentAsync(layer, taskId, input);
-      const task = await store.getTask(taskId);
-      store.emit("task:updated", task);
-      try {
-        const citationInputs = store.scanAndRecordCitations(
-          input.content,
-          "task_document",
-          `document:${taskId}:${input.key}:rev${document.revision}`,
-          input.author ?? "user",
-          taskId,
-          document.updatedAt,
-        );
-        if (citationInputs.length > 0) {
-          void store.recordGoalCitations(citationInputs);
-        }
-      } catch (err) {
-        console.warn("[fusion] Failed to scan/record goal citations from task document:", err);
-      }
-      return document;
-    }
-
-    const taskExists = store.db.prepare(`SELECT id, "column" FROM tasks WHERE id = ? AND ${TaskStore.ACTIVE_TASKS_WHERE}`).get(taskId) as
-      | { id: string; column: Column }
-      | undefined;
-    if (taskExists?.column === "archived") {
-      throw new Error(`Task ${taskId} is archived — documents are read-only`);
-    }
-    if (!taskExists) {
-      if (store.isTaskArchived(taskId)) {
-        throw new Error(`Task ${taskId} is archived — documents are read-only`);
-      }
-      throw new Error(`Task ${taskId} not found`);
-    }
-
-    const now = new Date().toISOString();
-    const author = input.author ?? "user";
-    const metadata = toJsonNullable(input.metadata);
-
-    const document = store.db.transaction(() => {
-      const existing = store.db
-        .prepare("SELECT * FROM task_documents WHERE taskId = ? AND key = ?")
-        .get(taskId, input.key) as TaskDocumentRow | undefined;
-
-      if (existing) {
-        store.db.prepare(
-          `INSERT INTO task_document_revisions (taskId, key, content, revision, author, metadata, createdAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        ).run(
-          taskId,
-          input.key,
-          existing.content,
-          existing.revision,
-          existing.author,
-          existing.metadata ?? null,
-          now,
-        );
-
-        store.db.prepare(
-          `UPDATE task_documents
-           SET content = ?, revision = ?, author = ?, metadata = ?, updatedAt = ?
-           WHERE taskId = ? AND key = ?`
-        ).run(
-          input.content,
-          existing.revision + 1,
-          author,
-          metadata,
-          now,
-          taskId,
-          input.key,
-        );
-      } else {
-        store.db.prepare(
-          `INSERT INTO task_documents (id, taskId, key, content, revision, author, metadata, createdAt, updatedAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(
-          randomUUID(),
-          taskId,
-          input.key,
-          input.content,
-          1,
-          author,
-          metadata,
-          now,
-          now,
-        );
-      }
-
-      const row = store.db
-        .prepare("SELECT * FROM task_documents WHERE taskId = ? AND key = ?")
-        .get(taskId, input.key) as TaskDocumentRow | undefined;
-
-      if (!row) {
-        throw new Error(`Failed to upsert document ${input.key} for task ${taskId}`);
-      }
-
-      return store.rowToTaskDocument(row);
-    });
-
-    store.db.bumpLastModified();
+        const layer = store.asyncLayer!;
+    const document = await upsertTaskDocumentAsync(layer, taskId, input);
     const task = await store.getTask(taskId);
     store.emit("task:updated", task);
-
     try {
       const citationInputs = store.scanAndRecordCitations(
         input.content,
@@ -356,11 +258,12 @@ export async function upsertTaskDocumentImpl(store: TaskStore, taskId: string, i
         document.updatedAt,
       );
       if (citationInputs.length > 0) {
-        store.recordGoalCitations(citationInputs);
+        void store.recordGoalCitations(citationInputs).catch((err) => {
+          severityAuditLog.warn("[fusion] Failed to record goal citations from task document:", err);
+        });
       }
     } catch (err) {
-      console.warn("[fusion] Failed to scan/record goal citations from task document:", err);
+      severityAuditLog.warn("[fusion] Failed to scan/record goal citations from task document:", err);
     }
-
     return document;
-  }
+}

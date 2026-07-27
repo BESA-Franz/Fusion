@@ -120,6 +120,15 @@ export * from "./planner/planning-plan-md.js";
 export * from "./tasks/file-scope-classification.js";
 export { MAX_TASK_LIST_TEXT_CHARS, clampTaskListText, formatTaskListText } from "./tasks/task-list-format.js";
 export {
+  DEFAULT_TOOL_OUTPUT_MAX_CHARS,
+  TOOL_OUTPUT_UNLIMITED_SETTING_VALUE,
+  buildToolOutputTruncationMarker,
+  clampToolOutputText,
+  clampToolOutputBlocks,
+  resolveAgentToolOutputMaxChars,
+  resolveToolOutputBudget,
+} from "./tool-output-budget.js";
+export {
   WAKE_DELTA_ASSIGNED_TASKS_CAP,
   rankAssignedTasksForWakeDelta,
   formatAssignedTasksWakeDeltaSection,
@@ -281,6 +290,8 @@ export { BUILTIN_CODING_WORKFLOW_IR } from "./workflows/builtin-coding-workflow-
 export { BUILTIN_CODING_IDEAS_WORKFLOW_IR } from "./workflows/builtin-coding-ideas-workflow-ir.js";
 export { PLAN_REVIEW_GROUP_ID } from "./workflows/builtin-plan-review-group.js";
 export { BUILTIN_MARKETING_WORKFLOW_IR } from "./workflows/builtin-marketing-workflow-ir.js";
+export { evaluateForeachMergeProof } from "./workflow-merge-proof.js";
+export type { ForeachMergeProof, ForeachMergeProofInput } from "./workflow-merge-proof.js";
 export {
   resolveWorkflowOptionalSteps,
   resolveDefaultOnOptionalGroupIds,
@@ -303,6 +314,7 @@ export {
   BUILTIN_MOVED_WORKFLOW_SETTINGS,
   BUILTIN_TRIAGE_POLICY_SETTINGS,
   BUILTIN_OVERSIGHT_SETTINGS,
+  DEFAULT_MAX_POST_REVIEW_FIXES,
   DEFAULT_PLANNER_OVERSEER_EXECUTOR_STUCK_AFTER_MS,
   PLANNER_HEARTBEAT_PATROL_ENABLED_SETTING_ID,
   renderTriagePolicyPlaceholders,
@@ -781,6 +793,10 @@ export {
   SelfDefeatingDependencyError,
   DependencyCycleError,
   TaskDeletedError,
+  // FNXC:TaskLookup404 2026-07-26-11:20: typed task-miss signal + guard so API
+  // boundaries can return 404 instead of 500 for an unknown task id.
+  TaskNotFoundError,
+  isTaskNotFoundError,
   TombstonedTaskResurrectionError,
   MergeQueueTaskNotFoundError,
   MergeQueueInvalidColumnError,
@@ -810,6 +826,7 @@ export {
 } from "./duplicates/near-duplicate.js";
 export { getTaskDuplicateLineage } from "./duplicates/duplicate-lineage.js";
 export {
+  parseDuplicateMarkerFromSessionText,
   parseExplicitDuplicateMarker,
   type ExplicitDuplicateMarker,
 } from "./duplicates/explicit-duplicate-marker.js";
@@ -2641,5 +2658,29 @@ export type { LanguageFamily, DetectedContentLanguage } from "./i18n/detect-cont
 export { promoteResearchFinding } from "./research/research-feature-promotion.js";
 export type { ResearchFeaturePromotionInput } from "./research/research-feature-promotion.js";
 export { getTotalAgentActiveMs, startPlanningSegment, finalizePlanningSegment } from "./tasks/task-timing.js";
+export { createLogger, type Logger } from "./process/logger.js";
 export { ACTIVE_WORKFLOW_WORK_ITEM_STATES } from "./types.js";
 export * from "./task-document-concurrency.js";
+/*
+FNXC:TaskDeleteAttribution 2026-07-26-14:30:
+Delete-caller attribution vocabulary. Exported from core because three packages must agree on it:
+the CLI/pi extension tags `agent-tool`, the engine tags `engine`, and the dashboard's browser client
+and Express route share the `x-fusion-client` header spelling across the wire.
+*/
+export * from "./task-delete-attribution.js";
+/*
+FNXC:TaskDeleteNotice 2026-07-26-16:10:
+Operator mailbox notice for non-operator deletes. Exported because the mailbox lives outside core:
+the engine runtime owns the MessageStore and registers it against its TaskStore through this seam.
+*/
+export {
+  NOTIFIED_TASK_DELETE_CALLER_KINDS,
+  shouldNotifyOperatorOfDelete,
+  registerTaskDeleteNoticeMailbox,
+  getTaskDeleteNoticeMailbox,
+  buildTaskDeleteNoticeContent,
+  buildTaskDeleteNoticeIdempotencyKey,
+  notifyOperatorOfNonOperatorDelete,
+  type TaskDeleteNoticeMailbox,
+  type TaskDeleteNoticeSnapshot,
+} from "./task-delete-notice.js";

@@ -1,3 +1,6 @@
+import { createLogger } from "../process/logger.js";
+
+const severityAuditLog = createLogger("core-async-mission-store");
 /**
  * Event-emitting PostgreSQL MissionStore facade.
  *
@@ -977,7 +980,7 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       try {
         await this.triageSlice(id);
       } catch (err) {
-        console.error(`[AsyncMissionStore] Auto-triage failed for slice ${id}:`, err);
+        severityAuditLog.error(`[AsyncMissionStore] Auto-triage failed for slice ${id}:`, err);
       }
     }
     this.emit("slice:activated", updated);
@@ -1206,7 +1209,7 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
    * whereas a duplicate bootstrap canonical must already prove this lineage.
    */
   async claimDefinedFeatureTaskInTransaction(
-    tx: import("./postgres/data-layer.js").DbTransaction,
+    tx: import("../postgres/data-layer.js").DbTransaction,
     input: { featureId: string; taskId: string; missionId: string; sliceId: string; requireExistingFeatureLink?: boolean },
   ): Promise<MissionFeature> {
     /*

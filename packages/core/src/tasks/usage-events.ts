@@ -1,4 +1,6 @@
 import type { Database } from "../db/db.js";
+import { createLogger } from "../process/logger.js";
+const severityAuditLog = createLogger("core-usage-events");
 
 /**
  * Queryable telemetry of agent activity (tool calls, messages, session
@@ -229,7 +231,7 @@ export function emitUsageEvent(db: Database, event: UsageEventInput): boolean {
     );
     return true;
   } catch (err) {
-    console.warn("[fusion] emitUsageEvent skipped a malformed/failed event:", err);
+    severityAuditLog.warn("[fusion] emitUsageEvent skipped a malformed/failed event:", err);
     return false;
   }
 }
