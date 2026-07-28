@@ -13,12 +13,13 @@ import {eq, sql} from "drizzle-orm";
 import type {Task, Column, ColumnId, HandoffToReviewOptions} from "../types.js";
 import {VALID_TRANSITIONS, COLUMNS} from "../types.js";
 import {serializeWorkflowIr} from "../workflows/workflow-ir.js";
+import {emitWorkflowLifecycleEvent} from "../workflow-events.js";
 import {resolveAllowedColumns, workflowHasColumn} from "../workflows/workflow-transitions.js";
 import {isBuiltinWorkflowId, getBuiltinWorkflow, resolveDefaultWorkflowIr, DEFAULT_WORKFLOW_ID} from "../workflows/builtin-workflows.js";
 import {parseWorkflowIr} from "../workflows/workflow-ir.js";
 import {findWorkflowColumn, resolveColumnPluginGates} from "../plugins/plugin-gate-verdict.js";
 import {getTraitRegistry, resolveColumnFlags} from "../workflows/trait-registry.js";
-import {resolveColumnCapacity, resolveWipBudgetColumns} from "../workflows/workflow-capacity.js";
+import {resolveColumnCapacity, resolveWipBudgetColumns, resolveCapacityPoolId} from "../workflows/workflow-capacity.js";
 import {
   type TransitionColumnFacts,
   evaluateCapacityRejection,

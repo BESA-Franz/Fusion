@@ -9,21 +9,20 @@
  * instance as its first parameter and performs byte-identical work.
  */
 import {TaskStore, storeLog, WORKFLOW_COMPILED_STEP_TEMPLATE_PREFIX, WORKFLOW_MOVE_POLICY_TIMEOUT_MS} from "../store.js";
+import { resolveCapacityPoolId } from "../workflows/workflow-capacity.js";
 import {TransitionRejectionError} from "./errors.js";
 import * as schema from "../postgres/schema/index.js";
 import {and, eq, isNull, ne, or, sql} from "drizzle-orm";
 import {mkdir, writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import type {Task, ColumnId, CheckoutClaimPrecondition, ActivityLogEntry, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, GoalCitation, GoalCitationFilter} from "../types.js";
-import {parseWorkflowIr, serializeWorkflowIr, downgradeIrToV1IfPure} from "../workflows/workflow-ir.js";
+import {parseWorkflowIr, downgradeIrToV1IfPure} from "../workflows/workflow-ir.js";
 import {makeTransitionRejection} from "../tasks/transition-types.js";
 import {getWorkflowExtensionRegistry} from "../workflows/workflow-extension-registry.js";
 import type {WorkflowMovePolicyInput} from "../workflows/workflow-extension-types.js";
 import "../builtin-traits.js";
 import {normalizeWorkflowIcon, type WorkflowDefinition, type WorkflowDefinitionInput} from "../workflows/workflow-definition-types.js";
-import {WORKFLOW_PARITY_OBSERVED_MUTATION, WORKFLOW_PARITY_DRIFT_MUTATION, type WorkflowParityDiff, type WorkflowParitySummary} from "../workflows/workflow-parity.js";
 import {normalizeTaskPriority} from "../tasks/task-priority.js";
-import {toJsonNullable} from "../db/db.js";
 import type {AsyncDataLayer, DbTransaction} from "../postgres/data-layer.js";
 import {recordRunAuditEventWithinTransaction} from "../postgres/data-layer.js";
 import {EvalStore} from "../eval/eval-store.js";
@@ -36,14 +35,14 @@ import {sanitizeFileScopeInPromptContent} from "../task-store/file-scope.js";
 import {type TaskRow} from "../task-store/persistence.js";
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
 import {isWorkflowDefinitionIdPrimaryKeyCollision, nextWorkflowDefinitionIdAsyncImpl} from "../task-store/workflow-definitions.js";
-import {upsertTaskRowInTransaction, buildTaskInsertValues} from "../task-store/async/async-persistence.js";
-import {readTaskRowInTransaction} from "../task-store/async/async-persistence.js";
-import {withTaskWorkflowSerialization} from "../task-store/async/async-workflow-workitems.js";
-import {recordActivityLogEntry as recordActivityLogEntryAsync} from "../task-store/async/async-audit.js";
+import {upsertTaskRowInTransaction, buildTaskInsertValues} from "./async/async-persistence.js";
+import {readTaskRowInTransaction} from "./async/async-persistence.js";
+import {withTaskWorkflowSerialization} from "./async/async-workflow-workitems.js";
+import {recordActivityLogEntry as recordActivityLogEntryAsync} from "./async/async-audit.js";
 import {applyOriginalDescription} from "../tasks/original-description-policy.js";
 import {recordRunAuditEvent as recordRunAuditEventAsync} from "../postgres/data-layer.js";
-import {listGoalCitations as listGoalCitationsAsync} from "../task-store/async/async-events.js";
-import type {GoalCitationRow, RunAuditEventRow} from "../task-store/row-types.js";
+import {listGoalCitations as listGoalCitationsAsync} from "./async/async-events.js";
+import type {RunAuditEventRow} from "../task-store/row-types.js";
 
 export async function getOrCreateForProjectImpl(store: typeof TaskStore, projectId?: string, centralCore?: CentralCore, globalSettingsDir?: string, asyncLayer?: AsyncDataLayer,): Promise<TaskStore> {
     if (!asyncLayer) {
@@ -504,50 +503,6 @@ export function getRunAuditEventsImpl(store: TaskStore, options: RunAuditEventFi
     return rows.map((row) => store.rowToRunAuditEvent(row));
   }
 
-export async function getWorkflowParitySummaryImpl(store: TaskStore, options: { since?: string; limit?: number } = {}): Promise<WorkflowParitySummary> {
-    const limit = options.limit ?? 1000;
-    const observed = await store.getRunAuditEventsAsync({
-      domain: "database",
-      mutationType: WORKFLOW_PARITY_OBSERVED_MUTATION as unknown as RunAuditEvent["mutationType"],
-      startTime: options.since,
-      limit,
-    });
-    const driftEvents = await store.getRunAuditEventsAsync({
-      domain: "database",
-      mutationType: WORKFLOW_PARITY_DRIFT_MUTATION as unknown as RunAuditEvent["mutationType"],
-      startTime: options.since,
-      limit,
-    });
-
-    let agreed = 0;
-    for (const event of observed) {
-      if (event.metadata?.agree === true) agreed += 1;
-    }
-
-    const driftFieldCounts: Record<string, number> = {};
-    const recentDrift: WorkflowParitySummary["recentDrift"] = [];
-    for (const event of driftEvents) {
-      const diffs = Array.isArray(event.metadata?.diffs)
-        ? (event.metadata.diffs as WorkflowParityDiff[])
-        : [];
-      for (const diff of diffs) {
-        driftFieldCounts[diff.field] = (driftFieldCounts[diff.field] ?? 0) + 1;
-      }
-      if (recentDrift.length < 20) {
-        recentDrift.push({ taskId: event.taskId ?? event.target, timestamp: event.timestamp, diffs });
-      }
-    }
-
-    return {
-      observed: observed.length,
-      agreed,
-      drift: driftEvents.length,
-      agreeRate: observed.length > 0 ? agreed / observed.length : 0,
-      driftFieldCounts,
-      recentDrift,
-    };
-  }
-
 export function dequeueMergeQueueOnColumnExitImpl(store: TaskStore, taskId: string, previousColumn: ColumnId, nextColumn: ColumnId, now: string): void {
     if (previousColumn !== "in-review" || nextColumn === "in-review") {
       return;
@@ -810,7 +765,7 @@ export function countActiveInCapacitySlotSyncImpl(store: TaskStore, params: { ta
 
     let count = 0;
     for (const row of rows) {
-      const effectiveWorkflowId = row.wid ?? TaskStore.DEFAULT_WORKFLOW_POOL_ID;
+      const effectiveWorkflowId = resolveCapacityPoolId(row.wid);
       if (effectiveWorkflowId !== workflowId) continue;
 
       if (row.col === targetColumn) {
@@ -862,7 +817,7 @@ export async function countActiveInCapacitySlotAsyncImpl(store: TaskStore, param
 
     let count = 0;
     for (const row of rows) {
-      const effectiveWorkflowId = row.wid ?? TaskStore.DEFAULT_WORKFLOW_POOL_ID;
+      const effectiveWorkflowId = resolveCapacityPoolId(row.wid);
       if (effectiveWorkflowId !== workflowId) continue;
 
       if (row.col === targetColumn) {

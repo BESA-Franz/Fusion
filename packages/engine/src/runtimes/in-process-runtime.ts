@@ -16,11 +16,13 @@ import type {
   CliSession,
   NotificationPayload,
   WorkflowWorkItem,
+  WorkflowWorkItemState,
 } from "@fusion/core";
 import {
   AsyncCentralClaimStore,
   ChatStore,
   isEphemeralAgent,
+  isTaskBlockedOnApproval,
   resolveWorkflowIrForTask,
 } from "@fusion/core";
 import { Scheduler } from "../scheduler.js";
@@ -125,7 +127,7 @@ export function isPlanningContinuationTaskDispatchable(
 /** Outcome of resolving one due work item for the planning-continuation drain. */
 export type PlanningContinuationResolution =
   | { kind: "actionable"; item: WorkflowWorkItem; task: Task }
-  | { kind: "skip"; item: WorkflowWorkItem; reason: "not-planning" | "paused" }
+  | { kind: "skip"; item: WorkflowWorkItem; reason: "not-planning" | "paused" | "awaiting-approval" }
   | {
       kind: "orphan";
       item: WorkflowWorkItem;
@@ -152,6 +154,21 @@ export function resolvePlanningContinuationCandidate(
   if (item.waitReason !== "planning") {
     return { kind: "skip", item, reason: "not-planning" };
   }
+  /*
+  FNXC:PlanApprovalHold 2026-07-27-19:30 (U7 / R4):
+  Dispatching a planning continuation starts a Plan Review run, so a card blocked
+  on a pending human approval decision must not be dispatched. The status-only
+  hold shape the plan-approval gate writes (`status: "awaiting-approval"`, no
+  pause flag) fell straight through the pause check below and was dispatched.
+
+  SKIP, never `orphan`: an orphan is cancelled and terminalized, so an approval
+  landing a minute later would find nothing left to resume and would need a second
+  repair (FN-8592's sweep) to come back. Skipping leaves the item due and
+  claimable, which is what "the operator has not decided yet" actually means.
+  */
+  if (isTaskBlockedOnApproval(task)) {
+    return { kind: "skip", item, reason: "awaiting-approval" };
+  }
   if (task.paused === true || task.userPaused === true) {
     return { kind: "skip", item, reason: "paused" };
   }
@@ -159,6 +176,141 @@ export function resolvePlanningContinuationCandidate(
     return { kind: "skip", item, reason: "paused" };
   }
   return { kind: "actionable", item, task };
+}
+
+/**
+ * FNXC:PlanApprovalHold 2026-07-27-21:30 (U7, PR #2491 review — greptile P1):
+ * How long a park-skipped continuation leaves the due window for.
+ *
+ * The due poll is a FIFO batch (`limit: 20`) and a skipped item stays `runnable`
+ * and due, so it re-fills a batch slot on every pass. Before the approval guard
+ * an approval-held item was DISPATCHED, so it never accumulated; now that it is
+ * correctly skipped, 20 cards parked on approval would starve every newer
+ * plan-review continuation until enough humans decided. That is a real
+ * consequence of the guard, not a pre-existing one.
+ *
+ * Deferral, not a state change: the item stays `runnable`, so every "is the graph
+ * idle?" predicate that reasons over ACTIVE_WORKFLOW_WORK_ITEM_STATES behaves
+ * exactly as before — moving it to `held` would remove it from the due set too,
+ * but nothing requeues a `held` planning item, which trades starvation for a
+ * permanent strand. `retryAfter` is a pure due-window filter, so the worst case
+ * is bounded latency instead.
+ *
+ * 60s is chosen against HUMAN latency: the park it defers is waiting on a person,
+ * who has already taken minutes or hours, so an extra minute after the decision
+ * is invisible — while occupancy of the shared batch drops from every poll (~2s)
+ * to at most one slot per minute per parked card.
+ */
+export const PARKED_CONTINUATION_DEFER_MS = 60_000;
+
+/**
+ * FNXC:PlanApprovalHold 2026-07-27-21:30 (U7, PR #2491 review — greptile P1):
+ * Decide whether a skipped due item should be pushed out of the due window.
+ *
+ * Only the OPERATOR-PARK skips qualify (`awaiting-approval`, `paused`): those are
+ * open-ended waits on a human, which is what makes them able to accumulate.
+ * `not-planning` is deliberately excluded — that item belongs to a different
+ * drain, and deferring another owner's work would be this drain reaching outside
+ * its own lane.
+ *
+ * Pure and separately exported so the deferral is testable without constructing a
+ * runtime, matching why `resolvePlanningContinuationCandidate` is exported.
+ */
+export function resolveParkedContinuationDeferral(
+  resolution: PlanningContinuationResolution,
+  nowMs: number,
+  deferMs: number = PARKED_CONTINUATION_DEFER_MS,
+): { itemId: string; expectedState: WorkflowWorkItemState; retryAfter: string } | null {
+  if (resolution.kind !== "skip") return null;
+  if (resolution.reason !== "awaiting-approval" && resolution.reason !== "paused") return null;
+  return {
+    itemId: resolution.item.id,
+    /*
+    FNXC:WorkflowWorkItemCas 2026-07-27-22:10 (U7, PR #2491 review — greptile P1):
+    The state as the due poll SAW it, carried so the write is a compare-and-set.
+    A blind write would reset a claim another node took between the poll and here:
+    the store's terminal-state check refuses cancelled/succeeded/failed, but
+    `running` is not terminal, so `running -> runnable` would have succeeded and
+    let the item be claimed twice. Deferral is a fairness optimization — it must
+    never be able to disturb live work to achieve it.
+    */
+    expectedState: resolution.item.state,
+    retryAfter: new Date(nowMs + deferMs).toISOString(),
+  };
+}
+
+/** The FIFO due-poll batch size. Named because the starvation the deferral above
+ *  prevents is a property of this bound, so the two belong in one place. */
+export const DUE_PLANNING_CONTINUATION_BATCH_LIMIT = 20;
+
+/** Everything the drain pass touches, injected so the pass is exercisable without
+ *  constructing a runtime (which would attach to the real project registry). */
+export interface DuePlanningContinuationDrainDeps {
+  listDue: () => Promise<WorkflowWorkItem[]>;
+  getTask: (taskId: string) => Promise<Task | undefined>;
+  cancelOrphan: (
+    item: WorkflowWorkItem,
+    reason: "task-not-found" | "task-terminal",
+  ) => Promise<void>;
+  defer: (
+    deferral: { itemId: string; expectedState: WorkflowWorkItemState; retryAfter: string },
+  ) => Promise<void>;
+  /** `item` is passed only so the caller's failure log can keep naming the work
+   *  item verbatim; the extraction is otherwise a byte-for-byte body move. */
+  dispatch: (task: Task, item: WorkflowWorkItem) => void;
+  nowMs: () => number;
+  warn: (message: string) => void;
+}
+
+/**
+ * FNXC:WorkflowScheduling 2026-07-21-12:20:
+ * A single runtime drain owns selection at a time. Concurrent wakeups collapse
+ * behind the caller's guard and the recurring processor supplies the next pass.
+ *
+ * FNXC:WorkflowScheduling 2026-07-21-22:31:
+ * Per-item task loads must not abort the pass. getTask throws for soft-deleted
+ * rows without an archive snapshot; one orphan earlier in created_at FIFO used
+ * to prevent every later planning continuation from dispatching (FN-8470 → FN-8471).
+ * Cancel orphaned work items so they leave the due set and free the batch window.
+ *
+ * FNXC:PlanApprovalHold 2026-07-27-22:10 (U7, PR #2491 review — CodeRabbit):
+ * EXTRACTED verbatim from `InProcessRuntime.drainWorkflowContinuations` with no
+ * behavior change, because the deferral wiring was unprovable where it lived: the
+ * method is private on a class whose construction attaches to the real project
+ * registry, so no test could tell "the drain applies the deferral" from "the drain
+ * ignores it". The re-entry guard and `status === "active"` check stay with the
+ * caller — those are runtime lifecycle, not pass logic.
+ */
+export async function drainDuePlanningContinuations(
+  deps: DuePlanningContinuationDrainDeps,
+): Promise<void> {
+  const items = await deps.listDue();
+  for (const item of items) {
+    let task: Task | undefined;
+    let taskLookupFailed = false;
+    try {
+      task = await deps.getTask(item.taskId);
+    } catch (error) {
+      taskLookupFailed = true;
+      deps.warn(
+        `Workflow continuation ${item.id}: getTask(${item.taskId}) failed — treating as orphan: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    const resolved = resolvePlanningContinuationCandidate(item, task, { taskLookupFailed });
+    if (resolved.kind === "orphan") {
+      await deps.cancelOrphan(resolved.item, resolved.reason);
+      continue;
+    }
+    // FNXC:PlanApprovalHold 2026-07-27-21:30 (U7, PR #2491 review — greptile P1):
+    // push an operator-parked item out of the FIFO due window so it cannot starve
+    // newer actionable continuations while a human decides.
+    const deferral = resolveParkedContinuationDeferral(resolved, deps.nowMs());
+    if (deferral) await deps.defer(deferral);
+    if (resolved.kind !== "actionable") continue;
+    deps.dispatch(resolved.task, resolved.item);
+  }
 }
 
 /**
@@ -2028,51 +2180,69 @@ export class InProcessRuntime
     });
   }
 
+  /**
+   * FNXC:WorkflowScheduling 2026-07-21-12:20:
+   * A single runtime drain owns selection at a time. Concurrent wakeups collapse
+   * behind this guard and the recurring processor supplies the next bounded pass.
+   *
+   * The pass itself lives in `drainDuePlanningContinuations` (see its header for
+   * the FN-8470/FN-8471 orphan rationale and the deferral); this method is the
+   * runtime-lifecycle wrapper — re-entry guard, active-status check, and the
+   * adapters that bind the pass to this runtime's store and executor.
+   */
   private async drainWorkflowContinuations(): Promise<void> {
-    /*
-    FNXC:WorkflowScheduling 2026-07-21-12:20:
-    A single runtime drain owns selection at a time. Concurrent wakeups collapse
-    behind this guard and the recurring processor supplies the next bounded pass.
-
-    FNXC:WorkflowScheduling 2026-07-21-22:31:
-    Per-item task loads must not abort the pass. getTask throws for soft-deleted
-    rows without an archive snapshot; one orphan earlier in created_at FIFO used
-    to prevent every later planning continuation from dispatching (FN-8470 → FN-8471).
-    Cancel orphaned work items so they leave the due set and free the limit:20 window.
-    */
     if (this.workflowContinuationDrainActive || this.status !== "active") return;
     this.workflowContinuationDrainActive = true;
     try {
-      const items = await this.taskStore.listDueWorkflowWorkItems({
-        kinds: ["task"],
-        states: ["runnable", "retrying"],
-        limit: 20,
+      await drainDuePlanningContinuations({
+        listDue: () => this.taskStore.listDueWorkflowWorkItems({
+          kinds: ["task"],
+          states: ["runnable", "retrying"],
+          limit: DUE_PLANNING_CONTINUATION_BATCH_LIMIT,
+        }),
+        getTask: (taskId) => Promise.resolve(this.taskStore.getTask(taskId)),
+        cancelOrphan: (item, reason) => this.cancelOrphanedWorkflowWorkItem(item, reason),
+        defer: (deferral) => this.deferParkedWorkflowWorkItem(deferral),
+        dispatch: (task, item) => {
+          void this.executor.execute(task).catch((error) => {
+            runtimeLog.error(`Workflow continuation ${item.id} failed:`, error);
+          });
+        },
+        nowMs: () => Date.now(),
+        warn: (message) => runtimeLog.warn(message),
       });
-      for (const item of items) {
-        let task: Task | undefined;
-        let taskLookupFailed = false;
-        try {
-          task = await this.taskStore.getTask(item.taskId);
-        } catch (error) {
-          taskLookupFailed = true;
-          runtimeLog.warn(
-            `Workflow continuation ${item.id}: getTask(${item.taskId}) failed — treating as orphan: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-        const resolved = resolvePlanningContinuationCandidate(item, task, { taskLookupFailed });
-        if (resolved.kind === "orphan") {
-          await this.cancelOrphanedWorkflowWorkItem(resolved.item, resolved.reason);
-          continue;
-        }
-        if (resolved.kind !== "actionable") continue;
-        void this.executor.execute(resolved.task).catch((error) => {
-          runtimeLog.error(`Workflow continuation ${resolved.item.id} failed:`, error);
-        });
-      }
     } finally {
       this.workflowContinuationDrainActive = false;
+    }
+  }
+
+  /**
+   * FNXC:PlanApprovalHold 2026-07-27-21:30 (U7, PR #2491 review — greptile P1):
+   * Push an operator-parked item's `retryAfter` forward so it leaves the due
+   * window. State stays `runnable` on purpose (see
+   * `PARKED_CONTINUATION_DEFER_MS`).
+   *
+   * Fail-soft: if the write loses, the item simply stays due and is re-skipped
+   * next pass — exactly the pre-deferral behavior — so a store hiccup degrades to
+   * the old starvation risk rather than dropping the card's continuation.
+   */
+  private async deferParkedWorkflowWorkItem(
+    deferral: { itemId: string; expectedState: WorkflowWorkItemState; retryAfter: string },
+  ): Promise<void> {
+    if (typeof this.taskStore.transitionWorkflowWorkItem !== "function") return;
+    try {
+      // `expectedState` makes this a compare-and-set: if another node claimed or
+      // terminalized the item since the due poll, the store returns it untouched.
+      await this.taskStore.transitionWorkflowWorkItem(deferral.itemId, deferral.expectedState, {
+        expectedState: deferral.expectedState,
+        retryAfter: deferral.retryAfter,
+      });
+    } catch (error) {
+      runtimeLog.warn(
+        `Failed to defer parked workflow work item ${deferral.itemId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 

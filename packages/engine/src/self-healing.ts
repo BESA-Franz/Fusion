@@ -24,14 +24,13 @@
  * - `reclaimStaleActiveBranches`: remains native (branch-level)
  */
 
-import { exec, execSync } from "node:child_process";
-import { promisify } from "node:util";
+import { execSync } from "node:child_process";
 import { setImmediate as setImmediateCb } from "node:timers";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkflowColumnsEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, resolveWorkflowIrForTask, resolveReboundTarget, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult } from "@fusion/core";
+import { resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, resolveWorkflowIrForTask, resolveReboundTarget, resolveLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult } from "@fusion/core";
 import { finalizePlanningSegment } from "@fusion/core";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
@@ -74,7 +73,7 @@ imported it from merger-ai while merger-ai imports `MIN_TEMP_WORKTREE_REAP_AGE_M
 self-healing — a real import cycle. Importing from the predicate module breaks the cycle.
 */
 import { isRepoLanded } from "./merge/workspace-land-predicate.js";
-import { findAlreadyMergedTaskCommit, getCommitTaskOwnership } from "./merge/already-merged-detector.js";
+import { getCommitTaskOwnership } from "./merge/already-merged-detector.js";
 import { getTaskCompletionBlockerForStore } from "./execution/task-completion.js";
 import { shouldReclaimWedgedMerge } from "./merge/merge-reclaim-policy.js";
 
@@ -96,8 +95,11 @@ import {
   type NtfyNotifier,
 } from "./util/notifier.js";
 import type { GhostBugDecision } from "./triage-domain/triage-preflight.js";
-import { DependencyBlockedTodoReporter } from "./healing/dependency-blocked-todo-reporter.js";
 import { filterPathsByIgnoreList, getUnmetSchedulingDependencies, isCoordinationOnlyTask, pathsOverlap, shouldHoldActiveFileScopeLease } from "./scheduler.js";
+import { runSurfacingSweep, hours, type SurfacingCycle } from "./surfacing-sweeps.js";
+/* U4 substrate PR1: the git-evidence readers and their helpers now live in
+   self-healing-git-evidence.ts. Imported back here because call sites remain. */
+import { SelfHealingGitEvidence, execAsync, shellQuote } from "./self-healing-git-evidence.js";
 import { evaluateParkedAgentTaskLink, PARKED_AGENT_LINK_FRESH_RUN_MS } from "./agents/task-agent-sync.js";
 import { describeSelfHealingNoActionWedge } from "./notification/task-wedge-notification.js";
 
@@ -172,7 +174,6 @@ const worktreeMetadataReconcileLog = createLogger("worktree-metadata-reconcile")
 FNXC:EngineDiagnostics 2026-07-26-10:25:
 Self-healing no-action/skip/defer/worktrunk-skip/maintenance lifecycle lines fire every sweep and drowned recoveries in the TUI. Those are debug (FUSION_DEBUG=self-healing). Keep log/warn/error for real recoveries (Recovered/Reclaimed/Cleaned/Revived/…), stuck kills, and failures.
 */
-const execAsync = promisify(exec);
 const yieldEventLoop = (): Promise<void> => new Promise((resolve) => setImmediateCb(resolve));
 const DONE_TASK_INTEGRITY_SWEEP_LIMIT = 50;
 const BOARD_STALL_NOTIFICATION_COOLDOWN_MS = 60 * 60_000;
@@ -776,14 +777,6 @@ type AutoRebindSafetyResult =
 
 export type RebindResult = { repaired: number; outcomes: RebindOutcome[] };
 
-interface LandedTaskCommit {
-  sha: string;
-  subject?: string;
-  filesChanged?: number;
-  insertions?: number;
-  deletions?: number;
-  rebaseBaseSha?: string;
-}
 
 /**
  * Decide whether a git commit belongs to a given task.
@@ -800,52 +793,17 @@ interface LandedTaskCommit {
  *  - Subject anchored on the task ID in conventional-commit form:
  *      `<type>(<taskId>): …` or `<taskId>: …` or `<type>(<taskId>/...): …`
  */
-function commitOwnedByTask(taskId: string, lineageId: string | undefined, subject: string, body: string): boolean {
-  if (lineageId && new RegExp(`(?:^|\\n)Fusion-Task-Lineage: ${escapeRegex(lineageId)}\\s*(?:\\n|$)`).test(body)) {
-    return true;
-  }
-  if (new RegExp(`(?:^|\\n)Fusion-Task-Id: ${escapeRegex(taskId)}\\s*(?:\\n|$)`).test(body)) {
-    return true;
-  }
-  // Subject anchor: `<type>(<…taskId…>): …` or `<taskId>: …` at start.
-  // The conventional scope group is intentionally NOT optional: a bare
-  // `<type>: …` (e.g. `feat: unrelated change`) carries no task ID and is NOT
-  // ownership evidence, even if the body mentions the task in prose (incident
-  // bug #2 — a prose-mention must never claim a task).
-  const subjectAnchor = new RegExp(
-    `^(?:[A-Za-z]+\\([^)]*\\b${escapeRegex(taskId)}\\b[^)]*\\):|${escapeRegex(taskId)}:)`,
-  );
-  return subjectAnchor.test(subject);
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
 
 
-function parseShortstat(output: string): Pick<LandedTaskCommit, "filesChanged" | "insertions" | "deletions"> {
-  const normalized = output.trim().replace(/\n/g, " ");
-  const filesMatch = normalized.match(/(\d+) files? changed/);
-  const insertionsMatch = normalized.match(/(\d+) insertions?\(\+\)/);
-  const deletionsMatch = normalized.match(/(\d+) deletions?\(-\)/);
 
-  return {
-    filesChanged: filesMatch ? Number.parseInt(filesMatch[1], 10) : 0,
-    insertions: insertionsMatch ? Number.parseInt(insertionsMatch[1], 10) : 0,
-    deletions: deletionsMatch ? Number.parseInt(deletionsMatch[1], 10) : 0,
-  };
-}
+
 
 function hasTerminalInvalidDoneTransition(task: Pick<Task, "error">): boolean {
   const error = task.error ?? "";
   return error.includes("Invalid transition:") && error.includes("→ 'done'");
 }
 
-export class SelfHealingManager {
+export class SelfHealingManager extends SelfHealingGitEvidence {
   // ── Auto-unpause state ──────────────────────────────────────────────
   private unpauseTimer: ReturnType<typeof setTimeout> | null = null;
   private unpauseAttempt = 0;
@@ -895,7 +853,6 @@ export class SelfHealingManager {
   private preservedQueuedOverlapLogged = new Map<string, string>();
   private maintenanceTickCounter = 0;
   private readonly processBootStartedAt = Date.now();
-  private dependencyBlockedTodoReporter: DependencyBlockedTodoReporter | null = null;
   private lastDbCorruptionNotifiedAt: number | null = null;
 
   private boardStallWindow: {
@@ -924,8 +881,12 @@ export class SelfHealingManager {
 
   constructor(
     private store: TaskStore,
-    private options: SelfHealingOptions,
-  ) {}
+    protected readonly options: SelfHealingOptions,
+  ) {
+    /* U4 substrate PR1: the git-evidence readers moved to a base class, so this
+       derived constructor needs an explicit super(). No other change. */
+    super();
+  }
 
   private classifyPausedAbortWorkflowRecovery(
     task: Task,
@@ -1516,6 +1477,7 @@ export class SelfHealingManager {
     }
 
     // Each recovery step is isolated — one failure doesn't prevent subsequent steps.
+    const startupSurfacing = this.surfacingCycleMemo();
     const steps: Array<{ name: string; fn: () => Promise<unknown> }> = [
       // FNXC:LegacyAdoption 2026-07-19-04:20 (U9b / KTD-8): adoption runs FIRST. Every step
       // below reasons about `task.status` and column, so a pre-cutover row must be adopted
@@ -1597,9 +1559,11 @@ export class SelfHealingManager {
       { name: "reconcile-in-review-branch-rebind", fn: () => this.reconcileInReviewBranchRebind().then(() => undefined) },
       { name: "reclaim-stale-active-branches", fn: () => this.reclaimStaleActiveBranches().then(() => undefined) },
       { name: "surface-in-review-stalls", fn: () => this.surfaceInReviewStalls().then(() => undefined) },
-      { name: "surface-in-review-stalled", fn: () => this.surfaceInReviewStalled().then(() => undefined) },
-      { name: "surface-stale-paused-reviews", fn: () => this.surfaceStalePausedReviews().then(() => undefined) },
-      { name: "surface-stale-paused-todos", fn: () => this.surfaceStalePausedTodos().then(() => undefined) },
+      /* One shared cycle for the family — see `openSurfacingCycle`. Opened
+         lazily and awaited by all three, so the board is read once. */
+      { name: "surface-in-review-stalled", fn: () => this.surfaceInReviewStalled(startupSurfacing()).then(() => undefined) },
+      { name: "surface-stale-paused-reviews", fn: () => this.surfaceStalePausedReviews(startupSurfacing()).then(() => undefined) },
+      { name: "surface-stale-paused-todos", fn: () => this.surfaceStalePausedTodos(startupSurfacing()).then(() => undefined) },
       { name: "audit-no-commits-expected-candidates", fn: () => this.auditNoCommitsExpectedCandidates().then(() => undefined) },
     ];
 
@@ -1986,58 +1950,6 @@ export class SelfHealingManager {
     }
   }
 
-  // ── Lost work detection ────────────────────────────────────────────
-
-  /**
-   * Check whether a task's branch has any unique commits compared to main.
-   * If the branch has no unique commits and the task has steps marked done,
-   * those steps represent lost uncommitted work — reset them to "pending"
-   * so the next execution doesn't skip them.
-   */
-  private async resetStepsIfWorkLost(task: Task): Promise<void> {
-    const completedSteps = task.steps.filter(
-      (s) => s.status === "done" || s.status === "in-progress",
-    );
-    if (completedSteps.length === 0) return;
-
-    const branchName = resolveTaskWorkingBranch(task);
-
-    try {
-      const { stdout: mergeBaseOut } = await execAsync(
-        `git merge-base "${branchName}" HEAD`,
-        { cwd: this.options.rootDir, encoding: "utf-8", timeout: 30_000 },
-      );
-      const mergeBase = mergeBaseOut.trim();
-      const { stdout: branchHeadOut } = await execAsync(
-        `git rev-parse "${branchName}"`,
-        { cwd: this.options.rootDir, encoding: "utf-8", timeout: 30_000 },
-      );
-      const branchHead = branchHeadOut.trim();
-
-      if (mergeBase === branchHead) {
-        log.warn(
-          `${task.id} branch has no unique commits — resetting ${completedSteps.length} step(s) to pending`,
-        );
-
-        for (let i = 0; i < task.steps.length; i++) {
-          if (task.steps[i].status === "done" || task.steps[i].status === "in-progress") {
-            await this.store.updateStep(task.id, i, "pending");
-          }
-        }
-
-        await this.store.logEntry(
-          task.id,
-          `Reset ${completedSteps.length} step(s) to pending — branch had no commits (uncommitted work lost with worktree)`,
-        );
-      }
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      log.warn(
-        `Failed to reset steps for ${task.id} after branch/worktree loss (${branchName}): ${errorMessage} — non-fatal`,
-      );
-    }
-  }
-
   // ── Periodic maintenance ──────────────────────────────────────────
 
   private async startMaintenance(): Promise<void> {
@@ -2137,170 +2049,7 @@ export class SelfHealingManager {
     return this.isPastInterruptedMergeGrace(task, timeoutMs);
   }
 
-  private async findLandedTaskCommit(
-    task: Task,
-    options?: { preferEarliestOwnedCommit?: boolean },
-  ): Promise<LandedTaskCommit | null> {
-    // Search strategies, tried in order of reliability:
-    //   1. mergeDetails.commitSha — already stored by the merger; verify it's
-    //      reachable from HEAD before trusting it.
-    //   2. Fusion-Task-Lineage trailer — canonical immutable lineage marker.
-    //   3. Fusion-Task-Id trailer — legacy human task-id marker.
-    //   4. Subject grep — legacy/AI commits where the task ID lives in the
-    //      subject line (e.g. `feat(FN-123): …`).
-    //
-    // (1) gives us the right sha even if the commit subject is exotic; (2)
-    // covers includeTaskIdInCommit=false setups where (3) would silently
-    // miss; (3) catches commits authored before the trailer was introduced.
 
-    // ── (1) Stored sha ────────────────────────────────────────────────────
-    const rebaseBaseSha = task.mergeDetails?.rebaseBaseSha;
-    const storedSha = task.mergeDetails?.commitSha;
-    if (storedSha) {
-      try {
-        await execAsync(
-          `git merge-base --is-ancestor ${shellQuote(storedSha)} HEAD`,
-          { cwd: this.options.rootDir },
-        );
-        const { stdout } = await execAsync(
-          `git log -1 --format=%H%x1f%s%x1f%b ${shellQuote(storedSha)}`,
-          { cwd: this.options.rootDir, maxBuffer: 1024 * 1024 },
-        );
-        const [sha, subject = "", body = ""] = stdout.trim().split("\x1f");
-        if (sha && commitOwnedByTask(task.id, task.lineageId, subject, body)) {
-          const commit: LandedTaskCommit = { sha, subject, rebaseBaseSha };
-          try {
-            const shortstat = await this.readShortstatForSha(sha, rebaseBaseSha);
-            if (shortstat) {
-              Object.assign(commit, shortstat);
-            }
-          } catch { /* stats are optional */ }
-          return commit;
-        }
-      } catch {
-        // Not reachable (rebased away, branch reset, etc.) — fall through.
-      }
-    }
-
-    const readLog = async (range: string, grepArg: string, fixedStrings: boolean) => {
-      const command = [
-        "git log",
-        "--format=%H%x1f%s",
-        "--max-count=20",
-        ...(options?.preferEarliestOwnedCommit ? ["--reverse"] : []),
-        ...(fixedStrings ? ["--fixed-strings"] : ["-E"]),
-        `--grep=${grepArg}`,
-        shellQuote(range),
-      ].join(" ");
-
-      return execAsync(command, {
-        cwd: this.options.rootDir,
-        maxBuffer: 1024 * 1024,
-      });
-    };
-
-    // Search canonical lineage trailer, then legacy task-id trailer, then
-    // legacy subject fallback. All share bounded/full HEAD range resolution.
-    const search = async (grepArg: string, fixedStrings: boolean): Promise<string> => {
-      let out: string;
-      try {
-        const r = await readLog(
-          task.baseCommitSha ? `${task.baseCommitSha}..HEAD` : "HEAD",
-          grepArg,
-          fixedStrings,
-        );
-        out = r.stdout;
-      } catch (err: unknown) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        log.warn(
-          `Failed to read git log for landed commit lookup (${task.id}): ${errorMessage} — retrying with HEAD range`,
-        );
-        if (!task.baseCommitSha) return "";
-        const r = await readLog("HEAD", grepArg, fixedStrings);
-        out = r.stdout;
-      }
-      // Bounded range may exclude the landed commit when baseCommitSha was
-      // advanced past it; re-scan all of HEAD if empty.
-      if (!out.trim() && task.baseCommitSha) {
-        const r = await readLog("HEAD", grepArg, fixedStrings);
-        out = r.stdout;
-      }
-      return out;
-    };
-
-    // (2) Canonical lineage trailer.
-    let stdout = "";
-    if (task.lineageId) {
-      const lineagePattern = `^Fusion-Task-Lineage: ${task.lineageId}$`;
-      stdout = await search(shellQuote(lineagePattern), false);
-    }
-
-    // (3) Legacy task-id trailer.
-    if (!stdout.trim()) {
-      const trailerPattern = `^Fusion-Task-Id: ${task.id}$`;
-      stdout = await search(shellQuote(trailerPattern), false);
-    }
-
-    // (4) Subject grep fallback (legacy commits).
-    if (!stdout.trim()) {
-      stdout = await search(shellQuote(task.id), true);
-    }
-
-    // FN-5441/FN-5446 regression: `git log --grep=FN-XXXX` matches the entire
-    // commit message, including prose body mentions. The previous code blindly
-    // accepted the first match — which is how FN-5441/5446 got attributed to
-    // an unrelated FN-5483 commit that *mentioned* them by name. Walk the
-    // candidates and accept only the first one that actually owns the task
-    // (anchored lineage/id trailer or subject-anchored conventional commit).
-    const candidateLines = stdout.trim().split("\n").filter(Boolean);
-    let sha = "";
-    let subject = "";
-    for (const line of candidateLines) {
-      const [candidateSha, candidateSubject = ""] = line.split("\x1f");
-      if (!candidateSha) continue;
-      try {
-        const { stdout: bodyOut } = await execAsync(
-          `git log -1 --format=%b ${shellQuote(candidateSha)}`,
-          { cwd: this.options.rootDir, maxBuffer: 1024 * 1024 },
-        );
-        if (commitOwnedByTask(task.id, task.lineageId, candidateSubject, bodyOut)) {
-          sha = candidateSha;
-          subject = candidateSubject;
-          break;
-        }
-      } catch {
-        // If we can't read the body, conservatively skip this candidate.
-      }
-    }
-    if (!sha) return null;
-
-    const commit: LandedTaskCommit = { sha, subject, rebaseBaseSha };
-    try {
-      const shortstat = await this.readShortstatForSha(sha, rebaseBaseSha);
-      if (shortstat) {
-        Object.assign(commit, shortstat);
-      }
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      log.warn(
-        `Failed to read shortstat for landed commit ${sha} (${task.id}): ${errorMessage} — continuing without stats`,
-      );
-      // Stats are useful for the task detail view but not required for recovery.
-    }
-
-    return commit;
-  }
-
-  private async findAlreadyMergedTaskCommit(input: {
-    taskId: string;
-    lineageId?: string;
-    repoDir: string;
-    baseBranch: string;
-    taskBranch?: string;
-    baseCommitSha?: string;
-  }) {
-    return findAlreadyMergedTaskCommit(input);
-  }
 
   /**
    * Best-effort refresh of the remote-tracking base ref so the already-merged
@@ -2312,70 +2061,9 @@ export class SelfHealingManager {
    * still attempt to resolve the (possibly stale) remote-tracking ref; if even
    * that is absent we return null and the caller leaves the card untouched.
    */
-  private async refreshRemoteBaseRef(baseBranch: string): Promise<string | null> {
-    // Already a remote ref — nothing local to refresh.
-    if (baseBranch.startsWith("origin/")) return null;
-    const remoteRef = `origin/${baseBranch}`;
-    try {
-      await execAsync(`git fetch origin ${shellQuote(baseBranch)}`, {
-        cwd: this.options.rootDir,
-        timeout: 60_000,
-      });
-    } catch {
-      // Swallow: fall through to the existing remote-tracking ref if present.
-    }
-    try {
-      await execAsync(`git rev-parse --verify ${shellQuote(remoteRef)}`, {
-        cwd: this.options.rootDir,
-        timeout: 30_000,
-      });
-      return remoteRef;
-    } catch {
-      return null;
-    }
-  }
 
-  private async readCommitTaskOwnership(sha: string, taskId: string, lineageId?: string) {
-    const { stdout } = await execAsync(`git show -s --format=%s%x1f%b ${shellQuote(sha)}`, {
-      cwd: this.options.rootDir,
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024,
-    });
-    const [subject = "", body = ""] = stdout.split("\x1f");
-    return getCommitTaskOwnership(taskId, lineageId, subject, body);
-  }
 
-  private async branchHasNoUniqueDiff(branchTip: string, baseBranch: string): Promise<boolean> {
-    const { stdout: mergeBaseStdout } = await execAsync(`git merge-base ${shellQuote(branchTip)} ${shellQuote(baseBranch)}`, {
-      cwd: this.options.rootDir,
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024,
-    });
-    const mergeBase = mergeBaseStdout.trim();
-    if (!mergeBase) return false;
 
-    await execAsync(`git diff --quiet ${shellQuote(mergeBase)}..${shellQuote(branchTip)}`, {
-      cwd: this.options.rootDir,
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024,
-    });
-    return true;
-  }
-
-  private async baseHasExplicitTaskOwnership(taskId: string, lineageId: string | undefined, baseBranch: string): Promise<boolean> {
-    const patterns = lineageId
-      ? [`^Fusion-Task-Lineage: ${escapeRegex(lineageId)}$`, `^Fusion-Task-Id: ${escapeRegex(taskId)}$`]
-      : [`^Fusion-Task-Id: ${escapeRegex(taskId)}$`];
-    for (const pattern of patterns) {
-      const { stdout } = await execAsync(`git log --grep=${shellQuote(pattern)} -E --max-count=1 --format=%H ${shellQuote(baseBranch)}`, {
-        cwd: this.options.rootDir,
-        timeout: 30_000,
-        maxBuffer: 1024 * 1024,
-      });
-      if (stdout.trim()) return true;
-    }
-    return false;
-  }
 
   /**
    * FNXC:WorkflowRecovery 2026-07-25-09:40:
@@ -2398,26 +2086,6 @@ export class SelfHealingManager {
    * (`isBranchTipMisboundToTask`), and the self-owned-branch reclaim sweep's `tip-already-merged` arm. Keeping the
    * three on one helper is the point — the reclaim arm drifted without the diff proof and that was the bug.
    */
-  private async foreignTipRejection(input: {
-    taskId: string;
-    lineageId?: string;
-    branchTip: string;
-    baseBranch: string;
-    ownership: Awaited<ReturnType<SelfHealingManager["readCommitTaskOwnership"]>>;
-  }): Promise<{ reason: "foreign-task-tip" | "foreign-lineage-tip"; owner?: string } | null> {
-    const { taskId, lineageId, branchTip, baseBranch, ownership } = input;
-    if (ownership.rejectionReason !== "foreign-task" && ownership.rejectionReason !== "foreign-lineage") return null;
-
-    const hasNoUniqueDiff = await this.branchHasNoUniqueDiff(branchTip, baseBranch).catch(() => false);
-    const baseAlreadyHasCurrentTask = hasNoUniqueDiff
-      ? await this.baseHasExplicitTaskOwnership(taskId, lineageId, baseBranch).catch(() => false)
-      : false;
-    if (hasNoUniqueDiff && !baseAlreadyHasCurrentTask) return null;
-
-    return ownership.rejectionReason === "foreign-task"
-      ? { reason: "foreign-task-tip", owner: ownership.ownerTaskId }
-      : { reason: "foreign-lineage-tip", owner: ownership.ownerLineageId };
-  }
 
   private async rejectForeignAlreadyMergedCandidate(input: {
     task: Pick<Task, "id" | "lineageId">;
@@ -2462,42 +2130,6 @@ export class SelfHealingManager {
     }
   }
 
-  private async branchTipForeignOwnership(input: {
-    taskId: string;
-    lineageId?: string;
-    branch: string;
-    baseBranch: string;
-  }): Promise<{ sha: string; owner?: string; reason: "foreign-task-tip" | "foreign-lineage-tip" | "ownership-unverifiable" } | null> {
-    const { taskId, lineageId, branch, baseBranch } = input;
-    let stdout = "";
-    try {
-      ({ stdout } = await execAsync(`git rev-parse ${shellQuote(branch)}`, {
-        cwd: this.options.rootDir,
-        timeout: 30_000,
-        maxBuffer: 1024 * 1024,
-      }));
-    } catch {
-      return { sha: "unverified", reason: "ownership-unverifiable" };
-    }
-    const sha = stdout.trim();
-    if (!sha) return null;
-    let ownership: Awaited<ReturnType<SelfHealingManager["readCommitTaskOwnership"]>>;
-    try {
-      ownership = await this.readCommitTaskOwnership(sha, taskId, lineageId);
-    } catch {
-      return { sha, reason: "ownership-unverifiable" };
-    }
-    /*
-    FNXC:WorkflowRecovery 2026-07-03-21:35:
-    Already-merged recovery must classify no-diff task branches before enforcing branch-tip trailers. A branch created from main can point at a previous task's landed commit and later sit behind main after unrelated commits; reject foreign trailers only when merge-base-to-tip diff proof shows the branch contains real task-branch content.
-
-    FNXC:WorkflowRecovery 2026-07-25-09:40:
-    That diff-proof classification now lives in `foreignTipRejection` so this path, branch-misbound recovery, and the reclaim sweep cannot drift apart again.
-    */
-    const rejection = await this.foreignTipRejection({ taskId, lineageId, branchTip: sha, baseBranch, ownership });
-    if (rejection) return { sha, owner: rejection.owner, reason: rejection.reason };
-    return null;
-  }
 
   private async resolveSelfHealingMergeTarget(
     task: Task,
@@ -2561,17 +2193,6 @@ export class SelfHealingManager {
     }
   }
 
-  private async isCommitReachableFromBranch(commitSha: string | undefined, branch: string): Promise<boolean> {
-    if (!commitSha) return true;
-    try {
-      await execAsync(`git merge-base --is-ancestor ${shellQuote(commitSha)} ${shellQuote(branch)}`, {
-        cwd: this.options.rootDir,
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  }
 
   private async recordSelfHealingBranchGroupMemberLanding(
     task: Task,
@@ -2865,6 +2486,7 @@ export class SelfHealingManager {
         await this.reconcileStrandedHoldContinuations();
       } else {
         // Batch 2 — Task recovery (operations are independent of each other)
+        const maintenanceSurfacing = this.surfacingCycleMemo();
         const batch2Fns: Array<{ name: string; fn: () => Promise<unknown> }> = [
           {
             name: "recover-active-mission-validations",
@@ -2997,9 +2619,10 @@ export class SelfHealingManager {
           { name: "reconcile-in-review-branch-rebind", fn: () => this.reconcileInReviewBranchRebind().then(() => undefined) },
           { name: "reclaim-stale-active-branches", fn: () => this.reclaimStaleActiveBranches() },
           { name: "surface-in-review-stalls", fn: () => this.surfaceInReviewStalls() },
-          { name: "surface-in-review-stalled", fn: () => this.surfaceInReviewStalled() },
-          { name: "surface-stale-paused-reviews", fn: () => this.surfaceStalePausedReviews() },
-          { name: "surface-stale-paused-todos", fn: () => this.surfaceStalePausedTodos() },
+          /* One shared cycle for the family — see `openSurfacingCycle`. */
+          { name: "surface-in-review-stalled", fn: () => this.surfaceInReviewStalled(maintenanceSurfacing()) },
+          { name: "surface-stale-paused-reviews", fn: () => this.surfaceStalePausedReviews(maintenanceSurfacing()) },
+          { name: "surface-stale-paused-todos", fn: () => this.surfaceStalePausedTodos(maintenanceSurfacing()) },
           { name: "surface-db-corruption", fn: () => this.surfaceDbCorruption() },
           { name: "audit-no-commits-expected-candidates", fn: () => this.auditNoCommitsExpectedCandidates() },
         ];
@@ -3209,11 +2832,27 @@ export class SelfHealingManager {
     if (!recoverFn) return 0;
 
     try {
-      const tasks = await this.store.listTasks({ column: "todo", slim: true });
+      /*
+      FNXC:WorkflowLifecycleColumns 2026-07-28-06:25 (Phase B / slice B3.1 — U4):
+      This sweep decided "is this card in the hold column?" TWICE — the QUERY
+      (`{ column: "todo" }`) and the per-task GUARD (`task.column !== "todo"`) —
+      and both were literal. They convert TOGETHER or not at all: a correct guard
+      behind a literal query never runs, and a converted query behind a literal
+      guard rejects every row it just fetched. Either half alone is a green diff
+      with no behavior change.
+
+      Cost discipline: the column filter is gone, so the CHEAP non-column
+      rejections (paused / executing / incomplete steps / errored / taint) run
+      FIRST and synchronously, and only the handful of survivors pay an IR
+      resolution — shared through `irCache`, so a board spanning three workflows
+      resolves three times regardless of card count. `includeArchived: false`
+      keeps archived rows out, which the old column filter did implicitly.
+      */
+      const tasks = await this.store.listTasks({ slim: true, includeArchived: false });
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
 
-      const stranded = tasks.filter((task) => {
-        if (task.column !== "todo" || task.paused) return false;
+      const completedNonColumnCandidates = tasks.filter((task) => {
+        if (task.paused) return false;
         if (executingIds.has(task.id)) return false;
         if (task.steps.length === 0 || !task.steps.every((s) => s.status === "done" || s.status === "skipped")) return false;
         /*
@@ -3235,9 +2874,32 @@ export class SelfHealingManager {
         return true;
       });
 
+      /*
+      FNXC:WorkflowLifecycleColumns 2026-07-28-06:25 (Phase B / slice B3.1 — U4):
+      The column half of the old predicate, now resolved per task against the
+      card's OWN workflow. A board can span workflows with different hold
+      columns, so this cannot be hoisted to one board-wide value. A workflow that
+      declares no hold column keeps the legacy `todo`, matching the pre-conversion
+      behavior rather than matching nothing.
+      */
+      const irCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
+      const stranded: Task[] = [];
+      for (const task of completedNonColumnCandidates) {
+        let holdColumn = "todo";
+        try {
+          const lifecycle = resolveLifecycleColumns(
+            await resolveWorkflowIrForTask(this.store, task.id, irCache),
+          );
+          if (lifecycle?.hold) holdColumn = lifecycle.hold;
+        } catch {
+          holdColumn = "todo";
+        }
+        if (task.column === holdColumn) stranded.push(task);
+      }
+
       if (stranded.length === 0) return 0;
 
-      log.warn(`Found ${stranded.length} completed task(s) stranded in todo`);
+      log.warn(`Found ${stranded.length} completed task(s) stranded in the hold column`);
 
       let recovered = 0;
       for (const task of stranded) {
@@ -4667,39 +4329,6 @@ export class SelfHealingManager {
    *
    * @returns Number of tasks unblocked
    */
-  private async findWorktreePathForBranch(branchName: string): Promise<string | undefined> {
-    try {
-      const { stdout } = await execAsync("git worktree list --porcelain", {
-        cwd: this.options.rootDir,
-        timeout: 30_000,
-      });
-      const lines = stdout.split("\n");
-      let currentWorktree: string | undefined;
-      let currentBranch: string | undefined;
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) {
-          if (currentWorktree && currentBranch === branchName) return currentWorktree;
-          currentWorktree = undefined;
-          currentBranch = undefined;
-          continue;
-        }
-        if (line.startsWith("worktree ")) {
-          currentWorktree = line.slice("worktree ".length).trim();
-          continue;
-        }
-        if (line.startsWith("branch refs/heads/")) {
-          currentBranch = line.slice("branch refs/heads/".length).trim();
-        }
-      }
-      if (currentWorktree && currentBranch === branchName) return currentWorktree;
-      return undefined;
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      log.warn(`[self-healing] reconcileCompletedTask: failed to read worktree list for ${branchName}: ${errorMessage}`);
-      return undefined;
-    }
-  }
 
   private async clearCompletionBranchIfSubsumed(task: Task, branchName: string): Promise<boolean> {
     try {
@@ -5423,15 +5052,18 @@ export class SelfHealingManager {
   }
 
   /**
-   * #1401: periodic transitionPending recovery sweep. Flag-ON only — when
-   * `workflowColumns` is OFF the legacy path never writes markers, so there is
-   * nothing to recover. Delegates to the store's idempotent recovery method
-   * (a no-op when no stale markers exist), keeping capacity counts honest after
-   * a crash between the in-txn marker write and the post-commit clear.
+   * #1401: periodic transitionPending recovery sweep. Delegates to the store's
+   * idempotent recovery method (a no-op when no stale markers exist), keeping
+   * capacity counts honest after a crash between the in-txn marker write and the
+   * post-commit clear.
+   *
+   * FNXC:WorkflowColumns 2026-07-27-09:40 (U2 / R9):
+   * The `isWorkflowColumnsEnabled` gate is GONE, not disabled. That helper
+   * returned a literal `true`, so the early return was unreachable and the
+   * settings read that fed it was pure cost. The sweep is unconditional now,
+   * which is what it already was at runtime.
    */
   async runStaleTransitionPendingSweep(): Promise<void> {
-    const settings = await this.store.getSettings();
-    if (!isWorkflowColumnsEnabled(settings)) return;
     await this.store.recoverStaleTransitionPending();
   }
 
@@ -8038,216 +7670,178 @@ export class SelfHealingManager {
       return 0;
     }
   }
+  /*
+  FNXC:WorkflowRecoveryPolicy 2026-07-27-23:20 (U4 — surfacing family retired onto the runner):
+  These three were three copies of one skeleton. The mechanism they shared —
+  pause gates, threshold resolution, the fresh-row skip, the at-most-once dedup,
+  the log write, the never-throw contract — now lives in `runSurfacingSweep`, and
+  each sweep is the part that was genuinely its own: which role it watches, which
+  operator setting it inherits, who is eligible, and what it says.
 
-  private getDependencyBlockedTodoReporter(): DependencyBlockedTodoReporter | null {
-    if (this.dependencyBlockedTodoReporter) {
-      return this.dependencyBlockedTodoReporter;
-    }
-    const projectId = this.options.getProjectId?.();
-    if (!projectId) {
-      return null;
-    }
-    this.dependencyBlockedTodoReporter = new DependencyBlockedTodoReporter({
-      store: this.store,
-      projectId,
-      now: () => Date.now(),
-    });
-    return this.dependencyBlockedTodoReporter;
+  Thresholds are now POLICY-OVER-SETTING. A workflow that declares
+  `recovery.stalenessMs` on the role's column wins; one that declares nothing
+  keeps reading the operator setting exactly as before, so this migration changes
+  nothing for an existing project and requires no workflow to be edited.
+
+  Surfacing is OBSERVATIONAL, so per the re-ratified invariant it reports on
+  user-paused cards — which is the entire point of the two paused sweeps.
+  */
+  /*
+  FNXC:WorkflowRecoveryPolicy 2026-07-28-03:10 (PR #2487 review — shared cycle):
+  ONE task snapshot and ONE workflow-IR cache shared across the three surfacing
+  sweeps.
+
+  Consolidating them onto a single runner made a pre-existing redundancy visible
+  for the first time: each sweep issued its own unfiltered non-slim `listTasks`
+  AND re-resolved every task's workflow from a fresh Map, and all three run
+  back-to-back in both startup recovery and the maintenance batch. That is three
+  full board reads and three IR resolutions per cycle where one of each suffices.
+
+  WHY SHARING A SNAPSHOT IS SAFE HERE, and it is a property rather than a hope:
+  the three sweeps PARTITION the task space, so no card is ever visible to two of
+  them and none can observe staleness another introduced.
+
+    surfaceStalePausedTodos    hold column   AND paused === true
+    surfaceStalePausedReviews  review column AND paused === true
+    surfaceInReviewStalled     review column AND paused !== true
+
+  A card sits in exactly one column, so hold and review are exclusive; within
+  review, `paused` splits the remaining two. `surfacing-family-shared.test.ts`
+  asserts this partition directly, so a future sweep that widens its eligibility
+  into another's territory fails rather than silently sharing a stale snapshot.
+
+  The sweeps are read-mostly regardless: they append a task-log entry under their
+  own distinct `logPrefix` and mutate no column or lifecycle field, and the
+  at-most-once dedup matches on that prefix, so one sweep's entry is invisible to
+  another's suppression check.
+  */
+  /** A once-only opener: the first caller starts the cycle, the rest await it. */
+  private surfacingCycleMemo(): () => Promise<SurfacingCycle | null> {
+    let pending: Promise<SurfacingCycle | null> | undefined;
+    return () => (pending ??= this.openSurfacingCycle());
   }
 
-  async surfaceDependencyBlockedTodos(): Promise<number> {
-    try {
-      const settings = await this.store.getSettings();
-      if (settings.globalPause || settings.enginePaused) return 0;
-      if (settings.dependencyBlockedTodoReportEnabled === false) return 0;
-
-      const reporter = this.getDependencyBlockedTodoReporter();
-      if (!reporter) return 0;
-      const result = await reporter.report();
-      return result.groupCount ?? 0;
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      log.error(`Dependency-blocked todo surfacing failed: ${errorMessage}`);
-      return 0;
-    }
+  private async openSurfacingCycle(): Promise<SurfacingCycle | null> {
+    const settings = await this.store.getSettings();
+    if (settings.globalPause || settings.enginePaused) return null;
+    return {
+      settings,
+      tasks: await this.store.listTasks({ slim: false }),
+      irCache: new Map(),
+      cycleStartMs: Date.now(),
+    };
   }
 
-  /**
-   * Surface quiet-window backlog-health diagnostics for unpaused in-review tasks.
-   *
-   * Non-overlap contract:
-   * - `surfaceStalePausedReviews()` owns paused in-review tasks.
-   * - `surfaceInReviewStalls()` owns reason-driven in-review stalls.
-   *
-   * Skips tasks not eligible for auto-merge processing (global `autoMerge`
-   * off without an explicit per-task `autoMerge: true` override) — PR-based
-   * review flow owns lifecycle until human merge.
-   */
-  async surfaceInReviewStalled(): Promise<number> {
+  private async runSurfacing(
+    spec: Parameters<typeof runSurfacingSweep>[0],
+    thresholdKey: "stalePausedTodoThresholdMs" | "stalePausedReviewThresholdMs" | "inReviewStalledThresholdMs",
+    label: string,
+    cycle?: SurfacingCycle | null | Promise<SurfacingCycle | null>,
+  ): Promise<number> {
     try {
-      const settings = await this.store.getSettings();
-      if (settings.globalPause || settings.enginePaused) return 0;
-      const cycleStartMs = Date.now();
-      const thresholdMs = settings.inReviewStalledThresholdMs;
-      if (!thresholdMs || thresholdMs <= 0) return 0;
-
-      const tasks = await this.store.listTasks({ column: "in-review", slim: false });
-      const activeMergeTaskId = this.options.getActiveMergeTaskId?.() ?? null;
-      const executingTaskIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
-      let surfaced = 0;
-
-      for (const task of tasks) {
-        if (task.deletedAt) continue;
-        if (!allowsAutoMergeProcessing(task, settings)) continue;
-        if (task.paused === true) continue;
-        if (task.id === activeMergeTaskId || executingTaskIds.has(task.id)) continue;
-        if (await this.isMergeLaneOwned(task.id)) continue;
-
-        const signal = getInReviewStalledSignal(task, {
-          now: cycleStartMs,
-          thresholdMs,
-          autoMerge: true,
-          activeMergeTaskId,
-          executingTaskIds,
+      /* A caller running the family together supplies the shared cycle; a
+         standalone call (tests, a single registry entry) opens its own. */
+      const active = cycle !== undefined ? await cycle : await this.openSurfacingCycle();
+      if (!active) return 0;
+      const { settings, tasks, irCache, cycleStartMs } = active;
+      const inheritedThresholdMs = Number(settings[thresholdKey] ?? 0);
+      return await runSurfacingSweep(spec, {
+        store: this.store,
+        tasks,
+        inheritedThresholdMs,
+        settings,
+        cycleStartMs,
+        irCache,
+        activation: {
           engineActiveSinceMs: settings.engineActiveSinceMs,
           engineActivationGraceMs: settings.engineActivationGraceMs,
-        });
-        if (!signal) continue;
-
-        if (Date.parse(task.updatedAt) >= cycleStartMs) {
-          continue;
-        }
-
-        const previous = [...(task.log ?? [])]
-          .reverse()
-          .find((entry) => entry.action.startsWith("In-review stalled surfaced ["));
-        if (previous) {
-          const parsed = /^In-review stalled surfaced \[([^\]]+)\]/.exec(previous.action);
-          const previousCode = parsed?.[1];
-          const previousAt = Date.parse(previous.timestamp);
-          if (Number.isFinite(previousAt) && previousAt >= cycleStartMs - thresholdMs && previousCode === signal.code) {
-            continue;
-          }
-        }
-
-        const hours = (signal.quietMs / 3_600_000).toFixed(1);
-        await this.store.logEntry(
-          task.id,
-          `In-review stalled surfaced [${signal.code}]: quiet ${hours}h beyond ${(thresholdMs / 3_600_000).toFixed(1)}h threshold; disposition options — nudge review, retry, archive, or create follow-up task. lastActivitySource=${signal.lastActivitySource}`,
-        );
-        surfaced += 1;
-      }
-
-      return surfaced;
+        },
+      });
     } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      log.error(`In-review stalled surfacing failed: ${errorMessage}`);
+      log.error(`${label} failed: ${err instanceof Error ? err.message : String(err)}`);
       return 0;
     }
   }
 
-  async surfaceStalePausedReviews(): Promise<number> {
-    try {
-      const settings = await this.store.getSettings();
-      if (settings.globalPause || settings.enginePaused) return 0;
-
-      const cycleStartMs = Date.now();
-      const thresholdMs = settings.stalePausedReviewThresholdMs;
-      if (!thresholdMs || thresholdMs <= 0) return 0;
-
-      const tasks = await this.store.listTasks({ column: "in-review", slim: false });
-      let surfaced = 0;
-
-      for (const task of tasks) {
-        if (task.deletedAt) continue;
-        if (task.paused !== true) continue;
-        const signal = getStalePausedReviewSignal(task, {
-          now: cycleStartMs,
-          thresholdMs,
-          engineActiveSinceMs: settings.engineActiveSinceMs,
-          engineActivationGraceMs: settings.engineActivationGraceMs,
-        });
-        if (!signal) continue;
-        if (Date.parse(task.updatedAt) >= cycleStartMs) continue;
-
-        const previous = [...(task.log ?? [])]
-          .reverse()
-          .find((entry) => entry.action.startsWith("Stale paused review surfaced ["));
-        if (previous) {
-          const parsed = /^Stale paused review surfaced \[([^\]]+)\]/.exec(previous.action);
-          const previousCode = parsed?.[1];
-          const previousAt = Date.parse(previous.timestamp);
-          if (Number.isFinite(previousAt) && previousAt >= cycleStartMs - thresholdMs && previousCode === signal.code) {
-            continue;
-          }
-        }
-
-        const hours = (signal.ageMs / 3_600_000).toFixed(1);
-        await this.store.logEntry(
-          task.id,
-          `Stale paused review surfaced [${signal.code}]: paused ${hours}h; disposition options — unpause, retry, archive, or create follow-up task. pausedReason=${signal.pausedReason ?? "none"}`,
-        );
-        surfaced += 1;
-      }
-
-      return surfaced;
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      log.error(`Stale paused review surfacing failed: ${errorMessage}`);
-      return 0;
-    }
+  async surfaceStalePausedTodos(cycle?: SurfacingCycle | null | Promise<SurfacingCycle | null>): Promise<number> {
+    return this.runSurfacing(
+      {
+        logPrefix: "Stale paused todo surfaced",
+        role: "hold",
+        isEligible: (task) => task.paused === true,
+        evaluate: (task, thresholdMs, now, activation, roleColumn) =>
+          getStalePausedTodoSignal(task, { now, thresholdMs, holdColumn: roleColumn, ...activation }),
+        describe: (_task, signal, thresholdMs) =>
+          `paused ${hours(signal.ageMs)}h beyond ${hours(thresholdMs)}h threshold; disposition options — unpause, move to triage, archive, or create follow-up task. pausedReason=${(_task as { pausedReason?: string }).pausedReason ?? "none"}`,
+      },
+      "stalePausedTodoThresholdMs",
+      "Stale paused todo surfacing",
+      cycle,
+    );
   }
 
-  async surfaceStalePausedTodos(): Promise<number> {
-    try {
-      const settings = await this.store.getSettings();
-      if (settings.globalPause || settings.enginePaused) return 0;
-
-      const cycleStartMs = Date.now();
-      const thresholdMs = settings.stalePausedTodoThresholdMs;
-      if (!thresholdMs || thresholdMs <= 0) return 0;
-
-      const tasks = await this.store.listTasks({ column: "todo", slim: false });
-      let surfaced = 0;
-
-      for (const task of tasks) {
-        if (task.paused !== true) continue;
-        const signal = getStalePausedTodoSignal(task, {
-          now: cycleStartMs,
-          thresholdMs,
-          engineActiveSinceMs: settings.engineActiveSinceMs,
-          engineActivationGraceMs: settings.engineActivationGraceMs,
-        });
-        if (!signal) continue;
-        if (Date.parse(task.updatedAt) >= cycleStartMs) continue;
-
-        const previous = [...(task.log ?? [])]
-          .reverse()
-          .find((entry) => entry.action.startsWith("Stale paused todo surfaced ["));
-        if (previous) {
-          const parsed = /^Stale paused todo surfaced \[([^\]]+)\]/.exec(previous.action);
-          const previousCode = parsed?.[1];
-          const previousAt = Date.parse(previous.timestamp);
-          if (Number.isFinite(previousAt) && previousAt >= cycleStartMs - thresholdMs && previousCode === signal.code) {
-            continue;
-          }
-        }
-
-        const hours = (signal.ageMs / 3_600_000).toFixed(1);
-        await this.store.logEntry(
-          task.id,
-          `Stale paused todo surfaced [${signal.code}]: paused ${hours}h beyond ${(thresholdMs / 3_600_000).toFixed(1)}h threshold; disposition options — unpause, move to triage, archive, or create follow-up task. pausedReason=${signal.pausedReason ?? "none"}`,
-        );
-        surfaced += 1;
-      }
-
-      return surfaced;
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      log.error(`Stale paused todo surfacing failed: ${errorMessage}`);
-      return 0;
-    }
+  async surfaceStalePausedReviews(cycle?: SurfacingCycle | null | Promise<SurfacingCycle | null>): Promise<number> {
+    return this.runSurfacing(
+      {
+        logPrefix: "Stale paused review surfaced",
+        role: "review",
+        isEligible: (task) => task.paused === true,
+        evaluate: (task, thresholdMs, now, activation, roleColumn) =>
+          getStalePausedReviewSignal(task, { now, thresholdMs, reviewColumn: roleColumn, ...activation }),
+        describe: (_task, signal) =>
+          `paused ${hours(signal.ageMs)}h; disposition options — unpause, retry, archive, or create follow-up task. pausedReason=${(_task as { pausedReason?: string }).pausedReason ?? "none"}`,
+      },
+      "stalePausedReviewThresholdMs",
+      "Stale paused review surfacing",
+      cycle,
+    );
   }
+
+  async surfaceInReviewStalled(cycle?: SurfacingCycle | null | Promise<SurfacingCycle | null>): Promise<number> {
+    const activeMergeTaskId = this.options.getActiveMergeTaskId?.() ?? null;
+    const executingTaskIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
+    return this.runSurfacing(
+      {
+        logPrefix: "In-review stalled surfaced",
+        role: "review",
+        /* Unlike the paused sweeps this one watches ACTIVE review work, so a
+           paused card is excluded rather than targeted. */
+        isEligible: (task, settings) =>
+          /*
+          FNXC:WorkflowRecoveryPolicy 2026-07-28-01:20 (PR #2487 review, P1):
+          `allowsAutoMergeProcessing` is one of the SIX SAFEGUARDS —
+          `autoMerge:false` is terminal-until-human. The migration dropped this
+          gate while still passing `autoMerge: true` to the signal below, so the
+          code asserted an eligibility it no longer checked and the sweep treated
+          auto-merge-disabled tasks (and manually-opened-PR tasks) as eligible.
+          The `autoMerge: true` argument is only sound BECAUSE this gate proves it.
+          */
+          allowsAutoMergeProcessing(task, settings) &&
+          task.paused !== true &&
+          task.id !== activeMergeTaskId &&
+          !executingTaskIds.has(task.id),
+        isEligibleAsync: async (task) => !(await this.isMergeLaneOwned(task.id)),
+        evaluate: (task, thresholdMs, now, activation, roleColumn) => {
+          const signal = getInReviewStalledSignal(task, {
+            now,
+            thresholdMs,
+            autoMerge: true,
+            activeMergeTaskId,
+            executingTaskIds,
+            reviewColumn: roleColumn,
+            ...activation,
+          });
+          return signal ? { ...signal, code: signal.code, ageMs: signal.quietMs } : undefined;
+        },
+        describe: (_task, signal, thresholdMs) =>
+          `quiet ${hours(signal.ageMs)}h beyond ${hours(thresholdMs)}h threshold; disposition options — nudge review, retry, archive, or create follow-up task. lastActivitySource=${(signal as { lastActivitySource?: string }).lastActivitySource}`,
+      },
+      "inReviewStalledThresholdMs",
+      "In-review stalled surfacing",
+      cycle,
+    );
+  }
+
 
   /**
    * Backward lifecycle move gated on triple proof (FN-5335).
@@ -8945,17 +8539,6 @@ export class SelfHealingManager {
   }
 
   /** True iff `branch` exists as a local ref in the sub-repo at `repoRootDir`. */
-  private async repoBranchExists(repoRootDir: string, branch: string): Promise<boolean> {
-    try {
-      await execAsync(`git rev-parse --verify ${shellQuote(`refs/heads/${branch}`)}`, {
-        cwd: repoRootDir,
-        timeout: 30_000,
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  }
 
   /*
   FNXC:Workspace 2026-06-22-09:30 (Phase D U1, KTD3 — phantom workspace-repo-land lease reclaim):
@@ -9188,47 +8771,7 @@ export class SelfHealingManager {
     }
   }
 
-  private async readShortstatForSha(
-    sha: string,
-    rebaseBaseSha?: string,
-  ): Promise<{ filesChanged: number; insertions: number; deletions: number } | null> {
-    try {
-      const command = rebaseBaseSha
-        ? `git diff --shortstat ${shellQuote(`${rebaseBaseSha}..${sha}`)}`
-        : `git show --shortstat --format= ${shellQuote(sha)}`;
-      const stats = await execAsync(command, {
-        cwd: this.options.rootDir,
-        maxBuffer: 1024 * 1024,
-      });
-      const parsed = parseShortstat(stats.stdout);
-      return {
-        filesChanged: parsed.filesChanged ?? 0,
-        insertions: parsed.insertions ?? 0,
-        deletions: parsed.deletions ?? 0,
-      };
-    } catch {
-      return null;
-    }
-  }
 
-  private async readLandedFilesForSha(sha: string, rebaseBaseSha?: string): Promise<string[] | null> {
-    try {
-      const command = rebaseBaseSha
-        ? `git diff --name-only ${shellQuote(`${rebaseBaseSha}..${sha}`)}`
-        : `git show --name-only --format= ${shellQuote(sha)}`;
-      const result = await execAsync(command, {
-        cwd: this.options.rootDir,
-        maxBuffer: 1024 * 1024,
-      });
-      const files = result.stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean);
-      return files.length > 0 ? Array.from(new Set(files)) : [];
-    } catch {
-      return null;
-    }
-  }
 
   async recoverDoneTaskMergeMetadata(): Promise<number> {
     try {
@@ -10541,42 +10084,6 @@ export class SelfHealingManager {
     }
   }
 
-  private async isBranchTipMisboundToTask(input: {
-    branch: string;
-    taskId: string;
-    lineageId?: string;
-    baseBranch: string;
-  }): Promise<{ misbound: boolean; branchTip: string; landed: Awaited<ReturnType<typeof findAlreadyMergedTaskCommit>>; rejection?: { reason: "foreign-task-tip" | "foreign-lineage-tip"; owner?: string } }> {
-    const { branch, taskId, lineageId, baseBranch } = input;
-    const { stdout: tipOut } = await execAsync(`git rev-parse ${shellQuote(branch)}`, {
-      cwd: this.options.rootDir,
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024,
-    });
-    const branchTip = tipOut.trim();
-    const ownership = await this.readCommitTaskOwnership(branchTip, taskId, lineageId);
-    /*
-    FNXC:WorkflowRecovery 2026-07-03-21:39:
-    Branch-misbound recovery shares the no-op inheritance edge case with already-merged recovery. Check merge-base-to-tip diff state first so a branch with no unique task content is not mislabeled misbound solely because its inherited tip belongs to the previously landed task, even after base advances.
-
-    FNXC:WorkflowRecovery 2026-07-25-09:40:
-    Shared with already-merged recovery and the reclaim sweep via `foreignTipRejection`.
-    */
-    const rejection = await this.foreignTipRejection({ taskId, lineageId, branchTip, baseBranch, ownership });
-    if (rejection) {
-      return { misbound: false, branchTip, landed: null, rejection };
-    }
-    const hasTaskId = ownership.ownerTaskId === taskId;
-    const hasLineage = lineageId ? ownership.ownerLineageId === lineageId : false;
-    const landed = await this.findAlreadyMergedTaskCommit({
-      taskId,
-      lineageId,
-      repoDir: this.options.rootDir,
-      baseBranch,
-      taskBranch: branch,
-    });
-    return { misbound: !hasTaskId && !hasLineage, branchTip, landed };
-  }
 
   async recoverBranchMisboundInReviewTasks(): Promise<number> {
     try {

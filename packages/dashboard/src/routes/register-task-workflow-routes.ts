@@ -27,6 +27,7 @@ import type {
   RunAuditEvent,
   ArtifactType,
   PrInfo,
+  WorkflowIr,
 } from "@fusion/core";
 import {
   COLUMNS,
@@ -53,7 +54,6 @@ import {
   findNearDuplicates,
   isEphemeralAgent,
   parseExplicitDuplicateMarker,
-  isWorkflowColumnsEnabled,
   resolveWorkflowIrForTask,
   workflowHasColumn,
   columnHasFlag,
@@ -168,6 +168,53 @@ async function resolveIntakeColumnForTask(store: TaskStore, taskId: string): Pro
   } catch {
     return "triage";
   }
+}
+
+/*
+FNXC:WorkflowResolvedColumns 2026-07-27-16:15 (U10 / R8):
+Lifecycle POSITION — "is this move backward?" — resolved through `COLUMNS.indexOf(...)`, the
+legacy enum. A workflow that renames its lanes returns -1 for both endpoints, and
+`isBackwardMoveBlockedByOpenPr` treats a negative index as "cannot tell → allow", so the open-PR
+guard silently stopped existing on every custom board rather than rejecting anything. A guard that
+never fires does not fail a test.
+
+`ir.columns` is ordered and that order IS the lifecycle order (see the graph entry contract), so
+the workflow is the authority. The legacy enum stays as the fallback for an unresolvable or v1
+(column-less) IR, which keeps `builtin:coding` — whose column order equals the enum — unchanged.
+*/
+/*
+FNXC:WorkflowResolvedColumns 2026-07-27-18:20 (U10 / R8 — greptile P1 on PR #2492):
+The workflow is authoritative ONLY when it can place BOTH endpoints. Using its ordering
+unconditionally reopened the same hole from the other side: a row still stored in a column the
+workflow removed or renamed scores -1, and a negative index means "allow" — so exactly the rows
+U11 leaves behind in `todo` could be dragged backward past an open PR.
+
+Two orderings, never mixed. Mixing them would misjudge a workflow that REORDERS legacy ids (its
+own order says forward while the enum says backward), so the enum is a fallback for the whole
+comparison, not a per-column patch.
+
+Residual, deliberately not papered over: when the source is undeclared AND the target is a
+workflow-only id, neither ordering places both and the guard cannot fire. That is NOT a
+regression — the previous `COLUMNS.indexOf` scored the custom target -1 and was equally absent.
+Closing it needs the guard restated in terms of column TRAITS rather than position, which belongs
+with the merge lane's conversion (U9), not with a rendering unit.
+*/
+function resolveMoveOrderIndices(
+  ir: WorkflowIr | undefined,
+  fromColumn: string,
+  toColumn: string,
+): { fromIndex: number; toIndex: number } {
+  const declared = (ir as { columns?: Array<{ id: string }> } | undefined)?.columns;
+  if (Array.isArray(declared) && declared.length > 0) {
+    const order = new Map(declared.map((column, index) => [column.id, index]));
+    const fromIndex = order.get(fromColumn) ?? -1;
+    const toIndex = order.get(toColumn) ?? -1;
+    if (fromIndex >= 0 && toIndex >= 0) return { fromIndex, toIndex };
+  }
+  return {
+    fromIndex: COLUMNS.indexOf(fromColumn as Column),
+    toIndex: COLUMNS.indexOf(toColumn as Column),
+  };
 }
 
 async function resolveWipColumnForTask(store: TaskStore, taskId: string): Promise<string> {
@@ -749,6 +796,16 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       (task.branchContext?.groupId
         ? await scopedStore.getActivePrEntityBySource?.("branch-group", task.branchContext.groupId)
         : null);
+    /*
+    FNXC:WorkflowResolvedColumns 2026-07-27-16:20 (U10 / R8):
+    Deliberately still on the legacy enum, unlike the move route's copy of this guard. This whole
+    function is gated on the literal `task.column !== "in-review"` above and re-engages to the
+    literal `"in-progress"`, so both endpoints are legacy ids by construction and the enum resolves
+    them correctly. Swapping in the task's workflow order here would make the guard WEAKER, not
+    stronger: a workflow declaring `in-review` but not `in-progress` would score -1 for the target
+    and disable the guard entirely. Convert this site when its surrounding literals are converted
+    (U5 owns the re-engage lane), not before.
+    */
     if (
       isBackwardMoveBlockedByOpenPr({
         fromIndex: COLUMNS.indexOf(task.column as Column),
@@ -1002,8 +1059,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       // any of these tasks. One batched query (cheap; short-circuits when the
       // table is empty). The payload is otherwise byte-identical.
       try {
-        const settings = await scopedStore.getSettingsFast();
-        if (isWorkflowColumnsEnabled(settings) && tasks.length > 0) {
+        // FNXC:WorkflowColumns 2026-07-27-09:52 (U2 / R9): the
+        // `isWorkflowColumnsEnabled` conjunct is deleted (literal `true`), so
+        // branch-progress enrichment is gated only on there being tasks.
+        if (tasks.length > 0) {
           const byTask = await scopedStore.getBranchProgressByTask(tasks.map((t) => t.id));
           if (byTask.size > 0) {
             tasks = tasks.map((task) => {
@@ -1108,11 +1167,11 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   router.get("/tasks/board-workflows", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
+      // FNXC:WorkflowColumns 2026-07-27-09:53 (U2 / R9): the flag-OFF
+      // `{ flagEnabled: false }` short-circuit is deleted — unreachable behind a
+      // literal `true`. `buildBoardWorkflowsPayload` still emits `flagEnabled: true`
+      // for shipped clients that branch on it.
       const settings = await scopedStore.getSettingsFast();
-      if (!isWorkflowColumnsEnabled(settings)) {
-        res.json({ flagEnabled: false, defaultWorkflowId: "builtin:coding", workflows: [], taskWorkflowIds: {} });
-        return;
-      }
       // Resolve over the same (non-archived) board list the client renders.
       const tasks = await scopedStore.listTasks({ slim: true, includeArchived: false });
       const taskIds = tasks.map((t) => t.id);
@@ -1762,13 +1821,11 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           (guardTask.branchContext?.groupId
             ? await scopedStore.getActivePrEntityBySource?.("branch-group", guardTask.branchContext.groupId)
             : null);
-        if (
-          isBackwardMoveBlockedByOpenPr({
-            fromIndex: COLUMNS.indexOf(guardTask.column as Column),
-            toIndex: COLUMNS.indexOf(moveTarget),
-            activePrEntity,
-          })
-        ) {
+        // FNXC:WorkflowResolvedColumns 2026-07-27-16:15 (U10 / R8): position comes from the
+        // task's own workflow column order (already resolved above as `moveTargetIr`), falling
+        // back to the legacy enum when the workflow cannot place both endpoints.
+        const { fromIndex, toIndex } = resolveMoveOrderIndices(moveTargetIr, guardTask.column, moveTarget);
+        if (isBackwardMoveBlockedByOpenPr({ fromIndex, toIndex, activePrEntity })) {
           throw new ApiError(409, PR_OPEN_BLOCKS_MOVE_BACK_MESSAGE, {
             code: "pr-open-blocks-move-back",
             messageKey: "board.rejection.prOpenBlocksMoveBack",
@@ -1841,10 +1898,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   router.post("/tasks/:id/promote", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
+      // FNXC:WorkflowColumns 2026-07-27-09:54 (U2 / R9): the
+      // "Workflow columns are not enabled" rejection is deleted — its gate was a
+      // literal `true`, so promote never took it.
       const settings = await scopedStore.getSettingsFast();
-      if (!isWorkflowColumnsEnabled(settings)) {
-        throw badRequest("Workflow columns are not enabled");
-      }
       const existing = await scopedStore.getTask(req.params.id);
       const rootDir = scopedStore.getRootDir();
       const allocateWorktree = existing

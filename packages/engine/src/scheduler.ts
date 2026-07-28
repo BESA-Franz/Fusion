@@ -44,7 +44,7 @@ import { StaleTaskReporter } from "./healing/stale-task-reporter.js";
 import { BacklogPressureReporter } from "./scheduling/backlog-pressure-reporter.js";
 import { UnlinkedMissionsAdvisoryReporter } from "./missions/unlinked-missions-advisory-reporter.js";
 import { createRunAuditor, generateSyntheticRunId } from "./util/run-audit.js";
-import { isWorkflowColumnsEnabled, DEFAULT_WORKFLOW_POOL_ID, resolveWorkflowIrForTask, resolveWorkflowIrById, resolveColumnFlags } from "@fusion/core";
+import { DEFAULT_WORKFLOW_POOL_ID, resolveWorkflowIrForTask, resolveWorkflowIrById, resolveColumnFlags } from "@fusion/core";
 import type { WorkflowIr, WorkflowIrV2 } from "@fusion/core";
 import { runHoldReleaseSweep, isUnplannedForExecution, type SlotReservation } from "./execution/hold-release.js";
 import { moveTaskToReplanColumn } from "./execution/replan-target.js";
@@ -1551,15 +1551,16 @@ export class Scheduler {
         // U6 (KTD-10): report the default workflow's in-progress capacity as a
         // per-column gate — the generalization of the legacy maxConcurrent gate
         // (which reads through to the same value).
-        const perColumnGates = isWorkflowColumnsEnabled(settings)
-          ? [{
-            workflowId: DEFAULT_WORKFLOW_POOL_ID,
-            columnId: "in-progress",
-            used: agentSlots + started,
-            limit: maxConcurrent,
-            slack: maxConcurrent - (agentSlots + started),
-          }]
-          : undefined;
+        // FNXC:WorkflowColumns 2026-07-27-09:42 (U2 / R9): the
+        // `isWorkflowColumnsEnabled` conditional is deleted — it returned a
+        // literal `true`, so the `undefined` arm never produced a diagnostic.
+        const perColumnGates = [{
+          workflowId: DEFAULT_WORKFLOW_POOL_ID,
+          columnId: "in-progress",
+          used: agentSlots + started,
+          limit: maxConcurrent,
+          slack: maxConcurrent - (agentSlots + started),
+        }];
         return computeConcurrencyGateDiagnostic({
           agentSlots,
           maxConcurrent,

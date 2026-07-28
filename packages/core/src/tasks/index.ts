@@ -3,7 +3,6 @@
  * Domain barrel for core/tasks.
  */
 export * from "./blocker-fanout.js";
-export * from "./dependency-blocked-todo-report.js";
 export * from "./distributed-task-id.js";
 export * from "./file-scope-classification.js";
 export * from "./frontend-ux-policy.js";

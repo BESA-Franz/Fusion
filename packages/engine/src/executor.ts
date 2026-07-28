@@ -22,6 +22,7 @@ import { moveTaskToReplanColumn, resolveReplanTargetColumn } from "./execution/r
 import type { TaskStep, WorkflowIr, WorkflowFieldDefinition, WorkflowColumnAgent, EffectiveAgentInput, WorkflowWorkEngineDispatchResult, WorkflowWorkItem } from "@fusion/core";
 import { WorkflowGraphTaskRunner, type WorkflowGraphTaskRunResult, type WorkflowColumnBoundaryHooks } from "./workflows/workflow-graph-task-runner.js";
 import { createStoreIrPinPersistence, type WorkflowIrPinStoreSurface } from "./workflows/workflow-column-boundary.js";
+import { createExecutorColumnBoundaryHooks } from "./workflow-column-boundary-hooks.js";
 import { ensureWorkflowCompletionSummary } from "./workflows/workflow-completion-summary.js";
 import { createCodeNodeRunner } from "./execution/code-node-runner.js";
 import { getTaskReviewCheckoutPath, resolveReviewCheckoutCwd } from "./execution/review-checkout.js";
@@ -6378,70 +6379,23 @@ export class TaskExecutor {
     });
   }
 
+  /*
+  FNXC:WorkflowColumnBoundary 2026-07-27-16:40 (PR #2475 review, P2):
+  The wiring itself now lives in `createExecutorColumnBoundaryHooks` so the E2E suite can drive the
+  REAL hooks instead of rebuilding them (a hand copy had already diverged in three places). What
+  stays here is only genuine Executor state: the in-flight graph-move marker and the logger.
+  */
   private buildColumnBoundaryHooks(task: Pick<Task, "id">, workflowRunId?: string): WorkflowColumnBoundaryHooks {
-    // KTD-3 (U9b): store-backed durable IR pin. The cast is the same posture as
-    // buildBranchPersistence — structural probe of the row surface so a store
-    // lacking the pin fields degrades to the inert no-pin seam.
-    const pinPersistence = createStoreIrPinPersistence(
-      this.store as unknown as WorkflowIrPinStoreSurface,
-      task.id,
-    );
-    return {
-      pinNodeEntry: pinPersistence.pinNodeEntry,
-      loadPriorPin: pinPersistence.loadPriorPin,
-      // KTD-3 drift-park loop fix (PR #2342): detectDrift clears the stale pin
-      // row fields so an ordinary requeue re-resolves the CURRENT IR fresh.
-      clearPin: pinPersistence.clearPin,
-      onSuspend: async (suspension) => {
-        const items = await this.store.listWorkflowWorkItemsForTask(task.id, { kinds: ["task"] });
-        const live = items.filter((item) => ACTIVE_WORKFLOW_WORK_ITEM_STATES.includes(item.state));
-        if (live.some((item) => item.nodeId === suspension.nodeId)) return;
-        await this.store.replaceActiveTaskWorkflowContinuation({
-          runId: `${workflowRunId ?? `${task.id}:workflow`}:continuation:${suspension.nodeId}:${items.length}`,
-          taskId: task.id,
-          nodeId: suspension.nodeId,
-          kind: "task",
-          state: "held",
-          stableWorkflowRunId: workflowRunId ?? `${task.id}:workflow`,
-          continuationSequence: items.length,
-          waitReason: "capacity",
-          sourceColumn: suspension.fromColumn,
-          targetColumn: suspension.toColumn,
-          irHash: suspension.irHash,
-        });
-      },
-      moveTask: async (toColumn, ctx) => {
-        this.workflowLifecycleMovesInFlight.add(task.id);
-        try {
-          await this.store.moveTask(task.id, toColumn, {
-            moveSource: "engine",
-            workflowMoveSource: "workflow-graph",
-            bypassGuards: true,
-            preserveProgress: true,
-            workflowMoveMetadata: { fromColumn: ctx.fromColumn, nodeId: ctx.nodeId },
-          });
-        } finally {
-          this.workflowLifecycleMovesInFlight.delete(task.id);
-        }
-      },
-      emitAudit: async (event) => {
-        await this.store.recordRunAuditEvent?.({
-          taskId: event.taskId,
-          agentId: "executor",
-          runId: generateSyntheticRunId("workflow-column-boundary", event.taskId),
-          domain: "database",
-          mutationType: event.type,
-          target: event.taskId,
-          metadata:
-            event.type === "task:column-transition"
-              ? { taskId: event.taskId, workflowId: event.workflowId, fromColumn: event.fromColumn, toColumn: event.toColumn, nodeId: event.nodeId, irHash: event.irHash }
-              : { taskId: event.taskId, workflowId: event.workflowId, pinnedNodeId: event.pinnedNodeId, reason: event.reason },
-        });
-      },
+    return createExecutorColumnBoundaryHooks({
+      store: this.store,
+      task,
+      workflowRunId,
+      markMoveInFlight: (taskId) => this.workflowLifecycleMovesInFlight.add(taskId),
+      clearMoveInFlight: (taskId) => this.workflowLifecycleMovesInFlight.delete(taskId),
       onWarn: (message, detail) => {
         executorLog.debug(`[workflow-column-boundary] ${task.id}: ${message} ${JSON.stringify(detail)}`);
       },
-    };
+    });
   }
 
   /**
@@ -7807,6 +7761,26 @@ export class TaskExecutor {
           this.graphSeamGoverningNodeId.delete(seamTask.id);
           this.graphSeamThinkingLevel.delete(seamTask.id);
         }
+        /*
+        FNXC:WorkflowExecutionOwnership 2026-07-27-16:25 (U8 / R4):
+        THIS BOOLEAN IS THE OWNERSHIP BOUNDARY, and it is too narrow. `runImplementation` has
+        28 measured ways of disposing of a task (16 column moves, 3 review handoffs, 9 terminal
+        parks — counted by `executor-lifecycle-ownership-ledger.test.ts`) and exactly 3 ways of
+        telling the graph anything, all of which collapse to `taskDone: true` here.
+
+        The consequence is not a missing feature, it is a second lifecycle owner. Because the
+        seam has no value for "the agent stopped because a step is blocked on a pending review"
+        or "the session was paused after the work was already complete", the implementation
+        phase performs those transitions ITSELF (`executor-exit-while-review-pending`,
+        `paused-after-completion`) and the graph learns about them afterwards — which is why
+        `handleGraphFailure` carries `alreadyFinalizedToReview` / `completionFinalized`
+        classifiers whose whole job is to recognise a move the graph did not make.
+
+        U8's direction: widen this vocabulary so a disposition is REPORTED here and the graph
+        routes it, rather than performed upstream and compensated for downstream. The
+        compensating classifiers are the acceptance test — they become unreachable, and then
+        deletable, exactly when the last out-of-band transition is gone.
+        */
         if (result.taskDone) {
           return { outcome: "success", value: "implemented" };
         }

@@ -694,6 +694,51 @@ export function ListView({
     return [...columnsById.values()];
   }, [boardWorkflows, isAllWorkflowsSelected, selectedWorkflow, workflowMode]);
 
+  /**
+   * FNXC:WorkflowResolvedColumns 2026-07-27-14:45 (U10 / R8):
+   * Display-only landing lane for a row whose stored column the resolved workflow does not
+   * declare. Prefers the intake lane (where an operator expects unplaced work), then the first
+   * non-complete/non-archived lane, then the first lane at all.
+   */
+  const pickFallbackColumnId = useCallback((columns: readonly BoardWorkflowColumn[]): ColumnId | undefined => {
+    const placeable = columns.filter((column) => !column.flags.archived && !column.flags.hiddenFromBoard);
+    return placeable.find((column) => column.flags.intake)?.id
+      ?? placeable.find((column) => !column.flags.complete)?.id
+      ?? placeable[0]?.id
+      ?? columns[0]?.id;
+  }, []);
+
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-27-18:40 (U10 / R8 — greptile P1 on PR #2492):
+  Per-WORKFLOW landing lanes. In the All-workflows list, `listColumns` is a cross-workflow union
+  ordered default-workflow-first, so one global fallback filed every stranded row under the DEFAULT
+  workflow's intake — a card from another workflow rendered under a lifecycle it does not belong to.
+  Resolve the landing lane from the card's own workflow; the global fallback below is only the last
+  resort for a card whose workflow cannot be resolved at all.
+  */
+  const fallbackColumnIdByWorkflowId = useMemo(() => {
+    const map = new Map<string, ColumnId>();
+    for (const workflow of boardWorkflows?.workflows ?? []) {
+      const fallback = pickFallbackColumnId(workflow.columns);
+      if (fallback !== undefined) map.set(workflow.id, fallback);
+    }
+    return map;
+  }, [boardWorkflows, pickFallbackColumnId]);
+
+  const listFallbackColumnId = useMemo<ColumnId | undefined>(
+    () => pickFallbackColumnId(listColumns),
+    [listColumns, pickFallbackColumnId],
+  );
+
+  /** The workflow a rendered card belongs to, resolved the same way the lane filter resolves it. */
+  const resolveTaskWorkflowId = useCallback((taskId: string): string | undefined => {
+    if (!boardWorkflows) return undefined;
+    const raw = boardWorkflows.taskWorkflowIds[taskId];
+    return raw && boardWorkflows.workflows.some((workflow) => workflow.id === raw)
+      ? raw
+      : boardWorkflows.defaultWorkflowId;
+  }, [boardWorkflows]);
+
   const columnNameById = useMemo(() => {
     const map = new Map<ColumnId, string>();
     for (const column of listColumns) {
@@ -919,9 +964,28 @@ export function ListView({
     const groups: Record<string, Task[]> = {};
     for (const column of listColumns) groups[column.id] = [];
 
+    /*
+    FNXC:WorkflowResolvedColumns 2026-07-27-14:45 (U10 / R8):
+    A row whose stored column the resolved workflow no longer declares must NOT vanish. The
+    previous `if (groups[column])` guard silently dropped it — no lane, no row, no error — which
+    is exactly what a removed column (U11 merging Todo into Planning) or a workflow edited to
+    drop a lane produces for cards already resting there. Re-home it for DISPLAY into the
+    workflow's intake/first visible lane, mirroring the safety nets Board already carries for its
+    selected-workflow and aggregate groupings. Display-only: the task's stored column is untouched,
+    so the move menu and any engine rebound still see the real column.
+    */
     columnFiltered.forEach((task) => {
       const column = workflowMode ? task.column : (isColumn(task.column) ? task.column : DEFAULT_COLUMN);
-      if (groups[column]) groups[column].push(task);
+      if (groups[column] !== undefined) {
+        groups[column].push(task);
+        return;
+      }
+      const ownWorkflowId = workflowMode ? resolveTaskWorkflowId(task.id) : undefined;
+      const ownFallback = ownWorkflowId ? fallbackColumnIdByWorkflowId.get(ownWorkflowId) : undefined;
+      const columnId = (ownFallback !== undefined && groups[ownFallback] !== undefined)
+        ? ownFallback
+        : listFallbackColumnId;
+      if (columnId !== undefined && groups[columnId] !== undefined) groups[columnId].push(task);
     });
 
     for (const column of listColumns) {
@@ -951,7 +1015,7 @@ export function ListView({
       });
     }
     return groups;
-  }, [tasks, searchQuery, selectedWorkflowTaskIds, listColumns, workflowMode, hideDoneTasks, selectedColumn, staleOnlyFilter, stalePausedReviewOnlyFilter, sortField, sortDirection]);
+  }, [tasks, searchQuery, selectedWorkflowTaskIds, listColumns, workflowMode, hideDoneTasks, selectedColumn, staleOnlyFilter, stalePausedReviewOnlyFilter, sortField, sortDirection, fallbackColumnIdByWorkflowId, listFallbackColumnId, resolveTaskWorkflowId]);
 
   // Calculate total filtered count from groups
   const filteredCount = useMemo(() => {
