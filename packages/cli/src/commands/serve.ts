@@ -1135,8 +1135,7 @@ export async function runServe(
 
   try {
     if (centralCore) {
-      const nodes = await centralCore.listNodes();
-      const localNode = nodes.find((node) => node.type === "local");
+      const localNode = await centralCore.getRuntimeNode();
       if (localNode) {
         localNodeId = localNode.id;
         await centralCore.updateNode(localNode.id, { status: "online" });

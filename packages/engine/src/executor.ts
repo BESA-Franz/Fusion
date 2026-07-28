@@ -15,6 +15,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import type { TaskStore, Task, TaskDetail, TaskTokenUsage, StepStatus, Settings, WorkflowStep, MissionStore, AsyncMissionStore, Slice, AgentState, AgentCapability, RunMutationContext, AgentHeartbeatConfig, Agent, AgentMemoryInclusionMode, ProjectSettings, MergeResult, WorkflowIrNode, WorkflowIrNodeKind, WorkflowStepResult as CoreWorkflowStepResult, ThinkingLevel } from "@fusion/core";
 import { getUnmetSchedulingDependencies } from "./scheduler.js";
 import { RetryStormError, serializeRetryStormError, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, resolveWorkflowIrForTask, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveReboundTarget, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, resolveEffectiveAutoMerge, isLiveSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveMaxConsecutiveToolFailureRetries, resolveConsecutiveToolFailureRetryBackoffMs, resolveConsecutiveToolFailureThreshold, resolveExecutorEscalationTarget, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, COMPLETION_SUMMARY_NODE_ID, upsertWorkflowStepResult, AWAITING_APPROVAL_PAUSE_REASON, THINKING_LEVELS, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AgentStore, resolveExecutorFallbackModel } from "@fusion/core";
+import { canExecuteTaskOnNode } from "./effective-node.js";
 import { finalizeProvenAutoMergeTask } from "./auto-merge-finalization.js";
 import { mergeEffectiveSettings } from "./effective-settings.js";
 import { generateFeatureVideo, type GenerateFeatureVideoOptions } from "./review-artifacts/feature-video.js";
@@ -1575,6 +1576,8 @@ export function getExecutorSystemPrompt(settings: Settings): string {
 
 
 export interface TaskExecutorOptions {
+  /** Returns this process's configured node identity for dispatch ownership checks. */
+  getLocalNodeId?: () => string | undefined;
   semaphore?: AgentSemaphore;
   /** Worktree pool for recycling idle worktrees across tasks. */
   pool?: WorktreePool;
@@ -3144,6 +3147,12 @@ export class TaskExecutor {
     store.on("task:moved", ({ task, from, to, source }) => {
       executorLog.log(`[event:task:moved] ${task.id}: ${from} → ${to}`);
       if (to === "in-progress") {
+        if (!canExecuteTaskOnNode(task, this.options.getLocalNodeId?.())) {
+          executorLog.debug(
+            `[event:task:moved] Skipping execute() for ${task.id} — assigned to ${task.effectiveNodeId ?? task.nodeId}`,
+          );
+          return;
+        }
         this.userCanceledTaskIds.delete(task.id);
         if (this.recoveringCompleted.has(task.id)) {
           executorLog.log(`[event:task:moved] Skipping execute() for ${task.id} — completed-task recovery in progress`);

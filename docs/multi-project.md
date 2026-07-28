@@ -61,9 +61,10 @@ Legacy SQLite paths (`~/.fusion/fusion-central.db`, `<repo>/.fusion/fusion.db`) 
 1. Provision one Postgres (local Docker, RDS, Supabase, etc.).
 2. On **every** Fusion node: `export DATABASE_URL=...` (same URL). If you use PgBouncer/Supavisor in transaction mode, also set `DATABASE_MIGRATION_URL` to a direct (non-pooled) connection for schema work.
 3. Register projects and nodes so they appear in shared `central.projects` / `central.nodes`.
-4. For each host, set `project_node_path_mappings` so that host’s absolute checkout path is recorded for each project.
-5. Run `fn serve` / the engine on each node. Task IDs and settings are shared via Postgres; checkout exclusivity uses `task_claims`; abandoned-owner recovery uses `MeshLeaseManager`.
-6. Keep provider credentials (`auth.json`) in mind: they are still file-local unless you use auth-sync. Task filesystem blobs under `.fusion/tasks/{ID}/` remain on the node that materializes them until a later blob strategy.
+4. On every process, set `FUSION_NODE_ID` to that host's exact registered node ID. Startup fails when the configured ID does not exist; this prevents one process from silently executing another node's assigned work.
+5. For each host, set `project_node_path_mappings` so that host’s absolute checkout path is recorded for each project.
+6. Run `fn serve` / the engine on each node. Task IDs and settings are shared via Postgres; checkout exclusivity uses `task_claims`; abandoned-owner recovery uses `MeshLeaseManager`.
+7. Keep provider credentials (`auth.json`) in mind: they are still file-local unless you use auth-sync. Task filesystem blobs under `.fusion/tasks/{ID}/` remain on the node that materializes them until a later blob strategy.
 
 What is **not** multi-node via shared DB alone:
 
