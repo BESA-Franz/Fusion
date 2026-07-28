@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { TaskDeletedError } from "@fusion/core";
 import type { ChatRoomMessage, Message, NotificationProvider, Settings, Task } from "@fusion/core";
 import { NotificationService } from "../notification/notification-service.js";
 import { NtfyNotificationProvider } from "../notification/ntfy-provider.js";
@@ -1257,6 +1258,30 @@ describe("NotificationService", () => {
 
     expect(claimTaskWedgeNotificationEpisode).not.toHaveBeenCalled();
     expect(sendNotification).not.toHaveBeenCalledWith("task-wedged", expect.anything());
+    await service.stop();
+  });
+
+  it("contains a wedge-episode claim that races task soft-delete", async () => {
+    const store = createStore({ ntfyEnabled: false });
+    const claimTaskWedgeNotificationEpisode = vi
+      .fn()
+      .mockRejectedValue(new TaskDeletedError("BESA-006", "2026-07-28T17:06:14.804Z"));
+    (store as any).claimTaskWedgeNotificationEpisode = claimTaskWedgeNotificationEpisode;
+    const service = new NotificationService(store as any);
+    await service.start();
+
+    store.emit("task:updated", task({
+      id: "BESA-006",
+      column: "in-progress",
+      status: "in-progress",
+    }));
+
+    await vi.waitFor(() => {
+      expect(claimTaskWedgeNotificationEpisode).toHaveBeenCalledWith("BESA-006", null);
+      expect(schedulerLog.warn).toHaveBeenCalledWith(
+        expect.stringContaining("BESA-006 wedge notification skipped"),
+      );
+    });
     await service.stop();
   });
 
