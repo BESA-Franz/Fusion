@@ -127,8 +127,9 @@ Short form:
 
 1. Same external `DATABASE_URL` on every node.
 2. Register nodes/projects + path mappings per host.
-3. Run engines; claims enforce exclusive execution.
-4. Expect worktrees/auth/blobs to remain node-local unless you opt into auth-sync or a future blob store.
+3. Set each process's `FUSION_NODE_ID` to its exact registered node ID.
+4. Run engines; node-aware scheduler gates and claims enforce exclusive execution.
+5. Expect worktrees/auth/blobs to remain node-local unless you opt into auth-sync or a future blob store.
 
 ## 10. Historical note
 

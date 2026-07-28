@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { resolveEffectiveNode } from "../effective-node.js";
+import {
+  canDispatchEffectiveNode,
+  canExecuteTaskOnNode,
+  materializeExecutionNodeId,
+  resolveEffectiveNode,
+} from "../effective-node.js";
 
 describe("resolveEffectiveNode", () => {
   it.each([
@@ -62,5 +67,44 @@ describe("resolveEffectiveNode", () => {
       nodeId: "node-task",
       source: "task-override",
     });
+  });
+});
+
+describe("multi-node dispatch ownership", () => {
+  const assigned = { nodeId: "node-pc1", source: "task-override" as const };
+  const unpinned = { nodeId: undefined, source: "local" as const };
+
+  it("allows only the matching identified process to dispatch assigned work", () => {
+    expect(canDispatchEffectiveNode(assigned, "node-pc1")).toBe(true);
+    expect(canDispatchEffectiveNode(assigned, "node-vps")).toBe(false);
+  });
+
+  it("preserves legacy behavior when the process has no configured identity", () => {
+    expect(canDispatchEffectiveNode(assigned, undefined)).toBe(true);
+  });
+
+  it("allows unpinned work on any identified process and materializes the winner", () => {
+    expect(canDispatchEffectiveNode(unpinned, "node-pc1")).toBe(true);
+    expect(materializeExecutionNodeId(unpinned, "node-pc1")).toBe("node-pc1");
+  });
+
+  it("keeps an explicit assignment when persisting the execution node", () => {
+    expect(materializeExecutionNodeId(assigned, "node-vps")).toBe("node-pc1");
+    expect(materializeExecutionNodeId(unpinned, undefined)).toBeNull();
+  });
+
+  it("rejects event execution when persisted ownership belongs to another node", () => {
+    expect(
+      canExecuteTaskOnNode(
+        { nodeId: "node-pc1", effectiveNodeId: "node-pc1" },
+        "node-vps",
+      ),
+    ).toBe(false);
+    expect(
+      canExecuteTaskOnNode(
+        { nodeId: undefined, effectiveNodeId: "node-pc1" },
+        "node-pc1",
+      ),
+    ).toBe(true);
   });
 });

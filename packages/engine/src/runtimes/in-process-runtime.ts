@@ -56,6 +56,7 @@ import { MissionExecutionLoop } from "../mission-execution-loop.js";
 import { TriageProcessor } from "../triage.js";
 import { EphemeralWorkerManager } from "../ephemeral-worker-manager.js";
 import { validateProjectNodeMapping } from "../node-dispatch-validation.js";
+import { canExecuteTaskOnNode } from "../effective-node.js";
 import { attachAgentLinkSync } from "../task-agent-sync.js";
 import { createRunAuditor, generateSyntheticRunId } from "../run-audit.js";
 import { setImmediate as setImmediateCb } from "node:timers";
@@ -279,6 +280,7 @@ export class InProcessRuntime
   private backendShutdown?: () => Promise<void>;
   private scheduler!: Scheduler;
   private executor!: TaskExecutor;
+  private localNodeId?: string;
   private worktreePool!: WorktreePool;
   private globalSemaphore?: AgentSemaphore;
   private projectSemaphore?: ScopedAgentSemaphore;
@@ -448,6 +450,15 @@ export class InProcessRuntime
           );
         }
       }
+
+      /*
+      FNXC:MultiNodeRouting 2026-07-28-14:45:
+      Resolve process identity before constructing schedulers, lease managers,
+      and executors. FUSION_NODE_ID is fail-closed in CentralCore, preventing a
+      shared-database process from silently impersonating the first local row.
+      */
+      const runtimeNode = await this.centralCore.getRuntimeNode();
+      this.localNodeId = runtimeNode?.id;
 
       this.messageStore = new MessageStoreClass(null, { asyncLayer: messageLayer });
 
@@ -695,6 +706,7 @@ export class InProcessRuntime
         getExecutingTaskIds: () => this.executor?.getExecutingTaskIds() ?? new Set<string>(),
         centralClaimStore: this.leaseCentralClaimStore,
         projectId: this.config.projectId,
+        localNodeId: this.localNodeId,
       });
 
       const autoClaimSnapshotManager = new AutoClaimSnapshotManager({ taskStore: this.taskStore });
@@ -716,6 +728,7 @@ export class InProcessRuntime
         missionAutopilot,
         missionExecutionLoop,
         leaseManager: this.leaseManager,
+        localNodeId: this.localNodeId,
         onTaskFailed: (taskId) => {
           if (missionAutopilot) {
             void missionAutopilot.handleTaskFailure(taskId);
@@ -832,6 +845,7 @@ export class InProcessRuntime
 
       const prNodeGithubOps = this.config.prNodeGithubOps;
       const executorOptions: TaskExecutorOptions = {
+        getLocalNodeId: () => this.localNodeId,
         semaphore: this.projectSemaphore,
         pool: this.worktreePool,
         usageLimitPauser: this.usageLimitPauser,
@@ -1168,6 +1182,12 @@ export class InProcessRuntime
         if (!chatLayer2) throw new Error("Self-healing ChatStore requires the project PostgreSQL AsyncDataLayer");
         this.chatStore ??= new ChatStore(chatLayer2);
       }
+      /*
+      FNXC:MultiNodeRouting 2026-07-28-14:45:
+      The fail-closed runtime identity resolved before scheduler construction is
+      also the lease attribution identity. A shared-database process must never
+      fall back to another node's row for recovery decisions.
+      */
       this.selfHealingManager = new SelfHealingManager(this.taskStore, {
         rootDir: this.config.workingDirectory,
         agentStore: this.agentStore,
@@ -1988,6 +2008,9 @@ export class InProcessRuntime
           continue;
         }
         if (resolved.kind !== "actionable") continue;
+        if (!canExecuteTaskOnNode(resolved.task, this.localNodeId)) {
+          continue;
+        }
         void this.executor.execute(resolved.task).catch((error) => {
           runtimeLog.error(`Workflow continuation ${resolved.item.id} failed:`, error);
         });

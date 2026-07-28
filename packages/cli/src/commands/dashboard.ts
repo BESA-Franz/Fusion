@@ -2828,8 +2828,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     //
     if (centralCoreForMesh) {
       try {
-        const nodes = await centralCoreForMesh.listNodes();
-        const localNode = nodes.find((node) => node.type === "local");
+        const localNode = await centralCoreForMesh.getRuntimeNode();
         if (localNode) {
           localNodeIdForMesh = localNode.id;
           await centralCoreForMesh.updateNode(localNode.id, { status: "online" });

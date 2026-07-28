@@ -34,7 +34,12 @@ import { schedulerLog } from "./logger.js";
 import { type PrMonitor, type PrComment } from "./pr-monitor.js";
 import { reconcileMissionFeatureState } from "./mission-feature-sync.js";
 import { evaluateSpecStaleness, getPromptPath } from "./spec-staleness.js";
-import { resolveEffectiveNode, type EffectiveNode } from "./effective-node.js";
+import {
+  canDispatchEffectiveNode,
+  materializeExecutionNodeId,
+  resolveEffectiveNode,
+  type EffectiveNode,
+} from "./effective-node.js";
 import { applyUnavailableNodePolicy, decideOwningNodeHandoff } from "./node-routing-policy.js";
 import type { NodeDispatchValidationResult } from "./node-dispatch-validation.js";
 import type { MeshLeaseManager } from "./mesh-lease-manager.js";
@@ -2239,6 +2244,17 @@ export class Scheduler {
           }
         }
 
+        /*
+        FNXC:MultiNodeRouting 2026-07-28-14:45:
+        Shared-PostgreSQL schedulers all observe the same todo rows. Once a
+        process has an explicit node identity, only the process matching the
+        effective task/project assignment may win dispatch. Unpinned work
+        remains a normal cross-node race and is materialized to the winner.
+        */
+        if (!canDispatchEffectiveNode(effectiveNode, this.options.localNodeId)) {
+          continue;
+        }
+
         if (latestSettings.ephemeralAgentsEnabled === false && !freshTask.assignedAgentId) {
           if (!this.options.agentStore) {
             if (!loggedMissingAgentStoreThisPass) {
@@ -2363,7 +2379,7 @@ export class Scheduler {
           status: null,
           blockedBy: null,
           executionStartBranch: baseBranch ?? undefined,
-          effectiveNodeId: effectiveNode.nodeId ?? null,
+          effectiveNodeId: materializeExecutionNodeId(effectiveNode, this.options.localNodeId),
           effectiveNodeSource: effectiveNode.source,
           mergeRetries: 0,
         });
@@ -2871,6 +2887,16 @@ export class Scheduler {
             }
           }
 
+          /*
+          FNXC:MultiNodeRouting 2026-07-28-14:45:
+          Mirror the legacy dispatch gate in the workflow hold/release path.
+          Otherwise workflow-native tasks could still be reserved and started
+          by a scheduler whose configured node id does not own the assignment.
+          */
+          if (!canDispatchEffectiveNode(effectiveNode, this.options.localNodeId)) {
+            return null;
+          }
+
           if (latestSettings.ephemeralAgentsEnabled === false && !freshTask.assignedAgentId) {
             /*
             FNXC:WorkflowScheduling 2026-06-23-22:33:
@@ -3130,7 +3156,7 @@ export class Scheduler {
             baseBranch: this.resolveBaseBranch(freshTask, tasks),
             dispatchStormCount: nextDispatchStormCount,
             dispatchTimestamp,
-            effectiveNodeId: effectiveNode.nodeId ?? null,
+            effectiveNodeId: materializeExecutionNodeId(effectiveNode, this.options.localNodeId),
             effectiveNodeSource: effectiveNode.source,
             task: freshTask,
           });
