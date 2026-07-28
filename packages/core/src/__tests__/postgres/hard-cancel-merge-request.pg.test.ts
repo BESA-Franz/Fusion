@@ -11,10 +11,14 @@
  * - engine moveSource does not cancel (rebound path preserves merge state)
  *
  * FNXC:EngineTests 2026-07-26-07:20:
- * Review P2: include this file in packages/core `test:pg-gate` so the merge-blocking
- * PG gate fails on hard-cancel regressions rather than only full-suite.
- * Also assert persisted column=todo so side-effect-only assertions cannot pass while
- * the task remains in-review.
+ * Assert persisted column=todo so side-effect-only assertions cannot pass while the
+ * task remains in-review.
+
+ * FNXC:EngineTests 2026-07-27-21:55:
+ * Keep this file OUT of `test:pg-gate`. FN-8497 / engine-vitest-gate-policy pin the
+ * merge-blocking PG canary list to exactly handoff-to-review-atomicity + task-lifecycle-e2e.
+ * Adding a third path fails the policy assertion and the PR Gate. Coverage stays on the
+ * non-blocking core PG discovery lane (`pnpm --filter @fusion/core test`).
  */
 
 import { beforeAll, beforeEach, afterEach, afterAll, expect, it } from "vitest";
