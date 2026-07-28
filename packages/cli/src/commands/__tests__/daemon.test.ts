@@ -190,6 +190,9 @@ const mocks = vi.hoisted(() => {
       listNodes: vi.fn().mockResolvedValue([
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
+      getRuntimeNode: vi.fn().mockResolvedValue(
+        { id: "node-local", name: "local", type: "local", status: "offline" },
+      ),
       updateNode: vi.fn().mockResolvedValue(undefined),
       startDiscovery: vi.fn().mockResolvedValue({}),
       stopDiscovery: vi.fn(),
