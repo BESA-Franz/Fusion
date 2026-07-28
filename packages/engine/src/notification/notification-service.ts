@@ -268,7 +268,22 @@ export class NotificationService {
     only operator notification; dispatch-time suppression below covers races.
     */
     if (wedge) this.cancelPendingFailureNotification(task.id, "classified-terminal-wedge");
-    if (!transientFailure) void this.maybeNotifyTaskWedge(task, wedge);
+    if (!transientFailure) {
+      /*
+      FNXC:TaskWedgeNotifications 2026-07-28-19:10:
+      task:updated listeners are synchronous but wedge episode persistence is
+      intentionally fire-and-forget. A task may be soft-deleted immediately
+      after the update (for example a routing smoke cleanup) while the durable
+      claim is still awaiting its task lock. Contain that best-effort
+      notification failure here so a TaskDeletedError or store outage cannot
+      become an unhandled rejection that terminates the Fusion daemon.
+      */
+      void this.maybeNotifyTaskWedge(task, wedge).catch((error) => {
+        schedulerLog.warn(
+          `[notify] ${task.id} wedge notification skipped: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
     void this.maybeSuppressTransientFailedNotification(task, `status=${task.status ?? "undefined"}`);
 
     /*
