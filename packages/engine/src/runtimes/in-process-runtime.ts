@@ -1101,6 +1101,7 @@ export class InProcessRuntime
         this.taskStore,
         this.config.workingDirectory,
         {
+          localNodeId: this.localNodeId,
           semaphore: this.projectSemaphore,
           stuckTaskDetector: this.stuckTaskDetector,
           usageLimitPauser: this.usageLimitPauser,

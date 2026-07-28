@@ -1716,6 +1716,39 @@ Planner rewrote mission without the raw request.
   });
 
   describe("poll ordering", () => {
+    it("does not dispatch planning for a task pinned to another shared-db node", async () => {
+      const tasks: Task[] = [
+        createTriageTask({ id: "FN-FOREIGN-NODE", nodeId: "node-remote" }),
+        createTriageTask({ id: "FN-LOCAL-NODE", nodeId: "node-local" }),
+      ];
+      const triageStore = createMockStore({
+        listTasks: vi.fn().mockResolvedValue(tasks),
+        getSettings: vi.fn().mockResolvedValue({
+          maxConcurrent: 10,
+          maxTriageConcurrent: 10,
+          pollIntervalMs: 10_000,
+          groupOverlappingFiles: false,
+          autoMerge: true,
+        }),
+      });
+      const triageProcessor = new TriageProcessor(
+        triageStore,
+        rootDir,
+        { localNodeId: "node-local" },
+      );
+      const specifySpy = vi
+        .spyOn(triageProcessor, "specifyTask")
+        .mockResolvedValue(undefined);
+
+      (triageProcessor as any).running = true;
+      await (triageProcessor as any).poll();
+
+      expect(specifySpy).toHaveBeenCalledTimes(1);
+      expect(specifySpy).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "FN-LOCAL-NODE" }),
+      );
+    });
+
     it("dispatches eligible triage tasks by createdAt asc", async () => {
       const tasks: Task[] = [
         createTriageTask({

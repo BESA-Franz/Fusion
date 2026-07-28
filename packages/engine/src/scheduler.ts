@@ -1774,6 +1774,23 @@ export class Scheduler {
       for (const taskId of ordered) {
         const task = tasks.find((t) => t.id === taskId)!;
 
+        /*
+        FNXC:MultiNodeRouting 2026-07-28-17:37:
+        Route before every node-local preflight. A foreign task's PROMPT.md and
+        worktree live under that node's mapped project path; validating them
+        here would falsely rebound a healthy remote task to triage before the
+        later dispatch gate runs. Explicit task/project assignments therefore
+        remain completely untouched by non-owning shared-DB schedulers.
+        */
+        if (
+          !canDispatchEffectiveNode(
+            resolveEffectiveNode(task, settings),
+            this.options.localNodeId,
+          )
+        ) {
+          continue;
+        }
+
         if (task.checkedOutBy && this.options.leaseManager) {
           const recovered = await this.options.leaseManager.recoverAbandonedLease(
             task.id,
@@ -2580,6 +2597,22 @@ export class Scheduler {
         now: () => Date.now(),
         reserveSlot: async (task): Promise<SlotReservation | null> => {
           let reservedScope = false;
+
+          /*
+          FNXC:MultiNodeRouting 2026-07-28-17:38:
+          The workflow hold/release sweep reaches filesystem and replan logic
+          before its final dispatch gate. Reject foreign assignments at the
+          reservation boundary so a non-owning node cannot mutate their column,
+          status, logs, leases, or local planning files.
+          */
+          if (
+            !canDispatchEffectiveNode(
+              resolveEffectiveNode(task, settings),
+              this.options.localNodeId,
+            )
+          ) {
+            return null;
+          }
 
           /*
           FNXC:WorkflowScheduling 2026-07-07-00:00:

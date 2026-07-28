@@ -189,10 +189,16 @@ import { accumulateSessionTokenUsage } from "./session-token-usage.js";
 import { finalizePlanningSegment, startPlanningSegment } from "@fusion/core";
 import type { AgentActionGateContext } from "./agent-action-gate.js";
 import { buildAgentGatedActionSummary } from "./permanent-agent-gating.js";
+import {
+  canDispatchEffectiveNode,
+  resolveEffectiveNode,
+} from "./effective-node.js";
 
 
 export interface TriageProcessorOptions {
   pollIntervalMs?: number;
+  /** Fixed identity of this process in a shared PostgreSQL control plane. */
+  localNodeId?: string;
   semaphore?: AgentSemaphore;
   /**
    * FNXC:ProviderRateLimitIsolation 2026-07-21-18:00:
@@ -397,6 +403,7 @@ export class TriageProcessor {
         const tasks = await this.discoverReadyPlanningTasks(
           await this.store.listTasks({ slim: true, includeArchived: false }),
           now,
+          settings,
         );
         return tasks.filter((task) => !this.coordinatorAdmittedTaskIds.has(task.id)).map((task) => ({
           taskId: task.id, projectId: this.rootDir, createdAt: task.createdAt,
@@ -1105,9 +1112,14 @@ export class TriageProcessor {
    * refresh. Keeping the seed-prompt checks here makes the cross-lane admission
    * union include cards before their planner writes status:"planning".
    */
-  private async discoverReadyPlanningTasks(allTasks: Task[], now: number): Promise<Task[]> {
+  private async discoverReadyPlanningTasks(
+    allTasks: Task[],
+    now: number,
+    settings: Pick<Settings, "defaultNodeId">,
+  ): Promise<Task[]> {
     const eligibleTriageTasks = allTasks.filter(
       (t) => t.column === "triage" && isTaskStillInPlanningStage(t)
+        && canDispatchEffectiveNode(resolveEffectiveNode(t, settings), this.options.localNodeId)
         && !this.advancedRecoveryReservations.has(t.id)
         && !this.processing.has(t.id) && !this.hasLivePlanningWork(t.id) && !t.paused
         && t.status !== "awaiting-approval" && t.status !== "failed" && t.status !== "stuck-killed"
@@ -1115,6 +1127,7 @@ export class TriageProcessor {
     );
     const eligibleTodoTasksRaw = allTasks.filter(
       (t) => t.column === "todo" && !this.processing.has(t.id) && !this.hasLivePlanningWork(t.id) && !t.paused
+        && canDispatchEffectiveNode(resolveEffectiveNode(t, settings), this.options.localNodeId)
         && t.status !== "awaiting-approval" && t.status !== "failed" && t.status !== "stuck-killed"
         && t.status !== "planning"
         && !(t.nextRecoveryAt && new Date(t.nextRecoveryAt).getTime() > now),
@@ -1199,7 +1212,7 @@ export class TriageProcessor {
         this.idleSemaphoreLeakCandidateSince = result.candidateSinceMs;
       }
 
-      const triageTasks = await this.discoverReadyPlanningTasks(allTasks, now);
+      const triageTasks = await this.discoverReadyPlanningTasks(allTasks, now, settings);
 
       /*
       FNXC:ConcurrencyAdmission 2026-08-03-12:00:
@@ -1333,6 +1346,34 @@ export class TriageProcessor {
       this.coordinatorAdmittedTaskIds.delete(task.id);
       return;
     }
+
+    /*
+    FNXC:MultiNodeRouting 2026-07-28-17:35:
+    Triage is an execution surface independent of Scheduler. Shared-PostgreSQL
+    runtimes all observe the same planning rows, so re-check the authoritative
+    task immediately before claiming it. The poll filter avoids needless
+    admission attempts; this gate also closes stale-snapshot and direct-call
+    paths before status, logs, sessions, or PROMPT.md can be mutated.
+    */
+    let routingTask: Task = task;
+    try {
+      routingTask = await this.store.getTask(task.id) ?? task;
+    } catch {
+      // Preserve legacy/single-process behavior if the authoritative refresh
+      // itself is unavailable; existing planning error handling remains owner.
+    }
+    const routingSettings = await this.store.getSettings();
+    if (
+      !canDispatchEffectiveNode(
+        resolveEffectiveNode(routingTask, routingSettings),
+        this.options.localNodeId,
+      )
+    ) {
+      dropPreHeldExecutorSlot(task.id, this.options.semaphore);
+      this.coordinatorAdmittedTaskIds.delete(task.id);
+      return;
+    }
+
     this.processing.add(task.id);
     this.processingSince.set(task.id, Date.now());
 

@@ -207,6 +207,23 @@ describe("Scheduler workflow cutover", () => {
     expect(assignedElsewhere.column).toBe("todo");
   });
 
+  it("does not validate or replan another node's task against the local filesystem", async () => {
+    vi.mocked(existsSync).mockReturnValue(false);
+    const assignedElsewhere = task({ id: "FN-REMOTE-MISSING", nodeId: "node-pc3" });
+    const store = storeWith([assignedElsewhere]);
+    const scheduler = new Scheduler(store, {
+      localNodeId: "node-vps",
+    });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.updateTask).not.toHaveBeenCalled();
+    expect(store.logEntry).not.toHaveBeenCalled();
+    expect(assignedElsewhere.column).toBe("todo");
+  });
+
   it("dispatches matching assigned work and persists the concrete node", async () => {
     const assignedHere = task({ id: "FN-LOCAL", nodeId: "node-pc1" });
     const store = storeWith([assignedHere]);
