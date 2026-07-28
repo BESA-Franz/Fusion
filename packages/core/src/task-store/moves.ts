@@ -13,6 +13,7 @@ import {eq, sql} from "drizzle-orm";
 import type {Task, Column, ColumnId, HandoffToReviewOptions} from "../types.js";
 import {VALID_TRANSITIONS, COLUMNS} from "../types.js";
 import {serializeWorkflowIr} from "../workflow-ir.js";
+import {emitWorkflowLifecycleEvent} from "../workflow-events.js";
 import {resolveAllowedColumns, workflowHasColumn} from "../workflow-transitions.js";
 import {isBuiltinWorkflowId, getBuiltinWorkflow, resolveDefaultWorkflowIr, DEFAULT_WORKFLOW_ID} from "../builtin-workflows.js";
 import {parseWorkflowIr} from "../workflow-ir.js";
@@ -26,7 +27,6 @@ import {
 } from "../workflow-transition-policy.js";
 import {type DefaultWorkflowMoveContext, applyDefaultWorkflowMoveEffects} from "../default-workflow-hooks.js";
 import {makeTransitionRejection, makeTransitionPending} from "../transition-types.js";
-import {writeTransitionPending, clearTransitionPending} from "../transition-pending.js";
 import {writeTransitionPendingAsync, clearTransitionPendingAsync} from "./async-transition-pending.js";
 import type {WorkflowIr} from "../workflow-ir-types.js";
 import "../builtin-traits.js";
@@ -47,17 +47,20 @@ builtin:coding — which rejected every move out of a custom workflow column
 getTaskWorkflowSelectionAsync and map it to the same IR the sync path would.
 */
 async function resolveTaskWorkflowIrForMove(store: TaskStore, id: string): Promise<WorkflowIr> {
-  if (!store.backendMode) {
-    return store.resolveTaskWorkflowIrSync(id);
-  }
+  
   const selection = await store.getTaskWorkflowSelectionAsync(id);
   const workflowId = selection?.workflowId;
   /* FNXC:WorkflowBuiltins 2026-07-19-10:24: every no-selection/unresolvable fallback goes through resolveDefaultWorkflowIr() so this resolver and prepareWorkflowMovePolicyPreflightImpl agree on the default IR (see the helper's note on the "preflight is stale" drift). */
-  if (!workflowId) return store.applyBuiltInPromptOverridesSync(DEFAULT_WORKFLOW_ID, resolveDefaultWorkflowIr());
+  if (!workflowId) {
+    return store.applyBuiltInPromptOverridesAsync(DEFAULT_WORKFLOW_ID, resolveDefaultWorkflowIr());
+  }
   if (isBuiltinWorkflowId(workflowId)) {
     const builtin = getBuiltinWorkflow(workflowId);
     const ir = builtin?.ir;
-    return store.applyBuiltInPromptOverridesSync(workflowId, ir === undefined ? resolveDefaultWorkflowIr() : typeof ir === "string" ? parseWorkflowIr(ir) : ir);
+    return store.applyBuiltInPromptOverridesAsync(
+      workflowId,
+      ir === undefined ? resolveDefaultWorkflowIr() : typeof ir === "string" ? parseWorkflowIr(ir) : ir,
+    );
   }
   try {
     const def = await store.getWorkflowDefinition(workflowId);
@@ -90,6 +93,39 @@ function resolveTransitionColumnFacts(ir: WorkflowIr, columnId: string): Transit
     columnId,
     flags: column ? resolveColumnFlags(column) : {},
   };
+}
+
+/*
+FNXC:WorkflowReviewGates 2026-07-26-16:40:
+Single authority for "is this move a RECOGNISED entry into `in-review`?", consumed by both the
+backend-transaction and SQLite-transaction emit sites of `task:handoff-invariant-violation`.
+
+Requirement history: the invariant dates from when `TaskStore.handoffToReview(...)` was the ONLY
+legal way into `in-review`, so any other arrival was genuinely suspicious and worth auditing. After
+the U1 IR-driven lifecycle cutover the workflow GRAPH owns column transitions — node column
+assignment is the authority and the graph column boundary (`workflow-column-boundary.ts`
+`onNodeEntry`) performs the move via `store.moveTask`. Moving the pre-merge review gates
+(`code-review`, `browser-verification`) into the `in-review` column then made the graph cross that
+boundary on EVERY gate entry, so a legitimate, fully-provenanced transition emitted a violation
+audit on each crossing (observed on FN-8596 15:19:22: a violation immediately followed by the
+`browser-verification` `task:column-transition`).
+
+The fix is narrow ON PURPOSE: the invariant is NOT retired, because it still catches the movers it
+was written for — operator drags, merge bounces, self-healing rehomes, and any future call site
+that lands a card in review without going through handoff. Only a move carrying the graph's own
+provenance is recognised. `workflowMoveSource: "workflow-graph"` is produced at four call sites,
+ALL inside the executor's own graph / column-boundary machinery (the boundary hook plus the
+graph-owned merge-boundary moves). No non-graph mover writes that literal — operator drags carry
+`moveSource:"user"` and recovery sweeps use their own provenance (e.g.
+`"self-healing-advanced-triage"`) — so neither can spoof it.
+*/
+function isRecognizedInReviewEntry(
+  options: MoveTaskOptions | undefined,
+  internal: MoveTaskInternalOptions,
+): boolean {
+  if (internal.fromHandoff) return true;
+  if (options?.allowDirectInReviewMove === true) return true;
+  return options?.workflowMoveSource === "workflow-graph";
 }
 
 /*
@@ -203,16 +239,12 @@ export async function handoffToReviewImpl(store: TaskStore, taskId: string, opts
           // Backend mode: read the deleted task via async getTask (includeDeleted
           // path). SQLite path: sync readTaskFromDb.
           let deletedTaskColumn: string = "todo";
-          if (store.backendMode) {
-            const layer = store.asyncLayer!;
-            const pgRow = await readTaskRowAsync(layer, taskId, { includeDeleted: true });
-            if (pgRow) {
-              deletedTaskColumn = (pgRow.column as string) ?? "todo";
-            }
-          } else {
-            const deletedTask = store.readTaskFromDb(taskId, { includeDeleted: true });
-            deletedTaskColumn = deletedTask?.column ?? "todo";
+                    const layer = store.asyncLayer!;
+          const pgRow = await readTaskRowAsync(layer, taskId, { includeDeleted: true });
+          if (pgRow) {
+            deletedTaskColumn = (pgRow.column as string) ?? "todo";
           }
+
           throw new HandoffInvariantViolationError(
             taskId,
             deletedTaskColumn,
@@ -296,78 +328,9 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         // Backend-mode same-column handoff: use layer.transactionImmediate with
         // async in-transaction helpers (enqueueMergeQueueInTransaction,
         // recordRunAuditEventWithinTransaction) instead of sync SQLite.
-        if (store.backendMode) {
-          const layer = store.asyncLayer!;
-          await layer.transactionImmediate(async (tx) => {
-            const liveRow = await readTaskRowInTransaction(tx, id, { includeDeleted: true }, layer.projectId);
-            if (liveRow?.deletedAt) {
-              throw new HandoffInvariantViolationError(
-                id,
-                task.column,
-                `Cannot hand off ${id} to in-review because the task is deleted`,
-              );
-            }
-            const existingRows = await tx
-              .select({ one: sql`1` })
-              .from(schema.project.mergeQueue)
-              .where(eq(schema.project.mergeQueue.taskId, id))
-              .limit(1);
-            const existing = existingRows.length > 0;
-            await recordRunAuditEventWithinTransaction(tx, {
-              taskId: id,
-              agentId: internal.runContext?.agentId ?? "system",
-              runId: internal.runContext?.runId ?? "unknown",
-              domain: "database",
-              mutationType: "task:move",
-              target: id,
-              metadata: {
-                from: task.column,
-                to: toColumn,
-                moveSource,
-              },
-            });
-            await enqueueMergeQueueInTransaction(tx, id, { priority: task.priority, now: internal.now }, {
-              agentId: internal.runContext?.agentId,
-              runId: internal.runContext?.runId,
-            });
-            // FNXC:PostgresCutover 2026-07-15-12:00:
-            // Same-column retries must share the outer handoff transaction too,
-            // so workflow work cannot survive a rolled-back queue/audit handoff.
-            await store.createCompletionHandoffWorkflowWork(task, {
-              runId: internal.runContext?.runId,
-              now: internal.now,
-              source: internal.evidence?.reason,
-            }, tx);
-            await recordRunAuditEventWithinTransaction(tx, {
-              taskId: id,
-              agentId: internal.runContext?.agentId ?? "system",
-              runId: internal.runContext?.runId ?? "unknown",
-              domain: "database",
-              mutationType: "task:handoff",
-              target: id,
-              metadata: {
-                taskId: id,
-                fromColumn: task.column,
-                ownerAgentId: internal.ownerAgentId ?? null,
-                reason: internal.evidence?.reason,
-                runId: internal.runContext?.runId,
-                agentId: internal.runContext?.agentId,
-                alreadyEnqueued: existing,
-              },
-            });
-            /*
-            FNXC:HandoffFailureInjection 2026-07-15-12:00:
-            Backend handoffs bypass the legacy enqueueMergeQueueSyncInternal spy.
-            This test-only no-op seam runs after every VAL-DATA-013 sub-write
-            (move, queue, workflow work, and handoff audit), so an injected throw
-            proves this transaction rolls all of them back.
-            */
-            await store.__invokeHandoffMergeQueueFailureInjectorForTesting(id);
-          });
-          return task;
-        }
-        store.db.transactionImmediate(() => {
-          const liveRow = store.readTaskFromDb(id, { includeDeleted: true });
+                const layer = store.asyncLayer!;
+        await layer.transactionImmediate(async (tx) => {
+          const liveRow = await readTaskRowInTransaction(tx, id, { includeDeleted: true }, layer.projectId);
           if (liveRow?.deletedAt) {
             throw new HandoffInvariantViolationError(
               id,
@@ -375,11 +338,16 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
               `Cannot hand off ${id} to in-review because the task is deleted`,
             );
           }
-          const existing = store.db.prepare("SELECT 1 FROM mergeQueue WHERE taskId = ?").get(id) as { 1: number } | undefined;
-          store.insertRunAuditEventRow({
+          const existingRows = await tx
+            .select({ one: sql`1` })
+            .from(schema.project.mergeQueue)
+            .where(eq(schema.project.mergeQueue.taskId, id))
+            .limit(1);
+          const existing = existingRows.length > 0;
+          await recordRunAuditEventWithinTransaction(tx, {
             taskId: id,
-            agentId: internal.runContext?.agentId,
-            runId: internal.runContext?.runId,
+            agentId: internal.runContext?.agentId ?? "system",
+            runId: internal.runContext?.runId ?? "unknown",
             domain: "database",
             mutationType: "task:move",
             target: id,
@@ -389,16 +357,22 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
               moveSource,
             },
           });
-          store.enqueueMergeQueueSyncInternal(id, { priority: task.priority, now: internal.now });
-          store.createCompletionHandoffWorkflowWork(task, {
+          await enqueueMergeQueueInTransaction(tx, id, { priority: task.priority, now: internal.now }, {
+            agentId: internal.runContext?.agentId,
+            runId: internal.runContext?.runId,
+          });
+          // FNXC:PostgresCutover 2026-07-15-12:00:
+          // Same-column retries must share the outer handoff transaction too,
+          // so workflow work cannot survive a rolled-back queue/audit handoff.
+          await store.createCompletionHandoffWorkflowWork(task, {
             runId: internal.runContext?.runId,
             now: internal.now,
             source: internal.evidence?.reason,
-          });
-          store.insertRunAuditEventRow({
+          }, tx);
+          await recordRunAuditEventWithinTransaction(tx, {
             taskId: id,
-            agentId: internal.runContext?.agentId,
-            runId: internal.runContext?.runId,
+            agentId: internal.runContext?.agentId ?? "system",
+            runId: internal.runContext?.runId ?? "unknown",
             domain: "database",
             mutationType: "task:handoff",
             target: id,
@@ -409,12 +383,20 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
               reason: internal.evidence?.reason,
               runId: internal.runContext?.runId,
               agentId: internal.runContext?.agentId,
-              alreadyEnqueued: Boolean(existing),
+              alreadyEnqueued: existing,
             },
           });
+          /*
+          FNXC:HandoffFailureInjection 2026-07-15-12:00:
+          Backend handoffs bypass the legacy enqueueMergeQueueSyncInternal spy.
+          This test-only no-op seam runs after every VAL-DATA-013 sub-write
+          (move, queue, workflow work, and handoff audit), so an injected throw
+          proves this transaction rolls all of them back.
+          */
+          await store.__invokeHandoffMergeQueueFailureInjectorForTesting(id);
         });
         return task;
-      }
+}
 
       if (toColumn === "done" && store.clearDoneTransientFields(task)) {
         task.updatedAt = new Date().toISOString();
@@ -931,162 +913,24 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
     // dequeue/enqueue all run inside the async transaction so they commit or
     // roll back atomically (VAL-DATA-002/003/013). The transition guards and
     // side effects above are pure JS and already ran unchanged.
-    if (store.backendMode) {
-      const layer = store.asyncLayer!;
-      const context = store.createTaskPersistSerializationContext(task);
-      await layer.transactionImmediate(async (tx) => {
-        // Capacity check (KTD-10). In backend mode, count active tasks in the
-        // target column via async Drizzle instead of the sync helper.
-        if (useWorkflow && workflowIr && fromColumn !== toColumn) {
-          const capacity = resolveColumnCapacity(workflowIr, toColumn, mergedSettingsForMove);
-          if (capacity.hasCapacity && Number.isFinite(capacity.limit)) {
-            // Shared pooled-budget enforcement (see enforcePooledColumnCapacity);
-            // this path supplies the async in-transaction counter.
-            await enforcePooledColumnCapacity({
-              workflowIr,
-              toColumn,
-              taskId: id,
-              capacity,
-              countOccupants: (budgetColumn, countPending) =>
-                store.countActiveInCapacitySlotAsync({
-                  tx,
-                  targetColumn: budgetColumn,
-                  workflowId: effectiveWorkflowIdForMove,
-                  countPending,
-                  excludeTaskId: id,
-                }),
-            });
-          }
-        }
-
-        // Upsert the task row (update column + all mutated fields).
-        // FNXC:MultiProjectIsolation 2026-07-10: pass the bound projectId (stamped
-        // on insert, preserved on update) so partitioning survives moves.
-        await upsertTaskRowInTransaction(tx, task as unknown as Record<string, unknown>, context, layer.projectId);
-
-        // U4 (flag-ON) parity with the SQLite branch below: write the
-        // crash-safe transitionPending marker in the SAME transaction as the
-        // column change (KTD-2). countActiveInCapacitySlotAsync already counts
-        // pending markers in PG, so this is load-bearing for capacity too.
-        if (useWorkflow) {
-          await writeTransitionPendingAsync(
-            tx,
-            id,
-            makeTransitionPending(toColumn, ["default-workflow:postCommit"], Date.parse(movedAt) || Date.now()),
-          );
-        }
-
-        // Audit: task:move
-        await recordRunAuditEventWithinTransaction(tx, {
-          taskId: id,
-          agentId: internal.runContext?.agentId ?? "system",
-          runId: internal.runContext?.runId ?? "unknown",
-          domain: "database",
-          mutationType: "task:move",
-          target: id,
-          metadata: {
-            from: fromColumn,
-            to: toColumn,
-            moveSource,
-          },
-        });
-
-        // Dequeue from merge queue on column exit (if leaving in-review).
-        await dequeueMergeQueueOnColumnExitInTransaction(tx, id, fromColumn, toColumn, movedAt);
-
-        if (toColumn === "in-review" && !internal.fromHandoff && options?.allowDirectInReviewMove !== true) {
-          await recordRunAuditEventWithinTransaction(tx, {
-            taskId: id,
-            agentId: internal.runContext?.agentId ?? "system",
-            runId: internal.runContext?.runId ?? "unknown",
-            domain: "database",
-            mutationType: "task:handoff-invariant-violation",
-            target: id,
-            metadata: {
-              taskId: id,
-              fromColumn,
-              callerStack: new Error().stack?.split("\n").slice(0, 8).join("\n"),
-            },
-          });
-        }
-
-        if (internal.fromHandoff) {
-          const existingRows = await tx
-            .select({ one: sql`1` })
-            .from(schema.project.mergeQueue)
-            .where(eq(schema.project.mergeQueue.taskId, id))
-            .limit(1);
-          alreadyEnqueued = existingRows.length > 0;
-          await enqueueMergeQueueInTransaction(tx, id, { priority: task.priority, now: internal.now }, {
-            agentId: internal.runContext?.agentId,
-            runId: internal.runContext?.runId,
-          });
-          // FNXC:PostgresCutover 2026-06-27-10:25:
-          // Thread the outer move transaction so cancel + upsert commit
-          // atomically with the handoff (no orphaned merge-gate items on rollback).
-          await store.createCompletionHandoffWorkflowWork(task, {
-            runId: internal.runContext?.runId,
-            now: internal.now,
-            source: internal.evidence?.reason,
-          }, tx);
-          await recordRunAuditEventWithinTransaction(tx, {
-            taskId: id,
-            agentId: internal.runContext?.agentId ?? "system",
-            runId: internal.runContext?.runId ?? "unknown",
-            domain: "database",
-            mutationType: "task:handoff",
-            target: id,
-            metadata: {
-              taskId: id,
-              fromColumn,
-              ownerAgentId: internal.ownerAgentId ?? null,
-              reason: internal.evidence?.reason,
-              runId: internal.runContext?.runId,
-              agentId: internal.runContext?.agentId,
-              alreadyEnqueued,
-            },
-          });
-          /*
-          FNXC:HandoffFailureInjection 2026-07-15-12:00:
-          Backend handoffs bypass the legacy enqueueMergeQueueSyncInternal spy.
-          This test-only no-op seam runs after every VAL-DATA-013 sub-write
-          (move, queue, workflow work, and handoff audit), so an injected throw
-          proves this transaction rolls all of them back.
-          */
-          await store.__invokeHandoffMergeQueueFailureInjectorForTesting(id);
-        }
-      });
-    } else {
-    store.db.transactionImmediate(() => {
-      deletedAt = store.getSoftDeletedWriteConflict(id, task);
-      if (deletedAt) {
-        return;
-      }
-
-      // ── U6: in-txn capacity enforcement (KTD-10) ──────────────────────────
-      // WIP limits are trait *config*; enforcement is a substrate capability
-      // that runs HERE, inside the move transaction, so two holds releasing into
-      // one slot serialize — exactly one commits, the other rejects and retries
-      // next sweep. It is NOT a guard: it runs regardless of bypassGuards /
-      // recoveryRehome / moveSource (engine/recovery/scheduler moves honor it
-      // too). Only a real column change into a capacity-bearing column is gated;
-      // same-column no-ops were returned earlier. The count is taken with the
-      // moving task EXCLUDED and the prospective slot it is about to occupy
-      // added back implicitly (it must fit alongside existing holders), so a
-      // full column (occupants == limit) rejects.
+        const layer = store.asyncLayer!;
+    const context = store.createTaskPersistSerializationContext(task);
+    await layer.transactionImmediate(async (tx) => {
+      // Capacity check (KTD-10). In backend mode, count active tasks in the
+      // target column via async Drizzle instead of the sync helper.
       if (useWorkflow && workflowIr && fromColumn !== toColumn) {
         const capacity = resolveColumnCapacity(workflowIr, toColumn, mergedSettingsForMove);
         if (capacity.hasCapacity && Number.isFinite(capacity.limit)) {
           // Shared pooled-budget enforcement (see enforcePooledColumnCapacity);
-          // the sync counter keeps count → verdict → throw fully synchronous
-          // inside this sync transaction callback.
-          enforcePooledColumnCapacity({
+          // this path supplies the async in-transaction counter.
+          await enforcePooledColumnCapacity({
             workflowIr,
             toColumn,
             taskId: id,
             capacity,
             countOccupants: (budgetColumn, countPending) =>
-              store.countActiveInCapacitySlotSync({
+              store.countActiveInCapacitySlotAsync({
+                tx,
                 targetColumn: budgetColumn,
                 workflowId: effectiveWorkflowIdForMove,
                 countPending,
@@ -1096,11 +940,28 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         }
       }
 
-      store.upsertTaskWithFtsRecovery(task);
-      store.insertRunAuditEventRow({
+      // Upsert the task row (update column + all mutated fields).
+      // FNXC:MultiProjectIsolation 2026-07-10: pass the bound projectId (stamped
+      // on insert, preserved on update) so partitioning survives moves.
+      await upsertTaskRowInTransaction(tx, task as unknown as Record<string, unknown>, context, layer.projectId);
+
+      // U4 (flag-ON) parity with the SQLite branch below: write the
+      // crash-safe transitionPending marker in the SAME transaction as the
+      // column change (KTD-2). countActiveInCapacitySlotAsync already counts
+      // pending markers in PG, so this is load-bearing for capacity too.
+      if (useWorkflow) {
+        await writeTransitionPendingAsync(
+          tx,
+          id,
+          makeTransitionPending(toColumn, ["default-workflow:postCommit"], Date.parse(movedAt) || Date.now()),
+        );
+      }
+
+      // Audit: task:move
+      await recordRunAuditEventWithinTransaction(tx, {
         taskId: id,
-        agentId: internal.runContext?.agentId,
-        runId: internal.runContext?.runId,
+        agentId: internal.runContext?.agentId ?? "system",
+        runId: internal.runContext?.runId ?? "unknown",
         domain: "database",
         mutationType: "task:move",
         target: id,
@@ -1110,29 +971,17 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
           moveSource,
         },
       });
-      store.dequeueMergeQueueOnColumnExit(id, fromColumn, toColumn, movedAt);
 
-      // U4 (flag-ON): write the crash-safe transitionPending marker in the SAME
-      // transaction as the column change (KTD-2). It records the post-commit
-      // hooks that still owe idempotent execution so a crash mid-transition is
-      // recoverable from SQLite (the authoritative store, ADR-0001). The store
-      // clears it immediately after the post-commit hook runner completes
-      // (below). For the default workflow the field effects already applied
-      // in-lock; the marker guards the post-commit completion so recovery never
-      // double-runs (idempotent) and never strands the card.
-      if (useWorkflow) {
-        writeTransitionPending(
-          store.db,
-          id,
-          makeTransitionPending(toColumn, ["default-workflow:postCommit"], Date.parse(movedAt) || Date.now()),
-        );
-      }
+      // Dequeue from merge queue on column exit (if leaving in-review).
+      await dequeueMergeQueueOnColumnExitInTransaction(tx, id, fromColumn, toColumn, movedAt);
 
-      if (toColumn === "in-review" && !internal.fromHandoff && options?.allowDirectInReviewMove !== true) {
-        store.insertRunAuditEventRow({
+      // FNXC:WorkflowReviewGates 2026-07-26-16:40: see isRecognizedInReviewEntry — a
+      // graph-owned crossing into the review column is a legitimate arrival, not a violation.
+      if (toColumn === "in-review" && !isRecognizedInReviewEntry(options, internal)) {
+        await recordRunAuditEventWithinTransaction(tx, {
           taskId: id,
-          agentId: internal.runContext?.agentId,
-          runId: internal.runContext?.runId,
+          agentId: internal.runContext?.agentId ?? "system",
+          runId: internal.runContext?.runId ?? "unknown",
           domain: "database",
           mutationType: "task:handoff-invariant-violation",
           target: id,
@@ -1145,17 +994,28 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
       }
 
       if (internal.fromHandoff) {
-        alreadyEnqueued = Boolean(store.db.prepare("SELECT 1 FROM mergeQueue WHERE taskId = ?").get(id));
-        store.enqueueMergeQueueSyncInternal(id, { priority: task.priority, now: internal.now });
-        store.createCompletionHandoffWorkflowWork(task, {
+        const existingRows = await tx
+          .select({ one: sql`1` })
+          .from(schema.project.mergeQueue)
+          .where(eq(schema.project.mergeQueue.taskId, id))
+          .limit(1);
+        alreadyEnqueued = existingRows.length > 0;
+        await enqueueMergeQueueInTransaction(tx, id, { priority: task.priority, now: internal.now }, {
+          agentId: internal.runContext?.agentId,
+          runId: internal.runContext?.runId,
+        });
+        // FNXC:PostgresCutover 2026-06-27-10:25:
+        // Thread the outer move transaction so cancel + upsert commit
+        // atomically with the handoff (no orphaned merge-gate items on rollback).
+        await store.createCompletionHandoffWorkflowWork(task, {
           runId: internal.runContext?.runId,
           now: internal.now,
           source: internal.evidence?.reason,
-        });
-        store.insertRunAuditEventRow({
+        }, tx);
+        await recordRunAuditEventWithinTransaction(tx, {
           taskId: id,
-          agentId: internal.runContext?.agentId,
-          runId: internal.runContext?.runId,
+          agentId: internal.runContext?.agentId ?? "system",
+          runId: internal.runContext?.runId ?? "unknown",
           domain: "database",
           mutationType: "task:handoff",
           target: id,
@@ -1169,9 +1029,17 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
             alreadyEnqueued,
           },
         });
+        /*
+        FNXC:HandoffFailureInjection 2026-07-15-12:00:
+        Backend handoffs bypass the legacy enqueueMergeQueueSyncInternal spy.
+        This test-only no-op seam runs after every VAL-DATA-013 sub-write
+        (move, queue, workflow work, and handoff audit), so an injected throw
+        proves this transaction rolls all of them back.
+        */
+        await store.__invokeHandoffMergeQueueFailureInjectorForTesting(id);
       }
     });
-    } // end of else (non-backend sync path)
+ // end of else (non-backend sync path)
 
     if (deletedAt) {
       if (internal.fromHandoff) {
@@ -1302,9 +1170,7 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
       // Backend mode: clearLinkedAgentTaskIds is a sync SQLite operation; skip
       // it in backend mode (the agent cleanup is best-effort and handled by
       // the async satellite stores when needed).
-      if (!store.backendMode) {
-        store.clearLinkedAgentTaskIds(id, task.updatedAt);
-      }
+      
     }
 
     if (store.isWatching) store.taskCache.set(id, { ...task });
@@ -1338,11 +1204,8 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         }
       }
       try {
-        if (store.backendMode) {
-          await clearTransitionPendingAsync(store.asyncLayer!.db, id);
-        } else {
-          clearTransitionPending(store.db, id);
-        }
+                await clearTransitionPendingAsync(store.asyncLayer!.db, id);
+
       } catch {
         // Clearing is best-effort; the marker recovery sweep is the backstop.
       }
@@ -1350,6 +1213,47 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
 
     if (fromColumn !== toColumn) {
       store.emit("task:moved", { task, from: fromColumn, to: toColumn, source: moveSource });
+      /*
+      FNXC:WorkflowEvents 2026-07-27-11:45 (U3 / R5, R6):
+      THE post-commit emit point for lifecycle transitions. Its position is the
+      contract, not a detail: everything above has committed (the row upsert,
+      the capacity reservation, the in-transaction outbox writes), so an emitted
+      `TaskTransitioned` implies a durable transition and a rolled-back
+      transaction emits nothing at all — the transaction throws out of the
+      `layer.transactionImmediate` block long before reaching here.
+
+      It sits beside the existing `task:moved` store event rather than replacing
+      it: `task:moved` carries the whole task object to in-process listeners
+      (triage's column-wake handler), which the ids-only rule forbids on the
+      bus. U7 migrates that listener onto the bus as a subscriber; until then
+      the two coexist and neither is authoritative — a lifecycle decision reads
+      the task row, never an event.
+
+      Fire-and-forget by construction: `emit` never throws and never awaits
+      subscribers, so no subscriber can slow, fail, or reorder a transition.
+      */
+      emitWorkflowLifecycleEvent({
+        type: "TaskTransitioned",
+        taskId: id,
+        at: movedAt,
+        from: fromColumn,
+        to: toColumn,
+        moveSource,
+        ...(internal.runContext?.runId ? { runId: internal.runContext.runId } : {}),
+        /*
+        FNXC:WorkflowEvents 2026-07-27-15:10 (U3, PR #2467 review):
+        OMIT rather than guess. `effectiveWorkflowIdForMove` reads the task's real
+        selection only when `useWorkflow` is true; otherwise it is hardcoded to
+        `builtin:coding`. That compat flag is off for effectively every real
+        project (see the note at the flag-OFF adjacency branch above), so
+        emitting it unconditionally would stamp `builtin:coding` onto moves of
+        tasks on a custom workflow — a wrong value baked into a brand-new wire
+        field, latent only because no subscriber reads it yet. An absent
+        `workflowId` means "not resolved here"; a subscriber that needs it reads
+        the selection itself.
+        */
+        ...(useWorkflow ? { workflowId: effectiveWorkflowIdForMove } : {}),
+      });
     }
     if (toColumn === "done") {
       await store.clearNearDuplicateReferencesToFailSoft(id, {
