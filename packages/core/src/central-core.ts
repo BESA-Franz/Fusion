@@ -396,6 +396,18 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
   }
 
   /**
+   * Resolve the node represented by this process.
+   *
+   * FUSION_NODE_ID provides deterministic identity when multiple processes
+   * share one PostgreSQL control plane. Without it, the historical first-local
+   * node behavior remains available for single-node installations.
+   */
+  async getRuntimeNode(): Promise<NodeConfig | undefined> {
+    this.ensureInitialized();
+    return this.getLocalNode();
+  }
+
+  /**
    * Check if the central infrastructure is initialized.
    */
   isInitialized(): boolean {
@@ -2327,7 +2339,7 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
       return this.nodeDiscovery;
     }
 
-    const localNode = (await this.listNodes()).find((node) => node.type === "local");
+    const localNode = await this.getLocalNode();
     if (!localNode) {
       throw new Error("Local node not found");
     }
@@ -3614,6 +3626,19 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
   }
 
   private async getLocalNode(): Promise<NodeConfig | undefined> {
+    const configuredNodeId = process.env.FUSION_NODE_ID?.trim();
+    if (configuredNodeId) {
+      const configuredNode = this.backendMode
+        ? await asyncCentralCore.getNode(this.backendHandle, configuredNodeId)
+        : await this.getNode(configuredNodeId);
+      if (!configuredNode) {
+        throw new Error(
+          `Configured Fusion runtime node not found: FUSION_NODE_ID=${configuredNodeId}`,
+        );
+      }
+      return configuredNode;
+    }
+
     if (this.backendMode) {
       return asyncCentralCore.getLocalNode(this.backendHandle);
     }

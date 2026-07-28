@@ -190,6 +190,50 @@ describe("Scheduler workflow cutover", () => {
     expect(onSchedule).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-100", column: "in-progress" }));
   });
 
+  it("leaves work assigned to another configured node in todo", async () => {
+    const assignedElsewhere = task({ id: "FN-REMOTE", nodeId: "node-pc1" });
+    const store = storeWith([assignedElsewhere]);
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, {
+      localNodeId: "node-vps",
+      onSchedule,
+    });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.moveTaskIf).not.toHaveBeenCalled();
+    expect(onSchedule).not.toHaveBeenCalled();
+    expect(assignedElsewhere.column).toBe("todo");
+  });
+
+  it("dispatches matching assigned work and persists the concrete node", async () => {
+    const assignedHere = task({ id: "FN-LOCAL", nodeId: "node-pc1" });
+    const store = storeWith([assignedHere]);
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, {
+      localNodeId: "node-pc1",
+      onSchedule,
+    });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.moveTaskIf).toHaveBeenCalledWith(
+      "FN-LOCAL",
+      "in-progress",
+      expect.any(Function),
+      expect.any(Object),
+    );
+    expect(store.updateTask).toHaveBeenCalledWith(
+      "FN-LOCAL",
+      expect.objectContaining({ effectiveNodeId: "node-pc1" }),
+    );
+    expect(onSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "FN-LOCAL", effectiveNodeId: "node-pc1" }),
+    );
+  });
+
   it("does not dispatch an operator-parked todo task when only userPaused remains true", async () => {
     const parked = task({ id: "FN-PAUSED", paused: false, userPaused: true });
     const store = storeWith([parked]);
