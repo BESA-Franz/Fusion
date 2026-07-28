@@ -1749,6 +1749,39 @@ Planner rewrote mission without the raw request.
       );
     });
 
+    it("rechecks authoritative routing before claiming planning after reassignment", async () => {
+      const staleLocalSnapshot = createTriageTask({
+        id: "FN-REASSIGNED-NODE",
+        nodeId: "node-local",
+      });
+      const triageStore = createMockStore({
+        getTask: vi.fn().mockResolvedValue({
+          ...staleLocalSnapshot,
+          nodeId: "node-remote",
+        }),
+        getSettings: vi.fn().mockResolvedValue({
+          defaultNodeId: undefined,
+          maxConcurrent: 10,
+          maxTriageConcurrent: 10,
+          pollIntervalMs: 10_000,
+          groupOverlappingFiles: false,
+          autoMerge: true,
+        }),
+      });
+      const triageProcessor = new TriageProcessor(
+        triageStore,
+        rootDir,
+        { localNodeId: "node-local" },
+      );
+      const agentCallsBefore = mockCreateFnAgent.mock.calls.length;
+
+      await triageProcessor.specifyTask(staleLocalSnapshot);
+
+      expect(triageStore.updateTask).not.toHaveBeenCalled();
+      expect(triageStore.logEntry).not.toHaveBeenCalled();
+      expect(mockCreateFnAgent).toHaveBeenCalledTimes(agentCallsBefore);
+    });
+
     it("dispatches eligible triage tasks by createdAt asc", async () => {
       const tasks: Task[] = [
         createTriageTask({
