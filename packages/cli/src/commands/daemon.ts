@@ -968,8 +968,7 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   }
   try {
     if (centralCore) {
-      const nodes = await centralCore.listNodes();
-      const localNode = nodes.find((node) => node.type === "local");
+      const localNode = await centralCore.getRuntimeNode();
       if (localNode) {
         await centralCore.updateNode(localNode.id, { status: "online" });
       }
