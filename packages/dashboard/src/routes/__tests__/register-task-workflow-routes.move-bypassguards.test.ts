@@ -26,6 +26,10 @@ describe("task move route — bypassGuards is not forwardable", () => {
       getRootDir: vi.fn(() => process.cwd()),
       getTask: vi.fn(async () => ({ id: "FN-001", column: "todo" })),
       getSettings: vi.fn(async () => ({})),
+      getPluginStore: vi.fn(() => ({
+        init: vi.fn(async () => undefined),
+        listPlugins: vi.fn(async () => []),
+      })),
       moveTask,
     } as unknown as TaskStore;
 
@@ -41,12 +45,95 @@ describe("task move route — bypassGuards is not forwardable", () => {
       { "content-type": "application/json" },
     );
 
-    expect(res.status).toBe(200);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(moveTask).toHaveBeenCalledTimes(1);
     const passedOptions = moveTask.mock.calls[0][2] as Record<string, unknown> | undefined;
     // The route constructs its own options; the injected fields must not leak.
     expect(passedOptions?.bypassGuards).toBeUndefined();
     // The route hardcodes moveSource: "user" — the body's "engine" is ignored.
     expect(passedOptions?.moveSource).toBe("user");
+  });
+
+  it("does not allocate the dashboard host worktree for a node-pinned task", async () => {
+    const moveTask = vi.fn(async (_id: string, column: string, _options?: Record<string, unknown>) => ({
+      id: "FN-002",
+      column,
+      nodeId: "node-pc3",
+      dependencies: [],
+      steps: [],
+      currentStep: 0,
+    }));
+
+    const store: TaskStore = {
+      getRootDir: vi.fn(() => "/workspace"),
+      getTask: vi.fn(async () => ({
+        id: "FN-002",
+        column: "todo",
+        nodeId: "node-pc3",
+      })),
+      getSettings: vi.fn(async () => ({})),
+      getPluginStore: vi.fn(() => ({
+        init: vi.fn(async () => undefined),
+        listPlugins: vi.fn(async () => []),
+      })),
+      moveTask,
+    } as unknown as TaskStore;
+
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store));
+
+    const res = await REQUEST(
+      app,
+      "POST",
+      "/api/tasks/FN-002/move",
+      JSON.stringify({ column: "in-progress" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(moveTask).toHaveBeenCalledTimes(1);
+    const passedOptions = moveTask.mock.calls[0][2] as Record<string, unknown> | undefined;
+    expect(passedOptions?.allocateWorktree).toBeUndefined();
+  });
+
+  it("does not allocate the dashboard host worktree for a project-default node", async () => {
+    const moveTask = vi.fn(async (_id: string, column: string, _options?: Record<string, unknown>) => ({
+      id: "FN-003",
+      column,
+      dependencies: [],
+      steps: [],
+      currentStep: 0,
+    }));
+
+    const store: TaskStore = {
+      getRootDir: vi.fn(() => "/workspace"),
+      getTask: vi.fn(async () => ({
+        id: "FN-003",
+        column: "todo",
+      })),
+      getSettings: vi.fn(async () => ({ defaultNodeId: "node-pc3" })),
+      getPluginStore: vi.fn(() => ({
+        init: vi.fn(async () => undefined),
+        listPlugins: vi.fn(async () => []),
+      })),
+      moveTask,
+    } as unknown as TaskStore;
+
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store));
+
+    const res = await REQUEST(
+      app,
+      "POST",
+      "/api/tasks/FN-003/move",
+      JSON.stringify({ column: "in-progress" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const passedOptions = moveTask.mock.calls[0][2] as Record<string, unknown> | undefined;
+    expect(passedOptions?.allocateWorktree).toBeUndefined();
   });
 });

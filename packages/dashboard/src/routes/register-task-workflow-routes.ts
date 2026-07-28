@@ -1731,9 +1731,24 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         const existing = await scopedStore.getTask(req.params.id);
         if (existing) {
           const settings = await scopedStore.getSettings();
-          const rootDir = scopedStore.getRootDir();
-          allocateWorktree = (reservedNames) =>
-            planTaskWorktreePath(existing, rootDir, settings.worktreeNaming, reservedNames, settings);
+          /*
+          FNXC:MultiNodeRouting 2026-07-28-23:55:
+          A dashboard API request can originate on the VPS while the task is
+          pinned to a Windows worker. Reserving with the dashboard store's
+          rootDir in that case persisted `/workspace/.worktrees/...` into the
+          shared task row, so the remote executor inherited a path that only
+          exists on the VPS. For any explicit task or project node route, leave
+          allocation to the gated executor on the owning node. Legacy unpinned
+          single-host moves keep the existing transaction-locked reservation.
+          */
+          const hasNodeRoute = [existing.nodeId, settings.defaultNodeId].some(
+            (nodeId) => typeof nodeId === "string" && nodeId.trim().length > 0,
+          );
+          if (!hasNodeRoute) {
+            const rootDir = scopedStore.getRootDir();
+            allocateWorktree = (reservedNames) =>
+              planTaskWorktreePath(existing, rootDir, settings.worktreeNaming, reservedNames, settings);
+          }
         }
       }
 
