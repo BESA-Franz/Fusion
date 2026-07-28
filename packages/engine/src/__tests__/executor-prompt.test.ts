@@ -1025,6 +1025,84 @@ describe("TaskExecutor pause behavior", () => {
     expect(store.logEntry).toHaveBeenCalledWith("FN-001", "Resuming execution after unpause", undefined, undefined);
   });
 
+  it("does not resume a foreign-node task when the update event omits its node binding", async () => {
+    const store = createMockStore();
+    store.getTask.mockResolvedValue({
+      id: "FN-001",
+      paused: undefined,
+      column: "in-progress",
+      nodeId: "node-pc3",
+      description: "Remote task",
+      title: "Remote task",
+      dependencies: [],
+      steps: [],
+      currentStep: 0,
+      log: [],
+      prompt: "# test\n## Steps\n### Step 0: Preflight\n- [ ] check",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    mockedCreateFnAgent.mockImplementation(async () => ({
+      session: {
+        prompt: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn(),
+      },
+    }) as any);
+
+    new TaskExecutor(store, "/tmp/test", {
+      getLocalNodeId: () => "node-pc1",
+    });
+
+    store._trigger("task:updated", {
+      id: "FN-001",
+      paused: undefined,
+      column: "in-progress",
+      description: "Remote task",
+      title: "Remote task",
+      dependencies: [],
+      steps: [],
+      currentStep: 0,
+      log: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(store.getTask).toHaveBeenCalledWith("FN-001");
+    expect(mockedCreateFnAgent).not.toHaveBeenCalled();
+    expect(store.logEntry).not.toHaveBeenCalledWith(
+      "FN-001",
+      "Resuming execution after unpause",
+      undefined,
+      undefined,
+    );
+  });
+
+  it("does not execute a foreign-node task when the move event omits its node binding", async () => {
+    const store = createMockStore();
+    store.getTask.mockResolvedValue(createMockTaskDetail({
+      nodeId: "node-pc3",
+    }));
+    const executor = new TaskExecutor(store, "/tmp/test", {
+      getLocalNodeId: () => "node-pc1",
+    });
+    const executeSpy = vi.spyOn(executor, "execute").mockResolvedValue(undefined);
+
+    store._trigger("task:moved", {
+      task: createMockTaskDetail({ nodeId: undefined }),
+      from: "todo",
+      to: "in-progress",
+      source: "user",
+    });
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(store.getTask).toHaveBeenCalledWith("FN-001");
+    expect(executeSpy).not.toHaveBeenCalled();
+  });
+
   it("does not resume unpaused in-progress task while global pause is active", async () => {
     const store = createMockStore();
     store.getSettings.mockResolvedValue({

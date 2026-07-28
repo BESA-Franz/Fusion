@@ -2958,6 +2958,17 @@ export class TaskExecutor {
     this.resumingUnpaused.add(task.id);
     let handoffOwnsClaim = false;
     try {
+      const latestTask = await this.store.getTask(task.id);
+      if (latestTask.status === "failed") {
+        return false;
+      }
+      if (!canExecuteTaskOnNode(latestTask, this.options.getLocalNodeId?.())) {
+        executorLog.debug(
+          `[event:task:updated] Skipping unpause resume for ${latestTask.id} — assigned to ${latestTask.effectiveNodeId ?? latestTask.nodeId}`,
+        );
+        return false;
+      }
+
       const pauseLabel = await this.getExecutionPauseLabel();
       if (pauseLabel) {
         executorLog.log(`Skipping unpause resume for ${task.id} — ${pauseLabel} active`);
@@ -2977,7 +2988,7 @@ export class TaskExecutor {
       }
 
       this.approvalSuspended.delete(task.id);
-      if (this.isTaskWorkComplete(task) && !task.mergeDetails) {
+      if (this.isTaskWorkComplete(latestTask) && !latestTask.mergeDetails) {
         /*
         FNXC:ExecutorResume 2026-07-21-23:06:
         recoverCompletedTask refuses when resumingUnpaused still holds the id.
@@ -2988,7 +2999,7 @@ export class TaskExecutor {
         this.recoveringCompleted.add(task.id);
         handoffOwnsClaim = true; // prevent finally from double-deleting a already-cleared claim
         executorLog.log(`${task.id} unpaused with completed work and no session — recovering directly to in-review`);
-        void this.recoverCompletedTask(task)
+        void this.recoverCompletedTask(latestTask)
           .catch((err) => executorLog.error(`Failed to recover completed unpaused task ${task.id}:`, err))
           .finally(() => this.recoveringCompleted.delete(task.id));
         return true;
@@ -2996,7 +3007,7 @@ export class TaskExecutor {
 
       executorLog.log(`Unpaused ${task.id} in-progress with no session — resuming execution`);
       try {
-        await this.clearResumeFailureState(task);
+        await this.clearResumeFailureState(latestTask);
         await this.store.updateTask(task.id, {
           resumeLimboCount: 0,
           resumeLimboTipSha: null,
@@ -3008,7 +3019,7 @@ export class TaskExecutor {
         executorLog.warn(`${task.id} clearResumeFailureState failed during unpause: ${clearErr instanceof Error ? clearErr.message : String(clearErr)}`);
       }
       handoffOwnsClaim = true;
-      this.execute(task)
+      this.execute(latestTask)
         .catch((err) => executorLog.error(`Failed to resume unpaused ${task.id}:`, err))
         .finally(() => this.resumingUnpaused.delete(task.id));
       // execute().finally owns resumingUnpaused release from here.
@@ -3171,7 +3182,14 @@ export class TaskExecutor {
             executorLog.log(`[event:task:moved] Awaiting pending disposal for ${task.id} before dispatch`);
             await pending;
           }
-          const taskForExecution = await this.resetMergeStateIfNeeded(task, from);
+          const latestTask = await this.store.getTask(task.id);
+          if (!canExecuteTaskOnNode(latestTask, this.options.getLocalNodeId?.())) {
+            executorLog.debug(
+              `[event:task:moved] Skipping execute() for ${latestTask.id} after authoritative read — assigned to ${latestTask.effectiveNodeId ?? latestTask.nodeId}`,
+            );
+            return;
+          }
+          const taskForExecution = await this.resetMergeStateIfNeeded(latestTask, from);
           await this.execute(taskForExecution);
         })().catch((err) =>
           executorLog.error(`Failed to start ${task.id}:`, err),
