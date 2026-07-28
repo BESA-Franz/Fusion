@@ -83,6 +83,8 @@ export interface HoldReleaseDeps {
    * worktree allocation via `allocateWorktree`.
    */
   reserveSlot?: (task: Task, targetColumn: string) => SlotReservation | null | Promise<SlotReservation | null>;
+  /** Reject work that is not owned by this scheduler before local PROMPT checks. */
+  canDispatchTask?: (task: Task) => boolean | Promise<boolean>;
   /** Allocate a worktree path for a release into a processing column (passed
    *  through to `moveTask`'s `allocateWorktree`). */
   allocateWorktree?: (task: Task, reservedNames: Set<string>) => string | null;
@@ -522,6 +524,16 @@ async function issueRelease(
 ): Promise<boolean> {
   const targetColumn = findColumn(ir, target);
   const targetIsProcessing = targetColumn ? resolveColumnFlags(targetColumn).countsTowardWip === true : false;
+
+  /*
+  FNXC:NodeRouting 2026-07-28-20:23:
+  The scheduler must establish node ownership before the generic release helper
+  reads PROMPT.md. Foreign workers do not have authoritative local task files,
+  and a missing file must never rebound a replicated task.
+  */
+  if (targetIsProcessing && deps.canDispatchTask && !await deps.canDispatchTask(task)) {
+    return false;
+  }
 
   /*
   FNXC:WorkflowScheduling 2026-07-07-00:00:

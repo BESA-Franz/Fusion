@@ -690,9 +690,21 @@ export class InProcessRuntime
           })
         : undefined;
 
+      /*
+      FNXC:NodeRouting 2026-07-28-20:18:
+      One canonical environment value identifies this daemon across triage,
+      scheduling, and lease recovery. Trim only transport whitespace; node IDs
+      remain exact opaque identifiers.
+      */
+      const localNodeId = process.env.FUSION_NODE_ID?.trim() || undefined;
+      if (!localNodeId) {
+        runtimeLog.warn("FUSION_NODE_ID is not set; explicitly node-assigned tasks will stay queued");
+      }
+
       this.leaseManager = new MeshLeaseManager({
         taskStore: this.taskStore,
         agentStore: this.agentStore,
+        localNodeId,
         getHandoffPolicy: () => this.taskStore.getSettings().then((settings) => settings.owningNodeHandoffPolicy),
         getExecutingTaskIds: () => this.executor?.getExecutingTaskIds() ?? new Set<string>(),
         centralClaimStore: this.leaseCentralClaimStore,
@@ -732,6 +744,7 @@ export class InProcessRuntime
           const mappedPath = await this.centralCore.getProjectNodePath(this.config.projectId, nodeId);
           return validateProjectNodeMapping({ nodeId, mappedPath });
         },
+        localNodeId,
         snapshotManager: autoClaimSnapshotManager,
 
       });
@@ -1088,6 +1101,7 @@ export class InProcessRuntime
         this.config.workingDirectory,
         {
           semaphore: this.projectSemaphore,
+          localNodeId,
           stuckTaskDetector: this.stuckTaskDetector,
           usageLimitPauser: this.usageLimitPauser,
           agentStore: this.agentStore,

@@ -1567,6 +1567,22 @@ describe("TriageProcessor", () => {
     expect(processor.getProcessingTaskIds()).not.toContain(task.id);
   });
 
+  it("does not claim planning when the authoritative task row is routed to a foreign node", async () => {
+    const candidate = createTriageTask({ id: "FN-FOREIGN-CLAIM" });
+    const foreign = { ...candidate, nodeId: "node-foreign" };
+    const localStore = createMockStore({
+      getTask: vi.fn().mockResolvedValue(foreign),
+    });
+    const localProcessor = new TriageProcessor(localStore, rootDir, { localNodeId: "node-local" });
+
+    await localProcessor.specifyTask(candidate);
+
+    expect(localStore.updateTask).not.toHaveBeenCalledWith(
+      candidate.id,
+      expect.objectContaining({ status: "planning" }),
+    );
+  });
+
   /*
   FNXC:OriginalDescriptionInPrompt 2026-07-14-23:35:
   finalizeApprovedTask must inject ## Original Description with the task description
@@ -1716,6 +1732,27 @@ Planner rewrote mission without the raw request.
   });
 
   describe("poll ordering", () => {
+    it("skips a planning candidate routed to a foreign node", async () => {
+      const foreign = createTriageTask({ id: "FN-FOREIGN-CANDIDATE", nodeId: "node-foreign" });
+      const triageStore = createMockStore({
+        listTasks: vi.fn().mockResolvedValue([foreign]),
+        getSettings: vi.fn().mockResolvedValue({
+          maxConcurrent: 10,
+          maxTriageConcurrent: 10,
+          pollIntervalMs: 10_000,
+          groupOverlappingFiles: false,
+          autoMerge: true,
+        }),
+      });
+      const triageProcessor = new TriageProcessor(triageStore, rootDir, { localNodeId: "node-local" });
+      const specifySpy = vi.spyOn(triageProcessor, "specifyTask").mockResolvedValue(undefined);
+
+      (triageProcessor as any).running = true;
+      await (triageProcessor as any).poll();
+
+      expect(specifySpy).not.toHaveBeenCalled();
+    });
+
     it("dispatches eligible triage tasks by createdAt asc", async () => {
       const tasks: Task[] = [
         createTriageTask({

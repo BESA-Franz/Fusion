@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveEffectiveNode } from "../effective-node.js";
+import { canDispatchEffectiveNode, resolveEffectiveNode } from "../effective-node.js";
 
 describe("resolveEffectiveNode", () => {
   it.each([
@@ -62,5 +62,37 @@ describe("resolveEffectiveNode", () => {
       nodeId: "node-task",
       source: "task-override",
     });
+  });
+
+  it("uses the persisted effective node when no task override is set", () => {
+    expect(resolveEffectiveNode(
+      { nodeId: undefined, effectiveNodeId: "node-effective", effectiveNodeSource: "project-default" },
+      { defaultNodeId: "node-current-default" },
+    )).toEqual({
+      nodeId: "node-effective",
+      source: "project-default",
+    });
+  });
+
+  it("prefers an explicit task override over the persisted effective node", () => {
+    expect(resolveEffectiveNode(
+      { nodeId: "node-task", effectiveNodeId: "node-effective", effectiveNodeSource: "project-default" },
+      { defaultNodeId: "node-project" },
+    )).toEqual({
+      nodeId: "node-task",
+      source: "task-override",
+    });
+  });
+
+  it("allows an unassigned local route", () => {
+    expect(canDispatchEffectiveNode({ nodeId: undefined, source: "local" }, "node-local")).toBe(true);
+  });
+
+  it("allows a route assigned to the local node", () => {
+    expect(canDispatchEffectiveNode({ nodeId: "node-local", source: "task-override" }, "node-local")).toBe(true);
+  });
+
+  it("rejects a route assigned to a foreign node", () => {
+    expect(canDispatchEffectiveNode({ nodeId: "node-foreign", source: "task-override" }, "node-local")).toBe(false);
   });
 });

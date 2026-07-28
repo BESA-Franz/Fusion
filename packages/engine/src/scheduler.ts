@@ -34,7 +34,7 @@ import { schedulerLog } from "./logger.js";
 import { type PrMonitor, type PrComment } from "./pr-monitor.js";
 import { reconcileMissionFeatureState } from "./mission-feature-sync.js";
 import { evaluateSpecStaleness, getPromptPath } from "./spec-staleness.js";
-import { resolveEffectiveNode, type EffectiveNode } from "./effective-node.js";
+import { canDispatchEffectiveNode, resolveEffectiveNode, type EffectiveNode } from "./effective-node.js";
 import { applyUnavailableNodePolicy, decideOwningNodeHandoff } from "./node-routing-policy.js";
 import type { NodeDispatchValidationResult } from "./node-dispatch-validation.js";
 import type { MeshLeaseManager } from "./mesh-lease-manager.js";
@@ -1527,6 +1527,13 @@ export class Scheduler {
       const now = Date.now();
       let todo = tasks.filter((t) => {
         if (t.column !== "todo" || t.paused || t.userPaused) return false;
+        /*
+        FNXC:NodeRouting 2026-07-28-20:21:
+        Apply node ownership while forming the legacy candidate set, before the
+        bootstrap PROMPT read below. The later fresh-row guard still closes the
+        reassignment race at dispatch.
+        */
+        if (!canDispatchEffectiveNode(resolveEffectiveNode(t, settings), this.options.localNodeId)) return false;
         // Skip tasks with a recovery backoff that hasn't elapsed yet
         if (t.nextRecoveryAt && new Date(t.nextRecoveryAt).getTime() > now) return false;
         // FNXC:CodingIdeasWorkflow 2026-07-04-10:45: a todo task with status "planning" is being specified in place by the triage service (merged planner/capacity column in Coding (Ideas)); it must not be dispatched until planning finishes and the status clears.
@@ -1768,6 +1775,19 @@ export class Scheduler {
 
       for (const taskId of ordered) {
         const task = tasks.find((t) => t.id === taskId)!;
+
+        /*
+        FNXC:NodeRouting 2026-07-28-20:18:
+        Routing is a precondition for every local preflight. A foreign task may not
+        be inspected or rebound because this node has no authoritative task files.
+        */
+        const candidateEffectiveNode = resolveEffectiveNode(task, settings);
+        if (!canDispatchEffectiveNode(candidateEffectiveNode, this.options.localNodeId)) {
+          schedulerLog.debug(
+            `Task ${task.id} stays queued — effective node ${candidateEffectiveNode.nodeId ?? "local"} is foreign`,
+          );
+          continue;
+        }
 
         if (task.checkedOutBy && this.options.leaseManager) {
           const recovered = await this.options.leaseManager.recoverAbandonedLease(
@@ -2029,8 +2049,12 @@ export class Scheduler {
         }
 
         // Resolve effective node for routing
-        let effectiveNode = resolveEffectiveNode(freshTask, settings);
+        let effectiveNode = resolveEffectiveNode(freshTask, latestSettings);
         logTaskRouting(task.id, effectiveNode);
+
+        if (!canDispatchEffectiveNode(effectiveNode, this.options.localNodeId)) {
+          continue;
+        }
 
         // Enforce dispatch configuration validation before node-health fallback logic.
         if (effectiveNode.nodeId !== undefined && this.options.validateNodeDispatch) {
@@ -2562,8 +2586,24 @@ export class Scheduler {
 
       const result = await runHoldReleaseSweep(this.store, {
         now: () => Date.now(),
+        canDispatchTask: (task) =>
+          canDispatchEffectiveNode(resolveEffectiveNode(task, settings), this.options.localNodeId),
         reserveSlot: async (task): Promise<SlotReservation | null> => {
           let reservedScope = false;
+
+          /*
+          FNXC:NodeRouting 2026-07-28-20:18:
+          The hold/release reservation callback is the workflow scheduler's local
+          ownership boundary. Reject foreign work before workflow, dependency,
+          filesystem, PROMPT, or replan inspection can mutate its replicated row.
+          */
+          const candidateEffectiveNode = resolveEffectiveNode(task, settings);
+          if (!canDispatchEffectiveNode(candidateEffectiveNode, this.options.localNodeId)) {
+            schedulerLog.debug(
+              `Task ${task.id} remains held — effective node ${candidateEffectiveNode.nodeId ?? "local"} is foreign`,
+            );
+            return null;
+          }
 
           /*
           FNXC:WorkflowScheduling 2026-07-07-00:00:
@@ -2669,8 +2709,12 @@ export class Scheduler {
             return null;
           }
 
-          let effectiveNode = resolveEffectiveNode(freshTask, settings);
+          let effectiveNode = resolveEffectiveNode(freshTask, latestSettings);
           logTaskRouting(task.id, effectiveNode);
+
+          if (!canDispatchEffectiveNode(effectiveNode, this.options.localNodeId)) {
+            return null;
+          }
 
           if (effectiveNode.nodeId !== undefined && this.options.validateNodeDispatch) {
             const nodeValidation = await this.options.validateNodeDispatch(effectiveNode.nodeId);

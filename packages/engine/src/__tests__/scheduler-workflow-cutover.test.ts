@@ -190,6 +190,65 @@ describe("Scheduler workflow cutover", () => {
     expect(onSchedule).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-100", column: "in-progress" }));
   });
 
+  describe("effective node routing", () => {
+    it("keeps an explicitly foreign task with a missing local directory unchanged in todo", async () => {
+      const foreign = task({ id: "FN-FOREIGN-EXPLICIT", nodeId: "node-foreign" });
+      const store = storeWith([foreign]);
+      vi.mocked(existsSync).mockReturnValue(false);
+      const onSchedule = vi.fn();
+      const scheduler = new Scheduler(store, { localNodeId: "node-local", onSchedule });
+      (scheduler as unknown as { running: boolean }).running = true;
+
+      await scheduler.schedule();
+
+      expect(foreign.column).toBe("todo");
+      expect(foreign.status).toBeUndefined();
+      expect(store.updateTask).not.toHaveBeenCalled();
+      expect(store.moveTaskIf).not.toHaveBeenCalled();
+      expect(readFile).not.toHaveBeenCalled();
+      expect(onSchedule).not.toHaveBeenCalled();
+    });
+
+    it("keeps a task with a foreign persisted effective node unchanged in todo", async () => {
+      const foreign = task({
+        id: "FN-FOREIGN-EFFECTIVE",
+        effectiveNodeId: "node-foreign",
+        effectiveNodeSource: "project-default",
+      });
+      const store = storeWith([foreign]);
+      vi.mocked(existsSync).mockReturnValue(false);
+      const onSchedule = vi.fn();
+      const scheduler = new Scheduler(store, { localNodeId: "node-local", onSchedule });
+      (scheduler as unknown as { running: boolean }).running = true;
+
+      await scheduler.schedule();
+
+      expect(foreign.column).toBe("todo");
+      expect(foreign.status).toBeUndefined();
+      expect(store.updateTask).not.toHaveBeenCalled();
+      expect(store.moveTaskIf).not.toHaveBeenCalled();
+      expect(readFile).not.toHaveBeenCalled();
+      expect(onSchedule).not.toHaveBeenCalled();
+    });
+
+    it("dispatches a task explicitly assigned to the local node", async () => {
+      const local = task({ id: "FN-LOCAL-EXPLICIT", nodeId: "node-local" });
+      const store = storeWith([local]);
+      const onSchedule = vi.fn();
+      const scheduler = new Scheduler(store, { localNodeId: "node-local", onSchedule });
+      (scheduler as unknown as { running: boolean }).running = true;
+
+      await scheduler.schedule();
+
+      expect(local.column).toBe("in-progress");
+      expect(store.updateTask).toHaveBeenCalledWith(local.id, expect.objectContaining({
+        effectiveNodeId: "node-local",
+        effectiveNodeSource: "task-override",
+      }));
+      expect(onSchedule).toHaveBeenCalledWith(expect.objectContaining({ id: local.id }));
+    });
+  });
+
   it("does not dispatch an operator-parked todo task when only userPaused remains true", async () => {
     const parked = task({ id: "FN-PAUSED", paused: false, userPaused: true });
     const store = storeWith([parked]);

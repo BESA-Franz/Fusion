@@ -125,6 +125,7 @@ import {
   resolvePlanningThinkingLevel,
 } from "./agent-session-helpers.js";
 import { mergeEffectiveSettings } from "./effective-settings.js";
+import { canDispatchEffectiveNode, resolveEffectiveNode } from "./effective-node.js";
 import { detectDanglingTaskDocReferences, formatDanglingDiagnostic } from "./spec-validation/task-document-references.js";
 import { buildSessionSkillContext } from "./session-skill-context.js";
 import {
@@ -194,6 +195,8 @@ import { buildAgentGatedActionSummary } from "./permanent-agent-gating.js";
 export interface TriageProcessorOptions {
   pollIntervalMs?: number;
   semaphore?: AgentSemaphore;
+  /** Canonical ID of this daemon, used to reject planning work assigned elsewhere. */
+  localNodeId?: string;
   /**
    * FNXC:ProviderRateLimitIsolation 2026-07-21-18:00:
    * Parks only tasks routed through the provider whose API limit was detected.
@@ -397,6 +400,7 @@ export class TriageProcessor {
         const tasks = await this.discoverReadyPlanningTasks(
           await this.store.listTasks({ slim: true, includeArchived: false }),
           now,
+          settings,
         );
         return tasks.filter((task) => !this.coordinatorAdmittedTaskIds.has(task.id)).map((task) => ({
           taskId: task.id, projectId: this.rootDir, createdAt: task.createdAt,
@@ -1105,16 +1109,25 @@ export class TriageProcessor {
    * refresh. Keeping the seed-prompt checks here makes the cross-lane admission
    * union include cards before their planner writes status:"planning".
    */
-  private async discoverReadyPlanningTasks(allTasks: Task[], now: number): Promise<Task[]> {
+  private async discoverReadyPlanningTasks(allTasks: Task[], now: number, settings: Settings): Promise<Task[]> {
+    /*
+    FNXC:NodeRouting 2026-07-28-20:18:
+    Candidate discovery is the first planning ownership boundary. Filter replicated
+    foreign work here so it never consumes a coordinator or semaphore reservation.
+    */
+    const canPlanHere = (task: Task): boolean =>
+      canDispatchEffectiveNode(resolveEffectiveNode(task, settings), this.options.localNodeId);
     const eligibleTriageTasks = allTasks.filter(
       (t) => t.column === "triage" && isTaskStillInPlanningStage(t)
+        && canPlanHere(t)
         && !this.advancedRecoveryReservations.has(t.id)
         && !this.processing.has(t.id) && !this.hasLivePlanningWork(t.id) && !t.paused
         && t.status !== "awaiting-approval" && t.status !== "failed" && t.status !== "stuck-killed"
         && !(t.nextRecoveryAt && new Date(t.nextRecoveryAt).getTime() > now),
     );
     const eligibleTodoTasksRaw = allTasks.filter(
-      (t) => t.column === "todo" && !this.processing.has(t.id) && !this.hasLivePlanningWork(t.id) && !t.paused
+      (t) => t.column === "todo" && canPlanHere(t)
+        && !this.processing.has(t.id) && !this.hasLivePlanningWork(t.id) && !t.paused
         && t.status !== "awaiting-approval" && t.status !== "failed" && t.status !== "stuck-killed"
         && t.status !== "planning"
         && !(t.nextRecoveryAt && new Date(t.nextRecoveryAt).getTime() > now),
@@ -1199,7 +1212,7 @@ export class TriageProcessor {
         this.idleSemaphoreLeakCandidateSince = result.candidateSinceMs;
       }
 
-      const triageTasks = await this.discoverReadyPlanningTasks(allTasks, now);
+      const triageTasks = await this.discoverReadyPlanningTasks(allTasks, now, settings);
 
       /*
       FNXC:ConcurrencyAdmission 2026-08-03-12:00:
@@ -1350,6 +1363,20 @@ export class TriageProcessor {
       // pick up workflow values. Behavior-inert when nothing is customized.
       const settings = await mergeEffectiveSettings(this.store, currentTask, await this.store.getSettings());
       const promptPath = `.fusion/tasks/${task.id}/PROMPT.md`;
+
+      /*
+      FNXC:NodeRouting 2026-07-28-20:18:
+      Re-read routing immediately before the planning claim. A task can be reassigned
+      after candidate discovery; the fresh row is authoritative and must fail closed
+      before status:"planning" or any local agent work is created.
+      */
+      const effectiveNode = resolveEffectiveNode(currentTask, settings);
+      if (!canDispatchEffectiveNode(effectiveNode, this.options.localNodeId)) {
+        planLog.log(
+          `${task.id}: planning claim skipped — effective node ${effectiveNode.nodeId ?? "local"} is not this node`,
+        );
+        return;
+      }
 
       /*
       FNXC:PlanReview 2026-07-19-00:22 (U3):
