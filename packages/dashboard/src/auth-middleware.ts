@@ -27,7 +27,16 @@ export const TOKEN_QUERY_PARAM = "fn_token";
  *   (constant-time) and rejects browser-context requests (Origin/Host CSRF
  *   defense). It must therefore bypass the daemon-token gate, not weaken it.
  */
-const EXEMPT_PATHS = ["/api/health", "/api/cli-agent/hooks"];
+const PREFIX_EXEMPT_PATHS = ["/api/health", "/api/cli-agent/hooks"];
+/**
+ * Exact machine-ingest endpoints with their own mandatory, constant-time
+ * `FUSION_MONITOR_INGEST_SECRET` bearer check. Nested paths and monitor reads
+ * deliberately remain behind daemon authentication.
+ */
+const EXACT_EXEMPT_PATHS = new Set([
+  "/api/monitor/incidents",
+  "/api/monitor/deployments",
+]);
 
 /**
  * Only /api/* paths are gated by this middleware. The SPA shell (index.html,
@@ -76,7 +85,8 @@ export function getDaemonToken(options?: { daemon?: { token: string }; noAuth?: 
  * Check if a request path is exempt from authentication.
  */
 function isExemptPath(path: string): boolean {
-  return EXEMPT_PATHS.some((exempt) => path === exempt || path.startsWith(exempt + "/"));
+  return EXACT_EXEMPT_PATHS.has(path)
+    || PREFIX_EXEMPT_PATHS.some((exempt) => path === exempt || path.startsWith(exempt + "/"));
 }
 
 /**

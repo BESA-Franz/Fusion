@@ -94,6 +94,35 @@ describe("createAuthMiddleware", () => {
     expect(mockRes.status).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "/api/monitor/incidents",
+    "/api/monitor/deployments",
+  ])("exempts the independently authenticated monitor ingest route %s", (path) => {
+    mockReq.path = path;
+    mockReq.headers = { authorization: "Bearer dedicated-monitor-token" };
+
+    const middleware = createAuthMiddleware("fn_abc123def456789");
+    middleware(mockReq as Request, mockRes as Response, nextFn);
+
+    expect(nextFn).toHaveBeenCalled();
+    expect(mockRes.status).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "/api/monitor/metrics",
+    "/api/monitor/incidents/extra",
+    "/api/monitor/deployments/extra",
+  ])("keeps the non-ingest monitor path %s behind daemon auth", (path) => {
+    mockReq.path = path;
+    mockReq.headers = { authorization: "Bearer dedicated-monitor-token" };
+
+    const middleware = createAuthMiddleware("fn_abc123def456789");
+    middleware(mockReq as Request, mockRes as Response, nextFn);
+
+    expect(mockRes.status).toHaveBeenCalledWith(401);
+    expect(nextFn).not.toHaveBeenCalled();
+  });
+
   it("handles tokens of different lengths without crashing", () => {
     // Test with shorter token
     mockReq.headers = { authorization: "Bearer short" };
