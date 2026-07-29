@@ -27,6 +27,13 @@ describe("Docker configuration", () => {
     expect(fromInstructions.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("builds only the production workspace dependency closure", () => {
+    const dockerfile = readFileSync(dockerfilePath, "utf8");
+
+    expect(dockerfile).toContain('pnpm --filter "@runfusion/fusion..." build');
+    expect(dockerfile).not.toMatch(/^RUN pnpm build$/m);
+  });
+
   it("installs git and uses deterministic pnpm installs", () => {
     const dockerfile = readFileSync(dockerfilePath, "utf8");
 

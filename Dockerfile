@@ -52,7 +52,10 @@ COPY plugins/fusion-plugin-reports/package.json ./plugins/fusion-plugin-reports/
 RUN pnpm install --frozen-lockfile
 
 COPY . .
-RUN pnpm build
+# Build the production CLI and its complete workspace dependency closure. The
+# runner only ships CLI, core, engine, and dashboard artifacts, so unrelated
+# examples and non-runtime workspaces must not extend production image builds.
+RUN pnpm --filter "@runfusion/fusion..." build
 
 FROM node:22-slim AS runner
 LABEL org.opencontainers.image.source="https://github.com/gsxdsm/fusion"
