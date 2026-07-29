@@ -17829,10 +17829,21 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
    * resolved SHA of the dep's tip — that's what gets squash-merged.
    */
   private async planSquashImportFromDep(
-    _taskId: string,
+    taskId: string,
     depTip: string,
     originalStartPoint: string | undefined,
   ): Promise<{ depTip: string; mainBase: string; label: string } | null> {
+    /*
+     * Only scheduler-derived dependency starts belong on the squash-import path.
+     * An explicit task.baseBranch is an operator-selected integration baseline and
+     * must remain the actual worktree start point; treating it like a sibling task
+     * branch silently replaces it with the ambient root HEAD.
+     */
+    const task = await this.store.getTask(taskId).catch(() => null);
+    if (!task?.executionStartBranch?.trim()) {
+      return null;
+    }
+
     let settings;
     try {
       settings = await this.store.getSettings();
