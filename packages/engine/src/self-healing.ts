@@ -10420,6 +10420,27 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           const fresh = await this.store.getTask(task.id);
           const latestExecutingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
           if (!fresh) continue;
+          /*
+          FNXC:NodeWorktreeIsolation 2026-07-29-04:20 (FN-6756 — enumerate the planner-liveness gate):
+          `latestExecutingIds` is TaskExecutor-owned and therefore blind to a triage
+          PLANNING session, exactly as `clearPhantomExecutorBinding`'s four session
+          maps were. This sweep does not merely clear a binding — it moves the card
+          to `todo` FIRST and then releases the worktree ownership, so an
+          executor-only gate lets a live planner be requeued and stripped of its
+          worktree by a second door after the leaked-slot reaper's was closed.
+
+          That is precisely how this bug survived its first fix: FN-8600 was fixed at
+          the reclaim sweep and never enumerated to the leaked-slot reaper. Gate on
+          the registry here so a registered session surface of ANY kind defers the
+          recovery to a later sweep, when the session has finished and released.
+          */
+          const livePlannerPaths = activeSessionRegistry
+            .pathsForTask(fresh.id)
+            .filter((path) => activeSessionRegistry.isPathActive(path));
+          if (livePlannerPaths.length > 0) {
+            log.debug(`[self-healing] deferring pause-abort recovery for ${fresh.id}: ${livePlannerPaths.length} live session path(s) registered`);
+            continue;
+          }
           const route = this.classifyPausedAbortWorkflowRecovery(fresh, settings, latestExecutingIds.has(fresh.id));
           if (route.kind === "no-action") {
             continue;
@@ -10462,7 +10483,19 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           // FNXC:WorkflowLifecycle 2026-06-20-00:00: use clearPhantomExecutorBinding
           // (wired + live-session-refusal guarded), NOT releaseExecutorWorktreeOwnership
           // which is a declared-but-never-wired option — it would silently no-op.
-          this.options.clearPhantomExecutorBinding?.(task.id);
+          /*
+          FNXC:NodeWorktreeIsolation 2026-07-29-04:20 (FN-6756 — honor the refusal):
+          The return value was DISCARDED here, so the refusal that the other two
+          callers treat as a stop signal did nothing on this path: a live session's
+          binding was reported cleared whether or not the clear happened. Honoring it
+          is defense-in-depth behind the registry gate above — matching caller 1's
+          reasoning that even if a future liveness signal slips past the pre-gate, a
+          refused clear must not be narrated as a successful release.
+          */
+          const phantomReleased = this.options.clearPhantomExecutorBinding?.(task.id);
+          if (phantomReleased === false) {
+            log.warn(`[self-healing] pause-abort recovery for ${task.id}: worktree ownership retained — a live session surface refused the release`);
+          }
 
           await this.store.logEntry(
             task.id,
