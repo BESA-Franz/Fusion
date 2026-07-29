@@ -11065,6 +11065,24 @@ export class TaskExecutor {
     this.graphRouting.add(task.id);
     let graphRunnerOwnsClaim = false;
     try {
+      /*
+      FNXC:SharedDbNodeRouting 2026-07-29-04:05:
+      Every direct and delayed execution continuation must re-check authoritative
+      node ownership before graph entry. Event listeners and the scheduler already
+      gate their normal dispatch paths, but recovery callbacks can call execute()
+      directly on every process sharing PostgreSQL. Without this final boundary a
+      foreign node can read an empty node-local PROMPT.md and move the live owner's
+      task back to triage while that owner is already editing its worktree.
+      */
+      const latestTask = await this.store.getTask(task.id);
+      if (!canExecuteTaskOnNode(latestTask, this.options.getLocalNodeId?.())) {
+        executorLog.log(
+          `Skipping direct execute() for ${latestTask.id} — assigned to ${latestTask.effectiveNodeId ?? latestTask.nodeId}`,
+        );
+        return;
+      }
+      task = latestTask;
+
       await this.clearStalePauseAbortBeforeDispatch(task);
       if (await this.blockOuterDispatchWhenDependenciesUnmet(task)) {
         // FNXC:GlobalConcurrencyControls 2026-07-14-18:30: release any scheduler pre-held slot when outer dispatch aborts before agent work starts.
