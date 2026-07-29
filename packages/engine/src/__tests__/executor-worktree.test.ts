@@ -2283,7 +2283,7 @@ describe("TaskExecutor dependency-based worktree creation", () => {
     } as any);
   });
 
-  it("creates worktree from baseBranch when set on task", async () => {
+  it("creates worktree from executionStartBranch when set on task", async () => {
     const store = createMockStore();
     const executor = new TaskExecutor(store, "/tmp/test");
 
@@ -2305,6 +2305,26 @@ describe("TaskExecutor dependency-based worktree creation", () => {
     );
     expect(worktreeAddCalls.length).toBeGreaterThan(0);
     expect(worktreeAddCalls[0][0]).toContain("fusion/fn-059");
+  });
+
+  it("creates a fresh worktree from the task's explicit baseBranch when executionStartBranch is absent", async () => {
+    const store = createMockStore();
+    const executor = new TaskExecutor(store, "/tmp/test");
+
+    store._setRow("FN-060B", {
+      baseBranch: "codex/erp-mvp-foundation",
+      executionStartBranch: null,
+    });
+    await executor.execute(makeTask({
+      id: "FN-060B",
+      baseBranch: "codex/erp-mvp-foundation",
+    }));
+
+    const worktreeAddCalls = mockedExecSync.mock.calls.filter(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("worktree add -b"),
+    );
+    expect(worktreeAddCalls.length).toBeGreaterThan(0);
+    expect(worktreeAddCalls[0][0]).toContain('"codex/erp-mvp-foundation"');
   });
 
   it("creates worktree from integration branch when baseBranch is not set", async () => {
