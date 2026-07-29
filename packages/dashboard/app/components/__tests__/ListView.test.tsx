@@ -1,3 +1,4 @@
+import React from "react";
 import { readFileSync } from "node:fs";
 import { describe, it, expect, vi } from "vitest";
 import { useEffect, useState } from "react";
@@ -641,6 +642,36 @@ describe("ListView unmapped-workflow self-heal", () => {
     await new Promise((resolve) => setTimeout(resolve, 400));
 
     expect(forcedCalls).toBe(1);
+  });
+
+  /*
+  FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile):
+  StrictMode replays effects as mount -> cleanup -> mount while PRESERVING refs. A
+  mounted latch that is only ever cleared stays `false` after the replay, so every
+  deferred continuation exits at the guard and the repair is silently dead for the whole
+  session — in production, since the dashboard root uses StrictMode.
+
+  REVERT CHECK: remove `mountedRef.current = true` from the effect SETUP and this fails —
+  no forced fetch is ever issued under StrictMode.
+  */
+  it("still repairs under StrictMode effect replay", async () => {
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({ ...DEFAULT_LANE_PAYLOAD, taskWorkflowIds: {} });
+
+    render(
+      <React.StrictMode>
+        <ListView
+          tasks={[createMockTask({ id: "FN-908", column: "todo", title: "Strict card" })]}
+          projectId={TEST_PROJECT_ID}
+          onMoveTask={vi.fn()}
+          onOpenDetail={vi.fn()}
+          addToast={mockAddToast}
+        />
+      </React.StrictMode>,
+    );
+
+    await waitFor(() => {
+      expect(vi.mocked(fetchBoardWorkflows).mock.calls.filter(([, o]) => o?.forceFresh === true).length).toBeGreaterThan(0);
+    }, { timeout: 2000 });
   });
 
   it("does not refetch when every rendered task is mapped", async () => {

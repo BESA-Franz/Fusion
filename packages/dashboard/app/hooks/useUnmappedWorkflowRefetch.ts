@@ -199,8 +199,19 @@ export function useUnmappedWorkflowRefetch(params: {
     attemptRepair(0);
   }, [attemptRepair, boardWorkflows, isTaskWorkflowMappingSuspect, tasks, workflowMode]);
 
-  useEffect(() => () => {
-    mountedRef.current = false;
-    if (unmappedRefetchTimerRef.current) clearTimeout(unmappedRefetchTimerRef.current);
+  /*
+  FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile):
+  SET IT TRUE ON SETUP, not just false on teardown. React StrictMode replays effects as
+  mount -> cleanup -> mount while PRESERVING refs, so a latch only ever cleared would be
+  left `false` after the replay and every deferred continuation would exit at the guard —
+  the repair silently disabled for the whole session, in production, which is the exact
+  defect class this unit exists to remove. I introduced it while fixing one.
+  */
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (unmappedRefetchTimerRef.current) clearTimeout(unmappedRefetchTimerRef.current);
+    };
   }, []);
 }
