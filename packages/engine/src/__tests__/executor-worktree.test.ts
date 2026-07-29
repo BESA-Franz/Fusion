@@ -1785,6 +1785,98 @@ describe("TaskExecutor worktree recovery", () => {
     );
   });
 
+  it("fast-forwards a reused branch that is strictly behind the requested start point", async () => {
+    const store = createMockStore();
+    mockedExistsSync.mockReturnValue(false);
+
+    mockedExecSync.mockImplementation((cmd: string | string[]) => {
+      const command = typeof cmd === "string" ? cmd : cmd[0];
+      if (command.includes('git worktree add -b "fusion/fn-050"')) {
+        const error: any = new Error("fatal: a branch named 'fusion/fn-050' already exists");
+        error.stderr = Buffer.from("fatal: a branch named 'fusion/fn-050' already exists");
+        throw error;
+      }
+      if (command.includes('git rev-parse --verify "fusion/fn-050^{commit}"')) {
+        return Buffer.from("1111111111111111111111111111111111111111\n");
+      }
+      if (command.includes('git rev-parse --verify "2222222222222222222222222222222222222222^{commit}"')) {
+        return Buffer.from("2222222222222222222222222222222222222222\n");
+      }
+      return Buffer.from("");
+    });
+
+    const executor = new TaskExecutor(store, "/tmp/test");
+    const result = await (executor as any).tryCreateWorktree(
+      "fusion/fn-050",
+      "/tmp/test/.worktrees/swift-falcon",
+      "FN-050",
+      "2222222222222222222222222222222222222222",
+      0,
+      0,
+      false,
+      {},
+    );
+
+    expect(result).toEqual({
+      path: "/tmp/test/.worktrees/swift-falcon",
+      branch: "fusion/fn-050",
+    });
+    expect(mockedExecSync).toHaveBeenCalledWith(
+      "git branch -f 'fusion/fn-050' '2222222222222222222222222222222222222222'",
+      expect.any(Object),
+    );
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-050",
+      expect.stringContaining("Fast-forwarded stale existing branch fusion/fn-050"),
+      expect.stringContaining("1111111 -> 2222222"),
+    );
+  });
+
+  it("preserves a reused branch when it is not an ancestor of the requested start point", async () => {
+    const store = createMockStore();
+    mockedExistsSync.mockReturnValue(false);
+
+    mockedExecSync.mockImplementation((cmd: string | string[]) => {
+      const command = typeof cmd === "string" ? cmd : cmd[0];
+      if (command.includes('git worktree add -b "fusion/fn-050"')) {
+        const error: any = new Error("fatal: a branch named 'fusion/fn-050' already exists");
+        error.stderr = Buffer.from("fatal: a branch named 'fusion/fn-050' already exists");
+        throw error;
+      }
+      if (command.includes('git rev-parse --verify "fusion/fn-050^{commit}"')) {
+        return Buffer.from("3333333333333333333333333333333333333333\n");
+      }
+      if (command.includes('git rev-parse --verify "2222222222222222222222222222222222222222^{commit}"')) {
+        return Buffer.from("2222222222222222222222222222222222222222\n");
+      }
+      if (command.includes("git merge-base --is-ancestor")) {
+        const error: any = new Error("not an ancestor");
+        error.status = 1;
+        throw error;
+      }
+      return Buffer.from("");
+    });
+
+    const executor = new TaskExecutor(store, "/tmp/test");
+    await (executor as any).tryCreateWorktree(
+      "fusion/fn-050",
+      "/tmp/test/.worktrees/swift-falcon",
+      "FN-050",
+      "2222222222222222222222222222222222222222",
+      0,
+      0,
+      false,
+      {},
+    );
+
+    expect(mockedExecSync.mock.calls.some(([command]) => String(command).startsWith("git branch -f "))).toBe(false);
+    expect(store.logEntry).not.toHaveBeenCalledWith(
+      "FN-050",
+      expect.stringContaining("Fast-forwarded stale existing branch"),
+      expect.anything(),
+    );
+  });
+
   it("runs git worktree prune before branch deletion for stale references", async () => {
     const store = createMockStore();
     let callCount = 0;

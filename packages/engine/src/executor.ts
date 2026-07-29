@@ -18344,6 +18344,54 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
     return false;
   }
 
+  /**
+   * A retry may find the task branch left behind by an earlier no-change run.
+   * Reusing that ref verbatim can silently start the new worktree from an old
+   * base. Advance it only when Git proves that its tip is an ancestor of the
+   * requested start point; a divergent branch or one with task commits is
+   * intentionally preserved.
+   */
+  private async fastForwardStaleExistingBranch(
+    branch: string,
+    startPoint: string | undefined,
+    taskId: string,
+  ): Promise<void> {
+    if (!startPoint) return;
+
+    try {
+      const [{ stdout: branchStdout }, { stdout: startStdout }] = await Promise.all([
+        execAsync(`git rev-parse --verify "${branch}^{commit}"`, { cwd: this.rootDir }),
+        execAsync(`git rev-parse --verify "${startPoint}^{commit}"`, { cwd: this.rootDir }),
+      ]);
+      const branchTip = branchStdout.trim();
+      const startTip = startStdout.trim();
+      if (!branchTip || !startTip || branchTip === startTip) return;
+
+      try {
+        await execAsync(
+          `git merge-base --is-ancestor ${this.quoteShellArg(branchTip)} ${this.quoteShellArg(startTip)}`,
+          { cwd: this.rootDir },
+        );
+      } catch {
+        return;
+      }
+
+      await execAsync(
+        `git branch -f ${this.quoteShellArg(branch)} ${this.quoteShellArg(startTip)}`,
+        { cwd: this.rootDir },
+      );
+      await this.store.logEntry(
+        taskId,
+        `Fast-forwarded stale existing branch ${branch} to requested worktree base`,
+        `${branchTip.slice(0, 7)} -> ${startTip.slice(0, 7)}`,
+      );
+    } catch (error: unknown) {
+      executorLog.warn(
+        `${taskId}: could not align existing branch ${branch} with requested base; preserving it (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+  }
+
   private async tryCreateWorktree(
     branch: string,
     path: string,
@@ -18527,6 +18575,7 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
 
       // Try creating from existing branch (branch might already exist)
       try {
+        await this.fastForwardStaleExistingBranch(branch, startPoint, taskId);
         await createFromExistingBranch();
         executorLog.log(`Worktree created from existing branch: ${path}`);
         await installGuardOrCleanup();
