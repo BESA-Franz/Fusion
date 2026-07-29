@@ -74,6 +74,14 @@ export function useUnmappedWorkflowRefetch(params: {
   /** True from firing a forced refresh until it settles. The timer ref is already
    *  cleared by then, so without this the effect re-arms mid-flight. */
   const repairInFlightRef = useRef(false);
+  /*
+  FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — CodeRabbit):
+  MOUNTED LATCH. The unmount cleanup can only clear the timer that EXISTS at unmount. A
+  forced refresh still in flight settles afterwards, its continuation passes the project
+  check (the ref is unchanged by unmounting), and it schedules a timer nobody will ever
+  clear — which then fires a refresh for a dead view. Both continuations check this.
+  */
+  const mountedRef = useRef(true);
 
   /*
   Abandon anything in flight when the project changes: cancel the pending timer, drop
@@ -125,6 +133,7 @@ export function useUnmappedWorkflowRefetch(params: {
     const armedForProject = projectIdRef.current;
     unmappedRefetchTimerRef.current = setTimeout(() => {
       unmappedRefetchTimerRef.current = null;
+      if (!mountedRef.current) return;
       // The board moved on: this repair belongs to a project no longer shown.
       if (projectIdRef.current !== armedForProject) return;
       const latestWorkflows = boardWorkflowsRef.current;
@@ -147,8 +156,8 @@ export function useUnmappedWorkflowRefetch(params: {
       if (settled && typeof (settled as Promise<void>).finally === "function") {
         void (settled as Promise<void>).finally(() => {
           repairInFlightRef.current = false;
-          // Same check on the settle path: a request that outlived a project switch
-          // must not schedule a follow-up through the old project's closure.
+          // A request can outlive BOTH the mount and the project it was armed for.
+          if (!mountedRef.current) return;
           if (projectIdRef.current !== armedForProject) return;
           attemptRepair(RETRY_DELAY_MS);
         });
@@ -191,6 +200,7 @@ export function useUnmappedWorkflowRefetch(params: {
   }, [attemptRepair, boardWorkflows, isTaskWorkflowMappingSuspect, tasks, workflowMode]);
 
   useEffect(() => () => {
+    mountedRef.current = false;
     if (unmappedRefetchTimerRef.current) clearTimeout(unmappedRefetchTimerRef.current);
   }, []);
 }

@@ -611,6 +611,38 @@ describe("ListView unmapped-workflow self-heal", () => {
     expect(forcedProjects.filter((id) => id === "project-a")).toHaveLength(1);
   });
 
+  /*
+  FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — CodeRabbit):
+  A repair in flight at UNMOUNT must not resume. The cleanup can only clear the timer
+  that exists at unmount; a settling request afterwards would schedule a fresh timer
+  nobody will ever clear, and fire a refresh for a view that is gone.
+
+  REVERT CHECK: drop the `mountedRef` guards and this fails — a forced fetch is issued
+  after the component has been unmounted.
+  */
+  it("does not resume a repair that settles after unmount", async () => {
+    const unmappedPayload = { ...DEFAULT_LANE_PAYLOAD, taskWorkflowIds: {} };
+    let releaseFirstForced: (() => void) | undefined;
+    let forcedCalls = 0;
+    vi.mocked(fetchBoardWorkflows).mockImplementation((_projectId?: string, options?: { forceFresh?: boolean }) => {
+      if (options?.forceFresh !== true) return Promise.resolve(unmappedPayload);
+      forcedCalls += 1;
+      if (forcedCalls === 1) {
+        return new Promise((resolve) => { releaseFirstForced = () => resolve(unmappedPayload); });
+      }
+      return Promise.resolve(unmappedPayload);
+    });
+
+    const view = renderListView({ tasks: [createMockTask({ id: "FN-907", column: "todo", title: "Unmount card" })] });
+    await waitFor(() => expect(forcedCalls).toBe(1));
+
+    view.unmount();
+    await act(async () => { releaseFirstForced?.(); await Promise.resolve(); });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(forcedCalls).toBe(1);
+  });
+
   it("does not refetch when every rendered task is mapped", async () => {
     const mapped = { ...DEFAULT_LANE_PAYLOAD, taskWorkflowIds: { "FN-902": "builtin:coding" } };
     vi.mocked(fetchBoardWorkflows).mockResolvedValue(mapped);
