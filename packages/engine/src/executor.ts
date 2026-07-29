@@ -2698,6 +2698,33 @@ export class TaskExecutor {
    * FNXC:ExecutorBinding 2026-06-30-00:00:
    * `preserveWorktrees: true` is the FN-6736 self-healing path. When the caller has already committed to `moveTask(..., { preserveWorktree: true })`, unregistering the held worktree path from `activeSessionRegistry` defeats the preserve: re-dispatch then sees the path as free and re-acquires a brand-new worktree (observed on FN-7249: gentle-peach orphaned, rosy-thorn rebuilt ~20s after reclaim). The preserve variant clears only the in-memory executor/lock bookkeeping and leaves the session-registry path entry intact so the re-dispatch reattaches to the same worktree. Non-self-healing callers (leaked-slot reaper, pause-abort recovery) keep the default full-clear behavior.
    */
+  /*
+  FNXC:NodeWorktreeIsolation 2026-07-29-06:05 (FN-6756 — one liveness predicate, PR #2531 review):
+  READ-ONLY liveness probe, extracted so callers can ASK before they mutate.
+
+  `clearPhantomExecutorBinding` both answers "is this live?" and performs a
+  destructive release, which forced every caller into a false choice: check first
+  and release ownership before their own fallible writes (a torn write — ownership
+  gone, task un-repaired, nobody owning the repair), or write first and discover the
+  refusal too late. Splitting the question from the act lets a caller gate on
+  liveness with no side effect and release only after its writes have committed.
+
+  Deliberately the SAME expression the destructive path uses, not a copy: a probe
+  that could disagree with the guard it stands in for is worse than no probe, and
+  independent re-derivation of "liveness" at each call site is precisely how this
+  bug reached users three times (reclaim sweep -> leaked-slot reaper -> pause-abort).
+
+  Registry paths count. A triage PLANNING session is owned by TriageProcessor and
+  appears in NONE of the four executor-owned maps; it registers here instead.
+  */
+  hasLiveSessionSurface(taskId: string): boolean {
+    return this.activeSessions.has(taskId)
+      || this.activeStepExecutors.has(taskId)
+      || this.activeWorkflowStepSessions.has(taskId)
+      || this.activeCliTaskSessions.has(taskId)
+      || activeSessionRegistry.pathsForTask(taskId).length > 0;
+  }
+
   clearPhantomExecutorBinding(taskId: string, options: { preserveWorktrees?: boolean } = {}): boolean {
     /*
     FNXC:NodeWorktreeIsolation 2026-07-29-02:10 (FN-6756 — planner worktrees reaped from under live planners):
@@ -2735,13 +2762,7 @@ export class TaskExecutor {
     NOT fixed by raising the grace period: a longer timeout only makes this rarer
     and harder to reproduce. The liveness gate is the bug.
     */
-    const registeredSessionPaths = activeSessionRegistry.pathsForTask(taskId);
-    const hasLiveSessionSurface = this.activeSessions.has(taskId)
-      || this.activeStepExecutors.has(taskId)
-      || this.activeWorkflowStepSessions.has(taskId)
-      || this.activeCliTaskSessions.has(taskId)
-      || registeredSessionPaths.length > 0;
-    if (hasLiveSessionSurface) {
+    if (this.hasLiveSessionSurface(taskId)) {
       executorLog.warn(`${taskId}: refusing to clear phantom executor binding because a live session surface is still registered`);
       return false;
     }

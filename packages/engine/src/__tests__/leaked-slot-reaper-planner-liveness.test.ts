@@ -225,11 +225,13 @@ describe("FN-6756: a live planner's worktree survives the leaked-slot reaper", (
       recordRunAuditEvent: vi.fn(async () => undefined),
     };
 
+    const executorProbe = makeExecutorWithHeldWorktree(PLANNER_TASK, PLANNER_WORKTREE);
     const clearPhantomExecutorBinding = vi.fn(() => true);
     const manager = Object.create(SelfHealingManager.prototype) as SelfHealingManager;
     (manager as unknown as Record<string, unknown>).store = store;
     (manager as unknown as Record<string, unknown>).options = {
       getExecutingTaskIds: () => new Set<string>(),
+      hasLiveSessionSurface: (id: string) => executorProbe.hasLiveSessionSurface(id),
       clearPhantomExecutorBinding,
     };
 
@@ -256,7 +258,7 @@ describe("FN-6756: a live planner's worktree survives the leaked-slot reaper", (
   but an executor session surface is live. That is the defense-in-depth branch, and
   it asserts the full no-op: no un-park, no move, no log, no audit, no count.
   */
-  it("a refused release aborts pause-abort recovery without logging, auditing or counting it", async () => {
+  it("a live executor session defers pause-abort recovery without logging, auditing or counting it", async () => {
     const taskId = "FN-6756-REFUSED";
     const executor = makeExecutorWithHeldWorktree(taskId, "/tmp/fn-6756-refused-worktree");
     // Live EXECUTOR session surface, and NO registry entry — so the registry
@@ -287,6 +289,7 @@ describe("FN-6756: a live planner's worktree survives the leaked-slot reaper", (
     (manager as unknown as Record<string, unknown>).store = store;
     (manager as unknown as Record<string, unknown>).options = {
       getExecutingTaskIds: () => new Set<string>(),
+      hasLiveSessionSurface: (id: string) => executor.hasLiveSessionSurface(id),
       clearPhantomExecutorBinding: (id: string) => executor.clearPhantomExecutorBinding(id),
     };
 
@@ -300,6 +303,62 @@ describe("FN-6756: a live planner's worktree survives the leaked-slot reaper", (
     // ...and the worktree the live session is using survives.
     expect(
       (executor as unknown as { activeWorktrees: Map<string, Set<string>> }).activeWorktrees.has(taskId),
+    ).toBe(true);
+  });
+
+
+  /*
+  FNXC:NodeWorktreeIsolation 2026-07-29-06:05 (FN-6756 — the torn write, PR #2531 review):
+  ORDERING. greptile caught that my first correction traded one fault for another:
+  hoisting the release ABOVE the fallible writes meant an `updateTask`/`moveTask`
+  rejection landed AFTER ownership had already been given up — the task un-repaired,
+  the slot released, and nothing owning the repair. Same shape U12 hit on re-home:
+  irreversible step committed before the fallible step.
+
+  The release now runs LAST. This drives a write failure and asserts ownership is
+  still held, so the next sweep can retry against intact state.
+  */
+  it("keeps worktree ownership when a recovery write fails", async () => {
+    const taskId = "FN-6756-TORN";
+    const worktree = "/tmp/fn-6756-torn-worktree";
+    const executor = makeExecutorWithHeldWorktree(taskId, worktree);
+
+    const parkedTask = {
+      id: taskId,
+      column: "in-progress",
+      status: "failed",
+      error: `${PAUSE_ABORT_PARK_ERROR_MARKER} — ${PAUSE_ABORT_PARK_OPERATOR_MARKER}`,
+      paused: false,
+      userPaused: false,
+      steps: [],
+    };
+    const store = {
+      getSettings: vi.fn(async () => ({ globalPause: false, enginePaused: false })),
+      listTasks: vi.fn(async () => [parkedTask]),
+      getTask: vi.fn(async () => parkedTask),
+      // The fallible write rejects, exactly as a store conflict would.
+      updateTask: vi.fn(async () => { throw new Error("store rejected the un-park"); }),
+      moveTask: vi.fn(async () => undefined),
+      logEntry: vi.fn(async () => undefined),
+      recordRunAuditEvent: vi.fn(async () => undefined),
+    };
+
+    const clearPhantomExecutorBinding = vi.fn((id: string) => executor.clearPhantomExecutorBinding(id));
+    const manager = Object.create(SelfHealingManager.prototype) as SelfHealingManager;
+    (manager as unknown as Record<string, unknown>).store = store;
+    (manager as unknown as Record<string, unknown>).options = {
+      getExecutingTaskIds: () => new Set<string>(),
+      hasLiveSessionSurface: (id: string) => executor.hasLiveSessionSurface(id),
+      clearPhantomExecutorBinding,
+    };
+
+    const recovered = await manager.recoverPausedAbortFailures();
+
+    expect(recovered, "a failed write must not count as a recovery").toBe(0);
+    expect(clearPhantomExecutorBinding, "ownership must not be released before the writes commit").not.toHaveBeenCalled();
+    expect(
+      (executor as unknown as { activeWorktrees: Map<string, Set<string>> }).activeWorktrees.has(taskId),
+      "ownership must survive so the next sweep retries against intact state",
     ).toBe(true);
   });
 });
