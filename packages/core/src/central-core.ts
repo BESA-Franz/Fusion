@@ -3425,7 +3425,14 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
 
     const existingNode = await this.getNodeByName(name);
     if (existingNode && existingNode.status !== "offline") {
-      await this.updateNode(existingNode.id, { status: "offline" });
+      /*
+       * mDNS is only a discovery hint. A registered node can remain reachable
+       * through its explicit URL after its transient DNS-SD advertisement
+       * disappears (for example across Tailscale subnet boundaries). Reuse the
+       * authoritative health probe instead of overwriting a successful HTTPS
+       * status with the weaker discovery signal.
+       */
+      await this.checkNodeHealth(existingNode.id);
     }
 
     this.emit("discovery:node:lost", name);
