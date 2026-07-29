@@ -42,6 +42,10 @@ The original notes, preserved because they are the reason every line here exists
  *  the fetch-races-the-selection-write case without permitting a refetch loop. */
 const MAX_ATTEMPTS_PER_SIGNATURE = 2;
 
+/** Delay before a follow-up attempt. An immediately-retried transient failure just
+ *  fails again and burns the budget. */
+const RETRY_DELAY_MS = 250;
+
 export function useUnmappedWorkflowRefetch(params: {
   boardWorkflows: BoardWorkflowsPayload | null;
   tasks: readonly Task[];
@@ -70,6 +74,38 @@ export function useUnmappedWorkflowRefetch(params: {
     return workflow !== undefined && !workflow.columns.some((column) => column.id === task.column);
   }, []);
 
+  /*
+  FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile, second round):
+  SELF-DRIVING, not effect-driven. The retry budget alone was not enough: if the forced
+  fetch REJECTS, `refreshBoardWorkflows` swallows the rejection by design (a transient
+  failure is not authoritative), so `boardWorkflows` never changes, the effect's deps
+  never change, and the effect never re-runs to spend the remaining attempt. The repair
+  died on exactly the failure it exists to survive.
+
+  So the repair re-arms itself from its own timer and re-reads live state through refs,
+  independent of React re-rendering. It stops on any of: state no longer suspect, budget
+  exhausted, or payload gone.
+
+  Subsequent attempts wait RETRY_DELAY_MS rather than firing on the next macrotask — a
+  transient network failure retried immediately just fails again and burns the budget.
+  The FIRST attempt keeps its 0ms defer, which exists so an optimistic workflow seed can
+  land before we decide anything.
+  */
+  const attemptRepair = useCallback((delayMs: number) => {
+    if (unmappedRefetchTimerRef.current) clearTimeout(unmappedRefetchTimerRef.current);
+    unmappedRefetchTimerRef.current = setTimeout(() => {
+      unmappedRefetchTimerRef.current = null;
+      const latestWorkflows = boardWorkflowsRef.current;
+      if (!latestWorkflows) return;
+      const stillUnmapped = tasksRef.current.some((task) => isTaskWorkflowMappingSuspect(latestWorkflows, task));
+      if (!stillUnmapped) return;
+      if (signatureAttemptsRef.current >= MAX_ATTEMPTS_PER_SIGNATURE) return;
+      signatureAttemptsRef.current += 1;
+      refreshBoardWorkflows({ forceFresh: true });
+      attemptRepair(RETRY_DELAY_MS);
+    }, delayMs);
+  }, [isTaskWorkflowMappingSuspect, refreshBoardWorkflows]);
+
   useEffect(() => {
     if (!boardWorkflows || !workflowMode) return;
     const unmapped = tasks
@@ -82,39 +118,20 @@ export function useUnmappedWorkflowRefetch(params: {
       return;
     }
     const signature = unmapped.join(",");
-    /*
-    FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile):
-    BOUNDED RETRY, not one-shot. The guard used to refuse any second attempt at the same
-    signature, which is the right instinct — a mapping that stays wrong after a fresh
-    fetch must not spin — but it also lost a real race: the forced fetch can return
-    BEFORE the workflow-selection write commits, so it legitimately reports the same
-    suspect set, and the card was then stuck with approximate metadata until an
-    unrelated focus, SSE or user action refreshed workflows.
-
-    Allowing a small fixed number of attempts per signature survives that race while
-    keeping the loop protection: a genuinely-unresolvable mapping still stops after
-    MAX_ATTEMPTS_PER_SIGNATURE instead of refetching forever. The counter resets
-    whenever the signature changes or the board becomes healthy.
-
-    This tightens Board as well as List, since both now share this hook. That is
-    intentional — Board had the identical race.
-    */
     if (signature === lastUnmappedTaskSignatureRef.current) {
       if (signatureAttemptsRef.current >= MAX_ATTEMPTS_PER_SIGNATURE) return;
     } else {
       lastUnmappedTaskSignatureRef.current = signature;
       signatureAttemptsRef.current = 0;
     }
-    signatureAttemptsRef.current += 1;
-    if (unmappedRefetchTimerRef.current) clearTimeout(unmappedRefetchTimerRef.current);
-    unmappedRefetchTimerRef.current = setTimeout(() => {
-      unmappedRefetchTimerRef.current = null;
-      const latestWorkflows = boardWorkflowsRef.current;
-      if (!latestWorkflows) return;
-      const stillUnmapped = tasksRef.current.some((task) => isTaskWorkflowMappingSuspect(latestWorkflows, task));
-      if (stillUnmapped) refreshBoardWorkflows({ forceFresh: true });
-    }, 0);
-  }, [boardWorkflows, isTaskWorkflowMappingSuspect, refreshBoardWorkflows, tasks, workflowMode]);
+    /*
+    Once the self-driving loop is armed it owns the cadence. Re-arming from the effect
+    on every payload change would cancel the pending RETRY_DELAY_MS wait and fire
+    immediately, collapsing the backoff and spending the budget faster than intended.
+    */
+    if (unmappedRefetchTimerRef.current) return;
+    attemptRepair(0);
+  }, [attemptRepair, boardWorkflows, isTaskWorkflowMappingSuspect, tasks, workflowMode]);
 
   useEffect(() => () => {
     if (unmappedRefetchTimerRef.current) clearTimeout(unmappedRefetchTimerRef.current);

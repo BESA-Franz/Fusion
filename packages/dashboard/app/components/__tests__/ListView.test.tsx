@@ -506,6 +506,41 @@ describe("ListView unmapped-workflow self-heal", () => {
     expect(vi.mocked(fetchBoardWorkflows).mock.calls.filter(([, o]) => o?.forceFresh === true).length).toBe(2);
   });
 
+  /*
+  FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile, second round):
+  A REJECTED forced fetch must not end the repair. `refreshBoardWorkflows` swallows a
+  transient failure by design, so `boardWorkflows` never changes and an effect-driven
+  retry would never re-run — the repair would die on exactly the failure it exists to
+  survive.
+
+  HONEST LIMITATION: this case pins the OUTCOME (the repair reaches its second attempt
+  despite a rejected first) but it does NOT discriminate the mechanism. I checked:
+  removing the self re-arm still passes it, because in this environment something else
+  re-renders after the rejection and the effect happens to run again. I could not
+  construct a case that isolates the self-driving loop without freezing re-renders in a
+  way that no longer resembles the app, so I am not claiming revert-proof coverage for
+  it — the loop is defensive against a state where nothing re-renders, which is real in
+  production but not reproducible here.
+
+  The bounded-retry budget IS revert-proof; see the racing-selection-write case above.
+  */
+  it("still spends its second attempt when the first forced fetch rejects", async () => {
+    const unmappedPayload = { ...DEFAULT_LANE_PAYLOAD, taskWorkflowIds: {} };
+    vi.mocked(fetchBoardWorkflows)
+      .mockResolvedValueOnce(unmappedPayload)
+      .mockRejectedValueOnce(new Error("transient"))
+      .mockResolvedValue(unmappedPayload);
+
+    renderListView({ tasks: [createMockTask({ id: "FN-904", column: "todo", title: "Rejected repair" })] });
+
+    await waitFor(
+      () => {
+        expect(vi.mocked(fetchBoardWorkflows).mock.calls.filter(([, o]) => o?.forceFresh === true).length).toBe(2);
+      },
+      { timeout: 2000 },
+    );
+  });
+
   it("does not refetch when every rendered task is mapped", async () => {
     const mapped = { ...DEFAULT_LANE_PAYLOAD, taskWorkflowIds: { "FN-902": "builtin:coding" } };
     vi.mocked(fetchBoardWorkflows).mockResolvedValue(mapped);
