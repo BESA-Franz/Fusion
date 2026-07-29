@@ -51,8 +51,18 @@ export function useUnmappedWorkflowRefetch(params: {
   tasks: readonly Task[];
   workflowMode: boolean;
   refreshBoardWorkflows: (options?: { forceFresh?: boolean }) => void | Promise<void>;
+  /*
+  FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile):
+  The project this repair belongs to. A repair pending across a PROJECT SWITCH would
+  otherwise resume through the OLD project's `refreshBoardWorkflows` closure, and that
+  stale request can claim the newest shared fetch sequence number — discarding the
+  CURRENT project's response and leaving the view without workflow metadata. Every
+  continuation checks this before doing anything.
+  */
+  projectId?: string;
 }): void {
-  const { boardWorkflows, tasks, workflowMode, refreshBoardWorkflows } = params;
+  const { boardWorkflows, tasks, workflowMode, refreshBoardWorkflows, projectId } = params;
+  const projectIdRef = useRef(projectId);
 
   const boardWorkflowsRef = useRef(boardWorkflows);
   boardWorkflowsRef.current = boardWorkflows;
@@ -64,6 +74,22 @@ export function useUnmappedWorkflowRefetch(params: {
   /** True from firing a forced refresh until it settles. The timer ref is already
    *  cleared by then, so without this the effect re-arms mid-flight. */
   const repairInFlightRef = useRef(false);
+
+  /*
+  Abandon anything in flight when the project changes: cancel the pending timer, drop
+  the in-flight latch, and reset the signature so the new project starts clean rather
+  than inheriting the previous board's attempt budget.
+  */
+  useEffect(() => {
+    projectIdRef.current = projectId;
+    if (unmappedRefetchTimerRef.current) {
+      clearTimeout(unmappedRefetchTimerRef.current);
+      unmappedRefetchTimerRef.current = null;
+    }
+    repairInFlightRef.current = false;
+    lastUnmappedTaskSignatureRef.current = null;
+    signatureAttemptsRef.current = 0;
+  }, [projectId]);
 
   const isTaskWorkflowMappingSuspect = useCallback((
     payload: NonNullable<typeof boardWorkflows>,
@@ -96,8 +122,11 @@ export function useUnmappedWorkflowRefetch(params: {
   */
   const attemptRepair = useCallback((delayMs: number) => {
     if (unmappedRefetchTimerRef.current) clearTimeout(unmappedRefetchTimerRef.current);
+    const armedForProject = projectIdRef.current;
     unmappedRefetchTimerRef.current = setTimeout(() => {
       unmappedRefetchTimerRef.current = null;
+      // The board moved on: this repair belongs to a project no longer shown.
+      if (projectIdRef.current !== armedForProject) return;
       const latestWorkflows = boardWorkflowsRef.current;
       if (!latestWorkflows) return;
       const stillUnmapped = tasksRef.current.some((task) => isTaskWorkflowMappingSuspect(latestWorkflows, task));
@@ -118,6 +147,9 @@ export function useUnmappedWorkflowRefetch(params: {
       if (settled && typeof (settled as Promise<void>).finally === "function") {
         void (settled as Promise<void>).finally(() => {
           repairInFlightRef.current = false;
+          // Same check on the settle path: a request that outlived a project switch
+          // must not schedule a follow-up through the old project's closure.
+          if (projectIdRef.current !== armedForProject) return;
           attemptRepair(RETRY_DELAY_MS);
         });
       } else {

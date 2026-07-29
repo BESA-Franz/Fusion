@@ -438,7 +438,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
 
   The refetch is deferred by one macrotask and re-checked against the latest state at fire time: the board's own quick-create commits the new task one microtask before applyOptimisticTaskWorkflow seeds it, so a synchronous refetch here would double-fire alongside the optimistic path. Deferring lets the seed land first — an already-mapped task is then skipped — so this only fetches for tasks that truly arrived without a workflow mapping.
   */
-  useUnmappedWorkflowRefetch({ boardWorkflows, tasks, workflowMode, refreshBoardWorkflows });
+  useUnmappedWorkflowRefetch({ boardWorkflows, tasks, workflowMode, refreshBoardWorkflows, projectId });
 
   const resolveWorkflowQuickCreateTarget = useCallback((targetWorkflowId: string, preferredColumnId?: string | null): ColumnId | undefined => {
     if (targetWorkflowId === ALL_WORKFLOWS_BOARD_VIEW_ID) return undefined;

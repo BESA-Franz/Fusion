@@ -575,6 +575,42 @@ describe("ListView unmapped-workflow self-heal", () => {
     await waitFor(() => expect(forcedCalls).toBe(2), { timeout: 2000 });
   });
 
+  /*
+  FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile):
+  A repair pending across a PROJECT SWITCH must abandon itself. Otherwise its
+  continuation runs through the OLD project's `refreshBoardWorkflows` closure, and that
+  stale request can claim the newest shared fetch sequence number — discarding the
+  CURRENT project's response and leaving the new board without workflow metadata.
+
+  REVERT CHECK: drop the `projectIdRef` comparison in the settle/timer continuations and
+  this fails — a forced fetch is issued for the OLD project after the switch.
+  */
+  it("abandons a pending repair when the project changes", async () => {
+    const unmappedPayload = { ...DEFAULT_LANE_PAYLOAD, taskWorkflowIds: {} };
+    let releaseFirstForced: (() => void) | undefined;
+    const forcedProjects: (string | undefined)[] = [];
+    vi.mocked(fetchBoardWorkflows).mockImplementation((projectId?: string, options?: { forceFresh?: boolean }) => {
+      if (options?.forceFresh !== true) return Promise.resolve(unmappedPayload);
+      forcedProjects.push(projectId);
+      if (forcedProjects.length === 1) {
+        return new Promise((resolve) => { releaseFirstForced = () => resolve(unmappedPayload); });
+      }
+      return Promise.resolve(unmappedPayload);
+    });
+
+    const tasks = [createMockTask({ id: "FN-906", column: "todo", title: "Switching card" })];
+    const view = renderListView({ tasks, projectId: "project-a" });
+    await waitFor(() => expect(forcedProjects).toEqual(["project-a"]));
+
+    // Switch projects while the repair is still in flight, then let it settle.
+    view.rerender(<ListView tasks={tasks} projectId="project-b" onMoveTask={vi.fn()} onOpenDetail={vi.fn()} addToast={mockAddToast} />);
+    await act(async () => { releaseFirstForced?.(); await Promise.resolve(); });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    // No follow-up may be issued for the project that is no longer displayed.
+    expect(forcedProjects.filter((id) => id === "project-a")).toHaveLength(1);
+  });
+
   it("does not refetch when every rendered task is mapped", async () => {
     const mapped = { ...DEFAULT_LANE_PAYLOAD, taskWorkflowIds: { "FN-902": "builtin:coding" } };
     vi.mocked(fetchBoardWorkflows).mockResolvedValue(mapped);

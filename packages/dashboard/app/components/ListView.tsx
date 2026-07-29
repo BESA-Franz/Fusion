@@ -785,7 +785,7 @@ export function ListView({
   so the degraded state persisted longest exactly where it is most likely — a
   just-created card, which is when a workflow was actually chosen.
   */
-  useUnmappedWorkflowRefetch({ boardWorkflows, tasks, workflowMode, refreshBoardWorkflows });
+  useUnmappedWorkflowRefetch({ boardWorkflows, tasks, workflowMode, refreshBoardWorkflows, projectId });
 
   const taskContextMenuColumnsByTaskId = useMemo(() => {
     const map = new Map<string, readonly TaskContextMenuColumnMetadata[]>();
