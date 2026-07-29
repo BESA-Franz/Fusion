@@ -70,7 +70,14 @@ function stripCommentsAndStrings(source: string): string {
   return source
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ")
-    .replace(/`(?:[^`\\]|\\.)*`/g, '""')
+    /*
+    Template literals: keep the ${...} EXPRESSIONS, drop only the literal text
+    (PR #2537 review — greptile). Erasing whole templates would have removed executable
+    interpolations with them, so a reader written inside `${...}` would have escaped the
+    census entirely — a hole in the direction that matters, since it hides a read.
+    */
+    .replace(/`(?:[^`\\]|\\.)*`/g, (template) =>
+      (template.match(/\$\{[\s\S]*?\}/g) ?? []).join(" "))
     .replace(/'(?:[^'\\\n]|\\.)*'/g, '""')
     .replace(/"(?:[^"\\\n]|\\.)*"/g, '""');
 }
