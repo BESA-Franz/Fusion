@@ -1103,6 +1103,26 @@ describe("TaskExecutor pause behavior", () => {
     expect(executeSpy).not.toHaveBeenCalled();
   });
 
+  it("does not enter the workflow graph when direct dispatch targets a foreign node", async () => {
+    const store = createMockStore();
+    const remoteTask = createMockTaskDetail({
+      column: "in-progress",
+      nodeId: "node-pc3",
+      effectiveNodeId: "node-pc3",
+    });
+    store.getTask.mockResolvedValue(remoteTask);
+    const executor = new TaskExecutor(store, "/tmp/test", {
+      getLocalNodeId: () => "node-pc1",
+    });
+
+    await executor.execute(remoteTask);
+
+    expect(store.getTask).toHaveBeenCalledWith("FN-001");
+    expect(store.getSettings).not.toHaveBeenCalled();
+    expect(store.updateTask).not.toHaveBeenCalled();
+    expect(mockedCreateFnAgent).not.toHaveBeenCalled();
+  });
+
   it("does not resume unpaused in-progress task while global pause is active", async () => {
     const store = createMockStore();
     store.getSettings.mockResolvedValue({
