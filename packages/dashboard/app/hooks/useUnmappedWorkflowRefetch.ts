@@ -50,7 +50,7 @@ export function useUnmappedWorkflowRefetch(params: {
   boardWorkflows: BoardWorkflowsPayload | null;
   tasks: readonly Task[];
   workflowMode: boolean;
-  refreshBoardWorkflows: (options?: { forceFresh?: boolean }) => void;
+  refreshBoardWorkflows: (options?: { forceFresh?: boolean }) => void | Promise<void>;
 }): void {
   const { boardWorkflows, tasks, workflowMode, refreshBoardWorkflows } = params;
 
@@ -61,6 +61,9 @@ export function useUnmappedWorkflowRefetch(params: {
   const lastUnmappedTaskSignatureRef = useRef<string | null>(null);
   const signatureAttemptsRef = useRef(0);
   const unmappedRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** True from firing a forced refresh until it settles. The timer ref is already
+   *  cleared by then, so without this the effect re-arms mid-flight. */
+  const repairInFlightRef = useRef(false);
 
   const isTaskWorkflowMappingSuspect = useCallback((
     payload: NonNullable<typeof boardWorkflows>,
@@ -101,8 +104,26 @@ export function useUnmappedWorkflowRefetch(params: {
       if (!stillUnmapped) return;
       if (signatureAttemptsRef.current >= MAX_ATTEMPTS_PER_SIGNATURE) return;
       signatureAttemptsRef.current += 1;
-      refreshBoardWorkflows({ forceFresh: true });
-      attemptRepair(RETRY_DELAY_MS);
+      /*
+      FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile):
+      Re-arm only once this attempt has SETTLED. A fixed timer alone meant a request in
+      flight for longer than RETRY_DELAY_MS had its successor started before its own
+      answer arrived, so both attempts could be spent on the same unresolved state and
+      the budget was gone before either response landed. `refreshBoardWorkflows` never
+      rejects (a failed fetch is non-authoritative), so `finally` is the settle point
+      for both outcomes; a non-promise return degrades to the old immediate re-arm.
+      */
+      repairInFlightRef.current = true;
+      const settled = refreshBoardWorkflows({ forceFresh: true });
+      if (settled && typeof (settled as Promise<void>).finally === "function") {
+        void (settled as Promise<void>).finally(() => {
+          repairInFlightRef.current = false;
+          attemptRepair(RETRY_DELAY_MS);
+        });
+      } else {
+        repairInFlightRef.current = false;
+        attemptRepair(RETRY_DELAY_MS);
+      }
     }, delayMs);
   }, [isTaskWorkflowMappingSuspect, refreshBoardWorkflows]);
 
@@ -128,8 +149,12 @@ export function useUnmappedWorkflowRefetch(params: {
     Once the self-driving loop is armed it owns the cadence. Re-arming from the effect
     on every payload change would cancel the pending RETRY_DELAY_MS wait and fire
     immediately, collapsing the backoff and spending the budget faster than intended.
+
+    The in-flight latch covers the other half: between firing a forced refresh and its
+    settling, the TIMER ref is already null, so the timer check alone let a payload
+    change start the next attempt while the previous request was still outstanding.
     */
-    if (unmappedRefetchTimerRef.current) return;
+    if (unmappedRefetchTimerRef.current || repairInFlightRef.current) return;
     attemptRepair(0);
   }, [attemptRepair, boardWorkflows, isTaskWorkflowMappingSuspect, tasks, workflowMode]);
 

@@ -541,6 +541,40 @@ describe("ListView unmapped-workflow self-heal", () => {
     );
   });
 
+  /*
+  FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile):
+  A SLOW forced refresh must not have its successor started before it settles. On a
+  fixed timer alone, a request in flight for longer than the retry delay had its second
+  attempt fired anyway, so both attempts were spent on the same unresolved state before
+  either answer arrived — the budget gone, the card still approximate.
+
+  REVERT CHECK: re-arm on the plain timer (drop the settle-await) and this fails —
+  the second attempt fires while the first is still pending.
+  */
+  it("waits for a slow forced refresh to settle before spending the next attempt", async () => {
+    const unmappedPayload = { ...DEFAULT_LANE_PAYLOAD, taskWorkflowIds: {} };
+    let releaseFirstForced: (() => void) | undefined;
+    let forcedCalls = 0;
+    vi.mocked(fetchBoardWorkflows).mockImplementation((_projectId?: string, options?: { forceFresh?: boolean }) => {
+      if (options?.forceFresh !== true) return Promise.resolve(unmappedPayload);
+      forcedCalls += 1;
+      if (forcedCalls === 1) {
+        return new Promise((resolve) => { releaseFirstForced = () => resolve(unmappedPayload); });
+      }
+      return Promise.resolve(unmappedPayload);
+    });
+
+    renderListView({ tasks: [createMockTask({ id: "FN-905", column: "todo", title: "Slow repair" })] });
+
+    await waitFor(() => expect(forcedCalls).toBe(1));
+    // Well past the retry delay, with the first attempt still in flight.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(forcedCalls).toBe(1);
+
+    await act(async () => { releaseFirstForced?.(); await Promise.resolve(); });
+    await waitFor(() => expect(forcedCalls).toBe(2), { timeout: 2000 });
+  });
+
   it("does not refetch when every rendered task is mapped", async () => {
     const mapped = { ...DEFAULT_LANE_PAYLOAD, taskWorkflowIds: { "FN-902": "builtin:coding" } };
     vi.mocked(fetchBoardWorkflows).mockResolvedValue(mapped);
