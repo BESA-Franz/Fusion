@@ -45,12 +45,37 @@ const RAW_BUILTIN_CODING_WORKFLOW_IR: WorkflowIr = {
   version: "v2",
   name: "builtin-coding-workflow",
   columns: [
-    // FNXC:Workflows 2026-07-05-00:00: Default-workflow intake column now displays as "Planning" while keeping the `triage` id for lifecycle/DB/type stability (FN-7599).
-    { id: "triage", name: "Planning", traits: [{ trait: "intake" }] },
+    /*
+    FNXC:MergedPlanningColumn 2026-07-28-15:40 (U11 / R1, R2):
+    ONE pre-implementation column. Specification, Plan Review and the replan loop all run here,
+    and the card leaves only when the scheduler releases it against implementation capacity — so a
+    card being planned never holds an implementation slot.
+
+    The id stays `todo` and the DISPLAY name becomes "Planning". That is deliberate and is the
+    cheaper half of the merge: `todo` was already the hold column, so every trait lookup, task row,
+    stored selection, and the 121 `column === "todo"` guards still in the engine keep meaning
+    exactly what they meant. Deleting `todo` instead and promoting `triage` would have produced the
+    same board while making each of those guards workflow-DEPENDENT — still live for Coding
+    (Ideas), which keeps `todo` per R11, and silently dead for Coding. Harder to detect than dead.
+    `builtin:coding-ideas` already ships this same id-keeping merge (FNXC:CodingIdeasWorkflow
+    2026-07-26-19:10), so this is an established shape rather than a new one.
+
+    `intake` must be on THIS column, not on a separate one upstream: an intake-only column has no
+    releaser — the capacity sweep only releases from a `hold` column — so a card parked there waits
+    for a human forever. That is the failure that reverted the earlier attempts (see
+    docs/solutions/architecture-patterns/workflow-node-column-placement-and-graph-entry-contract.md).
+
+    `todo` remains a legal column id for stored rows and user-authored workflows (R11, KTD-8);
+    what is deleted is Todo the STAGE, not the string.
+    */
     {
       id: "todo",
-      name: "Todo",
-      traits: [{ trait: "hold", config: { release: "capacity" } }, { trait: "reset-on-entry" }],
+      name: "Planning",
+      traits: [
+        { trait: "intake" },
+        { trait: "hold", config: { release: "capacity" } },
+        { trait: "reset-on-entry" },
+      ],
     },
     {
       id: "in-progress",
@@ -70,7 +95,14 @@ const RAW_BUILTIN_CODING_WORKFLOW_IR: WorkflowIr = {
     { id: "archived", name: "Archived", traits: [{ trait: "archived" }] },
   ],
   nodes: [
-    { id: "start", kind: "start", column: "triage" },
+    /*
+    FNXC:MergedPlanningColumn 2026-07-28-15:40 (U11):
+    `start` moves into the merged planning column with the rest of the specification phase. Its
+    column is load-bearing, not cosmetic: the graph entry contract resumes a continuation-less run
+    at the first node whose column is not BEHIND the card's, so leaving `start` in a column the IR
+    no longer declares would make it unplaceable.
+    */
+    { id: "start", kind: "start", column: "todo" },
     {
       id: "planning",
       kind: "prompt",

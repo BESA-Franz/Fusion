@@ -51,9 +51,38 @@ describe("workflow graph entry contract — resume at the card's own column", ()
 
   it("resolves the same way for the other built-in coding IRs", () => {
     expect(resolveColumnResumeNode(BUILTIN_STEPWISE_FINAL_REVIEW_CODING_WORKFLOW_IR, "in-progress")?.id).toBe("parse");
-    // The base IR names its planning seam `planning`; the contract is about columns, not ids.
-    expect(resolveColumnResumeNode(BUILTIN_CODING_WORKFLOW_IR, "todo")?.id).toBe("planning");
     expect(resolveColumnResumeNode(BUILTIN_CODING_WORKFLOW_IR, "in-progress")?.id).toBe("execute");
+  });
+
+  /*
+  FNXC:MergedPlanningColumn 2026-07-28-16:25 (U11):
+  EXPECTATION CHANGED BY THE MERGE, deliberately, and recorded rather than relaxed.
+
+  This assertion read `.toBe("planning")`. Once Todo and Planning are one column, `start` and the
+  specification node share it, and the resolver returns the FIRST node at or past the card's
+  column — which is now `start`. The entry contract caught this the moment the IR changed; that is
+  the contract working, and the change is safe only because `start` is a graph terminal that
+  reaches specification by a single unconditional success edge.
+
+  So the assertion is not weakened to "whatever it returns now". It pins the entry point AND the
+  hop, which together say the same thing the old single assertion said: a card in the planning
+  column still gets specified, and cannot be dropped past specification into implementation.
+  */
+  it("still routes a planning-column card into specification after the merge", () => {
+    const entry = resolveColumnResumeNode(BUILTIN_CODING_WORKFLOW_IR, "todo");
+    expect(entry?.column).toBe("todo");
+    expect(entry?.id).toBe("start");
+
+    const successors = BUILTIN_CODING_WORKFLOW_IR.edges.filter(
+      (edge) => edge.from === entry!.id
+        && (edge.condition === undefined || edge.condition === "success")
+        && edge.kind !== "rework",
+    );
+    expect(successors).toHaveLength(1);
+    expect(successors[0]!.to).toBe("planning");
+    // The failure this guards: entering past specification would put an unspecified card into
+    // implementation with no plan.
+    expect(entry?.id).not.toBe("execute");
   });
 
   it("skips forward when the card rests in a column the pipeline has no node for", () => {
