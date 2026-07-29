@@ -491,3 +491,26 @@ export async function lookupRegisteredProjectIdByPath(
     return undefined;
   }
 }
+
+/**
+ * Resolve the filesystem path that belongs to a central-registry project id.
+ *
+ * Project-id-only backend boots need the path before constructing TaskStore:
+ * the path anchors filesystem state while the id remains the PostgreSQL
+ * partition key. Lookup failures intentionally preserve the existing
+ * not-found behavior in the caller.
+ */
+export async function lookupRegisteredProjectPathById(
+  db: MigrationDb,
+  projectId: string,
+): Promise<string | undefined> {
+  if (!projectId) return undefined;
+  try {
+    const rows = (await db.execute(
+      sql`SELECT path FROM central.projects WHERE id = ${projectId} LIMIT 1`,
+    )) as Array<{ path: string }>;
+    return rows[0]?.path;
+  } catch {
+    return undefined;
+  }
+}
