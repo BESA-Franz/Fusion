@@ -66,6 +66,7 @@ import {
 import { runLoadedPluginSchemaInitHooks, type LoadedPluginSchemaContract } from "./plugin-schema-hook.js";
 import {
   lookupRegisteredProjectIdByPath,
+  lookupRegisteredProjectPathById,
   ProjectPartitionRekeyError,
   rekeyFallbackProjectPartition,
   selectDegradedBindTarget,
@@ -785,6 +786,21 @@ export function shouldUsePostgresBackend(
 }
 
 /**
+ * Resolve the filesystem anchor for a backend boot without weakening the
+ * project id's role as the PostgreSQL partition key.
+ */
+export async function resolveProjectRootForBackend(
+  db: PostgresJsDatabase<Record<string, never>>,
+  explicitRootDir: string,
+  projectId?: string,
+): Promise<string> {
+  if (explicitRootDir || !projectId) {
+    return explicitRootDir;
+  }
+  return (await lookupRegisteredProjectPathById(db, projectId)) ?? "";
+}
+
+/**
  * Construct a PostgreSQL-backed TaskStore for the current environment.
  *
  * FNXC:BackendFlip 2026-06-26-14:20:
@@ -840,7 +856,7 @@ export async function createTaskStoreForBackend(
       "createTaskStoreForBackend: rootDir is required when projectId is not provided",
     );
   }
-  const rootDir = options.rootDir ?? "";
+  let rootDir = options.rootDir ?? "";
 
   /*
   FNXC:FasterStartup 2026-07-14-23:55:
@@ -877,6 +893,12 @@ export async function createTaskStoreForBackend(
     embeddedRuntimeUrl,
     embeddedOwnsProcess,
   } = boot;
+
+  rootDir = await resolveProjectRootForBackend(
+    connections.migration,
+    rootDir,
+    options.projectId,
+  );
 
   /*
   FNXC:PostgresMigration 2026-07-10:
@@ -1240,7 +1262,7 @@ export async function createTaskStoreForBackend(
   let taskStore: TaskStore;
   try {
     const constructT0 = Date.now();
-    if (options.projectId && !options.rootDir) {
+    if (options.projectId && !rootDir) {
       taskStore = await TaskStore.getOrCreateForProject(
         options.projectId,
         undefined,
