@@ -1135,6 +1135,26 @@ export class WorkflowGraphExecutor {
           continue;
         }
         if (target && isMergeRegionKind(target.kind)) {
+          /*
+           * A manual-review task must stop at the graph-authored manual merge
+           * hold before the legacy merge-region collapse. Collapsing the
+           * `merge-gate` unconditionally bypasses its auto-merge decision and
+           * calls the merge seam even when `autoMerge:false`; on a worker-only
+           * daemon without a merge requester that becomes `merge-unavailable`
+           * and bounces a reviewed task back to execution.
+           */
+          const autoMerge = task.autoMerge !== false && settings?.autoMerge !== false;
+          if (!autoMerge) {
+            const manualHoldNode = ir.nodes.find((candidate) => candidate.kind === "manual-merge-hold") ?? target;
+            const boundary = await this.deps.columnBoundary?.onNodeEntry(manualHoldNode);
+            if (boundary?.kind === "suspended") throw new WorkflowGraphSuspended(boundary);
+            visitedNodeIds.push(manualHoldNode.id);
+            context[`node:${manualHoldNode.id}:outcome`] = "failure";
+            context[`node:${manualHoldNode.id}:value`] = "manual-required";
+            this.deps.logTaskEntry?.("Workflow merge parked for manual review (autoMerge=false)");
+            aggregate = { outcome: "success", value: "manual-required" };
+            break;
+          }
           aggregate = await runLegacyMergeSeam(target);
           if (aggregate.outcome === "failure") break;
           /*
