@@ -256,6 +256,7 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
    *   path: string,
    *   isolationMode?: "in-process" | "child-process",
    *   nodeId?: string,
+   *   projectId?: string,
    *   gitSetupMode?: "existing" | "init" | "clone",
    *   cloneUrl?: string,
    *   workspaceMode?: boolean,
@@ -265,7 +266,17 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
    */
   router.post("/projects", async (req, res) => {
     try {
-      const { name, path, isolationMode = "in-process", nodeId, cloneUrl, gitSetupMode, workspaceMode, taskPrefix } = req.body;
+      const {
+        name,
+        path,
+        isolationMode = "in-process",
+        nodeId,
+        projectId,
+        cloneUrl,
+        gitSetupMode,
+        workspaceMode,
+        taskPrefix,
+      } = req.body;
 
       if (!name || typeof name !== "string" || !name.trim()) {
         throw badRequest("name is required and must be a non-empty string");
@@ -276,9 +287,16 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       if (!["in-process", "child-process"].includes(isolationMode)) {
         throw badRequest("isolationMode must be 'in-process' or 'child-process'");
       }
+      if (projectId !== undefined && (
+        typeof projectId !== "string"
+        || !/^proj_[a-f0-9]{16}$/.test(projectId)
+      )) {
+        throw badRequest("projectId must use the format 'proj_' followed by 16 lowercase hexadecimal characters");
+      }
 
       const normalizedName = name.trim();
       const normalizedPath = path.trim();
+      const requestedProjectId = projectId as string | undefined;
       let normalizedCloneUrl: string | undefined;
       let normalizedGitSetupMode: "existing" | "init" | "clone" | undefined;
 
@@ -434,16 +452,31 @@ export const registerProjectRoutes: ApiRouteRegistrar = (ctx) => {
       }
 
       const activeProjectWithOutcome = await withCentralCore(async (central) => {
-        const identity = readProjectIdentity(fusionDirPath);
+        const storedIdentity = readProjectIdentity(fusionDirPath);
+        if (requestedProjectId && storedIdentity && storedIdentity.id !== requestedProjectId) {
+          throw new ApiError(409, "project-identity-mismatch", {
+            requestedProjectId,
+            storedProjectId: storedIdentity.id,
+          });
+        }
+        const identity = storedIdentity ?? (requestedProjectId
+          ? { id: requestedProjectId, createdAt: new Date().toISOString() }
+          : undefined);
         const ensured = await central.ensureProjectForPath({
           path: normalizedPath,
-          identity: identity ?? undefined,
+          identity,
           name: normalizedName,
           isolationMode,
           nodeId,
           skipGitInit,
         });
         const project = ensured.project;
+        if (requestedProjectId && project.id !== requestedProjectId) {
+          throw new ApiError(409, "project-registry-identity-mismatch", {
+            requestedProjectId,
+            registeredProjectId: project.id,
+          });
+        }
 
         // Activate the project (registration sets it to 'initializing')
         const activeProject = await central.updateProject(project.id, { status: "active" });

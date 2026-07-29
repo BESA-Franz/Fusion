@@ -128,6 +128,8 @@ export interface ActivityFeedEntry {
 export interface ProjectCreateInput {
   name: string;
   path: string;
+  /** Preserve a shared project identity when registering the same repository on another node. */
+  projectId?: string;
   isolationMode?: "in-process" | "child-process";
   nodeId?: string;
   gitSetupMode?: "existing" | "init" | "clone";
