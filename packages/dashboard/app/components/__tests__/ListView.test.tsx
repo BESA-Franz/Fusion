@@ -481,6 +481,31 @@ describe("ListView unmapped-workflow self-heal", () => {
     expect(vi.mocked(fetchBoardWorkflows).mock.calls.some(([, options]) => options?.forceFresh === true)).toBe(true);
   });
 
+  /*
+  FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile):
+  The forced fetch can return BEFORE the workflow-selection write commits, reporting the
+  same suspect set. A one-shot guard treated that as "unresolvable" and gave up, leaving
+  the card on approximate metadata until an unrelated refresh.
+
+  REVERT CHECK: restore the one-shot guard (return whenever the signature repeats) and
+  this fails — only ONE forced fetch is issued, so the mapping that arrives on the
+  second response never triggers the repair.
+  */
+  it("retries once more when the forced fetch races the selection write", async () => {
+    const unmappedPayload = { ...DEFAULT_LANE_PAYLOAD, taskWorkflowIds: {} };
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue(unmappedPayload);
+
+    renderListView({ tasks: [createMockTask({ id: "FN-903", column: "todo", title: "Racing card" })] });
+
+    // Two forced attempts for the same still-suspect signature, then it must stop —
+    // loop protection is kept, just not at one attempt.
+    await waitFor(() => {
+      expect(vi.mocked(fetchBoardWorkflows).mock.calls.filter(([, o]) => o?.forceFresh === true).length).toBe(2);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(vi.mocked(fetchBoardWorkflows).mock.calls.filter(([, o]) => o?.forceFresh === true).length).toBe(2);
+  });
+
   it("does not refetch when every rendered task is mapped", async () => {
     const mapped = { ...DEFAULT_LANE_PAYLOAD, taskWorkflowIds: { "FN-902": "builtin:coding" } };
     vi.mocked(fetchBoardWorkflows).mockResolvedValue(mapped);

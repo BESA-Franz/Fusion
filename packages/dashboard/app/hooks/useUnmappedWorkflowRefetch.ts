@@ -38,6 +38,10 @@ The original notes, preserved because they are the reason every line here exists
   column. The signature guard still prevents refetch loops for mappings that stay wrong
   after a fresh fetch.
 */
+/** Attempts allowed per unresolved signature before the repair gives up. Two covers
+ *  the fetch-races-the-selection-write case without permitting a refetch loop. */
+const MAX_ATTEMPTS_PER_SIGNATURE = 2;
+
 export function useUnmappedWorkflowRefetch(params: {
   boardWorkflows: BoardWorkflowsPayload | null;
   tasks: readonly Task[];
@@ -51,6 +55,7 @@ export function useUnmappedWorkflowRefetch(params: {
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
   const lastUnmappedTaskSignatureRef = useRef<string | null>(null);
+  const signatureAttemptsRef = useRef(0);
   const unmappedRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isTaskWorkflowMappingSuspect = useCallback((
@@ -73,11 +78,34 @@ export function useUnmappedWorkflowRefetch(params: {
       .sort();
     if (unmapped.length === 0) {
       lastUnmappedTaskSignatureRef.current = null;
+      signatureAttemptsRef.current = 0;
       return;
     }
     const signature = unmapped.join(",");
-    if (signature === lastUnmappedTaskSignatureRef.current) return;
-    lastUnmappedTaskSignatureRef.current = signature;
+    /*
+    FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile):
+    BOUNDED RETRY, not one-shot. The guard used to refuse any second attempt at the same
+    signature, which is the right instinct — a mapping that stays wrong after a fresh
+    fetch must not spin — but it also lost a real race: the forced fetch can return
+    BEFORE the workflow-selection write commits, so it legitimately reports the same
+    suspect set, and the card was then stuck with approximate metadata until an
+    unrelated focus, SSE or user action refreshed workflows.
+
+    Allowing a small fixed number of attempts per signature survives that race while
+    keeping the loop protection: a genuinely-unresolvable mapping still stops after
+    MAX_ATTEMPTS_PER_SIGNATURE instead of refetching forever. The counter resets
+    whenever the signature changes or the board becomes healthy.
+
+    This tightens Board as well as List, since both now share this hook. That is
+    intentional — Board had the identical race.
+    */
+    if (signature === lastUnmappedTaskSignatureRef.current) {
+      if (signatureAttemptsRef.current >= MAX_ATTEMPTS_PER_SIGNATURE) return;
+    } else {
+      lastUnmappedTaskSignatureRef.current = signature;
+      signatureAttemptsRef.current = 0;
+    }
+    signatureAttemptsRef.current += 1;
     if (unmappedRefetchTimerRef.current) clearTimeout(unmappedRefetchTimerRef.current);
     unmappedRefetchTimerRef.current = setTimeout(() => {
       unmappedRefetchTimerRef.current = null;
