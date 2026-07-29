@@ -262,10 +262,10 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     && backend.kind !== "worktrunk"
     && settings.worktrunk?.enabled !== true;
   const allowSiblingBranchRename = settings.executorAllowSiblingBranchRename === true;
-  const baseBranch = task.executionStartBranch || null;
+  const baseBranch = task.executionStartBranch || task.baseBranch || null;
   /*
    * FNXC:WorktreeIsolation 2026-07-01-08:35:
-   * Fresh task worktrees must never inherit the project root checkout's ambient HEAD. The root checkout can temporarily point at a sibling task branch/commit during merge or recovery work, so an omitted `git worktree add -b ... <startPoint>` contaminates new task branches with unrelated task commits. Use the task's explicit executionStartBranch when present; otherwise pin creation to the resolved integration branch.
+   * Fresh task worktrees must never inherit the project root checkout's ambient HEAD. The root checkout can temporarily point at a sibling task branch/commit during merge or recovery work, so an omitted `git worktree add -b ... <startPoint>` contaminates new task branches with unrelated task commits. Use the scheduler-persisted executionStartBranch when present, then the task's explicit baseBranch, and otherwise pin creation to the resolved project integration branch.
    */
   const freshStartPoint = baseBranch ?? await resolveIntegrationBranch(rootDir, settings, { logger: logger ?? console });
 
