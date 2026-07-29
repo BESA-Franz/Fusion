@@ -10,9 +10,9 @@ maintains.
 
 WHAT THE FLAG IS. `isWorkflowColumnsCompatibilityFlagEnabled` (store.ts) returns
 `experimentalFeatures.workflowColumns === true`. It is the RAW key, distinct from the
-public runtime helper that treats stale `false` as enabled. No production code writes
-the key, so it reads false for every real project — which is why every branch behind it
-has been silently inert, and why U12 spent its length finding features that looked
+public runtime helper that treats stale `false` as enabled. No module hardcodes
+the key, so it reads false for every project that never carried a stale persisted value
+— which is why every branch behind it has been silently inert, and why U12 spent its length finding features that looked
 enforced and were not.
 
 WHAT REMAINS, and why it is not mine to remove. Both surviving reads are on the MOVE
@@ -59,11 +59,20 @@ const ALLOWED: ReadonlyArray<{ file: string; why: string }> = [
   },
 ];
 
-/** Strip comments so the many explanatory notes about this flag are not counted as reads. */
-function stripComments(source: string): string {
+/*
+Strip comments AND string/template literals before scanning (PR #2537 review — greptile).
+Comments alone were not enough: this flag is discussed by name in diagnostics, error
+copy and fixtures, and a substring scan would classify any such TEXT as a reader — a
+ratchet that fails on prose is a ratchet people learn to edit around. What remains after
+this is executable code, where the symbol appearing means it is genuinely referenced.
+*/
+function stripCommentsAndStrings(source: string): string {
   return source
     .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ");
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ")
+    .replace(/`(?:[^`\\]|\\.)*`/g, '""')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, '""')
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""');
 }
 
 function collectSourceFiles(dir: string, out: string[]): void {
@@ -91,7 +100,7 @@ describe("raw workflowColumns flag census (U12)", () => {
 
   it("the raw flag is read ONLY by the known move-path sites", () => {
     const readers = files
-      .filter((file) => stripComments(readFileSync(file, "utf8")).includes(RAW_FLAG_READER))
+      .filter((file) => stripCommentsAndStrings(readFileSync(file, "utf8")).includes(RAW_FLAG_READER))
       .map((file) => file.slice(REPO_ROOT.length + 1))
       .sort();
 
@@ -114,14 +123,23 @@ describe("raw workflowColumns flag census (U12)", () => {
     expect(readers).toEqual(allowed);
   });
 
-  it("no production code WRITES the key, which is why every read is false in practice", () => {
+  it("no production SOURCE LITERAL writes the key", () => {
     /*
-    The premise the whole unit rests on, pinned rather than asserted in prose: if a
-    writer ever appears, the branches behind the flag stop being uniformly dead and
-    every "this is unreachable" conclusion in U12 needs revisiting.
+    SCOPE, corrected (PR #2537 review — greptile). An earlier version of this claimed
+    "no production code writes the key", which overclaims and contradicts a correction
+    made earlier in this same unit (PR #2512, greptile P1): `settings-schema.ts`
+    explicitly TOLERATES stale persisted values, and the generic settings-update path —
+    settings import, configuration rollback — persists experimental-feature entries
+    assembled from RUNTIME data. A `true` can absolutely reach storage that way, on an
+    upgraded project that carried one.
+
+    A source scan cannot see that and must not pretend to. What it does prove is
+    narrower and still worth pinning: no module hardcodes the key, so nothing in the
+    product deliberately turns the flag on. That is the property behind "every read is
+    false for a project that never carried a stale value" — not an absolute.
     */
     const writers = files.filter((file) => {
-      const code = stripComments(readFileSync(file, "utf8"));
+      const code = stripCommentsAndStrings(readFileSync(file, "utf8"));
       return /workflowColumns\s*:\s*(true|false)/.test(code);
     }).map((file) => file.slice(REPO_ROOT.length + 1));
 
