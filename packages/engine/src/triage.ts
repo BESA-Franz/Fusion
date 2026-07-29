@@ -9,6 +9,7 @@ import type {
   Agent,
   AgentPermissionPolicy,
   PermanentAgentGatingContext,
+  WorkflowIr,
 } from "@fusion/core";
 import {
   DUPLICATE_OF_METADATA_KEY,
@@ -33,6 +34,7 @@ import {
   resolveAgentMemoryInclusionMode,
   resolvePlanApprovalRequired,
   resolveWorkflowIrForTask,
+  resolveTaskLifecycleColumns,
   getStepParser,
   computePlanApprovalFingerprint,
   extractIntentSignature,
@@ -1392,15 +1394,48 @@ export class TriageProcessor {
    * union include cards before their planner writes status:"planning".
    */
   private async discoverReadyPlanningTasks(allTasks: Task[], now: number): Promise<Task[]> {
+    /*
+    FNXC:MergedPlanningColumn 2026-07-28-15:10 (U11):
+    Planning discovery has TWO admission rules, and they were selected by hardcoded column id:
+    `triage` admitted any card still in the planning stage, `todo` admitted only a card whose
+    PROMPT.md still reads as a seed (a planned card in the hold column is waiting for CAPACITY,
+    not for planning, and re-specifying it would discard its approved spec).
+
+    Both now select by TRAIT, so a workflow that renames or merges its pre-implementation columns
+    keeps both rules. Deleting `triage` from the coding IRs — U11 — would otherwise leave the
+    intake rule matching nothing while the hold rule silently became the only one.
+
+    ORDER IS LOAD-BEARING. Under U11 one column carries BOTH `intake` and `hold`, so a card can
+    satisfy both rules. Hold is tested FIRST and the branches are mutually exclusive, for two
+    reasons: a card would otherwise appear in both lists and be dispatched twice for the same
+    planning run, and the hold rule is the NARROWER of the two — applying the intake rule to a
+    merged column would re-specify a card that has already been planned and is only waiting for a
+    slot. Narrower wins; nothing is admitted that both rules would not admit.
+
+    One IR cache per discovery pass: a board of 400 cards on three workflows reads three IRs.
+    A card whose workflow cannot be resolved falls back to the legacy ids rather than being
+    dropped from discovery entirely — an unplannable card is worse than a conservatively
+    planned one, and R11 keeps `todo`/`triage` legal ids for stored rows and custom workflows.
+    */
+    const irCache = new Map<string, WorkflowIr>();
+    const lifecycleByTaskId = new Map<string, { intake?: string; hold?: string }>();
+    for (const t of allTasks) {
+      const resolved = await resolveTaskLifecycleColumns(this.store, t.id, irCache);
+      lifecycleByTaskId.set(t.id, resolved ?? { intake: "triage", hold: "todo" });
+    }
+    const isAtHoldColumn = (t: Task): boolean => lifecycleByTaskId.get(t.id)?.hold === t.column;
+    const isAtIntakeColumn = (t: Task): boolean => lifecycleByTaskId.get(t.id)?.intake === t.column;
+
     const eligibleTriageTasks = allTasks.filter(
-      (t) => t.column === "triage" && isTaskStillInPlanningStage(t)
+      // `!isAtHoldColumn` keeps the two branches disjoint for a merged intake+hold column.
+      (t) => isAtIntakeColumn(t) && !isAtHoldColumn(t) && isTaskStillInPlanningStage(t)
         && !this.advancedRecoveryReservations.has(t.id)
         && !this.processing.has(t.id) && !this.hasLivePlanningWork(t.id) && !t.paused
         && t.status !== "awaiting-approval" && t.status !== "failed" && t.status !== "stuck-killed"
         && !(t.nextRecoveryAt && new Date(t.nextRecoveryAt).getTime() > now),
     );
     const eligibleTodoTasksRaw = allTasks.filter(
-      (t) => t.column === "todo" && !this.processing.has(t.id) && !this.hasLivePlanningWork(t.id) && !t.paused
+      (t) => isAtHoldColumn(t) && !this.processing.has(t.id) && !this.hasLivePlanningWork(t.id) && !t.paused
         && t.status !== "awaiting-approval" && t.status !== "failed" && t.status !== "stuck-killed"
         && t.status !== "planning"
         && !(t.nextRecoveryAt && new Date(t.nextRecoveryAt).getTime() > now),
