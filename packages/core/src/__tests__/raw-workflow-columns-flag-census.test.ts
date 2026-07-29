@@ -43,19 +43,21 @@ const RAW_FLAG_READER = "isWorkflowColumnsCompatibilityFlagEnabled";
  * Every file permitted to reference the raw reader, and why. Paths are repo-relative.
  * `store.ts` declares it; the other two are U2b's move path.
  */
-const ALLOWED: ReadonlyArray<{ file: string; why: string }> = [
+const ALLOWED: ReadonlyArray<{ file: string; occurrences: number; why: string }> = [
   {
     file: "packages/core/src/store.ts",
-    why: "declares the helper; goes with the last reader",
+    occurrences: 1,
+    why: "declares the helper; it goes with the last reader",
   },
-
   {
     file: "packages/core/src/task-store/moves.ts",
-    why: "U2b: `useWorkflow` selects between the two move-side-effect implementations",
+    occurrences: 2,
+    why: "U2b: the import, plus `useWorkflow` selecting between the two move-side-effect implementations",
   },
   {
     file: "packages/core/src/task-store/workflow-task-create-ops.ts",
-    why: "U2b: gates the move-policy preflight that moves.ts consumes; not separable from it",
+    occurrences: 2,
+    why: "U2b: the import, plus the gate on the move-policy preflight that moves.ts consumes",
   },
 ];
 
@@ -105,21 +107,40 @@ describe("raw workflowColumns flag census (U12)", () => {
     expect(files.length).toBeGreaterThan(200);
   });
 
-  it("the raw flag is read ONLY by the known move-path sites", () => {
-    const readers = files
-      .filter((file) => stripCommentsAndStrings(readFileSync(file, "utf8")).includes(RAW_FLAG_READER))
-      .map((file) => file.slice(REPO_ROOT.length + 1))
-      .sort();
+  it("the raw flag is read ONLY by the known move-path sites, at the known COUNT", () => {
+    /*
+    COUNTS, not just file names (PR #2537 review — CodeRabbit). A per-file allowlist has
+    a hole exactly where it matters least visibly: a NEW raw-flag read added inside
+    `moves.ts` — already an allowed file — would have passed silently. Pinning the
+    occurrence count per file means the census notices a third read in a file that is
+    permitted two.
 
-    const allowed = ALLOWED.map((entry) => entry.file).sort();
+    Whole-word matching, so a longer identifier that merely contains this one is not
+    counted. Deliberately NOT a full AST parse: that is a heavy lift for a guard whose
+    job is to notice movement, and the count already fails on the case that motivated
+    it. If this ever needs to distinguish a call from a re-export, parse then.
+    */
+    const wholeWord = new RegExp(`\\b${RAW_FLAG_READER}\\b`, "g");
+    const readers = files
+      .map((file) => ({
+        file: file.slice(REPO_ROOT.length + 1),
+        occurrences: (stripCommentsAndStrings(readFileSync(file, "utf8")).match(wholeWord) ?? []).length,
+      }))
+      .filter((entry) => entry.occurrences > 0)
+      .sort((a, b) => a.file.localeCompare(b.file));
+
+    const allowed = ALLOWED
+      .map((entry) => ({ file: entry.file, occurrences: entry.occurrences }))
+      .sort((a, b) => a.file.localeCompare(b.file));
 
     /*
     Equality, not subset. A subset check would let the last reader vanish silently and
     leave the settings key orphaned forever, which is precisely the outcome this exists
     to prevent.
 
-    If this fails because a reader was ADDED: do not extend ALLOWED to make it pass. A
-    new read re-gates behaviour on a flag that is false for every real project, so the
+    If this fails because a reader was ADDED — a new file, or a higher count in an
+    existing one: do not edit ALLOWED to make it pass. A new read re-gates behaviour on
+    a flag that is false for every project that never carried a stale value, so the
     feature behind it will not run.
 
     If this fails because a reader was REMOVED: U2b has landed. Delete
