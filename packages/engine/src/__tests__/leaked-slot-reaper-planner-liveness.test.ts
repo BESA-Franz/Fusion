@@ -241,4 +241,65 @@ describe("FN-6756: a live planner's worktree survives the leaked-slot reaper", (
     expect(clearPhantomExecutorBinding).not.toHaveBeenCalled();
     expect(activeSessionRegistry.isPathActive(PLANNER_WORKTREE)).toBe(true);
   });
+  /*
+  FNXC:NodeWorktreeIsolation 2026-07-29-05:10 (FN-6756 — the reporting half, PR #2531 review):
+  A refused release must not merely fail to clear — it must not NARRATE success.
+
+  The original defect had two halves and the second is why nobody caught it from
+  logs: after ignoring the refusal, the path still wrote "Auto-recovered: pause-abort
+  park cleared", emitted `task:auto-recover-paused-abort-park`, and incremented the
+  recovered counter. An operator reading the task log saw a clean recovery at the
+  exact moment their planner lost its worktree.
+
+  This drives the refusal through the executor's REAL guard (not a stubbed boolean),
+  with the registry pre-gate deliberately bypassed — the task has no registered path,
+  but an executor session surface is live. That is the defense-in-depth branch, and
+  it asserts the full no-op: no un-park, no move, no log, no audit, no count.
+  */
+  it("a refused release aborts pause-abort recovery without logging, auditing or counting it", async () => {
+    const taskId = "FN-6756-REFUSED";
+    const executor = makeExecutorWithHeldWorktree(taskId, "/tmp/fn-6756-refused-worktree");
+    // Live EXECUTOR session surface, and NO registry entry — so the registry
+    // pre-gate lets this through and clearPhantomExecutorBinding itself refuses.
+    (executor as unknown as { activeSessions: Map<string, unknown> }).activeSessions.set(taskId, { dispose() {} });
+    expect(activeSessionRegistry.pathsForTask(taskId)).toEqual([]);
+
+    const parkedTask = {
+      id: taskId,
+      column: "in-progress",
+      status: "failed",
+      error: `${PAUSE_ABORT_PARK_ERROR_MARKER} — ${PAUSE_ABORT_PARK_OPERATOR_MARKER}`,
+      paused: false,
+      userPaused: false,
+      steps: [],
+    };
+    const store = {
+      getSettings: vi.fn(async () => ({ globalPause: false, enginePaused: false })),
+      listTasks: vi.fn(async () => [parkedTask]),
+      getTask: vi.fn(async () => parkedTask),
+      moveTask: vi.fn(async () => undefined),
+      updateTask: vi.fn(async () => undefined),
+      logEntry: vi.fn(async () => undefined),
+      recordRunAuditEvent: vi.fn(async () => undefined),
+    };
+
+    const manager = Object.create(SelfHealingManager.prototype) as SelfHealingManager;
+    (manager as unknown as Record<string, unknown>).store = store;
+    (manager as unknown as Record<string, unknown>).options = {
+      getExecutingTaskIds: () => new Set<string>(),
+      clearPhantomExecutorBinding: (id: string) => executor.clearPhantomExecutorBinding(id),
+    };
+
+    const recovered = await manager.recoverPausedAbortFailures();
+
+    expect(recovered, "a refused release must not be counted as a recovery").toBe(0);
+    expect(store.updateTask, "the park must not be cleared").not.toHaveBeenCalled();
+    expect(store.moveTask, "the card must not be requeued").not.toHaveBeenCalled();
+    expect(store.logEntry, "no 'Auto-recovered' entry may be written").not.toHaveBeenCalled();
+    expect(store.recordRunAuditEvent, "no recovery audit may be emitted").not.toHaveBeenCalled();
+    // ...and the worktree the live session is using survives.
+    expect(
+      (executor as unknown as { activeWorktrees: Map<string, Set<string>> }).activeWorktrees.has(taskId),
+    ).toBe(true);
+  });
 });

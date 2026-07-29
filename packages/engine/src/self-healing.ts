@@ -10463,6 +10463,32 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                 createdAt: new Date().toISOString(),
               }
             : undefined;
+          /*
+          FNXC:NodeWorktreeIsolation 2026-07-29-05:10 (FN-6756 — honor the refusal, PR #2531 review):
+          Release worktree ownership FIRST, and ABORT the whole recovery if the
+          release is refused.
+
+          Two defects were stacked here. The return value was DISCARDED, so the
+          refusal that the other two callers treat as a stop signal did nothing. And
+          the release ran AFTER the un-park + requeue, so a refusal left the card
+          moved with its worktree still held — then fell through to
+          `logEntry("Auto-recovered: …")`, the `task:auto-recover-paused-abort-park`
+          audit, and `recovered++`. It reported success while pulling a worktree out
+          from under a live planner, which is why this was invisible in the logs.
+
+          Moving the release ahead of the mutations makes a refusal a clean no-op:
+          nothing is un-parked, nothing is moved, nothing is counted, and no audit
+          claims a recovery that did not happen. The task is simply retried on a
+          later sweep once the session releases. This mirrors caller 1
+          (reclaim-self-owned-branch-conflict), which likewise refuses BEFORE its
+          destructive moveTask rather than after.
+          */
+          const phantomReleased = this.options.clearPhantomExecutorBinding?.(task.id);
+          if (phantomReleased === false) {
+            log.warn(`[self-healing] pause-abort recovery deferred for ${task.id}: a live session surface refused the worktree release`);
+            continue;
+          }
+
           await this.store.updateTask(task.id, {
             status: null,
             error: null,
@@ -10478,25 +10504,6 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             });
             await this.store.updateTask(task.id, { workflowTransitionNotification });
           }
-          // Release any in-memory worktree ownership the leaked park may still
-          // pin, so the requeued task does not re-block the concurrency gate.
-          // FNXC:WorkflowLifecycle 2026-06-20-00:00: use clearPhantomExecutorBinding
-          // (wired + live-session-refusal guarded), NOT releaseExecutorWorktreeOwnership
-          // which is a declared-but-never-wired option — it would silently no-op.
-          /*
-          FNXC:NodeWorktreeIsolation 2026-07-29-04:20 (FN-6756 — honor the refusal):
-          The return value was DISCARDED here, so the refusal that the other two
-          callers treat as a stop signal did nothing on this path: a live session's
-          binding was reported cleared whether or not the clear happened. Honoring it
-          is defense-in-depth behind the registry gate above — matching caller 1's
-          reasoning that even if a future liveness signal slips past the pre-gate, a
-          refused clear must not be narrated as a successful release.
-          */
-          const phantomReleased = this.options.clearPhantomExecutorBinding?.(task.id);
-          if (phantomReleased === false) {
-            log.warn(`[self-healing] pause-abort recovery for ${task.id}: worktree ownership retained — a live session surface refused the release`);
-          }
-
           await this.store.logEntry(
             task.id,
             fresh.column === "in-review"
