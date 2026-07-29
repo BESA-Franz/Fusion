@@ -2327,6 +2327,51 @@ describe("TaskExecutor dependency-based worktree creation", () => {
     expect(worktreeAddCalls[0][0]).toContain('"codex/erp-mvp-foundation"');
   });
 
+  it("does not reinterpret an explicit task baseBranch as a dependency squash import", async () => {
+    const store = createMockStore();
+    store._setRow("BESA-BASE", {
+      baseBranch: "codex/erp-mvp-foundation",
+      executionStartBranch: null,
+    });
+    store.getSettings.mockResolvedValue({
+      worktreeRebaseBeforeMerge: false,
+    } as any);
+    const executor = new TaskExecutor(store, "/tmp/test");
+    const resolvedBase = "95e8ef22e00e229e2591d445ccf6b6c72f2e89a5";
+    const ambientRootHead = "5dd2ff03e7befd8e9a6d767fd32b1233817e2422";
+    vi.spyOn(executor as any, "resolveWorktreeStartPoint").mockResolvedValue(resolvedBase);
+    const createSpy = vi.spyOn(executor as any, "tryCreateWorktree").mockResolvedValue({
+      path: "/tmp/test/.worktrees/besa-base",
+      branch: "fusion/besa-base",
+    });
+    vi.spyOn(executor as any, "rebaseNewWorktreeOntoRemote").mockResolvedValue(undefined);
+    mockedExecSync.mockImplementation((cmd: any) => {
+      if (String(cmd).includes("git rev-parse HEAD")) return Buffer.from(ambientRootHead);
+      if (String(cmd).includes("git merge-base --is-ancestor")) {
+        throw new Error("not an ancestor");
+      }
+      return Buffer.from("");
+    });
+
+    await (executor as any).createWorktree(
+      "fusion/besa-base",
+      "/tmp/test/.worktrees/besa-base",
+      "BESA-BASE",
+      "codex/erp-mvp-foundation",
+    );
+
+    expect(createSpy).toHaveBeenCalledWith(
+      "fusion/besa-base",
+      "/tmp/test/.worktrees/besa-base",
+      "BESA-BASE",
+      resolvedBase,
+      0,
+      0,
+      false,
+      expect.any(Object),
+    );
+  });
+
   it("creates worktree from integration branch when baseBranch is not set", async () => {
     const store = createMockStore();
     const executor = new TaskExecutor(store, "/tmp/test");
