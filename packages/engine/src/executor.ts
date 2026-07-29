@@ -14,7 +14,7 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import type { TaskStore, Task, TaskDetail, TaskTokenUsage, StepStatus, Settings, WorkflowStep, MissionStore, AsyncMissionStore, Slice, AgentState, AgentCapability, RunMutationContext, AgentHeartbeatConfig, Agent, AgentMemoryInclusionMode, ProjectSettings, MergeResult, WorkflowIrNode, WorkflowIrNodeKind, WorkflowStepResult as CoreWorkflowStepResult, ThinkingLevel } from "@fusion/core";
 import { getUnmetSchedulingDependencies } from "./scheduler.js";
-import { RetryStormError, serializeRetryStormError, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, resolveWorkflowIrForTask, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveReboundTarget, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, resolveEffectiveAutoMerge, isLiveSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveMaxConsecutiveToolFailureRetries, resolveConsecutiveToolFailureRetryBackoffMs, resolveConsecutiveToolFailureThreshold, resolveExecutorEscalationTarget, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, COMPLETION_SUMMARY_NODE_ID, upsertWorkflowStepResult, AWAITING_APPROVAL_PAUSE_REASON, THINKING_LEVELS, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AgentStore, resolveExecutorFallbackModel } from "@fusion/core";
+import { RetryStormError, serializeRetryStormError, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, resolveWorkflowIrForTask, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveReboundTarget, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, resolveEffectiveAutoMerge, isLiveSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveMaxConsecutiveToolFailureRetries, resolveConsecutiveToolFailureRetryBackoffMs, resolveConsecutiveToolFailureThreshold, resolveExecutorEscalationTarget, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, COMPLETION_SUMMARY_NODE_ID, upsertWorkflowStepResult, AWAITING_APPROVAL_PAUSE_REASON, THINKING_LEVELS, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AgentStore, resolveExecutorFallbackModel, resolveValidatorFallbackModel } from "@fusion/core";
 import { canExecuteTaskOnNode } from "./effective-node.js";
 import { finalizeProvenAutoMergeTask } from "./auto-merge-finalization.js";
 import { mergeEffectiveSettings } from "./effective-settings.js";
@@ -105,6 +105,7 @@ import {
   createResolvedAgentSession,
   extractRuntimeHint,
   resolveExecutorSessionModel,
+  resolveValidatorSessionModel,
   resolveExecutorThinkingLevel,
   resolveExecutorFallbackThinkingLevel,
   resolveValidatorThinkingLevel,
@@ -17420,29 +17421,42 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
       },
     });
 
-    // Determine primary model and an explicit fallback. The workflow step's
-    // own override takes precedence; otherwise use the canonical executor
-    // hierarchy: task override → project execution lane → global execution lane
-    // → project default override → global default. The fallback is the per-step
-    // override's missing-counterpart settings, then the executor fallback lane,
-    // which itself falls through to the shared global fallback pair.
-    // FNXC:ModelResolution 2026-06-25-12:00: FN-7039 requires workflow steps to inherit project execution-lane model settings before default settings so configured Execution models reach step sessions unless the step itself overrides them.
+    // Determine primary model and an explicit fallback. Review-type workflow
+    // steps use the validator lane; ordinary workflow prompts use the executor
+    // lane. A complete per-step override remains authoritative for either lane.
+    // FNXC:ModelResolution 2026-06-25-12:00: FN-7039 requires ordinary workflow
+    // steps to inherit project execution-lane model settings before defaults.
+    // Review gates are independent validation surfaces and must not silently use
+    // the same implementation model merely because they execute in this method.
     const assignedRuntimeConfig = await this.getAssignedAgentRuntimeConfig(task.assignedAgentId);
-    const executorModel = resolveExecutorSessionModel(
-      task.modelProvider,
-      task.modelId,
-      settings,
-      assignedRuntimeConfig,
-    );
-    const primaryProvider = workflowStep.modelProvider || executorModel.provider;
-    const primaryModelId = workflowStep.modelId || executorModel.modelId;
+    const laneModel = isReviewTypeWorkflowStep
+      ? resolveValidatorSessionModel(
+          task.validatorModelProvider,
+          task.validatorModelId,
+          settings,
+          assignedRuntimeConfig,
+        )
+      : resolveExecutorSessionModel(
+          task.modelProvider,
+          task.modelId,
+          settings,
+          assignedRuntimeConfig,
+        );
     const useOverride = !!(workflowStep.modelProvider && workflowStep.modelId);
+    const primaryProvider = useOverride ? workflowStep.modelProvider : laneModel.provider;
+    const primaryModelId = useOverride ? workflowStep.modelId : laneModel.modelId;
 
-    const executorFallback = resolveExecutorFallbackModel(settings);
-    const fallback = executorFallback.provider && executorFallback.modelId
-      && (executorFallback.provider !== primaryProvider || executorFallback.modelId !== primaryModelId)
-      ? executorFallback
+    const workflowFallback = isReviewTypeWorkflowStep
+      ? resolveValidatorFallbackModel(settings)
+      : resolveExecutorFallbackModel(settings);
+    const fallback = workflowFallback.provider && workflowFallback.modelId
+      && (workflowFallback.provider !== primaryProvider || workflowFallback.modelId !== primaryModelId)
+      ? workflowFallback
       : undefined;
+    const fallbackSettingsHint = isReviewTypeWorkflowStep
+      ? "settings.validatorFallbackProvider/validatorFallbackModelId or fallbackProvider/fallbackModelId"
+      : "settings.executionFallbackProvider/executionFallbackModelId or fallbackProvider/fallbackModelId";
+    const fallbackLaneLabel = isReviewTypeWorkflowStep ? "validator" : "executor";
 
     const timeoutMs = Math.max(60_000, settings.workflowStepTimeoutMs ?? 900_000);
 
@@ -17451,7 +17465,6 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
       modelId: string | undefined,
       attemptLabel: string,
     ): Promise<WorkflowStepOutcome> => {
-      // Workflow step agents inherit executor instructions
       const stepInstructions = await this.resolveInstructionsForRole("executor", settings);
       const stepSystemPrompt = buildSystemPromptWithInstructions(systemPrompt, stepInstructions);
 
@@ -17585,16 +17598,23 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
 
       /*
        * FNXC:Settings-ThinkingLevel 2026-07-10-00:00:
-       * WorkflowStep sessions resolve reasoning effort as node/step `thinkingLevel` first, then task override, then settings defaults/lane fallbacks.
+       * WorkflowStep sessions resolve reasoning effort as node/step `thinkingLevel` first, then the task override for their selected model lane, then settings defaults/lane fallbacks.
        *
        * FNXC:Settings-ThinkingLevel 2026-07-10-14:20:
        * The step's own `fallback` attempt already swaps to a distinct model (validator fallback OR global fallback pair) — it must honor THAT model's fallback thinking level, not silently reuse the primary lane's thinking level. Route by which candidate `fallback.label` actually matched instead of only special-casing `validatorFallback`.
        */
-      const workflowStepThinkingSource = workflowStep.thinkingLevel ?? task.thinkingLevel;
+      const workflowStepThinkingSource = workflowStep.thinkingLevel
+        ?? (isReviewTypeWorkflowStep ? task.validatorThinkingLevel ?? task.thinkingLevel : task.thinkingLevel);
       const workflowStepThinkingLevel = attemptLabel === "fallback"
-        ? resolveExecutorFallbackThinkingLevel(workflowStepThinkingSource, settings)
-        : resolveExecutorThinkingLevel(workflowStepThinkingSource, settings);
-      const workflowStepFallbackThinkingLevel = resolveExecutorFallbackThinkingLevel(workflowStepThinkingSource, settings);
+        ? isReviewTypeWorkflowStep
+          ? resolveValidatorFallbackThinkingLevel(workflowStepThinkingSource, settings)
+          : resolveExecutorFallbackThinkingLevel(workflowStepThinkingSource, settings)
+        : isReviewTypeWorkflowStep
+          ? resolveValidatorThinkingLevel(workflowStepThinkingSource, settings)
+          : resolveExecutorThinkingLevel(workflowStepThinkingSource, settings);
+      const workflowStepFallbackThinkingLevel = isReviewTypeWorkflowStep
+        ? resolveValidatorFallbackThinkingLevel(workflowStepThinkingSource, settings)
+        : resolveExecutorFallbackThinkingLevel(workflowStepThinkingSource, settings);
       const { session } = await createResolvedAgentSession({
         sessionPurpose: "executor",
         runtimeHint: workflowRuntimeHint,
@@ -17604,8 +17624,8 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
         tools: toolMode,
         defaultProvider: provider,
         defaultModelId: modelId,
-        fallbackProvider: executorFallback.provider,
-        fallbackModelId: executorFallback.modelId,
+        fallbackProvider: workflowFallback.provider,
+        fallbackModelId: workflowFallback.modelId,
         fallbackThinkingLevel: workflowStepFallbackThinkingLevel,
         defaultThinkingLevel: workflowStepThinkingLevel,
         runAuditor: createRunAuditor(this.store, this.getRunContextFor(task.id)),
@@ -17855,7 +17875,7 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
         if (!retryMalformed) return retryOutcome;
         await this.store.logEntry(
           task.id,
-          `Workflow step '${workflowStep.name}' produced malformed output on both the primary attempt and one self-retry — no fallback model configured (set settings.executionFallbackProvider/Id or fallbackProvider/Id)`,
+          `Workflow step '${workflowStep.name}' produced malformed output on both the primary attempt and one self-retry — no fallback model configured (set ${fallbackSettingsHint})`,
         );
         return retryOutcome;
       }
@@ -17863,12 +17883,12 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
       executorLog.warn(`${task.id}: workflow step '${workflowStep.name}' ${reason} and no fallback model is configured`);
       await this.store.logEntry(
         task.id,
-        `Workflow step '${workflowStep.name}' ${reason} — no fallback model configured (set settings.executionFallbackProvider/Id or fallbackProvider/Id)`,
+        `Workflow step '${workflowStep.name}' ${reason} — no fallback model configured (set ${fallbackSettingsHint})`,
       );
       return primaryOutcome;
     }
 
-    executorLog.log(`${task.id}: retrying workflow step '${workflowStep.name}' with executor fallback ${fallback.provider}/${fallback.modelId} after primary ${primaryOutcome.timedOut ? "timeout" : "malformed output"}`);
+    executorLog.log(`${task.id}: retrying workflow step '${workflowStep.name}' with ${fallbackLaneLabel} fallback ${fallback.provider}/${fallback.modelId} after primary ${primaryOutcome.timedOut ? "timeout" : "malformed output"}`);
     return runOnce(fallback.provider, fallback.modelId, "fallback");
   }
 
