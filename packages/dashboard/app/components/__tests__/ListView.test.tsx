@@ -456,6 +456,54 @@ beforeEach(() => {
   writeBoardWorkflowsCache("project-b", DEFAULT_LANE_PAYLOAD);
 });
 
+/*
+FNXC:WorkflowResolvedColumns 2026-07-29-00:00 (U12 — PR #2525 review, greptile):
+List must self-heal a task whose workflow mapping the payload does not yet carry — the
+routine case, because the SSE task list updates before board-workflows does. Board has
+done this since FN-7591; List had not, so a just-created card kept an approximated move
+menu until some unrelated refresh.
+
+REVERT CHECK: remove the `useUnmappedWorkflowRefetch` call from ListView and this fails
+— `fetchBoardWorkflows` is never called a second time, so the mapping never resolves.
+*/
+describe("ListView unmapped-workflow self-heal", () => {
+  it("forces one board-workflows refetch when a rendered task has no workflow mapping", async () => {
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({
+      ...DEFAULT_LANE_PAYLOAD,
+      // FN-901 is rendered but absent from the mapping: newer than the payload.
+      taskWorkflowIds: {},
+    });
+
+    renderListView({ tasks: [createMockTask({ id: "FN-901", column: "todo", title: "Fresh card" })] });
+
+    await waitFor(() => expect(vi.mocked(fetchBoardWorkflows).mock.calls.length).toBeGreaterThan(1));
+    // Forced fresh, so a cached payload cannot satisfy the repair.
+    expect(vi.mocked(fetchBoardWorkflows).mock.calls.some(([, options]) => options?.forceFresh === true)).toBe(true);
+  });
+
+  it("does not refetch when every rendered task is mapped", async () => {
+    const mapped = { ...DEFAULT_LANE_PAYLOAD, taskWorkflowIds: { "FN-902": "builtin:coding" } };
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue(mapped);
+    // Seed the FIRST-PAINT cache too: the file-level seed maps no tasks, so without this
+    // the initial render legitimately sees an unmapped card and schedules the repair —
+    // which would make this case assert the opposite of what it means to.
+    writeBoardWorkflowsCache(TEST_PROJECT_ID, mapped);
+
+    renderListView({ tasks: [createMockTask({ id: "FN-902", column: "todo", title: "Mapped card" })] });
+
+    // Let the initial load settle, then watch only what happens AFTER it: other
+    // mechanisms (mount fetch, switcher open) legitimately call the fetcher, so
+    // counting from zero would measure them rather than the self-heal.
+    await act(async () => { await Promise.resolve(); });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    vi.mocked(fetchBoardWorkflows).mockClear();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The signature guard must not turn a healthy board into a refetch loop.
+    expect(vi.mocked(fetchBoardWorkflows).mock.calls.filter(([, options]) => options?.forceFresh === true)).toHaveLength(0);
+  });
+});
+
 describe("ListView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1222,37 +1270,38 @@ describe("ListView", () => {
   });
 
   it("refreshes workflow columns when workflow metadata SSE arrives", async () => {
+    const wf = (columns: { id: string; name: string; flags: Record<string, boolean> }[]) => ({
+      flagEnabled: true,
+      defaultWorkflowId: "wf-custom",
+      workflows: [{ id: "wf-custom", name: "Custom", columns }],
+      taskWorkflowIds: { "FN-001": "wf-custom" },
+    });
+    const before = wf([
+      { id: "backlog", name: "Backlog", flags: { intake: true } },
+      { id: "complete", name: "Complete", flags: { complete: true } },
+    ]);
+    const after = wf([
+      { id: "ready", name: "Ready", flags: { intake: true } },
+      { id: "complete", name: "Complete", flags: { complete: true } },
+    ]);
+    /*
+    FNXC:WorkflowResolvedColumns 2026-07-29-00:00 (U12):
+    Seed the FIRST-PAINT cache with `before`. The file-level seed maps no tasks, so
+    without this the initial render sees FN-001 as unmapped, the unmapped-workflow
+    self-heal correctly forces an extra board-workflows fetch, and that fetch eats the
+    `Once` payload this test is asserting on. Seeding makes the first paint already
+    consistent, which is what the test means to start from.
+
+    The trailing `mockResolvedValue(after)` covers the self-heal firing legitimately
+    AFTER the SSE swap: `backlog` -> `ready` leaves FN-001 in a column its workflow no
+    longer declares, so a repair fetch is correct there. Without a fallback it would
+    resolve `undefined` and wipe the payload.
+    */
+    writeBoardWorkflowsCache(TEST_PROJECT_ID, before);
     vi.mocked(fetchBoardWorkflows)
-      .mockResolvedValueOnce({
-        flagEnabled: true,
-        defaultWorkflowId: "wf-custom",
-        workflows: [
-          {
-            id: "wf-custom",
-            name: "Custom",
-            columns: [
-              { id: "backlog", name: "Backlog", flags: { intake: true } },
-              { id: "complete", name: "Complete", flags: { complete: true } },
-            ],
-          },
-        ],
-        taskWorkflowIds: { "FN-001": "wf-custom" },
-      })
-      .mockResolvedValueOnce({
-        flagEnabled: true,
-        defaultWorkflowId: "wf-custom",
-        workflows: [
-          {
-            id: "wf-custom",
-            name: "Custom",
-            columns: [
-              { id: "ready", name: "Ready", flags: { intake: true } },
-              { id: "complete", name: "Complete", flags: { complete: true } },
-            ],
-          },
-        ],
-        taskWorkflowIds: { "FN-001": "wf-custom" },
-      });
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(after)
+      .mockResolvedValue(after);
 
     renderListView({
       tasks: [createMockTask({ id: "FN-001", column: "backlog", title: "Workflow task" })],
