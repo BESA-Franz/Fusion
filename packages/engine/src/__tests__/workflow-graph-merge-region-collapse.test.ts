@@ -130,6 +130,33 @@ describe("WorkflowGraphExecutor merge-region collapse", () => {
     expectNoRawMergeRegionVisits(result.visitedNodeIds);
   });
 
+  it("parks autoMerge:false tasks at the manual hold without invoking the merge seam", async () => {
+    const calls: string[] = [];
+    const prompt = createPrompt({
+      merge: () => {
+        calls.push("merge");
+        return { outcome: "failure" as const, value: "merge-unavailable" };
+      },
+    });
+    const executor = new WorkflowGraphExecutor({ handlers: { prompt } });
+
+    const result = await executor.run(
+      { ...task, autoMerge: false },
+      { ...settings, autoMerge: true },
+      BUILTIN_CODING_WORKFLOW_IR,
+    );
+
+    expect(result.outcome).toBe("success");
+    expect(calls).toEqual([]);
+    expect(result.visitedNodeIds).toEqual([
+      ...SUCCESS_PATH.slice(0, SUCCESS_PATH.indexOf("merge")),
+      "merge-manual-hold",
+    ]);
+    expect(result.context["node:merge-manual-hold:outcome"]).toBe("failure");
+    expect(result.context["node:merge-manual-hold:value"]).toBe("manual-required");
+    expect(result.visitedNodeIds).not.toContain("post-merge-verification");
+  });
+
   it("does not collapse to merge when review fails before the merge-policy region", async () => {
     const calls: string[] = [];
     const prompt = createPrompt({
