@@ -11033,10 +11033,12 @@ export class SelfHealingManager {
    *
    * Conservative by construction — release happens ONLY when every guard agrees:
    *   - the holder is NOT in the executor's executing set;
-   *   - its task is missing, or in `todo`/`triage` (a task waiting to run must
-   *     not pin a worktree). `in-progress` and `in-review` holders legitimately
-   *     retain their worktree; `done`/`archived` are handled by worktree-metadata
-   *     reconcile + merge cleanup, so they are left alone here;
+   *   - its task is missing, or in `todo`/`triage` without an active planning
+   *     lifecycle. A planner writing the spec or a card awaiting plan approval
+   *     legitimately retains its worktree even though execution has not begun.
+   *     `in-progress` and `in-review` holders also retain their worktree;
+   *     `done`/`archived` are handled by worktree-metadata reconcile + merge
+   *     cleanup, so they are left alone here;
    *   - it has sat in the reapable column past a short grace (no mid-transition race);
    *   - and finally `clearPhantomExecutorBinding` itself refuses (returns false)
    *     if any live session surface is still registered — the last line of
@@ -11052,15 +11054,27 @@ export class SelfHealingManager {
     if (holders.length === 0) return 0;
 
     const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
+    const planningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
     const now = Date.now();
     let reaped = 0;
 
     for (const { taskId } of holders) {
       try {
-        if (executingIds.has(taskId)) continue;
+        if (executingIds.has(taskId) || planningIds.has(taskId)) continue;
 
         const task = await this.store.getTask(taskId).catch(() => null);
-        const reapableColumn = !task || task.column === "todo" || task.column === "triage";
+        /*
+        FNXC:WorkflowLifecycle 2026-07-30-09:10:
+        Planning owns a pre-execution worktree while the card still lives in triage. The leaked-slot
+        sweep used only the column and therefore detached a real planner after its 60-second grace,
+        allowing another run to reuse the slot/worktree concurrently. Preserve both the transient
+        planner claim and the durable human-approval handoff; the planning-id checks close the brief
+        status-transition windows on either side.
+        */
+        const planningLifecycleOwnsWorktree = task?.column === "triage"
+          && (task.status === "planning" || task.status === "awaiting-approval");
+        const reapableColumn = !task
+          || ((task.column === "todo" || task.column === "triage") && !planningLifecycleOwnsWorktree);
         if (!reapableColumn) continue;
 
         if (task) {
@@ -11075,7 +11089,8 @@ export class SelfHealingManager {
         // (coderabbit Major, PR #1687). clearPhantomExecutorBinding's live-session
         // refusal is the last line of defense, but this avoids racing it at all.
         const latestExecutingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
-        if (latestExecutingIds.has(taskId)) continue;
+        const latestPlanningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
+        if (latestExecutingIds.has(taskId) || latestPlanningIds.has(taskId)) continue;
 
         const released = this.options.clearPhantomExecutorBinding?.(taskId);
         // false = executor refused (live session surface); undefined = not wired.

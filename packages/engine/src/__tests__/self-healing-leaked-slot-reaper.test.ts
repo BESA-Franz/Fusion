@@ -72,11 +72,16 @@ describe("reapLeakedConcurrencySlots", () => {
     vi.clearAllMocks();
   });
 
-  function makeManager(holders: Array<{ taskId: string; worktreePath: string }>, executing: string[] = []) {
+  function makeManager(
+    holders: Array<{ taskId: string; worktreePath: string }>,
+    executing: string[] = [],
+    planning: string[] = [],
+  ) {
     return new SelfHealingManager(store, {
       rootDir: "/tmp/test-project",
       listWorktreeHolders: () => holders,
       getExecutingTaskIds: () => new Set<string>(executing),
+      getPlanningTaskIds: () => new Set<string>(planning),
       clearPhantomExecutorBinding: clearPhantomExecutorBinding as (taskId: string) => boolean | void,
     });
   }
@@ -98,6 +103,38 @@ describe("reapLeakedConcurrencySlots", () => {
   it("does NOT release a legit in-progress holder", async () => {
     (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(taskRow("FN-6750", "in-progress"));
     const manager = makeManager([{ taskId: "FN-6750", worktreePath: "/wt/proud-delta" }]);
+
+    const reaped = await manager.reapLeakedConcurrencySlots();
+
+    expect(reaped).toBe(0);
+    expect(clearPhantomExecutorBinding).not.toHaveBeenCalled();
+  });
+
+  // FNXC:WorkflowLifecycle 2026-07-30-09:05:
+  // Planning and approval are live triage lifecycle states. Their worktrees
+  // remain valid even though the executor has not moved the task in-progress.
+  it.each([
+    ["active planning", { status: "planning", planningStartedAt: "2026-05-20T12:04:45.000Z" }],
+    ["awaiting plan approval", { status: "awaiting-approval" }],
+  ])("does NOT release a triage holder during %s", async (_label, lifecycle) => {
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(
+      taskRow("FN-6770", "triage", lifecycle),
+    );
+    const manager = makeManager([{ taskId: "FN-6770", worktreePath: "/wt/planning-alder" }]);
+
+    const reaped = await manager.reapLeakedConcurrencySlots();
+
+    expect(reaped).toBe(0);
+    expect(clearPhantomExecutorBinding).not.toHaveBeenCalled();
+  });
+
+  it("does NOT release a holder tracked by the live planner during a status transition", async () => {
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(taskRow("FN-6771", "triage"));
+    const manager = makeManager(
+      [{ taskId: "FN-6771", worktreePath: "/wt/planning-birch" }],
+      [],
+      ["FN-6771"],
+    );
 
     const reaped = await manager.reapLeakedConcurrencySlots();
 
