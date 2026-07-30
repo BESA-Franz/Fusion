@@ -63,6 +63,11 @@ import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, ty
 import { finalizeProvenAutoMergeTask, validateWorkflowDoneMergeProof } from "./auto-merge-finalization.js";
 import { AutoRecoveryDispatcher } from "./auto-recovery.js";
 import { activeSessionRegistry, executingTaskLock } from "./active-session-registry.js";
+import {
+  canDispatchEffectiveNode,
+  canExecuteTaskOnNode,
+  resolveEffectiveNode,
+} from "./effective-node.js";
 import { isTaskStillInPlanningStage } from "./replan-target.js";
 import { getPromptPath } from "./spec-staleness.js";
 import { evaluateStrandedHoldContinuation, seedPreReleasePlanReviewContinuation } from "./plan-review-continuation.js";
@@ -268,6 +273,8 @@ const PRE_EXECUTION_WORKTREE_MAX_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
 export interface SelfHealingOptions {
   /** Project root directory (parent of .worktrees/) */
   rootDir: string;
+  /** Fixed identity of this process in a shared PostgreSQL control plane. */
+  localNodeId?: string;
   /** Optional callback to release TaskExecutor in-memory worktree ownership for a task. */
   releaseExecutorWorktreeOwnership?: (taskId: string) => void;
   /**
@@ -915,6 +922,25 @@ export class SelfHealingManager {
     private store: TaskStore,
     private options: SelfHealingOptions,
   ) {}
+
+  /*
+  FNXC:MultiNodePlanningRecovery 2026-07-30-07:35:
+  Process-local liveness sets can only prove that work is absent on this process.
+  Self-healing must first prove durable task ownership before treating that
+  absence as an orphan signal in a shared PostgreSQL control plane.
+  */
+  private canRecoverTaskOnLocalNode(
+    task: Pick<Task, "effectiveNodeId" | "nodeId">,
+    settings: Pick<Settings, "defaultNodeId">,
+  ): boolean {
+    if (typeof task.effectiveNodeId === "string" && task.effectiveNodeId.trim().length > 0) {
+      return canExecuteTaskOnNode(task, this.options.localNodeId);
+    }
+    return canDispatchEffectiveNode(
+      resolveEffectiveNode(task, settings),
+      this.options.localNodeId,
+    );
+  }
 
   private classifyPausedAbortWorkflowRecovery(
     task: Task,
@@ -3224,6 +3250,7 @@ export class SelfHealingManager {
         && task.status == null
         && !task.paused
         && !task.error
+        && this.canRecoverTaskOnLocalNode(task, settings)
         && Boolean(task.worktree)
         && Boolean(task.workflowIrPinNodeId)
         && !executingIds.has(task.id)
@@ -3244,6 +3271,7 @@ export class SelfHealingManager {
             || live.status != null
             || live.paused
             || live.error
+            || !this.canRecoverTaskOnLocalNode(live, settings)
             || !live.worktree
             || !live.workflowIrPinNodeId
             || (this.options.getExecutingTaskIds?.() ?? new Set<string>()).has(live.id)
@@ -3279,6 +3307,7 @@ export class SelfHealingManager {
             && current.status == null
             && !current.paused
             && !current.error
+            && this.canRecoverTaskOnLocalNode(current, settings)
             && current.worktree === live.worktree
             && current.workflowIrPinNodeId === live.workflowIrPinNodeId
             && current.workflowIrPinColumnId === resumeColumn
@@ -12496,6 +12525,7 @@ export class SelfHealingManager {
       // block recovery indefinitely.
       this.options.evictStaleTriageProcessing?.();
 
+      const settings = await this.store.getSettings();
       const tasks = await this.store.listTasks({ column: "triage" });
       const planningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
       const now = Date.now();
@@ -12504,6 +12534,7 @@ export class SelfHealingManager {
         t.column === "triage" &&
         t.status === "planning" &&
         !t.paused &&
+        this.canRecoverTaskOnLocalNode(t, settings) &&
         !planningIds.has(t.id) &&
         now - new Date(t.updatedAt).getTime() >= APPROVED_TRIAGE_RECOVERY_GRACE_MS
       );
@@ -12521,7 +12552,10 @@ export class SelfHealingManager {
         // Narrow test/legacy adapters can return an unrelated fixture row; only use a
         // re-read when it identifies the requested candidate.
         const recoveryTask = live?.id === task.id ? live : task;
-        if (!isTaskStillInPlanningStage(recoveryTask)) continue;
+        if (
+          !isTaskStillInPlanningStage(recoveryTask)
+          || !this.canRecoverTaskOnLocalNode(recoveryTask, settings)
+        ) continue;
         log.log(`Recovering specified triage task ${task.id}: ${task.title || task.description?.slice(0, 60) || "(untitled)"}`);
         const success = await recoverFn(recoveryTask);
         if (success) recovered++;
@@ -12644,6 +12678,7 @@ export class SelfHealingManager {
     try {
       this.options.evictStaleTriageProcessing?.();
 
+      const settings = await this.store.getSettings();
       const tasks = await this.store.listTasks({ slim: true, includeArchived: false });
       const planningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
       const now = Date.now();
@@ -12653,6 +12688,7 @@ export class SelfHealingManager {
         if (task.sourceType !== "task_refine") return false;
         if (task.paused) return false;
         if (task.status !== null && task.status !== "planning") return false;
+        if (!this.canRecoverTaskOnLocalNode(task, settings)) return false;
         if (planningIds.has(task.id)) return false;
 
         const createdAtMs = new Date(task.createdAt).getTime();
@@ -12678,6 +12714,9 @@ export class SelfHealingManager {
       let recovered = 0;
       for (const task of candidates) {
         try {
+          const live = await this.store.getTask(task.id).catch(() => null);
+          const recoveryTask = live?.id === task.id ? live : task;
+          if (!this.canRecoverTaskOnLocalNode(recoveryTask, settings)) continue;
           const nextPriority = bumpTaskPriority(task.priority);
           if (nextPriority === task.priority) continue;
 
@@ -12760,23 +12799,39 @@ export class SelfHealingManager {
    * the atomic null-check makes restart and repeated maintenance idempotent.
    */
   async finalizeOrphanedPlanningSegments(): Promise<number> {
+    const settings = await this.store.getSettings();
     const planningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
     const tasks = await this.store.listTasks({});
     let finalized = 0;
     for (const task of tasks) {
-      if (!task.planningStartedAt || planningIds.has(task.id) || this.options.hasActivePlanningWorkflowSession?.(task.id)) continue;
+      if (
+        !task.planningStartedAt
+        || !this.canRecoverTaskOnLocalNode(task, settings)
+        || planningIds.has(task.id)
+        || this.options.hasActivePlanningWorkflowSession?.(task.id)
+      ) continue;
       let applied = false;
       const endMs = Date.now();
       if (typeof this.store.updateTaskAtomic === "function") {
         await this.store.updateTaskAtomic(task.id, (live) => {
-          if (!live.planningStartedAt || planningIds.has(live.id) || this.options.hasActivePlanningWorkflowSession?.(live.id)) return null;
+          if (
+            !live.planningStartedAt
+            || !this.canRecoverTaskOnLocalNode(live, settings)
+            || planningIds.has(live.id)
+            || this.options.hasActivePlanningWorkflowSession?.(live.id)
+          ) return null;
           const patch = finalizePlanningSegment(live, endMs);
           applied = patch.planningStartedAt === null;
           return patch;
         });
       } else {
         const live = await this.store.getTask(task.id);
-        if (live?.planningStartedAt && !planningIds.has(live.id) && !this.options.hasActivePlanningWorkflowSession?.(live.id)) {
+        if (
+          live?.planningStartedAt
+          && this.canRecoverTaskOnLocalNode(live, settings)
+          && !planningIds.has(live.id)
+          && !this.options.hasActivePlanningWorkflowSession?.(live.id)
+        ) {
           const patch = finalizePlanningSegment(live, endMs);
           if (patch.planningStartedAt === null) { await this.store.updateTask(task.id, patch); applied = true; }
         }
@@ -12817,6 +12872,7 @@ export class SelfHealingManager {
       // block recovery indefinitely.
       this.options.evictStaleTriageProcessing?.();
 
+      const settings = await this.store.getSettings();
       const tasks = await this.store.listTasks({ column: "triage" });
       const planningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
       const now = Date.now();
@@ -12825,6 +12881,7 @@ export class SelfHealingManager {
         t.column === "triage" &&
         t.status === "planning" &&
         !t.paused &&
+        this.canRecoverTaskOnLocalNode(t, settings) &&
         !planningIds.has(t.id) &&
         now - new Date(t.updatedAt).getTime() >= APPROVED_TRIAGE_RECOVERY_GRACE_MS
       );
@@ -12843,13 +12900,20 @@ export class SelfHealingManager {
           let applied = false;
           if (typeof this.store.updateTaskAtomic === "function") {
             await this.store.updateTaskAtomic(task.id, (live) => {
-              if (!isTaskStillInPlanningStage(live)) return null;
+              if (
+                !isTaskStillInPlanningStage(live)
+                || !this.canRecoverTaskOnLocalNode(live, settings)
+              ) return null;
               applied = true;
               return { status: null };
             });
           } else {
             const live = await this.store.getTask(task.id);
-            if (live && isTaskStillInPlanningStage(live)) {
+            if (
+              live
+              && isTaskStillInPlanningStage(live)
+              && this.canRecoverTaskOnLocalNode(live, settings)
+            ) {
               await this.store.updateTask(task.id, { status: null });
               applied = true;
             }

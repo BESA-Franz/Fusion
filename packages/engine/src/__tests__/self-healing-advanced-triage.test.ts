@@ -134,6 +134,25 @@ describe("advanced workflow tasks stranded in triage", () => {
     expect(store.moveTaskIf).not.toHaveBeenCalled();
   });
 
+  /*
+  FNXC:MultiNodePlanningRecovery 2026-07-30-07:35:
+  Advanced triage recovery uses the same process-local liveness evidence as
+  ordinary planning recovery and therefore must respect durable node routing.
+  */
+  it("leaves advanced triage work assigned to another node untouched", async () => {
+    const foreign = task("FN-FOREIGN-ADVANCED", { nodeId: "node-pc2" });
+    const store = storeFor([foreign]);
+    const manager = new SelfHealingManager(store, {
+      rootDir: "/repo",
+      localNodeId: "node-pc1",
+      getExecutingTaskIds: () => new Set<string>(),
+      getPlanningTaskIds: () => new Set<string>(),
+    });
+
+    expect(await manager.recoverAdvancedTriageTasks()).toBe(0);
+    expect(store.moveTaskIf).not.toHaveBeenCalled();
+  });
+
   it("does not rehome a task claimed after discovery but before the atomic move", async () => {
     const stranded = task("FN-RACING-CLAIM");
     const store = storeFor([stranded]);
