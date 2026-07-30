@@ -52,3 +52,27 @@ describe("CentralCore discovery health precedence", () => {
     expect(emit).toHaveBeenCalledWith("discovery:node:lost", node.name);
   });
 });
+
+describe("CentralCore resource lifecycle", () => {
+  it("does not publish a runtime presence change when a temporary core is closed", async () => {
+    const markLocalNodeOffline = vi.fn().mockResolvedValue(undefined);
+    const removeAllListeners = vi.fn();
+    const context = {
+      nodeDiscovery: undefined,
+      markLocalNodeOffline,
+      backendMode: true,
+      db: null,
+      ownedBackendShutdown: null,
+      ownedBackendReleaseConnections: null,
+      asyncLayer: null,
+      initialized: true,
+      removeAllListeners,
+    };
+
+    await CentralCore.prototype.close.call(context as unknown as CentralCore);
+
+    expect(markLocalNodeOffline).not.toHaveBeenCalled();
+    expect(context.initialized).toBe(false);
+    expect(removeAllListeners).toHaveBeenCalledOnce();
+  });
+});

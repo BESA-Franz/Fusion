@@ -361,9 +361,15 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
       this.stopDiscovery();
     }
 
-    await this.markLocalNodeOffline().catch((error) => {
-      console.warn("[central-core] Failed to persist local node offline during close", error);
-    });
+    /*
+    FNXC:CentralCorePresenceOwnership 2026-07-30-21:36:
+    `close()` is also the resource-release primitive for short-lived CLI and
+    dashboard route cores. Publishing process presence here lets any temporary
+    request mark the long-running runtime node offline. Daemon, dashboard, and
+    project-engine shutdown paths already call `markLocalNodeOffline()` before
+    releasing their shared core, so presence remains an explicit lifecycle
+    responsibility rather than a side effect of connection cleanup.
+    */
 
     // FNXC:CentralCore 2026-06-26-12:30: In backend mode there is no SQLite
     // CentralDatabase to close; the shared connection pool is owned by the
