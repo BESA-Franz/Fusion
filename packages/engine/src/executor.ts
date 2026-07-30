@@ -8408,6 +8408,21 @@ export class TaskExecutor {
     return false;
   }
 
+  /*
+   * FNXC:ProjectIdentity 2026-07-30-19:39:
+   * Project identity is an authoritative store binding, not task payload data.
+   * Surface it read-only to execution sessions without widening the Task/API
+   * contract or trusting agent-provided environment values.
+   */
+  private getBoundProjectId(): string | undefined {
+    try {
+      const projectId = this.store.getAsyncLayer?.()?.projectId;
+      return typeof projectId === "string" && projectId.trim() ? projectId.trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Build the task-scoped runtime env that carries plugin-injected keys
    *  (e.g. compound-engineering `FUSION_CE_SKILLS_DIR` / `FUSION_CE_AGENTS_DIR`)
    *  plus the plugin PATH contribution. Shared by the legacy single-session path
@@ -12111,6 +12126,7 @@ export class TaskExecutor {
           taskDetail: detail,
           worktreePath,
           rootDir: this.rootDir,
+          projectId: this.getBoundProjectId(),
           settings,
           // FNXC:GlobalConcurrencyControls 2026-07-14-18:30: When the graph run already owns a top-level slot (outerConcurrencyClaims), do not pass the semaphore into per-step sessions — each step would acquire a second slot and can deadlock under a full global cap.
           semaphore: this.outerConcurrencyClaims.has(task.id) ? undefined : this.options.semaphore,
@@ -12160,9 +12176,17 @@ export class TaskExecutor {
           onStepComplete: (stepIndex, result) => {
             executorLog.log(`${task.id}: step ${stepIndex} ${result.success ? "succeeded" : "failed"} (${result.retries} retries)`);
             try {
-              this.store.updateStep(task.id, stepIndex, result.success ? "done" : "skipped", stepProjectionOptions).catch((err) => {
-                executorLog.warn(`${task.id}: failed to update step ${stepIndex} status: ${err}`);
-              });
+              /*
+               * FNXC:WorkflowStepControl 2026-07-30-19:36:
+               * A structured blocker is not a skipped step. Leave the current
+               * projection untouched so the durable blocked park retains the exact
+               * resume point; ordinary success/failure behavior stays unchanged.
+               */
+              if (result.outcome !== "blocked") {
+                this.store.updateStep(task.id, stepIndex, result.success ? "done" : "skipped", stepProjectionOptions).catch((err) => {
+                  executorLog.warn(`${task.id}: failed to update step ${stepIndex} status: ${err}`);
+                });
+              }
               const safeReason = result.success ? undefined : sanitizeFailureReason(result.error);
               if (!result.success) {
                 void emitProactiveStatus(
@@ -12242,6 +12266,14 @@ export class TaskExecutor {
 
           if (accumulatedStepTokenUsage) {
             await this.persistTaskTokenUsage(task.id, accumulatedStepTokenUsage);
+          }
+
+          const blockedResult = results.find((result) => result.outcome === "blocked");
+          if (blockedResult) {
+            const reason = blockedResult.error?.trim() || `Workflow step ${blockedResult.stepIndex} is blocked`;
+            await this.parkTaskBlocked(task.id, reason, blockedResult.blockedBy);
+            executorLog.log(`⛔ ${task.id} step ${blockedResult.stepIndex} blocked — implementation halted with progress preserved`);
+            return;
           }
 
           const allSuccess = results.every(r => r.success);
@@ -13180,6 +13212,7 @@ export class TaskExecutor {
               this.workspaceConfig,
               {
                 pluginTaskContributions,
+                projectId: this.getBoundProjectId(),
               },
             );
             await promptWithFallback(session, agentPrompt);
@@ -13554,6 +13587,7 @@ export class TaskExecutor {
                       this.workspaceConfig,
                       {
                         pluginTaskContributions: retryPluginTaskContributions,
+                        projectId: this.getBoundProjectId(),
                       },
                     ),
                   ].join("\n");
@@ -13575,6 +13609,7 @@ export class TaskExecutor {
                       this.workspaceConfig,
                       {
                         pluginTaskContributions: retryPluginTaskContributions,
+                        projectId: this.getBoundProjectId(),
                       },
                     ),
                   ].join("\n");
@@ -15738,6 +15773,57 @@ export class TaskExecutor {
     this.tokenUsageBaselines.delete(task.id);
   }
 
+  /*
+   * FNXC:Lifecycle 2026-07-30-19:36:
+   * Keep the honest blocked-task transition identical for the monolithic
+   * fn_task_done tool and graph-owned step sessions. Callers validate the reason;
+   * this method owns the single durable park/audit contract.
+   */
+  private async parkTaskBlocked(
+    taskId: string,
+    reason: string,
+    blockedBy: string[] = [],
+  ): Promise<string[]> {
+    const blockedTask = await this.store.getTask(taskId);
+    const blockedByIds = Array.from(
+      new Set(blockedBy.map((id) => id.trim()).filter((id) => id.length > 0)),
+    );
+    const parkError = `BLOCKED: ${reason}`;
+    const mergedDependencies = blockedByIds.length > 0
+      ? Array.from(new Set([...(blockedTask.dependencies ?? []), ...blockedByIds]))
+      : undefined;
+
+    await this.store.updateTask(taskId, {
+      status: "failed",
+      error: parkError,
+      paused: false,
+      pausedByAgentId: null,
+      ...(mergedDependencies ? { dependencies: mergedDependencies } : {}),
+    }, this.getRunContextFor(taskId));
+    await this.store.logEntry(
+      taskId,
+      `${parkError}${blockedByIds.length > 0 ? ` — recorded dependencies: ${blockedByIds.join(", ")}` : ""} — parked failed (honest blocked exit; steps preserved)`,
+      undefined,
+      this.getRunContextFor(taskId),
+    );
+    await this.store.recordRunAuditEvent?.({
+      taskId,
+      agentId: "executor",
+      runId: generateSyntheticRunId("execution-blocked", taskId),
+      domain: "database",
+      mutationType: "task:execution-blocked-parked",
+      target: taskId,
+      metadata: {
+        taskId,
+        blockedBy: blockedByIds,
+        hasReason: true,
+      },
+    });
+    await this.persistTokenUsage(taskId);
+    executorLog.log(`⛔ ${taskId} parked failed via blocked exit${blockedByIds.length > 0 ? ` (blockedBy: ${blockedByIds.join(", ")})` : ""}`);
+    return blockedByIds;
+  }
+
   private createTaskDoneTool(
     taskId: string,
     worktreePath: string,
@@ -15800,49 +15886,9 @@ export class TaskExecutor {
             };
           }
 
-          const blockedTask = await store.getTask(taskId);
-          const blockedByIds = Array.from(
-            new Set((params.blockedBy ?? []).map((id) => id.trim()).filter((id) => id.length > 0)),
-          );
-
-          const parkError = `BLOCKED: ${reason}`;
-          // Record blockedBy as real dependency edges (union with existing) so the task requeues
-          // behind the blocker rather than re-running the doomed work. Preserve worktree/branch/
-          // step progress (FN-7863 EXECUTION_DISPATCH_LOOP_EXHAUSTED park convention) — do NOT
-          // call onDone() so the outer loop's `liveTask.status === "failed"` honor-park branch keeps
-          // the row parked for the blocker/operator instead of handing off to review.
-          const mergedDependencies = blockedByIds.length > 0
-            ? Array.from(new Set([...(blockedTask.dependencies ?? []), ...blockedByIds]))
-            : undefined;
-          await store.updateTask(taskId, {
-            status: "failed",
-            error: parkError,
-            paused: false,
-            pausedByAgentId: null,
-            ...(mergedDependencies ? { dependencies: mergedDependencies } : {}),
-          }, this.getRunContextFor(taskId));
-
-          await store.logEntry(
-            taskId,
-            `${parkError}${blockedByIds.length > 0 ? ` — recorded dependencies: ${blockedByIds.join(", ")}` : ""} — parked failed (honest blocked exit; steps preserved)`,
-            undefined,
-            this.getRunContextFor(taskId),
-          );
-          await this.store.recordRunAuditEvent?.({
-            taskId,
-            agentId: "executor",
-            runId: generateSyntheticRunId("execution-blocked", taskId),
-            domain: "database",
-            mutationType: "task:execution-blocked-parked",
-            target: taskId,
-            metadata: {
-              taskId,
-              blockedBy: blockedByIds,
-              hasReason: true,
-            },
-          });
-          await this.persistTokenUsage(taskId);
-          executorLog.log(`⛔ ${taskId} parked failed via blocked exit${blockedByIds.length > 0 ? ` (blockedBy: ${blockedByIds.join(", ")})` : ""}`);
+          // Preserve worktree/branch/step progress and do not call onDone(); the
+          // workflow graph's blocked-park guard keeps this terminal state intact.
+          const blockedByIds = await this.parkTaskBlocked(taskId, reason, params.blockedBy);
 
           return {
             content: [{
@@ -20763,7 +20809,7 @@ export function buildExecutionPrompt(
   pluginRunner?: PluginRunner,
   customFieldDefs?: WorkflowFieldDefinition[],
   workspaceConfig?: WorkspaceConfig | null,
-  options?: { pluginTaskContributions?: string },
+  options?: { pluginTaskContributions?: string; projectId?: string },
 ): string {
   const prompt = scopePromptToWorktree(task.prompt, rootDir, worktreePath, workspaceConfig);
   const reviewLevel = parseReviewLevelFromPrompt(prompt);
@@ -20905,6 +20951,7 @@ git log --oneline
 
 ## Task: ${task.id}
 ${task.title ? `**${task.title}**` : ""}
+${options?.projectId ? `Project ID: \`${options.projectId}\`` : ""}
 ${task.dependencies.length > 0 ? `Dependencies: ${task.dependencies.join(", ")}` : ""}
 
 ## PROMPT.md

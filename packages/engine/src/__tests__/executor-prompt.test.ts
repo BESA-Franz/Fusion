@@ -55,6 +55,24 @@ function createMockTaskDetail(overrides: Partial<TaskDetail> = {}): TaskDetail {
 }
 
 describe("buildExecutionPrompt", () => {
+  it("shows the authoritative session project without adding it to the task contract", () => {
+    const task = createMockTaskDetail();
+
+    const result = buildExecutionPrompt(
+      task,
+      "/home/user/project",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { projectId: "proj_f2c9d44f12524e93" },
+    );
+
+    expect(result).toContain("Project ID: `proj_f2c9d44f12524e93`");
+    expect(task).not.toHaveProperty("projectId");
+  });
+
   it("includes attachment section with absolute paths for image attachments", () => {
     const task = createMockTaskDetail({
       attachments: [
@@ -1685,6 +1703,95 @@ describe("swallowed async store failure observability", () => {
       expect.objectContaining({ id: "FN-8490" }),
       expect.objectContaining({ message: "Step 1: start rejected" }),
     );
+  });
+
+  it("parks a structured blocked step without skipping it or requeueing the task", async () => {
+    const store = createMockStore();
+    const task = {
+      id: "FN-STEP-BLOCKED",
+      title: "Structured step blocker",
+      description: "Preserve the honest blocker",
+      column: "in-progress" as const,
+      dependencies: ["FN-BASE"],
+      steps: [
+        { name: "Preflight", status: "in-progress" as const },
+        { name: "Implement", status: "pending" as const },
+      ],
+      currentStep: 0,
+      log: [] as any[],
+      prompt: "# test\n## Steps\n### Step 0: Preflight\n- [ ] check\n### Step 1: Implement\n- [ ] build",
+      worktree: "/tmp/test/.worktrees/fn-step-blocked",
+      branch: "fusion/fn-step-blocked",
+      baseCommitSha: "abc123",
+      enabledWorkflowSteps: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    store.getSettings.mockResolvedValue({
+      maxConcurrent: 2,
+      maxWorktrees: 4,
+      pollIntervalMs: 15_000,
+      groupOverlappingFiles: false,
+      autoMerge: false,
+      runStepsInNewSessions: true,
+      maxParallelSteps: 1,
+    });
+    store.getTask.mockResolvedValue(task);
+    store.getAsyncLayer = vi.fn().mockReturnValue({
+      projectId: "proj_f2c9d44f12524e93",
+    });
+    store.recordRunAuditEvent = vi.fn().mockResolvedValue(undefined);
+    mockExecuteAll.mockImplementation(async () => {
+      const options = mockedStepSessionExecutor.mock.calls.at(-1)?.[0] as {
+        projectId?: string;
+        onStepComplete?: (
+          stepIndex: number,
+          result: {
+            stepIndex: number;
+            success: boolean;
+            outcome: "blocked";
+            error: string;
+            blockedBy: string[];
+            retries: number;
+          },
+        ) => void;
+      };
+      expect(options.projectId).toBe("proj_f2c9d44f12524e93");
+      const result = {
+        stepIndex: 0,
+        success: false,
+        outcome: "blocked" as const,
+        error: "Foundation checkout is stale",
+        blockedBy: ["FN-SYNC"],
+        retries: 0,
+      };
+      options.onStepComplete?.(0, result);
+      return [result];
+    });
+
+    const executor = new TaskExecutor(store, "/tmp/test");
+    await executor.execute(task);
+
+    expect(store.updateStep).not.toHaveBeenCalledWith(
+      "FN-STEP-BLOCKED",
+      0,
+      "skipped",
+      expect.anything(),
+    );
+    expect(store.updateTask).toHaveBeenCalledWith(
+      "FN-STEP-BLOCKED",
+      expect.objectContaining({
+        status: "failed",
+        error: "BLOCKED: Foundation checkout is stale",
+        dependencies: ["FN-BASE", "FN-SYNC"],
+      }),
+      expect.anything(),
+    );
+    expect(store.moveTask.mock.calls).not.toContainEqual([
+      "FN-STEP-BLOCKED",
+      "todo",
+      expect.anything(),
+    ]);
   });
 
   it("logs warning when rate-limit retry logEntry fails in step-session mode", async () => {

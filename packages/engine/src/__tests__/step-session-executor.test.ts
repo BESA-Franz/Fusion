@@ -1181,6 +1181,129 @@ describe("StepSessionExecutor", () => {
   });
 
   describe("sequential execution", () => {
+    it("shows the authoritative project identity in the step-agent context", async () => {
+      const prompt = makeStepPrompt("FN-001", 1);
+      const task = makeTaskDetail({ prompt, steps: [{ name: "Step 0", status: "pending" }] });
+      mockedCreateFnAgent.mockResolvedValue({ session: makeMockSession() } as any);
+
+      const executor = new StepSessionExecutor({
+        taskDetail: task,
+        worktreePath: "/project/.worktrees/main",
+        rootDir: "/project",
+        projectId: "proj_f2c9d44f12524e93",
+        settings: makeSettings({ maxParallelSteps: 1 }),
+      } as any);
+
+      await executor.executeAll();
+
+      expect(mockedCreateFnAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          systemPrompt: expect.stringContaining(
+            "Authoritative Project ID: proj_f2c9d44f12524e93",
+          ),
+        }),
+      );
+      expect(task).not.toHaveProperty("projectId");
+    });
+
+    it("stops before dependent steps when a step reports a structured blocker", async () => {
+      const prompt = makeStepPrompt("FN-001", 2);
+      const task = makeTaskDetail({
+        prompt,
+        steps: [
+          { name: "Preflight", status: "pending" },
+          { name: "Implement", status: "pending" },
+        ],
+      });
+      const settings = makeSettings({ maxParallelSteps: 1 });
+
+      mockedCreateFnAgent.mockImplementation(async (options: any) => {
+        const blockedTool = options.customTools.find(
+          (tool: { name?: string }) => tool.name === "fn_step_blocked",
+        );
+        return {
+          session: makeMockSession(async () => {
+            await blockedTool.execute("blocked-call", {
+              reason: "Foundation checkout is stale",
+              blockedBy: ["FN-9000"],
+            });
+          }),
+        } as any;
+      });
+
+      const executor = new StepSessionExecutor({
+        taskDetail: task,
+        worktreePath: "/project/.worktrees/main",
+        rootDir: "/project",
+        settings,
+        pluginRunner: undefined,
+      } as any);
+
+      const results = await executor.executeAll();
+
+      expect(results).toEqual([
+        expect.objectContaining({
+          stepIndex: 0,
+          success: false,
+          outcome: "blocked",
+          error: "Foundation checkout is stale",
+          blockedBy: ["FN-9000"],
+          retries: 0,
+        }),
+      ]);
+      expect(mockedCreateFnAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it("attributes a blocker to the active step when the primary session is reused", async () => {
+      const prompt = makeStepPrompt("FN-001", 2);
+      const task = makeTaskDetail({
+        prompt,
+        steps: [
+          { name: "Preflight", status: "pending" },
+          { name: "Implement", status: "pending" },
+        ],
+      });
+      let promptCalls = 0;
+      mockedCreateFnAgent.mockImplementation(async (options: any) => {
+        const blockedTool = options.customTools.find(
+          (tool: { name?: string }) => tool.name === "fn_step_blocked",
+        );
+        return {
+          session: makeMockSession(async () => {
+            promptCalls++;
+            if (promptCalls === 2) {
+              await blockedTool.execute("blocked-call", {
+                reason: "Second step needs an upstream artifact",
+              });
+            }
+          }),
+        } as any;
+      });
+
+      const executor = new StepSessionExecutor({
+        taskDetail: task,
+        worktreePath: "/project/.worktrees/main",
+        rootDir: "/project",
+        settings: makeSettings({
+          maxParallelSteps: 1,
+          runStepsInNewSessions: false,
+        }),
+      } as any);
+
+      const results = await executor.executeAll();
+
+      expect(results).toEqual([
+        expect.objectContaining({ stepIndex: 0, success: true }),
+        expect.objectContaining({
+          stepIndex: 1,
+          success: false,
+          outcome: "blocked",
+          error: "Second step needs an upstream artifact",
+        }),
+      ]);
+      expect(mockedCreateFnAgent).toHaveBeenCalledTimes(1);
+    });
+
     it("forwards taskEnv into step session creation", async () => {
       const prompt = makeStepPrompt("FN-001", 1);
       const task = makeTaskDetail({ prompt, steps: [{ name: "Step 0", status: "pending" }] });

@@ -17,7 +17,8 @@ import { promisify } from "node:util";
 const execAsync = promisify(exec);
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Type } from "@earendil-works/pi-ai";
 import type { AgentHeartbeatRun, AgentStore, MessageStore, PermanentAgentGatingContext, ResolvedMcpServerDefinition, TaskDetail, Settings, SteeringComment, TaskStore } from "@fusion/core";
 import { resolvePersistAgentThinkingLog, resolveExecutorFallbackModel } from "@fusion/core";
 
@@ -78,6 +79,10 @@ export interface StepResult {
   success: boolean;
   /** Error message if the step failed (after all retries). */
   error?: string;
+  /** Structured terminal outcome when the step explicitly reports a blocker. */
+  outcome?: "blocked";
+  /** Optional task IDs that must complete before a blocked step can resume. */
+  blockedBy?: string[];
   /** Number of retry attempts made (0 = first attempt succeeded). */
   retries: number;
   /** Optional per-step token usage extracted from session stats. */
@@ -110,6 +115,8 @@ export interface StepSessionExecutorOptions {
   taskDetail: TaskDetail;
   /** Path to the primary git worktree for this task. */
   worktreePath: string;
+  /** Authoritative project identity bound to this executor session. */
+  projectId?: string;
   /** Project root directory (parent of .worktrees/). */
   rootDir: string;
   /** Merged project settings. */
@@ -529,6 +536,7 @@ export function buildStepPrompt(
   parts.push(
     "After completing this step, commit your changes, then stop.",
     "Do NOT call task lifecycle tools. Do NOT call `fn_task_update`, `task_update`, `fn_task_done`, or any tool to mark this step in-progress/done/skipped.",
+    "If this step genuinely cannot proceed, call `fn_step_blocked(reason=\"...\", blockedBy=[...])` and then stop. Do not report a blocker only as prose.",
     "Do NOT proceed to subsequent steps. The workflow graph records step status, ordering, review, and completion.",
   );
 
@@ -660,6 +668,7 @@ export function buildReducedStepPrompt(taskDetail: TaskDetail, stepIndex: number
     "Check git status and git log to see what's been committed.",
     "Complete the remaining step work, commit your changes, then stop.",
     "Do NOT call `fn_task_update`, `task_update`, `fn_task_done`, or any tool to mark this step in-progress/done/skipped. The workflow graph records step status and completion.",
+    "If this step genuinely cannot proceed, call `fn_step_blocked(reason=\"...\", blockedBy=[...])` and then stop. Do not report a blocker only as prose.",
   ];
 
   return parts.join("\n").replace(/\n{3,}/g, "\n\n"); // Collapse multiple blank lines
@@ -741,6 +750,7 @@ export class StepSessionExecutor {
   private reusablePrimaryHandle: SessionHandle | null = null;
   private reusableStepTelemetry: { agentLogger: AgentLogger; trackingKey: string } | null = null;
   private reusablePrimaryLastTokenUsage: StepResult["tokenUsage"] | undefined;
+  private reusableBlockedOutcome: { reason: string; blockedBy: string[] } | undefined;
 
   private registerActiveStepSession(stepIndex: number, handle: SessionHandle, worktreePath: string): void {
     this.activeSessions.set(stepIndex, handle);
@@ -801,6 +811,7 @@ export class StepSessionExecutor {
       this.reusablePrimaryHandle = null;
       this.reusableStepTelemetry = null;
       this.reusablePrimaryLastTokenUsage = undefined;
+      this.reusableBlockedOutcome = undefined;
     }
   }
 
@@ -865,10 +876,16 @@ export class StepSessionExecutor {
         const stepIdx = runnableIndices[0]!;
         const result = await this.executeStep(stepIdx, this.options.worktreePath);
         this.stepResults.push(result);
+        if (result.outcome === "blocked") {
+          break;
+        }
       } else {
         // Multiple steps — parallel wave
         const waveResults = await this.executeParallelWave({ ...wave, indices: runnableIndices });
         this.stepResults.push(...waveResults);
+        if (waveResults.some((result) => result.outcome === "blocked")) {
+          break;
+        }
       }
     }
 
@@ -1205,6 +1222,8 @@ export class StepSessionExecutor {
         ...(run.resultJson ?? {}),
         success: result.success,
         error: result.error,
+        outcome: result.outcome,
+        blockedBy: result.blockedBy,
         retries: result.retries,
         tokenUsage: result.tokenUsage,
       },
@@ -1301,6 +1320,10 @@ export class StepSessionExecutor {
         });
         let session: AgentSession | null = null;
         const localTelemetry = { agentLogger, trackingKey };
+        let blockedOutcome: { reason: string; blockedBy: string[] } | undefined;
+        if (reusePrimarySession) {
+          this.reusableBlockedOutcome = undefined;
+        }
 
         /*
          * FNXC:Settings-ThinkingLevel 2026-07-10-00:00:
@@ -1331,6 +1354,58 @@ export class StepSessionExecutor {
                 createTaskLogsReadTool(this.options.store, taskDetail.id),
               ]
             : [];
+          /*
+           * FNXC:WorkflowStepControl 2026-07-30-19:31:
+           * Graph-owned step agents cannot call fn_task_done, so plain-text blocker
+           * reports were previously mistaken for success and dependent waves started.
+           * This tool records a structured, session-local terminal outcome; TaskExecutor
+           * remains the sole owner of durable lifecycle mutation.
+           */
+          const stepBlockedTool: ToolDefinition = {
+            name: "fn_step_blocked",
+            label: "Report Step Blocked",
+            description:
+              "Stop the current workflow step honestly when it cannot proceed. " +
+              "The workflow graph will preserve step progress, park the task as blocked, " +
+              "and will not start dependent steps.",
+            parameters: Type.Object({
+              reason: Type.String({
+                minLength: 1,
+                description: "Concrete blocker and what is needed to unblock this step.",
+              }),
+              blockedBy: Type.Optional(Type.Array(Type.String(), {
+                description: "Optional task IDs that must complete before this step can resume.",
+              })),
+            }),
+            execute: async (_id: string, params: { reason: string; blockedBy?: string[] }) => {
+              const reason = params.reason?.trim();
+              if (!reason) {
+                const message = "fn_step_blocked requires a non-empty reason.";
+                return {
+                  content: [{ type: "text" as const, text: message }],
+                  details: { error: message },
+                };
+              }
+              const outcome = {
+                reason,
+                blockedBy: Array.from(new Set(
+                  (params.blockedBy ?? []).map((id) => id.trim()).filter(Boolean),
+                )),
+              };
+              if (reusePrimarySession) {
+                this.reusableBlockedOutcome = outcome;
+              } else {
+                blockedOutcome = outcome;
+              }
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: "Step recorded as blocked. Stop now; the workflow graph owns the lifecycle transition.",
+                }],
+                details: {},
+              };
+            },
+          };
           /*
           FNXC:EphemeralAgentTaskCreation 2026-07-26-06:20:
           Per-step workflow sessions honor the same registration-time Deny as the outer
@@ -1393,6 +1468,7 @@ export class StepSessionExecutor {
 
 Your role:
 - Complete only the current step's scoped outcomes.
+- Authoritative Project ID: ${this.options.projectId ?? "unavailable"}
 - Read step context before editing.
 - Reuse existing patterns in nearby code.
 - Run relevant tests for changes made in this step.
@@ -1420,6 +1496,7 @@ Follow instructions precisely and avoid unrelated changes.`,
               // FNXC:McpConfig 2026-06-25-23:02: Workflow model-node step sessions receive the same resolved, secret-materialized MCP server set as the parent executor; runtime support is still enforced inside the pi session seam without logging server contents.
               mcpServers: this.options.mcpServers,
               customTools: [
+                stepBlockedTool,
                 ...pluginTools,
                 ...documentTools,
                 webFetchTool,
@@ -1515,6 +1592,24 @@ Follow instructions precisely and avoid unrelated changes.`,
           // the error is stored on session.state.error instead of being thrown.
           checkSessionError(session);
 
+          const effectiveBlockedOutcome = reusePrimarySession
+            ? this.reusableBlockedOutcome
+            : blockedOutcome;
+          if (effectiveBlockedOutcome) {
+            const result: StepResult = {
+              stepIndex,
+              success: false,
+              outcome: "blocked",
+              error: effectiveBlockedOutcome.reason,
+              blockedBy: effectiveBlockedOutcome.blockedBy,
+              retries,
+              tokenUsage: await this.extractStepTokenUsage(session, reusePrimarySession),
+            };
+            await this.completeWorkflowStepActivityRun(activityRun, "failed", result);
+            this.options.onStepComplete?.(stepIndex, result);
+            return result;
+          }
+
           const result: StepResult = {
             stepIndex,
             success: true,
@@ -1556,13 +1651,30 @@ Follow instructions precisely and avoid unrelated changes.`,
                 `[step-exec] Reduced-prompt recovery succeeded for step ${stepIndex}`,
                 "status",
               );
-              const result: StepResult = {
-                stepIndex,
-                success: true,
-                retries,
-                tokenUsage: await this.extractStepTokenUsage(session, reusePrimarySession),
-              };
-              await this.completeWorkflowStepActivityRun(activityRun, "completed", result);
+              const effectiveBlockedOutcome = reusePrimarySession
+                ? this.reusableBlockedOutcome
+                : blockedOutcome;
+              const result: StepResult = effectiveBlockedOutcome
+                ? {
+                    stepIndex,
+                    success: false,
+                    outcome: "blocked",
+                    error: effectiveBlockedOutcome.reason,
+                    blockedBy: effectiveBlockedOutcome.blockedBy,
+                    retries,
+                    tokenUsage: await this.extractStepTokenUsage(session, reusePrimarySession),
+                  }
+                : {
+                    stepIndex,
+                    success: true,
+                    retries,
+                    tokenUsage: await this.extractStepTokenUsage(session, reusePrimarySession),
+                  };
+              await this.completeWorkflowStepActivityRun(
+                activityRun,
+                result.outcome === "blocked" ? "failed" : "completed",
+                result,
+              );
               this.options.onStepComplete?.(stepIndex, result);
               return result;
             } catch (reducedErr: unknown) {
