@@ -28,7 +28,9 @@ const mockUpdateProject = vi.fn().mockResolvedValue({});
 const mockUnregisterProject = vi.fn();
 const mockGetProject = vi.fn();
 const mockGetProjectByPath = vi.fn();
+const mockGetProjectNodePath = vi.fn();
 const mockGetProjectHealth = vi.fn();
+const mockResolveProjectWorkingDirectory = vi.fn();
 const mockInit = vi.fn();
 const mockClose = vi.fn();
 const mockQuestion = vi.fn();
@@ -42,6 +44,13 @@ const mockTaskStoreInit = vi.fn();
 const mockTaskStoreListTasks = vi.fn();
 const mockTaskStoreClose = vi.fn();
 const mockEnsureMemoryFileWithBackend = vi.fn();
+const mockCreateTaskStoreForBackend = vi.fn(async () => ({
+  taskStore: {
+    init: mockTaskStoreInit,
+    listTasks: mockTaskStoreListTasks,
+  },
+  shutdown: vi.fn(async () => {}),
+}));
 
 // Mock @fusion/core
 vi.mock("@fusion/core", () => ({
@@ -55,7 +64,9 @@ vi.mock("@fusion/core", () => ({
     unregisterProject: mockUnregisterProject,
     getProject: mockGetProject,
     getProjectByPath: mockGetProjectByPath,
+    getProjectNodePath: mockGetProjectNodePath,
     getProjectHealth: mockGetProjectHealth,
+    resolveProjectWorkingDirectory: mockResolveProjectWorkingDirectory,
   })),
   GlobalSettingsStore: makeConstructibleMock(() => ({
     init: mockGlobalInit.mockResolvedValue(undefined),
@@ -69,13 +80,7 @@ vi.mock("@fusion/core", () => ({
   // FNXC:PostgresCutover 2026-07-05-17:20: getTaskCounts/health now boot the
   // project store through the PostgreSQL startup factory; route the factory to
   // the same mocked listTasks so count/in-flight assertions exercise it.
-  createTaskStoreForBackend: vi.fn(async () => ({
-    taskStore: {
-      init: mockTaskStoreInit,
-      listTasks: mockTaskStoreListTasks,
-    },
-    shutdown: vi.fn(async () => {}),
-  })),
+  createTaskStoreForBackend: mockCreateTaskStoreForBackend,
   // FN-7740: `getTaskCounts`/`runProjectAdd`'s interactive-init store now
   // close via `store.close()` and `listTasks` is wrapped in `retryOnLock`
   // (which imports `isSqliteLockError` from @fusion/core) — stub it per
@@ -143,6 +148,7 @@ describe("project commands", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     consoleSpy.mockRestore();
     consoleWarnSpy.mockRestore();
     consoleErrorSpy.mockRestore();
@@ -197,6 +203,72 @@ describe("project commands", () => {
     const parsed = JSON.parse(jsonOutput);
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed[0].name).toBe("app-one");
+  });
+
+  it("runProjectList resolves paths and task stores for the configured runtime node", async () => {
+    const localPath = "C:\\BESA\\besa-suite";
+    vi.stubEnv("FUSION_NODE_ID", "node_pc1");
+    mockListProjects.mockResolvedValue([
+      { id: "proj-1", name: "besa-suite", path: "/workspace", status: "active", isolationMode: "in-process" },
+    ]);
+    mockGetSettings.mockResolvedValue({});
+    mockGetProjectNodePath.mockResolvedValue(localPath);
+
+    const { runProjectList } = await import("../project.js");
+    await runProjectList({ json: true });
+
+    const parsed = JSON.parse(
+      consoleSpy.mock.calls.map((call) => String(call[0])).join(""),
+    );
+    expect(parsed[0].path).toBe(localPath);
+    expect(mockGetProjectNodePath).toHaveBeenCalledWith(
+      "proj-1",
+      "node_pc1",
+    );
+    expect(mockCreateTaskStoreForBackend).toHaveBeenCalledWith({
+      rootDir: localPath,
+    });
+  });
+
+  it("runProjectShow fails closed when the runtime node has no project path", async () => {
+    vi.stubEnv("FUSION_NODE_ID", "node_pc1");
+    mockGetProject.mockResolvedValue({
+      id: "proj-1",
+      name: "besa-suite",
+      path: "/workspace",
+      status: "active",
+      isolationMode: "in-process",
+    });
+    mockResolveProjectWorkingDirectory.mockRejectedValue(
+      new Error("mapping not found"),
+    );
+
+    const { runProjectShow } = await import("../project.js");
+
+    await expect(runProjectShow("proj-1")).rejects.toMatchObject({
+      name: "RuntimeProjectPathError",
+      context: {
+        projectId: "proj-1",
+        nodeId: "node_pc1",
+        registeredPath: "/workspace",
+      },
+    });
+    expect(mockCreateTaskStoreForBackend).not.toHaveBeenCalled();
+  });
+
+  it("runProjectList surfaces mapping lookup failures instead of hiding projects", async () => {
+    vi.stubEnv("FUSION_NODE_ID", "node_pc1");
+    mockListProjects.mockResolvedValue([
+      { id: "proj-1", name: "besa-suite", path: "/workspace", status: "active", isolationMode: "in-process" },
+    ]);
+    mockGetProjectNodePath.mockRejectedValue(new Error("database unavailable"));
+
+    const { runProjectList } = await import("../project.js");
+
+    await expect(runProjectList({ json: true })).rejects.toThrow(
+      "database unavailable",
+    );
+    expect(mockCreateTaskStoreForBackend).not.toHaveBeenCalled();
   });
 
   it("runProjectAdd registers project and prints sanitized path output", async () => {

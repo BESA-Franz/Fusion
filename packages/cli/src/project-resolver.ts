@@ -9,7 +9,7 @@
  */
 
 import { existsSync, statSync } from "node:fs";
-import { basename, dirname, join, normalize, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { promptOutputStream, result as outputResult } from "./output.js";
 import {
@@ -26,6 +26,12 @@ import {
   type RegisteredProject,
 } from "@fusion/core";
 import { ProjectManager } from "@fusion/engine";
+import {
+  comparableProjectPath,
+  listProjectsForRuntimeNode,
+  resolveProjectForRuntimeNode as resolveRuntimeProject,
+  RuntimeProjectPathError,
+} from "./runtime-project-path.js";
 
 // Singleton instances for reuse across commands
 let centralCoreInstance: CentralCore | null = null;
@@ -107,6 +113,22 @@ export async function getProjectManager(): Promise<ProjectManager> {
     projectManagerInstance = new ProjectManager(central);
   }
   return projectManagerInstance;
+}
+
+async function resolveProjectForRuntimeNode(
+  central: CentralCore,
+  project: RegisteredProject,
+): Promise<RegisteredProject> {
+  try {
+    return await resolveRuntimeProject(central, project);
+  } catch (error) {
+    if (!(error instanceof RuntimeProjectPathError)) throw error;
+    throw new ProjectResolutionError(
+      error.message,
+      "PATH_MISMATCH",
+      error.context,
+    );
+  }
 }
 
 /**
@@ -204,9 +226,9 @@ export async function resolveProject(options: ResolveOptions = {}): Promise<Reso
   // 1. Check explicit --project flag
   if (options.project) {
     const projects = await central.listProjects();
-    const match = projects.find((p) => p.name === options.project);
+    const registeredMatch = projects.find((p) => p.name === options.project);
 
-    if (!match) {
+    if (!registeredMatch) {
       // Suggest similar names if available
       const similar = projects
         .filter((p) => p.name.toLowerCase().includes(options.project!.toLowerCase()))
@@ -223,6 +245,7 @@ export async function resolveProject(options: ResolveOptions = {}): Promise<Reso
         { searchedName: options.project, availableProjects: projects.map((p) => p.name) }
       );
     }
+    const match = await resolveProjectForRuntimeNode(central, registeredMatch);
 
     // Check if path still exists
     if (!existsSync(match.path)) {
@@ -243,10 +266,16 @@ export async function resolveProject(options: ResolveOptions = {}): Promise<Reso
 
   if (fusionDir) {
     // 3. Match path against registered projects
-    const allProjects = await central.listProjects();
-    const normalizedKbDir = normalize(fusionDir);
+    const registeredProjects = await central.listProjects();
+    const allProjects = await listProjectsForRuntimeNode(
+      central,
+      registeredProjects,
+    );
+    const normalizedKbDir = comparableProjectPath(fusionDir);
 
-    const match = allProjects.find((p) => normalize(p.path) === normalizedKbDir);
+    const match = allProjects.find(
+      (project) => comparableProjectPath(project.path) === normalizedKbDir,
+    );
 
     if (match) {
       // Check if path still exists
@@ -260,6 +289,34 @@ export async function resolveProject(options: ResolveOptions = {}): Promise<Reso
       }
 
       return createResolvedProject(match);
+    }
+
+    const storedIdentity = readProjectIdentity(join(fusionDir, ".fusion"));
+    const identityMatch = storedIdentity
+      ? registeredProjects.find((project) => project.id === storedIdentity.id)
+      : undefined;
+    if (identityMatch) {
+      const mappedIdentityProject = await resolveProjectForRuntimeNode(
+        central,
+        identityMatch,
+      );
+      if (
+        comparableProjectPath(mappedIdentityProject.path)
+        !== normalizedKbDir
+      ) {
+        throw new ProjectResolutionError(
+          `Project "${mappedIdentityProject.name}" is mapped to a different path on this runtime node.`,
+          "PATH_MISMATCH",
+          {
+            projectId: mappedIdentityProject.id,
+            nodeId: process.env.FUSION_NODE_ID?.trim(),
+            registeredPath: identityMatch.path,
+            mappedPath: mappedIdentityProject.path,
+            detectedPath: fusionDir,
+            causeName: "ProjectIdentityPathMismatch",
+          },
+        );
+      }
     }
 
     // 4. Has .fusion/ but not registered
@@ -381,9 +438,13 @@ export async function resolveProject(options: ResolveOptions = {}): Promise<Reso
   }
 
   // 5. No .fusion/ found - check registered projects
-  const allProjects = await central.listProjects();
+  const registeredProjects = await central.listProjects();
+  const allProjects = await listProjectsForRuntimeNode(
+    central,
+    registeredProjects,
+  );
 
-  if (allProjects.length === 0) {
+  if (allProjects.length === 0 && registeredProjects.length === 0) {
     // 6a. No projects at all
     throw new ProjectResolutionError(
       "No projects registered.\n\n" +
@@ -393,6 +454,18 @@ export async function resolveProject(options: ResolveOptions = {}): Promise<Reso
         "  3. Run `fn project add .` to register it\n" +
         "\nOr: `fn project add <path>` to register from anywhere.",
       "NO_PROJECTS"
+    );
+  }
+
+  if (allProjects.length === 0) {
+    const nodeId = process.env.FUSION_NODE_ID?.trim();
+    throw new ProjectResolutionError(
+      `No registered project has a usable path mapping for runtime node "${nodeId}".`,
+      "PATH_MISMATCH",
+      {
+        nodeId,
+        registeredProjectCount: registeredProjects.length,
+      },
     );
   }
 
@@ -448,27 +521,30 @@ async function createProjectStore(rootDir: string): Promise<TaskStore> {
  * Initializes the TaskStore for the project.
  */
 async function createResolvedProject(project: RegisteredProject): Promise<ResolvedProject> {
+  const central = await getCentralCore();
+  const runtimeProject = await resolveProjectForRuntimeNode(central, project);
+
   // Initialize TaskStore for this project
   // FNXC:PostgresCutover 2026-07-04: boot PostgreSQL via createTaskStoreForBackend
   // instead of a legacy SQLite TaskStore whose runtime was removed (VAL-REMOVAL-005).
-  const store = await createProjectStore(project.path);
+  const store = await createProjectStore(runtimeProject.path);
 
   // Try to get runtime from ProjectManager if available
   let runtime: import("@fusion/engine").ProjectRuntime | undefined;
   try {
     const pm = await getProjectManager();
-    runtime = pm.getRuntime(project.id);
+    runtime = pm.getRuntime(runtimeProject.id);
   } catch {
     // ProjectManager not initialized or runtime not started - that's ok
     runtime = undefined;
   }
 
   return {
-    projectId: project.id,
-    name: project.name,
-    directory: project.path,
-    status: project.status,
-    isolationMode: project.isolationMode,
+    projectId: runtimeProject.id,
+    name: runtimeProject.name,
+    directory: runtimeProject.path,
+    status: runtimeProject.status,
+    isolationMode: runtimeProject.isolationMode,
     runtime,
     store,
   };
@@ -537,10 +613,15 @@ export async function findProjectByPath(
   central?: CentralCore
 ): Promise<RegisteredProject | undefined> {
   const core = central ?? (await getCentralCore());
-  const normalizedPath = normalize(resolve(path));
-  const projects = await core.listProjects();
+  const normalizedPath = comparableProjectPath(path);
+  const projects = await listProjectsForRuntimeNode(
+    core,
+    await core.listProjects(),
+  );
 
-  return projects.find((p) => normalize(p.path) === normalizedPath);
+  return projects.find(
+    (project) => comparableProjectPath(project.path) === normalizedPath,
+  );
 }
 
 /**
@@ -603,7 +684,10 @@ export async function getProjectSummary(): Promise<
   Array<{ name: string; path: string; status: string }>
 > {
   const central = await getCentralCore();
-  const projects = await central.listProjects();
+  const projects = await listProjectsForRuntimeNode(
+    central,
+    await central.listProjects(),
+  );
 
   return projects.map((p) => ({
     name: p.name,
@@ -632,7 +716,7 @@ export function isCentralCoreInitialized(): boolean {
  */
 export async function listRegisteredProjects(): Promise<RegisteredProject[]> {
   const central = await getCentralCore();
-  return central.listProjects();
+  return listProjectsForRuntimeNode(central, await central.listProjects());
 }
 
 /**
@@ -641,7 +725,10 @@ export async function listRegisteredProjects(): Promise<RegisteredProject[]> {
 export async function getProjectByName(name: string): Promise<RegisteredProject | undefined> {
   const central = await getCentralCore();
   const projects = await central.listProjects();
-  return projects.find((p) => p.name === name);
+  const project = projects.find((candidate) => candidate.name === name);
+  return project
+    ? resolveProjectForRuntimeNode(central, project)
+    : undefined;
 }
 
 /**
@@ -919,12 +1006,16 @@ export async function startProjectRuntime(projectId: string): Promise<import("@f
   }
 
   // Get project config from registry
-  const project = await central.getProject(projectId);
-  if (!project) {
+  const registeredProject = await central.getProject(projectId);
+  if (!registeredProject) {
     throw new ProjectResolutionError(`Project "${projectId}" not found.`, "NOT_FOUND", {
       projectId,
     });
   }
+  const project = await resolveProjectForRuntimeNode(
+    central,
+    registeredProject,
+  );
 
   // Add and start the runtime
   const runtime = await pm.addProject({
@@ -984,7 +1075,10 @@ export async function getProjectsWithStatus(): Promise<
   const central = await getCentralCore();
   const pm = await getProjectManager();
 
-  const projects = await central.listProjects();
+  const projects = await listProjectsForRuntimeNode(
+    central,
+    await central.listProjects(),
+  );
 
   /*
    * FNXC:PostgresProjectStatus 2026-07-14-23:02:
@@ -1061,8 +1155,12 @@ export async function getProjectTaskCounts(
   let taskStore = store;
   if (!taskStore) {
     const central = await getCentralCore();
-    const project = await central.getProject(projectId);
-    if (!project) return {};
+    const registeredProject = await central.getProject(projectId);
+    if (!registeredProject) return {};
+    const project = await resolveProjectForRuntimeNode(
+      central,
+      registeredProject,
+    );
     /* FNXC:PostgresProjectStatus 2026-07-14-18:42:
      * One-shot task counts own a PostgreSQL backend for exactly this read.
      * Never construct the public TaskStore without an AsyncDataLayer.

@@ -17,6 +17,7 @@ afterEach(() => {
   for (const path of tempPaths.splice(0)) {
     rmSync(path, { recursive: true, force: true });
   }
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -50,6 +51,42 @@ describe("ensureCwdProjectRegistered", () => {
     expect(updateSpy).not.toHaveBeenCalled();
 
     await central.close();
+  });
+
+  it("recognizes an existing project by its configured runtime-node path", async () => {
+    const cwd = makeTempDir("fn-node-path-project-");
+    const project = {
+      id: "proj_1234567890abcdef",
+      name: "shared-project",
+      path: "/workspace",
+      status: "active",
+      isolationMode: "in-process",
+      createdAt: "2026-07-30T00:00:00.000Z",
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    };
+    const listProjects = vi.fn().mockResolvedValue([project]);
+    const getProjectNodePath = vi.fn().mockResolvedValue(cwd);
+    const ensureProjectForPath = vi.fn();
+    vi.stubEnv("FUSION_NODE_ID", "node_pc1");
+
+    const result = await ensureCwdProjectRegistered({
+      cwd,
+      central: {
+        listProjects,
+        getProjectNodePath,
+        ensureProjectForPath,
+      } as never,
+      logPrefix: "serve",
+      autoRegister: true,
+    });
+
+    expect(result).toMatchObject({ id: project.id, path: cwd });
+    expect(getProjectNodePath).toHaveBeenCalledWith(
+      project.id,
+      "node_pc1",
+    );
+    expect(ensureProjectForPath).not.toHaveBeenCalled();
+    expect(readProjectIdentity(cwd)?.id).toBe(project.id);
   });
 
   it("auto-registers unregistered project when enabled and persists identity", async () => {

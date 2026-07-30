@@ -9,6 +9,7 @@ import {
   readProjectIdentity,
   writeProjectIdentity,
 } from "@fusion/core";
+import { findProjectForRuntimePath } from "../runtime-project-path.js";
 
 const execAsync = promisify(exec);
 
@@ -41,7 +42,7 @@ export async function ensureCwdProjectRegistered(
 ): Promise<RegisteredProject | null> {
   const { cwd, central, logPrefix, autoRegister } = options;
 
-  const existing = await central.getProjectByPath(cwd);
+  const existing = await findProjectForRuntimePath(central, cwd);
   if (existing) {
     stampProjectIdentityBestEffort(cwd, existing, logPrefix);
     return existing;

@@ -5,8 +5,13 @@
  * for operating on tasks across multiple registered projects.
  */
 
-import { createTaskStoreForBackend, type AsyncDataLayer, type RegisteredProject, type TaskStore, CentralCore, GlobalSettingsStore, hasProjectIdentity, isValidSqliteDatabaseFile } from "@fusion/core";
+import { createTaskStoreForBackend, type AsyncDataLayer, type RegisteredProject, type TaskStore, CentralCore, GlobalSettingsStore, hasProjectIdentity, isValidSqliteDatabaseFile, readProjectIdentity } from "@fusion/core";
 import { resolve, dirname, basename } from "node:path";
+import {
+  findProjectForRuntimePath,
+  resolveProjectForRuntimeNode,
+  RuntimeProjectPathError,
+} from "./runtime-project-path.js";
 
 /** Project context for CLI operations */
 export interface ProjectContext {
@@ -105,6 +110,7 @@ export async function resolveProject(
           `Project '${projectNameFlag}' not found. Run 'fusion project list' to see registered projects.`
         );
       }
+      project = await resolveProjectForRuntimeNode(central, project);
     }
 
     // 2. Default project from global settings
@@ -115,6 +121,8 @@ export async function resolveProject(
         // If default project was deleted from registry, clear it
         if (!project) {
           await clearDefaultProject(globalDir);
+        } else {
+          project = await resolveProjectForRuntimeNode(central, project);
         }
       }
     }
@@ -249,10 +257,39 @@ export async function detectProjectFromCwd(
     const fusionDir = resolve(currentDir, ".fusion");
     const legacyDbPath = resolve(fusionDir, "fusion.db");
     if (hasProjectIdentity(fusionDir) || isValidSqliteDatabaseFile(legacyDbPath)) {
-      // Found a fn project - check if it's registered
-      const project = await central.getProjectByPath(currentDir);
+      // Found a fn project - match it against this runtime node's local paths.
+      const project = await findProjectForRuntimePath(central, currentDir);
       if (project) {
         return project;
+      }
+
+      /*
+      FNXC:CLIProjectNodePath 2026-07-30-05:52:
+      A persisted project identity that still exists centrally must never fall
+      through to an unregistered local store. Resolve its node mapping strictly
+      and reject a mismatched CWD before any project database is opened.
+      */
+      const identity = readProjectIdentity(fusionDir);
+      const registeredProjects = identity
+        ? await central.listProjects()
+        : [];
+      const identityProject = identity
+        ? registeredProjects.find((candidate) => candidate.id === identity.id)
+        : undefined;
+      if (identityProject) {
+        const mappedProject = await resolveProjectForRuntimeNode(
+          central,
+          identityProject,
+        );
+        throw new RuntimeProjectPathError(
+          `Project "${mappedProject.name}" is mapped to a different path on runtime node "${process.env.FUSION_NODE_ID?.trim()}".`,
+          {
+            projectId: mappedProject.id,
+            nodeId: process.env.FUSION_NODE_ID?.trim() ?? "",
+            registeredPath: identityProject.path,
+            causeName: "ProjectIdentityPathMismatch",
+          },
+        );
       }
 
       // For unregistered projects, only accept an exact CWD match.

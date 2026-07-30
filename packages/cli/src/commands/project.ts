@@ -32,6 +32,10 @@ import { existsSync, statSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { promptOutputStream } from "../output.js";
 import { detectProjectFromCwd, setDefaultProject } from "../project-context.js";
+import {
+  listProjectsForRuntimeNode,
+  resolveProjectForRuntimeNode,
+} from "../runtime-project-path.js";
 import { maybeInstallClaudeSkillForNewProject } from "./claude-skills-runner.js";
 import { retryOnLock } from "../lock-retry.js";
 
@@ -213,7 +217,10 @@ export async function runProjectList(options: ProjectListOptions = {}): Promise<
   await central.init();
 
   try {
-    const projects = await central.listProjects();
+    const projects = await listProjectsForRuntimeNode(
+      central,
+      await central.listProjects(),
+    );
     const defaultProject = await getDefaultProject();
 
     if (projects.length === 0) {
@@ -489,11 +496,15 @@ export async function runProjectRemove(name: string, options: ProjectRemoveOptio
   await central.init();
 
   try {
-    const project = await findProjectByNameOrId(central, name);
-    if (!project) {
+    const registeredProject = await findProjectByNameOrId(central, name);
+    if (!registeredProject) {
       console.error(`Error: Project '${name}' not found.`);
       process.exit(1);
     }
+    const project = await resolveProjectForRuntimeNode(
+      central,
+      registeredProject,
+    );
 
     if (!options.force) {
       const rl = createInterface({ input: process.stdin, output: promptOutputStream() });
@@ -532,14 +543,17 @@ export async function runProjectShow(name?: string): Promise<void> {
     let project: RegisteredProject | undefined;
 
     if (name) {
-      project = await findProjectByNameOrId(central, name);
+      const registeredProject = await findProjectByNameOrId(central, name);
+      project = registeredProject
+        ? await resolveProjectForRuntimeNode(central, registeredProject)
+        : undefined;
     } else {
       // Auto-detect from cwd
       const detected = await detectProjectFromCwd(process.cwd(), central);
       if (detected) {
         // detected might be a full project or just path info
         if ("id" in detected && detected.id) {
-          project = await central.getProject(detected.id);
+          project = detected as RegisteredProject;
         }
         if (!project) {
           // Unregistered project with .fusion

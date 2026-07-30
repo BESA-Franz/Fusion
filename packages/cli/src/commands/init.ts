@@ -23,6 +23,7 @@ import {
   readProjectIdentity,
   writeProjectIdentity,
 } from "@fusion/core";
+import { findProjectForRuntimePath } from "../runtime-project-path.js";
 import { maybeInstallClaudeSkillForNewProject } from "./claude-skills-runner.js";
 import { isGitRepo } from "./git.js";
 import {
@@ -64,7 +65,7 @@ export async function runInit(options: InitOptions = {}): Promise<void> {
     const central = new CentralCore();
     await central.init();
 
-    const existing = await central.getProjectByPath(cwd);
+    const existing = await findProjectForRuntimePath(central, cwd);
     if (existing) {
       try {
         writeProjectIdentity(join(cwd, ".fusion"), {
@@ -130,7 +131,7 @@ export async function runInit(options: InitOptions = {}): Promise<void> {
 
   try {
     // Check if already registered
-    const existing = await central.getProjectByPath(cwd);
+    const existing = await findProjectForRuntimePath(central, cwd);
     if (existing) {
       /*
       FNXC:ProjectIdentityMarker 2026-07-14-22:25:

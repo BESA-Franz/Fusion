@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { existsSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { TaskStore, createTaskStoreForBackend } from "@fusion/core";
 
 function makeConstructibleMock<T extends (...args: any[]) => unknown>(impl?: T) {
@@ -17,9 +18,10 @@ function makeConstructibleMock<T extends (...args: any[]) => unknown>(impl?: T) 
   return mock;
 }
 
-const { mockIsValidSqliteDatabaseFile, mockHasProjectIdentity } = vi.hoisted(() => ({
+const { mockIsValidSqliteDatabaseFile, mockHasProjectIdentity, mockReadProjectIdentity } = vi.hoisted(() => ({
   mockIsValidSqliteDatabaseFile: vi.fn(),
   mockHasProjectIdentity: vi.fn(),
+  mockReadProjectIdentity: vi.fn(),
 }));
 
 // Mock fs module
@@ -41,6 +43,8 @@ vi.mock("@fusion/core", async () => {
       listProjects = vi.fn().mockResolvedValue([]);
       getProject = vi.fn().mockResolvedValue(undefined);
       getProjectByPath = vi.fn().mockResolvedValue(undefined);
+      getProjectNodePath = vi.fn();
+      resolveProjectWorkingDirectory = vi.fn();
       registerProject = vi.fn();
       ensureProjectForPath = vi.fn().mockImplementation(async ({ path, name }: { path: string; name?: string }) => ({
         outcome: "registered",
@@ -70,7 +74,7 @@ vi.mock("@fusion/core", async () => {
       backend: { mode: "embedded" },
       shutdown: vi.fn().mockResolvedValue(undefined),
     })),
-    readProjectIdentity: vi.fn().mockReturnValue(undefined),
+    readProjectIdentity: mockReadProjectIdentity,
     writeProjectIdentity: vi.fn(),
   };
 });
@@ -80,6 +84,7 @@ vi.mock("@fusion/engine", async () => {
   return {
     ProjectManager: class MockProjectManager {
       getRuntime = vi.fn().mockReturnValue(undefined);
+      addProject = vi.fn();
       removeProject = vi.fn().mockResolvedValue(undefined);
       stopAll = vi.fn().mockResolvedValue(undefined);
     },
@@ -109,6 +114,7 @@ const {
   formatLastActivity,
   getProjectsWithStatus,
   getProjectTaskCounts,
+  startProjectRuntime,
   resolveProjectStore,
   resetProjectResolution,
 } = projectResolver;
@@ -119,6 +125,7 @@ describe("Project Resolver", () => {
     resetProjectResolution();
     mockIsValidSqliteDatabaseFile.mockReturnValue(false);
     mockHasProjectIdentity.mockReturnValue(false);
+    mockReadProjectIdentity.mockReturnValue(undefined);
     vi.mocked(TaskStore).mockImplementation(() => ({
       init: vi.fn().mockResolvedValue(undefined),
       listTasks: vi.fn().mockResolvedValue([]),
@@ -126,29 +133,41 @@ describe("Project Resolver", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
   describe("findKbDir", () => {
     it("finds a PostgreSQL-era project identity marker without SQLite", () => {
-      mockHasProjectIdentity.mockImplementation((path) => String(path) === "/project/.fusion");
+      const projectPath = resolve("/project");
+      mockHasProjectIdentity.mockImplementation(
+        (path) => String(path) === join(projectPath, ".fusion"),
+      );
 
-      expect(findKbDir("/project/src")).toBe("/project");
-      expect(mockIsValidSqliteDatabaseFile).not.toHaveBeenCalledWith("/project/.fusion/fusion.db");
+      expect(findKbDir(join(projectPath, "src"))).toBe(projectPath);
+      expect(mockIsValidSqliteDatabaseFile).not.toHaveBeenCalledWith(
+        join(projectPath, ".fusion", "fusion.db"),
+      );
     });
 
     it("should find .fusion directory in current path", () => {
-      mockIsValidSqliteDatabaseFile.mockImplementation((path) => String(path) === "/project/.fusion/fusion.db");
+      const projectPath = resolve("/project");
+      mockIsValidSqliteDatabaseFile.mockImplementation(
+        (path) => String(path) === join(projectPath, ".fusion", "fusion.db"),
+      );
 
-      const result = findKbDir("/project");
-      expect(result).toBe("/project");
+      const result = findKbDir(projectPath);
+      expect(result).toBe(projectPath);
     });
 
     it("should walk up parent directories to find .fusion", () => {
-      mockIsValidSqliteDatabaseFile.mockImplementation((path) => String(path) === "/a/b/.fusion/fusion.db");
+      const projectPath = resolve("/a/b");
+      mockIsValidSqliteDatabaseFile.mockImplementation(
+        (path) => String(path) === join(projectPath, ".fusion", "fusion.db"),
+      );
 
-      const result = findKbDir("/a/b/c");
-      expect(result).toBe("/a/b");
+      const result = findKbDir(join(projectPath, "c"));
+      expect(result).toBe(projectPath);
     });
 
     it("should return null if no .fusion found", () => {
@@ -248,6 +267,65 @@ describe("Project Resolver", () => {
       expect(shutdown).toHaveBeenCalledOnce();
     });
 
+    it("opens aggregate and one-shot stores at the configured node path", async () => {
+      const localPath = resolve("/node/alpha");
+      const shutdownAggregate = vi.fn().mockResolvedValue(undefined);
+      const shutdownCounts = vi.fn().mockResolvedValue(undefined);
+      const central = await getCentralCore();
+      vi.stubEnv("FUSION_NODE_ID", "node_pc1");
+      vi.mocked(central.listProjects).mockResolvedValue([project] as never);
+      vi.mocked(central.getProject).mockResolvedValue(project as never);
+      central.getProjectNodePath.mockResolvedValue(localPath);
+      central.resolveProjectWorkingDirectory.mockResolvedValue(localPath);
+      vi.mocked(createTaskStoreForBackend)
+        .mockResolvedValueOnce({
+          taskStore: { listTasks: vi.fn().mockResolvedValue([]) } as never,
+          shutdown: shutdownAggregate,
+        } as never)
+        .mockResolvedValueOnce({
+          taskStore: {
+            listTasks: vi.fn().mockResolvedValue([{ column: "todo" }]),
+          } as never,
+          shutdown: shutdownCounts,
+        } as never);
+
+      const aggregate = await getProjectsWithStatus();
+      const counts = await getProjectTaskCounts(project.id);
+
+      expect(aggregate[0]?.project.path).toBe(localPath);
+      expect(counts).toEqual({ todo: 1 });
+      expect(createTaskStoreForBackend).toHaveBeenNthCalledWith(1, {
+        rootDir: localPath,
+        projectId: project.id,
+      });
+      expect(createTaskStoreForBackend).toHaveBeenNthCalledWith(2, {
+        rootDir: localPath,
+        projectId: project.id,
+      });
+      expect(shutdownAggregate).toHaveBeenCalledOnce();
+      expect(shutdownCounts).toHaveBeenCalledOnce();
+    });
+
+    it("starts a runtime with the configured node path", async () => {
+      const localPath = resolve("/node/alpha");
+      const runtime = { getStatus: vi.fn().mockReturnValue("running") };
+      const central = await getCentralCore();
+      const manager = await getProjectManager();
+      vi.stubEnv("FUSION_NODE_ID", "node_pc1");
+      vi.mocked(central.getProject).mockResolvedValue(project as never);
+      central.resolveProjectWorkingDirectory.mockResolvedValue(localPath);
+      manager.addProject.mockResolvedValue(runtime);
+
+      await expect(startProjectRuntime(project.id)).resolves.toBe(runtime);
+      expect(manager.addProject).toHaveBeenCalledWith({
+        projectId: project.id,
+        workingDirectory: localPath,
+        isolationMode: project.isolationMode,
+        maxConcurrent: 2,
+        maxWorktrees: 4,
+      });
+    });
+
     it("releases one-shot column-count backends when task reads reject", async () => {
       const shutdown = vi.fn().mockResolvedValue(undefined);
       const central = await getCentralCore();
@@ -331,8 +409,11 @@ describe("Project Resolver", () => {
 
   describe("isKbProject", () => {
     it("should return true if fusion.db is a valid SQLite database", () => {
-      mockIsValidSqliteDatabaseFile.mockImplementation((path) => String(path) === "/project/.fusion/fusion.db");
-      expect(isKbProject("/project")).toBe(true);
+      const projectPath = resolve("/project");
+      mockIsValidSqliteDatabaseFile.mockImplementation(
+        (path) => String(path) === join(projectPath, ".fusion", "fusion.db"),
+      );
+      expect(isKbProject(projectPath)).toBe(true);
     });
 
     it("should return false if fusion.db is invalid or missing", () => {
@@ -400,6 +481,73 @@ describe("Project Resolver", () => {
       expect(resolved.name).toBe("alpha");
       expect(resolved.directory).toBe("/workspace/alpha");
       expect(resolved.store).toBeDefined();
+    });
+
+    it("uses the configured runtime node mapping for an explicit project", async () => {
+      const localPath = resolve("/node/alpha");
+      const project = {
+        id: "proj_shared",
+        name: "alpha",
+        path: "/workspace",
+        status: "active",
+        isolationMode: "in-process",
+        createdAt: "2026-07-30T00:00:00.000Z",
+        updatedAt: "2026-07-30T00:00:00.000Z",
+      };
+      vi.stubEnv("FUSION_NODE_ID", "node_pc1");
+      vi.mocked(existsSync).mockImplementation(
+        (path) => String(path) === localPath,
+      );
+
+      const core = await getCentralCore();
+      core.listProjects.mockResolvedValue([project]);
+      core.getProjectNodePath.mockResolvedValue(localPath);
+      core.resolveProjectWorkingDirectory.mockResolvedValue(localPath);
+
+      const resolvedProject = await resolveProject({
+        project: "alpha",
+        interactive: false,
+      });
+
+      expect(resolvedProject.directory).toBe(localPath);
+      expect(core.resolveProjectWorkingDirectory).toHaveBeenCalledWith(
+        project.id,
+        "node_pc1",
+      );
+      expect(createTaskStoreForBackend).toHaveBeenCalledWith({
+        rootDir: localPath,
+      });
+    });
+
+    it("fails closed before opening a remote path when the node mapping is missing", async () => {
+      const project = {
+        id: "proj_shared",
+        name: "alpha",
+        path: "/workspace",
+        status: "active",
+        isolationMode: "in-process",
+        createdAt: "2026-07-30T00:00:00.000Z",
+        updatedAt: "2026-07-30T00:00:00.000Z",
+      };
+      vi.stubEnv("FUSION_NODE_ID", "node_pc1");
+
+      const core = await getCentralCore();
+      core.listProjects.mockResolvedValue([project]);
+      core.resolveProjectWorkingDirectory.mockRejectedValue(
+        new Error("mapping not found"),
+      );
+
+      await expect(
+        resolveProject({ project: "alpha", interactive: false }),
+      ).rejects.toMatchObject({
+        code: "PATH_MISMATCH",
+        context: {
+          projectId: project.id,
+          nodeId: "node_pc1",
+          registeredPath: "/workspace",
+        },
+      });
+      expect(createTaskStoreForBackend).not.toHaveBeenCalled();
     });
 
     it("should throw NOT_FOUND if --project project not found", async () => {
@@ -501,6 +649,81 @@ describe("Project Resolver", () => {
       const resolved = await resolveProject({ cwd: "/workspace/cwd-match", interactive: false });
       expect(resolved.projectId).toBe("proj_456");
       expect(resolved.directory).toBe("/workspace/cwd-match");
+    });
+
+    it("matches CWD against the configured runtime node path", async () => {
+      const localPath = resolve("/node/cwd-match");
+      const project = {
+        id: "proj_shared",
+        name: "cwd-match",
+        path: "/workspace",
+        status: "active",
+        isolationMode: "in-process",
+        createdAt: "",
+        updatedAt: "",
+      };
+      vi.stubEnv("FUSION_NODE_ID", "node_pc1");
+      mockHasProjectIdentity.mockImplementation(
+        (path) => String(path) === join(localPath, ".fusion"),
+      );
+      vi.mocked(existsSync).mockImplementation(
+        (path) => String(path) === localPath,
+      );
+
+      const core = await getCentralCore();
+      core.listProjects.mockResolvedValue([project]);
+      core.getProjectNodePath.mockResolvedValue(localPath);
+      core.resolveProjectWorkingDirectory.mockResolvedValue(localPath);
+
+      const resolvedProject = await resolveProject({
+        cwd: localPath,
+        interactive: false,
+      });
+
+      expect(resolvedProject.directory).toBe(localPath);
+      expect(core.resolveProjectWorkingDirectory).toHaveBeenCalledWith(
+        project.id,
+        "node_pc1",
+      );
+    });
+
+    it("rejects a stored project identity when the CWD differs from its node path", async () => {
+      const detectedPath = resolve("/node/detected");
+      const mappedPath = resolve("/node/mapped");
+      const project = {
+        id: "proj_shared",
+        name: "identity-mismatch",
+        path: "/workspace",
+        status: "active",
+        isolationMode: "in-process",
+        createdAt: "",
+        updatedAt: "",
+      };
+      vi.stubEnv("FUSION_NODE_ID", "node_pc1");
+      mockHasProjectIdentity.mockImplementation(
+        (path) => String(path) === join(detectedPath, ".fusion"),
+      );
+      mockReadProjectIdentity.mockReturnValue({
+        id: project.id,
+        createdAt: "2026-07-30T00:00:00.000Z",
+      });
+
+      const core = await getCentralCore();
+      core.listProjects.mockResolvedValue([project]);
+      core.getProjectNodePath.mockResolvedValue(mappedPath);
+      core.resolveProjectWorkingDirectory.mockResolvedValue(mappedPath);
+
+      await expect(
+        resolveProject({ cwd: detectedPath, interactive: false }),
+      ).rejects.toMatchObject({
+        code: "PATH_MISMATCH",
+        context: {
+          projectId: project.id,
+          nodeId: "node_pc1",
+          causeName: "ProjectIdentityPathMismatch",
+        },
+      });
+      expect(createTaskStoreForBackend).not.toHaveBeenCalled();
     });
 
     it("should use the only registered project when no .fusion directory is found", async () => {
@@ -748,6 +971,30 @@ describe("Project Resolver", () => {
 
       await expect(getProjectSummary()).resolves.toEqual([
         { name: "summary", path: "/work/summary", status: "paused" },
+      ]);
+    });
+
+    it("list and summary helpers expose only the configured node path", async () => {
+      const localPath = resolve("/node/summary");
+      const project = {
+        id: "p6",
+        name: "summary",
+        path: "/workspace",
+        status: "paused",
+        isolationMode: "in-process",
+        createdAt: "",
+        updatedAt: "",
+      };
+      vi.stubEnv("FUSION_NODE_ID", "node_pc1");
+      const core = await getCentralCore();
+      core.listProjects.mockResolvedValue([project]);
+      core.getProjectNodePath.mockResolvedValue(localPath);
+
+      await expect(listRegisteredProjects()).resolves.toEqual([
+        { ...project, path: localPath },
+      ]);
+      await expect(getProjectSummary()).resolves.toEqual([
+        { name: "summary", path: localPath, status: "paused" },
       ]);
     });
 
