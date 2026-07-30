@@ -24,7 +24,7 @@
  * - `reclaimStaleActiveBranches`: remains native (branch-level)
  */
 
-import { exec, execSync } from "node:child_process";
+import { exec, execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
 import { setImmediate as setImmediateCb } from "node:timers";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -174,6 +174,7 @@ import {
 const log = createLogger("self-healing");
 const worktreeMetadataReconcileLog = createLogger("worktree-metadata-reconcile");
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const yieldEventLoop = (): Promise<void> => new Promise((resolve) => setImmediateCb(resolve));
 const DONE_TASK_INTEGRITY_SWEEP_LIMIT = 50;
 const BOARD_STALL_NOTIFICATION_COOLDOWN_MS = 60 * 60_000;
@@ -10530,8 +10531,16 @@ export class SelfHealingManager {
     baseBranch: string;
   }): Promise<{ misbound: boolean; branchTip: string; landed: Awaited<ReturnType<typeof findAlreadyMergedTaskCommit>>; rejection?: { reason: "foreign-task-tip" | "foreign-lineage-tip"; owner?: string } }> {
     const { branch, taskId, lineageId, baseBranch } = input;
-    const { stdout: tipOut } = await execAsync(`git rev-parse ${shellQuote(branch)}`, {
+    /*
+    FNXC:WorkflowRecovery 2026-07-31-01:45:
+    The branch-misbound startup sweep runs on Windows too. POSIX single quotes
+    passed through exec() become literal ref characters under cmd.exe, so a
+    real fusion/BESA branch looked unreadable. Use an exact local ref and argv;
+    a failed probe still throws to the caller's fail-closed per-task guard.
+    */
+    const { stdout: tipOut } = await execFileAsync("git", ["rev-parse", "--verify", `refs/heads/${branch}^{commit}`], {
       cwd: this.options.rootDir,
+      encoding: "utf-8",
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
     });

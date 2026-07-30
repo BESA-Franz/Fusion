@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,19 @@ import { SelfHealingManager } from "../../self-healing.js";
 
 function git(dir: string, cmd: string): string {
   return execSync(cmd, { cwd: dir, stdio: "pipe" }).toString().trim();
+}
+
+interface BranchMisboundTestManager {
+  readCommitTaskOwnership(...args: unknown[]): Promise<unknown>;
+  foreignTipRejection(...args: unknown[]): Promise<unknown>;
+  findAlreadyMergedTaskCommit(...args: unknown[]): Promise<unknown>;
+  clearCompletionBranchIfSubsumed(...args: unknown[]): Promise<boolean>;
+  reconcileCompletedTask(...args: unknown[]): Promise<unknown>;
+  recoverBranchMisboundInReviewTasks(): Promise<number>;
+}
+
+function exposeBranchMisboundMethods(manager: SelfHealingManager): BranchMisboundTestManager {
+  return manager as unknown as BranchMisboundTestManager;
 }
 
 function makeStore(task: Task, settings: Partial<Settings> = {}): TaskStore & EventEmitter {
@@ -33,6 +46,64 @@ function makeStore(task: Task, settings: Partial<Settings> = {}): TaskStore & Ev
 }
 
 describe("verification-fix already-on-main reliability interactions (real git)", () => {
+  it.runIf(process.platform === "win32")("recovers a slash branch without passing literal POSIX quotes to real Git", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "branch-misbound-win32-"));
+    try {
+      git(dir, "git init -b main");
+      git(dir, 'git config user.email "test@example.com"');
+      git(dir, 'git config user.name "Test"');
+      git(dir, "git commit --allow-empty -m init");
+      git(dir, "git branch fusion/besa-027");
+      const expectedTip = git(dir, "git rev-parse fusion/besa-027");
+
+      const task = {
+        id: "BESA-027",
+        title: "t",
+        description: "d",
+        column: "in-review",
+        dependencies: [],
+        steps: [],
+        currentStep: 0,
+        log: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        branch: "fusion/besa-027",
+        baseBranch: "main",
+      } as Task;
+      const manager = exposeBranchMisboundMethods(
+        new SelfHealingManager(makeStore(task), {
+          rootDir: dir,
+          getExecutingTaskIds: () => new Set(),
+        }),
+      );
+      vi.spyOn(manager, "readCommitTaskOwnership").mockResolvedValue({
+        owned: false,
+        ownerTaskId: undefined,
+        ownerLineageId: undefined,
+      });
+      vi.spyOn(manager, "foreignTipRejection").mockResolvedValue(null);
+      vi.spyOn(manager, "findAlreadyMergedTaskCommit").mockResolvedValue({
+        sha: expectedTip,
+        strategy: "ancestry",
+        ownershipProof: "task-trailer",
+      });
+      vi.spyOn(manager, "clearCompletionBranchIfSubsumed").mockResolvedValue(true);
+      vi.spyOn(manager, "reconcileCompletedTask").mockResolvedValue(undefined);
+
+      await expect(manager.recoverBranchMisboundInReviewTasks()).resolves.toBe(1);
+      expect(task).toMatchObject({
+        column: "done",
+        branch: null,
+        mergeDetails: {
+          commitSha: expectedTip,
+          mergeConfirmed: true,
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it("recovers no-content finalize and allows self-healing done transition", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fn-4559-ri-"));
     try {
@@ -89,12 +160,12 @@ describe("verification-fix already-on-main reliability interactions (real git)",
       } as Task;
       const store = makeStore(task);
       const manager = new SelfHealingManager(store, { rootDir: dir, getExecutingTaskIds: () => new Set() });
-      await (manager as any).recoverBranchMisboundInReviewTasks();
+      await exposeBranchMisboundMethods(manager).recoverBranchMisboundInReviewTasks();
       expect(task.column).toBe("done");
 
       const pausedStore = makeStore({ ...task, id: "FN-4553B", column: "in-review", branch: "fusion/fn-4553" } as Task, { globalPause: true });
       const pausedMgr = new SelfHealingManager(pausedStore, { rootDir: dir, getExecutingTaskIds: () => new Set() });
-      await expect((pausedMgr as any).recoverBranchMisboundInReviewTasks()).resolves.toBe(0);
+      await expect(exposeBranchMisboundMethods(pausedMgr).recoverBranchMisboundInReviewTasks()).resolves.toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
