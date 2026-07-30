@@ -52,8 +52,12 @@ upgraded databases.
 
 FNXC:MissionTaskPrefix 2026-07-26-12:00:
 SCHEMA_BASELINE_VERSION advances to 0037 for optional per-mission task_prefix.
+
+BESA:MissionTaskPrefixRepair 2026-07-29:
+SCHEMA_BASELINE_VERSION advances to 0038 to repair databases that recorded 0037
+while project.missions.task_prefix was still absent.
 */
-export const SCHEMA_BASELINE_VERSION = "0037";
+export const SCHEMA_BASELINE_VERSION = "0038";
 /** FNXC:SymbolLock 2026-07-31-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -157,6 +161,8 @@ export const MISSION_LINEAGE_STOP_VERSION = "0035";
 export const CHAT_SESSION_TAGS_VERSION = "0036";
 /** FNXC:MissionTaskPrefix 2026-07-26-12:00: upgraded projects need the optional mission prefix before mission reads and triage task creation use it. */
 export const MISSION_TASK_PREFIX_VERSION = "0037";
+/** BESA:MissionTaskPrefixRepair 2026-07-29: a distinct forward marker repairs falsely-versioned 0037 databases without rewriting migration history. */
+export const MISSION_TASK_PREFIX_REPAIR_VERSION = "0038";
 
 /** SECURITY DEFINER helper that only inserts LEGACY_ADOPTION_DRAINED_MARKER. */
 export const LEGACY_ADOPTION_DRAINED_MARKER_FUNCTION = "fusion_mark_legacy_adoption_drained";
@@ -368,6 +374,10 @@ const MILESTONE_ASSERTION_PROVENANCE_MIGRATION_PATH = join(
 const MISSION_LINEAGE_STOP_MIGRATION_PATH = join(MIGRATIONS_DIR, "0035_fn_8543_mission_lineage_stop.sql");
 const CHAT_SESSION_TAGS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0036_chat_session_tags.sql");
 const MISSION_TASK_PREFIX_MIGRATION_PATH = join(MIGRATIONS_DIR, "0037_mission_task_prefix.sql");
+const MISSION_TASK_PREFIX_REPAIR_MIGRATION_PATH = join(
+  MIGRATIONS_DIR,
+  "0038_mission_task_prefix_repair.sql",
+);
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -475,6 +485,7 @@ export async function applySchemaBaseline(
     const missionLineageStopAlreadyApplied = applied.includes(MISSION_LINEAGE_STOP_VERSION);
     const chatSessionTagsAlreadyApplied = applied.includes(CHAT_SESSION_TAGS_VERSION);
     const missionTaskPrefixAlreadyApplied = applied.includes(MISSION_TASK_PREFIX_VERSION);
+    const missionTaskPrefixRepairAlreadyApplied = applied.includes(MISSION_TASK_PREFIX_REPAIR_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -1005,6 +1016,18 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(MISSION_TASK_PREFIX_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${MISSION_TASK_PREFIX_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+
+    /*
+    BESA:MissionTaskPrefixRepair 2026-07-29:
+    0037 could record success after its guarded ALTER no-op. Keep that migration
+    immutable and repair the resulting false-positive state with a new marker.
+    */
+    if (!missionTaskPrefixRepairAlreadyApplied) {
+      const migrationSql = await readFile(MISSION_TASK_PREFIX_REPAIR_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${MISSION_TASK_PREFIX_REPAIR_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
 

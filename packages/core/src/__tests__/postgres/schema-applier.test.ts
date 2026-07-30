@@ -79,6 +79,7 @@ import {
   MILESTONE_ASSERTION_PROVENANCE_VERSION,
   MISSION_LINEAGE_STOP_VERSION,
   CHAT_SESSION_TAGS_VERSION,
+  MISSION_TASK_PREFIX_REPAIR_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -198,6 +199,11 @@ describe("schema-applier: immutable migration identities", () => {
   it("registers runtime drained-marker grants at migration version 0032", () => {
     expect(LEGACY_ADOPTION_DRAINED_MARKER_RUNTIME_GRANTS_VERSION).toBe("0032");
     expect(Number(SCHEMA_BASELINE_VERSION)).toBeGreaterThanOrEqual(Number(LEGACY_ADOPTION_DRAINED_MARKER_RUNTIME_GRANTS_VERSION));
+  });
+
+  it("registers the mission task-prefix drift repair at migration version 0038", () => {
+    expect(MISSION_TASK_PREFIX_REPAIR_VERSION).toBe("0038");
+    expect(Number(SCHEMA_BASELINE_VERSION)).toBeGreaterThanOrEqual(Number(MISSION_TASK_PREFIX_REPAIR_VERSION));
   });
 
   /*
@@ -723,6 +729,34 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     await applySchemaBaseline(ctx.db);
     const second = await applySchemaBaseline(ctx.db);
     expect(second.applied).toBe(false);
+  });
+
+  it("repairs a database that recorded 0037 without missions.task_prefix", async () => {
+    ctx = await setupFreshDb();
+    await applySchemaBaseline(ctx.db, { pluginHooks: [] });
+    await ctx.db.execute(sql.raw(`
+      ALTER TABLE project.missions DROP COLUMN task_prefix;
+      DELETE FROM public.fusion_schema_migrations
+      WHERE version = '${MISSION_TASK_PREFIX_REPAIR_VERSION}';
+    `));
+
+    expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(true);
+
+    const columns = (await ctx.db.execute(sql`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'project'
+        AND table_name = 'missions'
+        AND column_name = 'task_prefix'
+    `)) as unknown as Array<{ column_name: string }>;
+    expect(columns).toEqual([{ column_name: "task_prefix" }]);
+
+    const versions = (await ctx.db.execute(sql`
+      SELECT version
+      FROM public.fusion_schema_migrations
+      WHERE version = ${MISSION_TASK_PREFIX_REPAIR_VERSION}
+    `)) as unknown as Array<{ version: string }>;
+    expect(versions).toEqual([{ version: MISSION_TASK_PREFIX_REPAIR_VERSION }]);
   });
 
   /*
