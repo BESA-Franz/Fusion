@@ -251,45 +251,47 @@ export const registerMeshRoutes: ApiRouteRegistrar = (ctx) => {
 
   router.post("/mesh/sync", async (req, res) => {
     try {
-      const { CentralCore } = await import("@fusion/core");
-      const central = new CentralCore();
-      await central.init();
+      /*
+      FNXC:MeshPresence 2026-07-30-20:57:
+      Mesh sync must use the server-owned CentralCore so the sender can be marked online without
+      request-local shutdown marking the receiving runtime offline.
+      */
+      await withCentralCore(async (central) => {
 
-      // Validate required fields
-      const senderNodeId = req.body?.senderNodeId;
-      if (!senderNodeId) {
-        throw badRequest("senderNodeId is required");
-      }
-
-      const knownPeers = req.body?.knownPeers;
-      if (!Array.isArray(knownPeers)) {
-        throw badRequest("knownPeers must be an array");
-      }
-
-      // Optional: validate knownPeers entries have required fields
-      for (const peer of knownPeers) {
-        if (!peer?.nodeId || !peer?.nodeName || typeof peer?.status !== "string") {
-          throw badRequest("Each knownPeers entry must have nodeId, nodeName, and status");
+        // Validate required fields
+        const senderNodeId = req.body?.senderNodeId;
+        if (!senderNodeId) {
+          throw badRequest("senderNodeId is required");
         }
-      }
 
-      // Get sender node from registry to validate auth
-      const senderNode = await central.getNode(senderNodeId);
-
-      // Auth validation: if sender is registered with an apiKey, validate it
-      if (senderNode?.apiKey) {
-        const authHeader = req.headers.authorization;
-        const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
-
-        if (!token || token !== senderNode.apiKey) {
-          await central.close();
-          res.status(401).json({ error: "Unauthorized" });
-          return;
+        const knownPeers = req.body?.knownPeers;
+        if (!Array.isArray(knownPeers)) {
+          throw badRequest("knownPeers must be an array");
         }
-      }
 
-      // Merge incoming peer data
-      await central.mergePeers(knownPeers);
+        // Optional: validate knownPeers entries have required fields
+        for (const peer of knownPeers) {
+          if (!peer?.nodeId || !peer?.nodeName || typeof peer?.status !== "string") {
+            throw badRequest("Each knownPeers entry must have nodeId, nodeName, and status");
+          }
+        }
+
+        // Get sender node from registry to validate auth
+        const senderNode = await central.getNode(senderNodeId);
+
+        // Auth validation: if sender is registered with an apiKey, validate it
+        if (senderNode?.apiKey) {
+          const authHeader = req.headers.authorization;
+          const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
+
+          if (!token || token !== senderNode.apiKey) {
+            res.status(401).json({ error: "Unauthorized" });
+            return;
+          }
+        }
+
+        // Merge incoming peer data
+        await central.mergePeers(knownPeers);
 
       // Update sender node status to online (it sent us a request, so it's alive)
       try {
@@ -434,22 +436,21 @@ export const registerMeshRoutes: ApiRouteRegistrar = (ctx) => {
         return central.getAuthMaterialSnapshot(authPathsModule.toProviderAuthEntries(allProviders));
       });
 
-      await central.close();
+        // Return sync response (membership + optional auth material only)
+        const response: Record<string, unknown> = {
+          senderNodeId: localPeer.nodeId,
+          senderNodeUrl: localPeer.nodeUrl,
+          knownPeers: allKnownPeers,
+          newPeers,
+          timestamp: new Date().toISOString(),
+        };
 
-      // Return sync response (membership + optional auth material only)
-      const response: Record<string, unknown> = {
-        senderNodeId: localPeer.nodeId,
-        senderNodeUrl: localPeer.nodeUrl,
-        knownPeers: allKnownPeers,
-        newPeers,
-        timestamp: new Date().toISOString(),
-      };
+        if (Object.keys(responseSharedState).length > 0) {
+          response.sharedState = responseSharedState;
+        }
 
-      if (Object.keys(responseSharedState).length > 0) {
-        response.sharedState = responseSharedState;
-      }
-
-      res.json(response);
+        res.json(response);
+      });
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;

@@ -45,6 +45,22 @@ function isDiscoveredRemoteProject(value: unknown): value is DiscoveredRemotePro
     && ["in-process", "child-process"].includes(String(project.isolationMode));
 }
 
+/**
+ * FNXC:NodeRegistry 2026-07-30-21:00:
+ * Registration responses expose freshly health-checked node state, but never the stored mesh API key
+ * or raw Docker environment/TLS secrets.
+ */
+function sanitizeNodeConfigForResponse(node: NodeConfig): NodeConfig {
+  const sanitized: NodeConfig = {
+    ...node,
+    ...(node.dockerConfig
+      ? { dockerConfig: sanitizeDockerNodeConfigForResponse(node.dockerConfig) }
+      : {}),
+  };
+  delete sanitized.apiKey;
+  return sanitized;
+}
+
 export const registerNodeRoutes: ApiRouteRegistrar = (ctx) => {
   const { router, options, rethrowAsApiError } = ctx;
 
@@ -137,17 +153,27 @@ export const registerNodeRoutes: ApiRouteRegistrar = (ctx) => {
         throw badRequest("capabilities must be an array of strings");
       }
 
-      const node = await withCentralCore((central) => central.registerNode({
-        name: name.trim(),
-        type: nodeType,
-        url: typeof url === "string" ? url.trim() : undefined,
-        apiKey: typeof apiKey === "string" ? apiKey : undefined,
-        maxConcurrent,
-        capabilities,
-        dockerConfig,
-      }));
+      const node = await withCentralCore(async (central) => {
+        const registered = await central.registerNode({
+          name: name.trim(),
+          type: nodeType,
+          url: typeof url === "string" ? url.trim() : undefined,
+          apiKey: typeof apiKey === "string" ? apiKey : undefined,
+          maxConcurrent,
+          capabilities,
+          dockerConfig,
+        });
+        if (registered.type === "remote") {
+          await central.checkNodeHealth(registered.id);
+        }
+        const freshNode = await central.getNode(registered.id);
+        if (!freshNode) {
+          throw new Error(`Node not found after registration: ${registered.id}`);
+        }
+        return freshNode;
+      });
 
-      res.status(201).json(node);
+      res.status(201).json(sanitizeNodeConfigForResponse(node));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;

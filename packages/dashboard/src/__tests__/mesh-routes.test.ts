@@ -421,6 +421,68 @@ describe("POST /api/mesh/sync", () => {
     expect(mockUpdateNode).toHaveBeenCalledWith("node_remote", { status: "online" });
   });
 
+  /*
+  FNXC:MeshPresence 2026-07-30-20:57:
+  A successful sync proves the remote sender is online, but it must not close the server-owned
+  CentralCore or mark the receiving runtime offline. Verify both statuses through the public node API.
+  */
+  it("keeps the receiving runtime online while marking the sender online", async () => {
+    const nodes = new Map([
+      ["node_local", makeNodeConfig({ id: "node_local", name: "Local", type: "local", url: undefined, status: "online" })],
+      ["node_remote", makeNodeConfig({ id: "node_remote", name: "Remote", status: "offline" })],
+    ]);
+
+    mockGetNode.mockImplementation(async (id: string) => nodes.get(id));
+    mockUpdateNode.mockImplementation(async (id: string, updates: Record<string, unknown>) => {
+      const current = nodes.get(id);
+      if (!current) throw new Error("Node not found");
+      const updated = { ...current, ...updates };
+      nodes.set(id, updated);
+      return updated;
+    });
+    mockClose.mockImplementation(async () => {
+      const receiver = nodes.get("node_local");
+      if (receiver) nodes.set("node_local", { ...receiver, status: "offline" });
+    });
+
+    const sharedCentral = {
+      isInitialized: vi.fn(() => true),
+      init: mockInit,
+      close: mockClose,
+      mergePeers: mockMergePeers,
+      getAllKnownPeerInfo: mockGetAllKnownPeerInfo,
+      getLocalPeerInfo: mockGetLocalPeerInfo,
+      getNode: mockGetNode,
+      updateNode: mockUpdateNode,
+      listNodes: vi.fn(async () => Array.from(nodes.values())),
+      applyAuthMaterialSnapshot: mockApplyAuthMaterialSnapshot,
+      getAuthMaterialSnapshot: mockGetAuthMaterialSnapshot,
+    };
+    const sharedApp = createMeshTestServer(new MockStore() as unknown as TaskStore, {
+      centralCore: sharedCentral as never,
+    });
+
+    const syncResponse = await request(
+      sharedApp,
+      "POST",
+      "/api/mesh/sync",
+      JSON.stringify({
+        senderNodeId: "node_remote",
+        senderNodeUrl: "https://remote.example.com",
+        knownPeers: [],
+      }),
+      { "Content-Type": "application/json" },
+    );
+    const nodesResponse = await request(sharedApp, "GET", "/api/nodes");
+    const returnedNodes = nodesResponse.body as Array<{ id: string; status: string }>;
+
+    expect(syncResponse.status).toBe(200);
+    expect(nodesResponse.status).toBe(200);
+    expect(returnedNodes.find((node) => node.id === "node_remote")?.status).toBe("online");
+    expect(returnedNodes.find((node) => node.id === "node_local")?.status).toBe("online");
+    expect(mockClose).not.toHaveBeenCalled();
+  });
+
   it("should silently skip update if sender node not found", async () => {
     mockGetNode.mockResolvedValue(undefined);
     mockUpdateNode.mockRejectedValue(new Error("Node not found"));

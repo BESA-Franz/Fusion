@@ -53,6 +53,15 @@ function createFixture() {
       status: "offline",
       ...input,
     })),
+    checkNodeHealth: vi.fn(async () => "online"),
+    getNode: vi.fn(async () => ({
+      id: "node_remote",
+      name: "macbook-air",
+      type: "remote",
+      url: "https://macbook-air.example.test:4041",
+      status: "online",
+      maxConcurrent: 1,
+    })),
   };
 
   return { app: buildApp(centralCore), centralCore };
@@ -108,6 +117,83 @@ describe("registerNodeRoutes PostgreSQL authority", () => {
     expect(centralCore.init).not.toHaveBeenCalled();
     expect(centralCore.close).not.toHaveBeenCalled();
     expect(legacyCentralConstructor).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:NodeRegistry 2026-07-30-21:00:
+  Remote registration must run one immediate health check, return the freshly persisted status, and
+  never echo the node API key or Docker-host secrets in the registration response.
+  */
+  it("returns freshly health-checked remote state without credentials", async () => {
+    const { app, centralCore } = createFixture();
+    let healthChecks = 0;
+    const dockerConfig = {
+      environment: {
+        API_KEY: "docker-secret",
+        LOG_LEVEL: "info",
+      },
+      host: {
+        tlsKey: "private-key",
+      },
+    };
+
+    centralCore.registerNode.mockResolvedValue({
+      id: "node_remote",
+      name: "macbook-air",
+      type: "remote",
+      url: "https://macbook-air.example.test:4041",
+      apiKey: "mesh-secret",
+      status: "offline",
+      maxConcurrent: 1,
+      dockerConfig,
+    });
+    centralCore.checkNodeHealth.mockImplementation(async () => {
+      healthChecks += 1;
+      if (healthChecks > 1) throw new Error("health check ran more than once");
+      return "online";
+    });
+    centralCore.getNode.mockImplementation(async () => ({
+      id: "node_remote",
+      name: "macbook-air",
+      type: "remote",
+      url: "https://macbook-air.example.test:4041",
+      apiKey: "mesh-secret",
+      status: healthChecks === 1 ? "online" : "offline",
+      maxConcurrent: 1,
+      dockerConfig,
+    }));
+
+    const response = await request(
+      app,
+      "POST",
+      "/api/nodes",
+      JSON.stringify({
+        name: "macbook-air",
+        type: "remote",
+        url: "https://macbook-air.example.test:4041",
+        apiKey: "mesh-secret",
+        maxConcurrent: 1,
+        dockerConfig,
+      }),
+      { "Content-Type": "application/json" },
+    );
+
+    expect(response.status).toBe(201);
+    expect(response.body).toMatchObject({
+      id: "node_remote",
+      status: "online",
+      dockerConfig: {
+        environment: {
+          API_KEY: "***",
+          LOG_LEVEL: "info",
+        },
+        host: {
+          tlsKey: "***",
+        },
+      },
+    });
+    expect(response.body).not.toHaveProperty("apiKey");
+    expect(healthChecks).toBe(1);
   });
 
   // FNXC:NodeRegistry — a route-owned fallback authority (no injected centralCore) must close on
