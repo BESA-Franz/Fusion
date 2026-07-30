@@ -39,7 +39,7 @@ fields independently, and the queued-todo cards where a timestamp must still rea
 type PlanningGuardCase = {
   label: string;
   task: Pick<Task, "column" | "worktree" | "steps" | "status">
-    & Partial<Pick<Task, "firstExecutionAt" | "executionStartedAt">>;
+    & Partial<Pick<Task, "firstExecutionAt" | "executionStartedAt" | "planningStartedAt">>;
   stillPlanning: boolean;
 };
 
@@ -154,6 +154,29 @@ const planningGuardCases: PlanningGuardCase[] = [
       status: "planning",
       worktree: "/tmp/claimed",
       firstExecutionAt: "2026-07-26T04:35:29.068Z",
+    },
+    stillPlanning: false,
+  },
+  {
+    label: "active Plan Review replan claimed after an earlier execution attempt",
+    task: {
+      column: "triage",
+      steps: [planStep("step-1")],
+      status: "planning",
+      firstExecutionAt: "2026-07-26T04:35:29.068Z",
+      planningStartedAt: "2026-07-30T08:56:04.897Z",
+    },
+    stillPlanning: true,
+  },
+  {
+    label: "execution that starts after the transient planning claim still wins the race",
+    task: {
+      column: "triage",
+      steps: [planStep("step-1")],
+      status: "planning",
+      firstExecutionAt: "2026-07-26T04:35:29.068Z",
+      planningStartedAt: "2026-07-30T08:56:04.897Z",
+      executionStartedAt: "2026-07-30T08:56:05.001Z",
     },
     stillPlanning: false,
   },

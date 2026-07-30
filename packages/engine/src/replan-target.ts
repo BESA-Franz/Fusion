@@ -67,7 +67,7 @@ const REPLAN_PARK_STATUSES = new Set(
 
 export function hasAdvancedPastPlanning(
   task: Pick<Task, "column" | "worktree" | "steps" | "status">
-    & Partial<Pick<Task, "firstExecutionAt" | "executionStartedAt">>,
+    & Partial<Pick<Task, "firstExecutionAt" | "executionStartedAt" | "planningStartedAt">>,
 ): boolean {
   if (
     task.column === "in-progress"
@@ -91,6 +91,30 @@ export function hasAdvancedPastPlanning(
   */
   if (task.status != null && REPLAN_PARK_STATUSES.has(task.status)) {
     return false;
+  }
+  /*
+  FNXC:WorkflowReplan 2026-07-30-11:10:
+  A Plan Review replan legitimately changes `needs-replan` to the transient `planning`
+  claim while retaining sticky execution timestamps from the prior attempt. Treating any
+  such stamp as newer execution stranded the completed replan in triage: finalization's
+  guarded write saw "advanced", returned without moving to todo, and left status=planning.
+
+  `planningStartedAt` is the durable ordering proof. When the current planning segment
+  started at or after the latest execution evidence, this is the active replan and must
+  remain in the planning stage. A later executionStartedAt still wins the FN-8361 race.
+  Missing or malformed planning timestamps keep the existing fail-closed behavior.
+  */
+  if (task.status === TRANSIENT_PLANNING_STATUS && task.planningStartedAt) {
+    const planningStartedAtMs = Date.parse(task.planningStartedAt);
+    const firstExecutionAtMs = Date.parse(task.firstExecutionAt ?? "");
+    const executionStartedAtMs = Date.parse(task.executionStartedAt ?? "");
+    const latestExecutionAtMs = Math.max(
+      Number.isNaN(firstExecutionAtMs) ? Number.NEGATIVE_INFINITY : firstExecutionAtMs,
+      Number.isNaN(executionStartedAtMs) ? Number.NEGATIVE_INFINITY : executionStartedAtMs,
+    );
+    if (!Number.isNaN(planningStartedAtMs) && planningStartedAtMs >= latestExecutionAtMs) {
+      return false;
+    }
   }
   /*
   FNXC:NodeWorktreeIsolation 2026-07-25-22:40:
@@ -130,7 +154,7 @@ the "not advanced" answer, and TypeScript could not flag it.
 */
 export function isTaskStillInPlanningStage(
   task: Pick<Task, "column" | "worktree" | "steps" | "status">
-    & Partial<Pick<Task, "firstExecutionAt" | "executionStartedAt">>,
+    & Partial<Pick<Task, "firstExecutionAt" | "executionStartedAt" | "planningStartedAt">>,
 ): boolean {
   return !hasAdvancedPastPlanning(task);
 }
