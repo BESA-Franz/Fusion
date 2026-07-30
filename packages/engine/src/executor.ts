@@ -19585,6 +19585,69 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
     }
   }
 
+  private async conflictingWorktreePreservationReason(
+    worktreePath: string,
+    branch: string,
+  ): Promise<string | null> {
+    if (existsSync(worktreePath)) {
+      let registered: boolean;
+      try {
+        registered = await isRegisteredGitWorktree(this.rootDir, worktreePath);
+      } catch (error) {
+        return `could not verify worktree registration: ${formatError(error).message}`;
+      }
+      if (registered) {
+        try {
+          const { stdout: dirty } = await execFileAsync(
+            "git",
+            ["status", "--porcelain", "--untracked-files=all"],
+            { cwd: worktreePath, timeout: 30_000 },
+          );
+          if (dirty.trim()) return "uncommitted changes are present";
+        } catch (error) {
+          return `could not prove the registered worktree is clean: ${formatError(error).message}`;
+        }
+      }
+      // A plain orphan directory has no checkout state to inspect. Its branch
+      // ref is still checked below before bounded stale-path cleanup may run.
+    }
+
+    try {
+      const { stdout: branchTip } = await execFileAsync(
+        "git",
+        ["for-each-ref", "--format=%(objectname)", `refs/heads/${branch}`],
+        { cwd: this.rootDir, timeout: 30_000 },
+      );
+      // for-each-ref exits successfully with no output when the exact ref is
+      // absent, which distinguishes "nothing to preserve" from probe failure.
+      if (!branchTip.trim()) return null;
+    } catch (error) {
+      return `could not verify whether branch ${branch} exists: ${formatError(error).message}`;
+    }
+
+    try {
+      const settings = await this.store.getSettings();
+      const integrationBranch = await resolveIntegrationBranch(this.rootDir, settings, {
+        logger: executorLog,
+      });
+      const { stdout: commitCountOutput } = await execFileAsync(
+        "git",
+        ["rev-list", "--count", `${integrationBranch}..${branch}`],
+        { cwd: this.rootDir, timeout: 30_000 },
+      );
+      const commitCount = Number.parseInt(commitCountOutput.trim(), 10);
+      if (!Number.isFinite(commitCount)) {
+        return `could not determine commits ahead of ${integrationBranch}`;
+      }
+      if (commitCount > 0) {
+        return `${commitCount} commit${commitCount === 1 ? "" : "s"} ahead of ${integrationBranch}`;
+      }
+      return null;
+    } catch (error) {
+      return `could not prove branch ${branch} is disposable: ${formatError(error).message}`;
+    }
+  }
+
   private async cleanupConflictingWorktree(
     worktreePath: string,
     branch: string,
@@ -19602,6 +19665,29 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
       const refusalMessage = `[FN-4811] Refused to remove worktree ${worktreePath}: actively owned by ${activeOwner} (requested by ${taskId})`;
       executorLog.warn(refusalMessage);
       await this.store.logEntry(taskId, `Refused to remove conflicting worktree — actively owned by another task`, `${worktreePath} (owner: ${activeOwner})`);
+      return false;
+    }
+
+    /*
+     * FNXC:ExecutorWorktree 2026-07-31-01:15:
+     * Missing workflow-node worktree recovery can rediscover the requesting
+     * task's still-live checkout through a branch collision. Liveness alone is
+     * insufficient because same-task rows are deliberately excluded above.
+     * Before force-removing any registered checkout, prove it has no dirty
+     * files; before deleting the ref, prove the branch has no commits ahead of
+     * the integration branch. This branch check also covers an already-missing
+     * checkout. Probe failures preserve as well: automatic conflict recovery
+     * must never turn uncertainty into `worktree remove --force` + `branch -D`.
+     */
+    const preservationReason = await this.conflictingWorktreePreservationReason(worktreePath, branch);
+    if (preservationReason) {
+      const refusalMessage = `[worktree-preservation] Refused to remove ${worktreePath}: ${preservationReason}`;
+      executorLog.warn(`${taskId}: ${refusalMessage}`);
+      await this.store.logEntry(
+        taskId,
+        `Refused to remove conflicting worktree — commits or uncommitted changes may be lost`,
+        `${worktreePath} (${preservationReason})`,
+      );
       return false;
     }
 

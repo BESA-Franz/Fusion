@@ -1,5 +1,6 @@
 import { exec } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { resolveIntegrationBranch } from "./integration-branch.js";
 
@@ -128,13 +129,34 @@ function quoteShellArg(value: string): string {
 }
 
 async function runGit(repoDir: string, command: string): Promise<string> {
-  const { stdout } = await execAsync(command, {
-    cwd: repoDir,
-    encoding: "utf-8",
-    timeout: GIT_TIMEOUT_MS,
-    maxBuffer: GIT_MAX_BUFFER,
-  });
-  return stdout.trim();
+  /*
+   * FNXC:BranchConflictRecovery 2026-07-31-01:20:
+   * This module historically built POSIX-single-quoted Git commands. Node's
+   * Windows shell passes those quotes literally, so a live `fusion/besa-*`
+   * branch looked missing and fell into destructive stale cleanup. Translate
+   * the controlled single-quoted arguments for the Windows shell. Keep the
+   * original form as a compatibility fallback for custom shells and test
+   * harnesses that deliberately emulate the prior POSIX command surface.
+   */
+  const windowsCommand = process.platform === "win32"
+    ? command.replace(/'([^']*)'/g, (_match, value: string) => JSON.stringify(value))
+    : command;
+  const candidates = windowsCommand === command ? [command] : [windowsCommand, command];
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      const { stdout } = await execAsync(candidate, {
+        cwd: repoDir,
+        encoding: "utf-8",
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: GIT_MAX_BUFFER,
+      });
+      return stdout.trim();
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 async function revParse(repoDir: string, ref: string): Promise<string> {
@@ -143,12 +165,7 @@ async function revParse(repoDir: string, ref: string): Promise<string> {
 
 async function isAncestor(repoDir: string, sha: string, ref: string): Promise<boolean> {
   try {
-    await execAsync(`git merge-base --is-ancestor ${quoteShellArg(sha)} ${quoteShellArg(ref)}`, {
-      cwd: repoDir,
-      encoding: "utf-8",
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: GIT_MAX_BUFFER,
-    });
+    await runGit(repoDir, `git merge-base --is-ancestor ${quoteShellArg(sha)} ${quoteShellArg(ref)}`);
     return true;
   } catch {
     return false;
@@ -898,9 +915,24 @@ export async function autoRecoverCrossContamination(
 }
 
 export function deriveTaskIdFromFusionBranch(branchName: string): string | null {
-  const match = /^fusion\/(fn-\d+)$/i.exec(branchName.trim());
+  /*
+   * FNXC:BranchConflictRecovery 2026-07-31-01:22:
+   * Project task ids are not restricted to `FN-<digits>` (BESA-036 is a real
+   * production example). Canonical `fusion/<task-id>` ownership must therefore
+   * derive the single branch segment generically; nested/suffixed branches only
+   * match when their complete segment is the requesting task id.
+   */
+  const match = /^fusion\/([^/]+)$/i.exec(branchName.trim());
   if (!match) return null;
   return match[1].toUpperCase();
+}
+
+function canonicalizeExistingWorktreePath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
 }
 
 async function isZeroUniqueCommitBranchViaPatchIdFallback(
@@ -1137,7 +1169,7 @@ export async function inspectBranchConflict(
   const normalizedOwnerTaskId = (input.ownerTaskId ?? input.requestingTaskId).trim().toUpperCase();
   const branchOwnerTaskId = deriveTaskIdFromFusionBranch(input.branchName);
   const isSelfOwnedWorktree =
-    livePath === input.conflictingWorktreePath ||
+    canonicalizeExistingWorktreePath(livePath) === canonicalizeExistingWorktreePath(input.conflictingWorktreePath) ||
     (branchOwnerTaskId !== null && branchOwnerTaskId === normalizedOwnerTaskId);
 
   if (taskAttributedCommitCount > 0 || (isSelfOwnedWorktree && attribution.foreignCount === 0)) {
