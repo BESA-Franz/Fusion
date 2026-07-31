@@ -69,6 +69,15 @@ export interface DockerNodePersistenceConfig {
   retainOnDelete?: boolean;
 }
 
+const SAFE_DOCKER_ENVIRONMENT_KEYS = new Set([
+  "FUSION_LOG_LEVEL",
+  "LANG",
+  "LC_ALL",
+  "LOG_LEVEL",
+  "NODE_ENV",
+  "TZ",
+]);
+
 export function validateDockerNodeConfig(config: unknown): {
   valid: boolean;
   config?: DockerNodeConfig;
@@ -185,16 +194,29 @@ export function validateDockerNodeConfig(config: unknown): {
 
 export function sanitizeDockerNodeConfigForResponse(config: DockerNodeConfig): DockerNodeConfig {
   const clone = structuredClone(config);
-  const sensitivePattern = /API_KEY|SECRET|TOKEN|PASSWORD/i;
 
-  for (const [key, value] of Object.entries(clone.environment)) {
-    if (sensitivePattern.test(key) && typeof value === "string") {
+  for (const key of Object.keys(clone.environment)) {
+    if (!SAFE_DOCKER_ENVIRONMENT_KEYS.has(key.toUpperCase())) {
       clone.environment[key] = "***";
     }
   }
 
-  if (clone.host?.tlsKey) {
-    clone.host.tlsKey = "***";
+  if (clone.host) {
+    if (clone.host.tlsKey) {
+      clone.host.tlsKey = "***";
+    }
+    if (clone.host.dockerHost) {
+      try {
+        const parsed = new URL(clone.host.dockerHost);
+        if (parsed.username || parsed.password) {
+          clone.host.dockerHost = "***";
+        }
+      } catch {
+        if (/^[a-z][a-z0-9+.-]*:\/\/[^/@]+@/i.test(clone.host.dockerHost)) {
+          clone.host.dockerHost = "***";
+        }
+      }
+    }
   }
 
   return clone;

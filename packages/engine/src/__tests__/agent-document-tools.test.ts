@@ -253,6 +253,9 @@ describe("task_document_read tool", () => {
     expect(getTaskDocument).toHaveBeenCalledWith(TASK_ID, "plan");
     expect(getText(result)).toContain("Document: plan");
     expect(getText(result)).toContain("Revision: 4");
+    expect(getText(result)).toContain(`Content hash: sha256:${"a".repeat(64)}`);
+    expect(getText(result)).toContain("expected_revision=4");
+    expect(getText(result)).toContain(`expected_content_hash=sha256:${"a".repeat(64)}`);
     expect(getText(result)).toContain("Detailed execution checklist");
     expect(result.details).toEqual({
       key: "plan",
@@ -271,6 +274,8 @@ describe("task_document_read tool", () => {
 
     expect(getTaskDocument).toHaveBeenCalledWith(TASK_ID, "plan");
     expect(getText(result)).toContain("Document \"plan\" not found.");
+    expect(getText(result)).toContain("expected_revision=0");
+    expect(getText(result)).toContain("omit expected_content_hash");
     expect(result.details).toEqual({ key: "plan", exists: false, expectedRevision: 0 });
   });
 
@@ -286,8 +291,12 @@ describe("task_document_read tool", () => {
 
     expect(getTaskDocuments).toHaveBeenCalledWith(TASK_ID);
     expect(getText(result)).toContain("Task documents:");
-    expect(getText(result)).toContain("- plan (revision 2, updated 2026-04-08T12:15:00.000Z)");
-    expect(getText(result)).toContain("- research (revision 1, updated 2026-04-08T12:30:00.000Z)");
+    expect(getText(result)).toContain(
+      `- plan (revision 2, content hash sha256:${"a".repeat(64)}, updated 2026-04-08T12:15:00.000Z)`,
+    );
+    expect(getText(result)).toContain(
+      `- research (revision 1, content hash sha256:${"a".repeat(64)}, updated 2026-04-08T12:30:00.000Z)`,
+    );
     expect(result.details).toEqual({
       documents: [
         { key: "plan", revision: 2, contentHash: `sha256:${"a".repeat(64)}` },
@@ -410,6 +419,8 @@ describe("chat task document tools", () => {
 
     expect(getTaskDocument).toHaveBeenCalledWith("FN-2022", "missing");
     expect(getText(result)).toContain("Document \"missing\" not found.");
+    expect(getText(result)).toContain("expected_revision=0");
+    expect(getText(result)).toContain("omit expected_content_hash");
   });
 
   it("continues to use the live-only registry when an explicit key is omitted", async () => {
@@ -424,8 +435,8 @@ describe("chat task document tools", () => {
 
     expect(getTaskDocuments).toHaveBeenCalledWith("FN-2023");
     expect(getText(result)).toContain("Task documents:");
-    expect(getText(result)).toContain("- plan (revision 1");
-    expect(getText(result)).toContain("- docs (revision 2");
+    expect(getText(result)).toContain(`- plan (revision 1, content hash sha256:${"a".repeat(64)}`);
+    expect(getText(result)).toContain(`- docs (revision 2, content hash sha256:${"a".repeat(64)}`);
   });
 
   it("returns clean errors for non-existent explicit task writes", async () => {

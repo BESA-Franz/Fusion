@@ -1,9 +1,10 @@
 import { CentralCore, sanitizeDockerNodeConfigForResponse, validateDockerNodeConfig } from "@fusion/core";
-import type { NodeConfig, NodeStatus } from "@fusion/core";
+import type { DockerNodeConfig, NodeConfig, NodeStatus } from "@fusion/core";
 import { ApiError, badRequest, notFound } from "../api-error.js";
 import type { ApiRouteRegistrar } from "./types.js";
 
 const REMOTE_DISCOVERY_TIMEOUT_MS = 5000;
+const REDACTED_CONFIG_VALUE = "***";
 
 type DiscoveredRemoteProject = {
   id: string;
@@ -45,6 +46,49 @@ function isDiscoveredRemoteProject(value: unknown): value is DiscoveredRemotePro
     && ["in-process", "child-process"].includes(String(project.isolationMode));
 }
 
+function redactCredentialedUrl(value: string | undefined): string | undefined {
+  if (!value) return value;
+  try {
+    const parsed = new URL(value);
+    return parsed.username || parsed.password ? REDACTED_CONFIG_VALUE : value;
+  } catch {
+    return /^[a-z][a-z0-9+.-]*:\/\/[^/@]+@/i.test(value) ? REDACTED_CONFIG_VALUE : value;
+  }
+}
+
+function restoreRedactedDockerConfig(
+  value: unknown,
+  existing: DockerNodeConfig | undefined,
+): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+
+  const restored = structuredClone(value) as Record<string, unknown>;
+  if (restored.environment && typeof restored.environment === "object" && !Array.isArray(restored.environment)) {
+    for (const [key, envValue] of Object.entries(restored.environment as Record<string, unknown>)) {
+      if (envValue !== REDACTED_CONFIG_VALUE) continue;
+      const currentValue = existing?.environment[key];
+      if (currentValue === undefined) {
+        throw badRequest(`environment.${key} must provide a value for a new variable`);
+      }
+      (restored.environment as Record<string, unknown>)[key] = currentValue;
+    }
+  }
+
+  if (restored.host && typeof restored.host === "object" && !Array.isArray(restored.host)) {
+    const host = restored.host as Record<string, unknown>;
+    for (const key of ["dockerHost", "tlsKey"] as const) {
+      if (host[key] !== REDACTED_CONFIG_VALUE) continue;
+      const currentValue = existing?.host?.[key];
+      if (!currentValue) {
+        throw badRequest(`host.${key} must provide a value when no stored value exists`);
+      }
+      host[key] = currentValue;
+    }
+  }
+
+  return restored;
+}
+
 /**
  * FNXC:NodeRegistry 2026-07-31-05:46:
  * Every NodeConfig response must preserve operational node state while omitting the stored mesh API key
@@ -53,6 +97,7 @@ function isDiscoveredRemoteProject(value: unknown): value is DiscoveredRemotePro
 function sanitizeNodeConfigForResponse(node: NodeConfig): NodeConfig {
   const sanitized: NodeConfig = {
     ...node,
+    ...(node.url ? { url: redactCredentialedUrl(node.url) } : {}),
     ...(node.dockerConfig
       ? { dockerConfig: sanitizeDockerNodeConfigForResponse(node.dockerConfig) }
       : {}),
@@ -302,14 +347,25 @@ export const registerNodeRoutes: ApiRouteRegistrar = (ctx) => {
 
       const updates: Partial<Omit<NodeConfig, "id" | "createdAt">> = {};
       if (name !== undefined) updates.name = name;
-      if (url !== undefined) updates.url = url;
-      if (apiKey !== undefined) updates.apiKey = apiKey;
+      if (url !== undefined && url !== REDACTED_CONFIG_VALUE) updates.url = url;
+      if (apiKey !== undefined && apiKey !== REDACTED_CONFIG_VALUE) updates.apiKey = apiKey;
       if (maxConcurrent !== undefined) updates.maxConcurrent = maxConcurrent;
       if (status !== undefined) updates.status = status as NodeStatus;
       if (capabilities !== undefined) updates.capabilities = capabilities;
-      if (dockerConfig !== undefined) updates.dockerConfig = dockerConfig;
 
-      const node = await withCentralCore((central) => central.updateNode(req.params.id, updates));
+      const node = await withCentralCore(async (central) => {
+        if (dockerConfig !== undefined) {
+          const existing = await central.getNode(req.params.id);
+          if (!existing) throw notFound("Node not found");
+          const restoredConfig = restoreRedactedDockerConfig(dockerConfig, existing.dockerConfig);
+          const validation = validateDockerNodeConfig(restoredConfig);
+          if (!validation.valid || !validation.config) {
+            throw new ApiError(400, "Invalid Docker config", { errors: validation.errors ?? [] });
+          }
+          updates.dockerConfig = validation.config;
+        }
+        return central.updateNode(req.params.id, updates);
+      });
 
       res.json(sanitizeNodeConfigForResponse(node));
     } catch (err: unknown) {
@@ -346,14 +402,15 @@ export const registerNodeRoutes: ApiRouteRegistrar = (ctx) => {
    */
   router.put("/nodes/:id/docker-config", async (req, res) => {
     try {
-      const validation = validateDockerNodeConfig(req.body);
-      if (!validation.valid || !validation.config) {
-        throw new ApiError(400, "Invalid Docker config", { errors: validation.errors ?? [] });
-      }
       const updated = await withCentralCore(async (central) => {
         const node = await central.getNode(req.params.id);
         if (!node) {
           throw notFound("Node not found");
+        }
+        const restoredConfig = restoreRedactedDockerConfig(req.body, node.dockerConfig);
+        const validation = validateDockerNodeConfig(restoredConfig);
+        if (!validation.valid || !validation.config) {
+          throw new ApiError(400, "Invalid Docker config", { errors: validation.errors ?? [] });
         }
         return central.updateNode(req.params.id, { dockerConfig: validation.config });
       });
@@ -392,10 +449,14 @@ export const registerNodeRoutes: ApiRouteRegistrar = (ctx) => {
           ...existing,
           ...patch,
           environment: mergedEnvironment,
+          host: patch.host && typeof patch.host === "object" && !Array.isArray(patch.host)
+            ? { ...existing.host, ...(patch.host as Record<string, unknown>) }
+            : existing.host,
           volumeMounts: patch.volumeMounts !== undefined ? patch.volumeMounts : existing.volumeMounts,
         };
 
-        const validation = validateDockerNodeConfig(merged);
+        const restoredConfig = restoreRedactedDockerConfig(merged, existing);
+        const validation = validateDockerNodeConfig(restoredConfig);
         if (!validation.valid || !validation.config) {
           throw new ApiError(400, "Invalid Docker config", { errors: validation.errors ?? [] });
         }
