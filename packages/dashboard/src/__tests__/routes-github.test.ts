@@ -2766,6 +2766,45 @@ describe("POST /tasks/:id/approve-plan", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("falls back to the central plan document when the local PROMPT.md is unavailable", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kb-dashboard-approve-plan-document-"));
+    try {
+      const localStore = createMockStore({
+        getTask: vi.fn(),
+        moveTask: vi.fn(),
+        updateTask: vi.fn(),
+        logEntry: vi.fn().mockResolvedValue(undefined),
+        getRootDir: vi.fn().mockReturnValue(root),
+        getTaskDocument: vi.fn().mockResolvedValue({
+          taskId: "FN-001",
+          key: "plan",
+          content: "# Task: FN-001\n\nDocument-backed plan body.\n",
+          revision: 1,
+        }),
+      });
+      const awaitingTask = { ...FAKE_TASK_DETAIL, column: "triage" as const, status: "awaiting-approval" as const };
+      const movedTask = { ...FAKE_TASK_DETAIL, column: "todo" as const };
+      (localStore.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(awaitingTask);
+      (localStore.moveTask as ReturnType<typeof vi.fn>).mockResolvedValue(movedTask);
+      (localStore.updateTask as ReturnType<typeof vi.fn>).mockResolvedValue({ ...movedTask, status: undefined });
+
+      const app = express();
+      app.use(express.json());
+      app.use("/api", createApiRoutes(localStore));
+
+      const res = await REQUEST(app, "POST", "/api/tasks/KB-001/approve-plan");
+
+      expect(res.status).toBe(200);
+      expect(localStore.getTaskDocument).toHaveBeenCalledWith("FN-001", "plan");
+      expect(localStore.updateTask).toHaveBeenCalledWith("FN-001", {
+        status: null,
+        approvedPlanFingerprint: "2199abe614dd2f4f73ab7f86ec4c385c98bcee1965b25bce45a48859e1212825",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("POST /tasks/:id/reject-plan", () => {

@@ -3739,16 +3739,33 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
        * on-disk PROMPT.md directly (best-effort) since the task row does not always carry
        * full prompt text; a missing/unreadable file leaves the fingerprint unset and the
        * manual gate falls back to today's always-re-park behavior for this task.
-       */
+      */
       let approvedPlanFingerprint: string | undefined;
+      let approvedPlanText: string | undefined;
       try {
         const { readFile } = await import("node:fs/promises");
         const { join } = await import("node:path");
         const promptPath = join(scopedStore.getRootDir(), ".fusion", "tasks", task.id, "PROMPT.md");
-        const promptText = await readFile(promptPath, "utf8");
-        approvedPlanFingerprint = computePlanApprovalFingerprint(promptText);
+        approvedPlanText = await readFile(promptPath, "utf8");
       } catch {
-        // No PROMPT.md to fingerprint (unusual for an awaiting-approval task) — leave unset.
+        /*
+         * FNXC:CrossNodePlanApproval 2026-07-31-23:37:
+         * A remotely planned task can persist its canonical `plan` document in shared
+         * storage while PROMPT.md still lives only on the owner node. Use that exact
+         * central revision as the cross-node approval source instead of silently
+         * dropping the fingerprint on the operator node.
+         */
+        try {
+          const planDocument = await scopedStore.getTaskDocument(task.id, "plan");
+          if (typeof planDocument?.content === "string" && planDocument.content.trim().length > 0) {
+            approvedPlanText = planDocument.content;
+          }
+        } catch {
+          // No local or central plan to fingerprint — retain the legacy best-effort behavior.
+        }
+      }
+      if (approvedPlanText) {
+        approvedPlanFingerprint = computePlanApprovalFingerprint(approvedPlanText);
       }
 
       // Move to todo and clear status
