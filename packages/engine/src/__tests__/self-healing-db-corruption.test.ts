@@ -146,6 +146,17 @@ describe("FN-5284: self-healing DB corruption surfacing", () => {
     expect(store.recordRunAuditEvent).not.toHaveBeenCalled();
   });
 
+  it("does not schedule heuristic meta-task auto-archive sweeps", async () => {
+    const store = createMockStore();
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+    stubMaintenance(manager);
+
+    await (manager as any).runMaintenance();
+
+    expect((manager as any).autoArchiveResolvedMetaTasks).not.toHaveBeenCalled();
+    expect((manager as any).autoArchiveStalledMetaTasks).not.toHaveBeenCalled();
+  });
+
   it("dispatches a notification and records an audit event on first corruption detection", async () => {
     const dispatch = vi.fn().mockResolvedValue(undefined);
     vi.spyOn(notifierModule, "getActiveNotificationService").mockReturnValue({ dispatch } as unknown as NotificationService);

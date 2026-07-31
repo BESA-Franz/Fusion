@@ -2932,8 +2932,14 @@ export class SelfHealingManager {
           { name: "reconcile-soft-delete-column-drift", fn: () => this.reconcileSoftDeletedColumnDrift() },
           { name: "clear-stale-blocked-by", fn: () => this.clearStaleBlockedBy() },
           { name: "auto-rebound-paused-scope-decay", fn: () => this.autoReboundPausedScopeDecay() },
-          { name: "auto-archive-meta-resolved", fn: () => this.autoArchiveResolvedMetaTasks() },
-          { name: "auto-archive-meta-stalled", fn: () => this.autoArchiveStalledMetaTasks() },
+          /*
+           * FNXC:SelfHealing 2026-07-31-07:10:
+           * There is deliberately no meta-task auto-archive sweep here. Upstream PR #2461
+           * removed these destructive maintenance steps because their title/description
+           * heuristic and positional fallback could bind ordinary live work to an unrelated
+           * resolved task. That exact path archived BESA-044. Relationships must be explicit
+           * task fields before an automatic archival feature can safely return.
+           */
           { name: "board-stall-auto-recovery", fn: () => this.runBoardStallAutoRecoverySweep() },
           // #1401: periodically recover transitionPending markers stranded by a
           // crash between the in-txn write and the post-commit clear (flag-ON

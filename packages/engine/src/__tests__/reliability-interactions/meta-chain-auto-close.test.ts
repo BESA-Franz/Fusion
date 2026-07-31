@@ -8,8 +8,8 @@ backend events rather than the removed synchronous SQLite read surface.
 import { hasGit, hasPg, makeReliabilityFixture } from "./_helpers.js";
 
 const canRun = hasGit && hasPg;
-(canRun ? describe : describe.skip)("reliability interactions: meta chain auto-close", () => {
-  it("replays FN-4890 incident shape across two maintenance ticks", async () => {
+(canRun ? describe : describe.skip)("reliability interactions: meta chains survive maintenance", () => {
+  it("does not archive heuristic meta-task matches across maintenance ticks", async () => {
     const now = Date.now();
     const fixture = await makeReliabilityFixture({
       taskId: "FN-4890-FIXTURE",
@@ -72,17 +72,17 @@ const canRun = hasGit && hasPg;
         metaTasks.map((meta) => [meta.id, taskMapAfterSecondTick.get(meta.id)?.column]),
       );
       expect(metaColumns).toEqual({
-        [meta1.id]: "archived",
+        [meta1.id]: "todo",
         [meta2.id]: "todo",
-        [meta3.id]: "archived",
-        [meta4.id]: "archived",
+        [meta3.id]: "todo",
+        [meta4.id]: "todo",
       });
 
       const runAudits = await fixture.store.getRunAuditEventsAsync({ limit: 200 });
       const decayAudits = runAudits.filter((event) => event.mutationType === "task:auto-rebound-paused-scope-decay");
       const metaResolvedAudits = runAudits.filter((event) => event.mutationType === "task:auto-archived-meta-resolved");
       expect(decayAudits.length).toBeGreaterThanOrEqual(1);
-      expect(metaResolvedAudits.length).toBeGreaterThanOrEqual(3);
+      expect(metaResolvedAudits).toHaveLength(0);
     } finally {
       await fixture.cleanup();
     }
