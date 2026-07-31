@@ -577,8 +577,50 @@ describe("artifact register tool path payloads", () => {
     expect(getText(result)).not.toContain("ERROR:");
   });
 
-  it("preserves literal null content so it remains a competing path payload", async () => {
+  it("normalizes null payload optionals on the production PI execution path", async () => {
     const { store, registerArtifact } = createMockStore();
+    registerArtifact.mockResolvedValue(createMockArtifact({
+      id: "art-inline-null-optionals",
+      type: "document",
+      title: "Factory receipt",
+      mimeType: "text/markdown",
+      content: "Checks: passed",
+    }));
+    const tool = createArtifactRegisterTool(store, AUTHOR_ID, undefined, { baseDir });
+    const validatedArgs = validateToolArguments(tool, {
+      id: "call-inline-null-optionals",
+      name: tool.name,
+      arguments: {
+        type: "document",
+        title: "Factory receipt",
+        mimeType: "text/markdown",
+        content: "Checks: passed",
+        uri: null,
+        dataBase64: null,
+        path: null,
+      },
+    });
+
+    const result = await runTool(tool, "call-inline-null-optionals", validatedArgs);
+
+    expect(registerArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      type: "document",
+      title: "Factory receipt",
+      content: "Checks: passed",
+      uri: undefined,
+    }));
+    expect(getText(result)).not.toContain("ERROR:");
+  });
+
+  it("treats PI's literal null sentinel as absent when another payload source is present", async () => {
+    const { store, registerArtifact } = createMockStore();
+    registerArtifact.mockResolvedValue(createMockArtifact({
+      id: "art-path-null-sentinel",
+      type: "image",
+      title: "Screenshot",
+      mimeType: "image/png",
+      content: undefined,
+    }));
     writeFileSync(join(baseDir, "shot.png"), PNG_IMAGE_BYTES);
     const tool = createArtifactRegisterTool(store, AUTHOR_ID, undefined, { baseDir });
     const rawArgs = {
@@ -599,9 +641,13 @@ describe("artifact register tool path payloads", () => {
     });
     const result = await runTool(tool, "call-path-literal-null-content", validatedArgs);
 
-    expect(preparedArgs).toHaveProperty("content", "null");
-    expect(registerArtifact).not.toHaveBeenCalled();
-    expect(getText(result)).toContain("path cannot be combined with uri, content, or dataBase64");
+    expect(preparedArgs).not.toHaveProperty("content");
+    expect(registerArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Conflicting screenshot",
+      content: undefined,
+      data: PNG_IMAGE_BYTES,
+    }));
+    expect(getText(result)).not.toContain("ERROR:");
   });
 
   it("preserves non-string payload values so converted payload conflicts fail closed", async () => {

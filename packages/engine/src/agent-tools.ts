@@ -2232,6 +2232,13 @@ export interface ArtifactRegisterToolOptions {
 
 const ARTIFACT_PAYLOAD_SOURCE_KEYS = ["uri", "content", "dataBase64", "path"] as const;
 
+function isAbsentArtifactPayloadSource(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length === 0 || normalized === "null" || normalized === "undefined";
+}
+
 function prepareArtifactRegisterArguments<T>(args: unknown): T {
   // PI's TypeBox conversion turns raw JSON null into the non-empty string "null".
   // Remove only semantic absence before conversion; preserve real values for validation/conflict checks.
@@ -2242,7 +2249,7 @@ function prepareArtifactRegisterArguments<T>(args: unknown): T {
   const prepared = { ...args } as Record<string, unknown>;
   for (const key of ARTIFACT_PAYLOAD_SOURCE_KEYS) {
     const value = prepared[key];
-    if (value === null || value === undefined || (typeof value === "string" && value.trim().length === 0)) {
+    if (isAbsentArtifactPayloadSource(value)) {
       delete prepared[key];
     }
   }
@@ -2252,22 +2259,25 @@ function prepareArtifactRegisterArguments<T>(args: unknown): T {
 function normalizeArtifactPayloadSources(
   params: Static<typeof artifactRegisterParams>,
 ): Static<typeof artifactRegisterParams> {
-  const payloadValues = [params.uri, params.content, params.dataBase64, params.path];
-  const hasNonBlankPayload = payloadValues.some(
-    (value) => value !== undefined && value.trim().length > 0,
-  );
-  if (!hasNonBlankPayload) return params;
-
-  const omitBlank = (value: string | undefined): string | undefined => (
-    value !== undefined && value.trim().length === 0 ? undefined : value
+  /*
+  The production PI runtime validates arguments before calling execute(), but it does
+  not consistently invoke ToolDefinition.prepareArguments. TypeBox therefore turns a
+  provider's JSON null for an omitted optional string into the literal string "null".
+  Normalize those validator sentinels again at the execution boundary. Payload-source
+  strings whose entire value is "null" or "undefined" cannot be distinguished from
+  that adapter representation; treating them as absence preserves the documented
+  exactly-one-source contract and keeps actual non-sentinel values fail-closed.
+  */
+  const omitSemanticAbsence = (value: string | undefined): string | undefined => (
+    isAbsentArtifactPayloadSource(value) ? undefined : value
   );
 
   return {
     ...params,
-    uri: omitBlank(params.uri),
-    content: omitBlank(params.content),
-    dataBase64: omitBlank(params.dataBase64),
-    path: omitBlank(params.path),
+    uri: omitSemanticAbsence(params.uri),
+    content: omitSemanticAbsence(params.content),
+    dataBase64: omitSemanticAbsence(params.dataBase64),
+    path: omitSemanticAbsence(params.path),
   };
 }
 
