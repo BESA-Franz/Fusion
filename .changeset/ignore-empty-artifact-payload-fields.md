@@ -2,6 +2,6 @@
 "@runfusion/fusion": patch
 ---
 
-summary: Ignore blank optional artifact payload fields when another payload source is present.
+summary: Ignore absent artifact payload optionals before provider argument conversion.
 category: fix
-dev: Agent artifact registration now normalizes provider-materialized empty strings before enforcing the exactly-one-payload contract.
+dev: Agent artifact registration removes raw null, undefined, and blank optional payload fields before PI converts arguments, while preserving real strings and the fail-closed exactly-one-payload contract.

@@ -2133,6 +2133,7 @@ export function createArtifactRegisterTool(
       "HTML mockups (type=document, mimeType=text/html, content or path) render as live sandboxed previews; PDFs (mimeType=application/pdf, path) open in an embedded viewer; videos play with seeking. " +
       "Alternatively provide inline `content` for text/markdown/HTML documents or `dataBase64` image bytes; optionally associate the artifact with a taskId.",
     parameters: artifactRegisterParams,
+    prepareArguments: prepareArtifactRegisterArguments,
     execute: async (_id: string, params: Static<typeof artifactRegisterParams>) => registerArtifactForAgent(store, authorId, params, messageStore, options),
   };
 }
@@ -2180,6 +2181,7 @@ export function createChatArtifactTools(store: TaskStore, messageStore?: Message
       description:
         "Register an artifact for a specific task so it appears in the dashboard Artifacts gallery and other agents can discover it. Requires task_id; accepts a local file `path` (screenshots, wireframes, mockups, recordings, PDFs), inline `content` (text/markdown/HTML — HTML renders as a live preview), or dataBase64 image bytes, and notifies the dashboard inbox best-effort.",
       parameters: chatArtifactRegisterParams,
+      prepareArguments: prepareArtifactRegisterArguments,
       execute: async (_id: string, params: Static<typeof chatArtifactRegisterParams>) => registerArtifactForAgent(
         store,
         chatAuthorId,
@@ -2226,6 +2228,25 @@ export function createChatArtifactTools(store: TaskStore, messageStore?: Message
 export interface ArtifactRegisterToolOptions {
   baseDir?: string;
   defaultTaskId?: string;
+}
+
+const ARTIFACT_PAYLOAD_SOURCE_KEYS = ["uri", "content", "dataBase64", "path"] as const;
+
+function prepareArtifactRegisterArguments<T>(args: unknown): T {
+  // PI's TypeBox conversion turns raw JSON null into the non-empty string "null".
+  // Remove only semantic absence before conversion; preserve real values for validation/conflict checks.
+  if (typeof args !== "object" || args === null || Array.isArray(args)) {
+    return args as T;
+  }
+
+  const prepared = { ...args } as Record<string, unknown>;
+  for (const key of ARTIFACT_PAYLOAD_SOURCE_KEYS) {
+    const value = prepared[key];
+    if (value === null || value === undefined || (typeof value === "string" && value.trim().length === 0)) {
+      delete prepared[key];
+    }
+  }
+  return prepared as T;
 }
 
 function normalizeArtifactPayloadSources(

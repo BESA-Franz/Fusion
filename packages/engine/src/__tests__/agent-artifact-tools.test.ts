@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { Artifact, ArtifactType, ArtifactWithTask, MessageStore, TaskStore } from "@fusion/core";
 import { DASHBOARD_USER_ID } from "@fusion/core";
 import {
@@ -534,6 +535,99 @@ describe("artifact register tool path payloads", () => {
     expect(getText(result)).not.toContain("ERROR:");
   });
 
+  it("removes raw null payload optionals before PI converts them while registering a path artifact", async () => {
+    const { store, registerArtifact } = createMockStore();
+    registerArtifact.mockResolvedValue(createMockArtifact({
+      id: "art-path-null-optionals",
+      type: "image",
+      title: "Screenshot",
+      mimeType: "image/png",
+      content: undefined,
+    }));
+    writeFileSync(join(baseDir, "shot.png"), PNG_IMAGE_BYTES);
+    const tool = createArtifactRegisterTool(store, AUTHOR_ID, undefined, { baseDir });
+    const rawArgs = {
+      type: "image",
+      title: "Screenshot",
+      mimeType: "image/png",
+      path: "shot.png",
+      content: null,
+      uri: null,
+      dataBase64: null,
+    };
+
+    const preparedArgs = tool.prepareArguments!(rawArgs);
+    const validatedArgs = validateToolArguments(tool, {
+      id: "call-path-null-optionals",
+      name: tool.name,
+      arguments: preparedArgs,
+    });
+    const result = await runTool(tool, "call-path-null-optionals", validatedArgs);
+
+    expect(preparedArgs).not.toHaveProperty("content");
+    expect(preparedArgs).not.toHaveProperty("uri");
+    expect(preparedArgs).not.toHaveProperty("dataBase64");
+    expect(registerArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      type: "image",
+      title: "Screenshot",
+      content: undefined,
+      uri: undefined,
+      data: PNG_IMAGE_BYTES,
+    }));
+    expect(getText(result)).not.toContain("ERROR:");
+  });
+
+  it("preserves literal null content so it remains a competing path payload", async () => {
+    const { store, registerArtifact } = createMockStore();
+    writeFileSync(join(baseDir, "shot.png"), PNG_IMAGE_BYTES);
+    const tool = createArtifactRegisterTool(store, AUTHOR_ID, undefined, { baseDir });
+    const rawArgs = {
+      type: "image",
+      title: "Conflicting screenshot",
+      mimeType: "image/png",
+      path: "shot.png",
+      content: "null",
+      uri: null,
+      dataBase64: null,
+    };
+
+    const preparedArgs = tool.prepareArguments!(rawArgs);
+    const validatedArgs = validateToolArguments(tool, {
+      id: "call-path-literal-null-content",
+      name: tool.name,
+      arguments: preparedArgs,
+    });
+    const result = await runTool(tool, "call-path-literal-null-content", validatedArgs);
+
+    expect(preparedArgs).toHaveProperty("content", "null");
+    expect(registerArtifact).not.toHaveBeenCalled();
+    expect(getText(result)).toContain("path cannot be combined with uri, content, or dataBase64");
+  });
+
+  it("preserves non-string payload values so converted payload conflicts fail closed", async () => {
+    const { store, registerArtifact } = createMockStore();
+    const tool = createArtifactRegisterTool(store, AUTHOR_ID, undefined, { baseDir });
+    const rawArgs = {
+      type: "image",
+      title: "Invalid screenshot",
+      path: "shot.png",
+      uri: 42,
+    };
+
+    const preparedArgs = tool.prepareArguments!(rawArgs);
+    const validatedArgs = validateToolArguments(tool, {
+      id: "call-path-invalid-uri",
+      name: tool.name,
+      arguments: preparedArgs,
+    });
+    const result = await runTool(tool, "call-path-invalid-uri", validatedArgs);
+
+    expect(preparedArgs).toHaveProperty("uri", 42);
+    expect(validatedArgs).toHaveProperty("uri", "42");
+    expect(registerArtifact).not.toHaveBeenCalled();
+    expect(getText(result)).toContain("path cannot be combined with uri, content, or dataBase64");
+  });
+
   it("ignores empty optional payload fields when registering inline content", async () => {
     const { store, registerArtifact } = createMockStore();
     registerArtifact.mockResolvedValue(createMockArtifact({
@@ -879,6 +973,44 @@ describe("chat artifact tools", () => {
       "fn_artifact_list",
       "fn_artifact_view",
     ]);
+  });
+
+  it("prepares raw null and blank payload optionals before PI validation in chat", async () => {
+    const { store, registerArtifact } = createMockStore();
+    registerArtifact.mockResolvedValue(createMockArtifact({
+      id: "art-chat-null-optionals",
+      authorId: "dashboard-chat",
+      taskId: "FN-3030",
+      content: "created from chat",
+    }));
+    const tool = findChatTool("fn_artifact_register", store);
+    const rawArgs = {
+      task_id: "FN-3030",
+      type: "document",
+      title: "Chat artifact",
+      content: "created from chat",
+      uri: null,
+      dataBase64: " ",
+      path: undefined,
+    };
+
+    const preparedArgs = tool.prepareArguments!(rawArgs);
+    const validatedArgs = validateToolArguments(tool, {
+      id: "call-chat-null-optionals",
+      name: tool.name,
+      arguments: preparedArgs,
+    });
+    const result = await runTool(tool, "call-chat-null-optionals", validatedArgs);
+
+    expect(preparedArgs).not.toHaveProperty("uri");
+    expect(preparedArgs).not.toHaveProperty("dataBase64");
+    expect(preparedArgs).not.toHaveProperty("path");
+    expect(registerArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: "FN-3030",
+      content: "created from chat",
+      uri: undefined,
+    }));
+    expect(getText(result)).not.toContain("ERROR:");
   });
 
   it("registers with explicit task_id, decoded image bytes, and fixed dashboard-chat author", async () => {
