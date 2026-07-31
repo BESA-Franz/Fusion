@@ -270,6 +270,19 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
     if (!project.nodeId) {
       return false;
     }
+    /*
+    FNXC:HybridExecutorRuntimeIdentity 2026-07-31-18:12:
+    A node registered by another control-plane process keeps type="remote" even when it is
+    the current process selected through FUSION_NODE_ID. Comparing only NodeConfig.type
+    therefore started HybridExecutor's second runtime for a project assigned to this very
+    daemon. Runtime identity, not registry provenance, is the ownership boundary.
+    */
+    const runtimeNode = await this.centralCore.getRuntimeNode();
+    if (runtimeNode) {
+      return project.nodeId !== runtimeNode.id;
+    }
+
+    // Preserve the historical fallback for installations without an explicit runtime node.
     const assignedNode = await this.centralCore.getNode(project.nodeId);
     return assignedNode?.type === "remote";
   }

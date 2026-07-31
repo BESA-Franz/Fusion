@@ -48,6 +48,7 @@ function createCentralCore(overrides?: {
   return {
     listNodes: overrides?.listNodes ?? (async () => [{ id: "local", type: "local" }]),
     listProjects: overrides?.listProjects ?? (async () => [baseProject]),
+    getRuntimeNode: vi.fn().mockResolvedValue({ id: "node-local", type: "remote" }),
     getProject: vi.fn().mockResolvedValue(baseProject),
     resolveLocalProjectWorkingDirectory: vi.fn().mockResolvedValue("/tmp/proj-1"),
     on: vi.fn(),
@@ -100,7 +101,7 @@ describe("hybrid executor startup integration", () => {
     await expect(shouldUseHybridExecutor(central)).resolves.toEqual({ enabled: true, reason: "multi-node" });
   });
 
-  it("remote-only ownership skips local projects and starts only explicit remote assignments", async () => {
+  it("remote-only ownership skips unassigned and runtime-owned projects", async () => {
     const now = new Date().toISOString();
     const localProject = {
       id: "proj-local",
@@ -118,13 +119,20 @@ describe("hybrid executor startup integration", () => {
       path: "/tmp/remote",
       nodeId: "node-remote",
     } as RegisteredProject;
-    const projects = [localProject, remoteProject];
+    const runtimeOwnedProject = {
+      ...localProject,
+      id: "proj-runtime-owned",
+      name: "Runtime-owned project",
+      path: "/tmp/runtime-owned",
+      nodeId: "node-local",
+    } as RegisteredProject;
+    const projects = [localProject, runtimeOwnedProject, remoteProject];
     const central = createCentralCore({
       listProjects: async () => projects,
     });
     central.getProject = vi.fn(async (id: string) => projects.find((project) => project.id === id));
     central.getNode = vi.fn(async (id: string) => (
-      id === "node-remote"
+      id === "node-remote" || id === "node-local"
         ? { id, type: "remote" }
         : undefined
     )) as CentralCore["getNode"];
