@@ -459,6 +459,31 @@ describe("GET /tasks", () => {
   });
 });
 
+describe("GET /tasks/:id/attachments/:filename", () => {
+  it("returns 404 when shared metadata points to a missing node-local file", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "fusion-missing-attachment-"));
+    const missingPath = join(rootDir, "missing.json");
+    const store = createMockStore({
+      getAttachment: vi.fn().mockResolvedValue({
+        path: missingPath,
+        mimeType: "application/json",
+      }),
+    });
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store));
+
+    try {
+      const res = await GET(app, "/api/tasks/FN-001/attachments/missing.json");
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: "Attachment not found" });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("Standardized error responses", () => {
   let store: TaskStore;
 

@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
+import { pipeline } from "node:stream/promises";
 import type {
   TaskStore,
   Task,
@@ -3245,9 +3246,24 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
     try {
       const { store: scopedStore } = await getProjectContext(req);
       const { path, mimeType } = await scopedStore.getAttachment(req.params.id, req.params.filename);
+      /*
+      FNXC:AttachmentReadStreamErrors 2026-07-31-18:20:
+      Shared task metadata can outlive a node-local attachment file. A bare
+      createReadStream(...).pipe(res) emits ENOENT after this try block returns,
+      turning a normal 404 into an unhandled process-level error. Stat first for a
+      deterministic not-found response and await pipeline so later stream errors
+      remain inside this route's error boundary.
+      */
+      await stat(path);
       res.setHeader("Content-Type", mimeType);
-      createReadStream(path).pipe(res);
+      await pipeline(createReadStream(path), res);
     } catch (err: unknown) {
+      if (res.headersSent) {
+        if (!res.destroyed) {
+          res.destroy(err instanceof Error ? err : undefined);
+        }
+        return;
+      }
       if (err instanceof ApiError) {
         throw err;
       }
