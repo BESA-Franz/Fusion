@@ -3615,7 +3615,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const reboundColumn = await resolveReboundColumnForTask(scopedStore, task.id);
       const updated = await scopedStore.moveTask(task.id, reboundColumn);
       await scopedStore.updateTask(task.id, {
-        status: undefined,
+        status: null,
         ...(approvedPlanFingerprint ? { approvedPlanFingerprint } : {}),
       });
 
@@ -3657,7 +3657,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
        * clear and PROMPT.md removal, so the regenerated plan is always treated as new and
        * requires fresh manual approval (it must never inherit the rejected plan's fingerprint).
        */
-      await scopedStore.updateTask(task.id, { status: undefined, approvedPlanFingerprint: null });
+      await scopedStore.updateTask(task.id, { status: null, approvedPlanFingerprint: null });
 
       // Remove PROMPT.md to force regeneration
       const { rm } = await import("node:fs/promises");

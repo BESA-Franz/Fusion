@@ -2638,7 +2638,7 @@ describe("POST /tasks/:id/approve-plan", () => {
     expect(res.status).toBe(200);
     expect(store.logEntry).toHaveBeenCalledWith("FN-001", "Plan approved by user");
     expect(store.moveTask).toHaveBeenCalledWith("FN-001", "todo");
-    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { status: undefined });
+    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { status: null });
     expect(res.body.column).toBe("todo");
     expect(res.body.status).toBeUndefined();
   });
@@ -2760,7 +2760,7 @@ describe("POST /tasks/:id/approve-plan", () => {
       expect(res.status).toBe(200);
       expect(localStore.updateTask).toHaveBeenCalledWith(
         "FN-001",
-        expect.objectContaining({ status: undefined, approvedPlanFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) }),
+        expect.objectContaining({ status: null, approvedPlanFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) }),
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -2800,7 +2800,7 @@ describe("POST /tasks/:id/reject-plan", () => {
     expect(store.logEntry).toHaveBeenCalledWith("FN-001", "Plan rejected by user", "Specification will be regenerated");
     // FN-7569: reject-plan clears any previously-recorded approval fingerprint so a
     // regenerated plan is always treated as new and requires fresh manual approval.
-    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { status: undefined, approvedPlanFingerprint: null });
+    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { status: null, approvedPlanFingerprint: null });
     expect(res.body.column).toBe("triage");
   });
 
@@ -2862,7 +2862,7 @@ describe("POST /tasks/:id/reject-plan", () => {
     const res = await REQUEST(buildApp(), "POST", "/api/tasks/KB-001/reject-plan");
 
     expect(res.status).toBe(200);
-    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { status: undefined, approvedPlanFingerprint: null });
+    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { status: null, approvedPlanFingerprint: null });
   });
 
   // Passthrough: an ordinary manual-approval hold (no awaitingApprovalReason)
@@ -2882,7 +2882,7 @@ describe("POST /tasks/:id/reject-plan", () => {
     const res = await REQUEST(buildApp(), "POST", "/api/tasks/KB-001/reject-plan");
 
     expect(res.status).toBe(200);
-    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { status: undefined, approvedPlanFingerprint: null });
+    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { status: null, approvedPlanFingerprint: null });
   });
 
   /*
@@ -2905,7 +2905,7 @@ describe("POST /tasks/:id/reject-plan", () => {
     const res = await REQUEST(buildApp(), "POST", "/api/tasks/KB-001/reject-plan");
 
     expect(res.status).toBe(200);
-    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { status: undefined, approvedPlanFingerprint: null });
+    expect(store.updateTask).toHaveBeenCalledWith("FN-001", { status: null, approvedPlanFingerprint: null });
   });
 });
 
