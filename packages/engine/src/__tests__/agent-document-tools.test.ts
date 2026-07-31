@@ -69,6 +69,14 @@ describe("task_document_write tool", () => {
     vi.clearAllMocks();
   });
 
+  it("documents distinct CAS instructions for missing and existing documents", () => {
+    const { store } = createMockStore();
+    const description = createTaskDocumentWriteTool(store, TASK_ID).description;
+
+    expect(description).toContain("missing, create it with expected_revision=0 and omit expected_content_hash");
+    expect(description).toContain("exists, pass the returned positive expected_revision and/or expected_content_hash");
+  });
+
   it("calls store.upsertTaskDocument with taskId, key, content, and author", async () => {
     const { store, upsertTaskDocument } = createMockStore();
     upsertTaskDocument.mockResolvedValue(
@@ -116,6 +124,22 @@ describe("task_document_write tool", () => {
     expect(result.isError).toBe(true);
     expect(result.details).toEqual(expect.objectContaining({ code: "TASK_DOCUMENT_PRECONDITION_FAILED", currentRevision: 2 }));
     expect(getText(result)).toContain("re-read");
+  });
+
+  it("explains create-if-absent when a CAS conflict reports no current revision", async () => {
+    const { store, upsertTaskDocument } = createMockStore();
+    upsertTaskDocument.mockRejectedValue(new TaskDocumentPreconditionFailedError({
+      projectId: "p1", taskId: TASK_ID, key: "plan", expectedContentHash: `sha256:${"a".repeat(64)}`,
+      currentRevision: null, currentContentHash: null,
+    }));
+
+    const result = await runTool(createTaskDocumentWriteTool(store, TASK_ID), "call-missing-conflict", {
+      key: "plan", content: "initial", expected_content_hash: `sha256:${"a".repeat(64)}`,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(getText(result)).toContain("expected_revision=0");
+    expect(getText(result)).toContain("omit expected_content_hash");
   });
 
   it("defaults author to agent when not provided", async () => {
@@ -230,6 +254,12 @@ describe("task_document_read tool", () => {
     expect(getText(result)).toContain("Document: plan");
     expect(getText(result)).toContain("Revision: 4");
     expect(getText(result)).toContain("Detailed execution checklist");
+    expect(result.details).toEqual({
+      key: "plan",
+      exists: true,
+      revision: 4,
+      contentHash: `sha256:${"a".repeat(64)}`,
+    });
   });
 
   it("returns not found message when the requested key does not exist", async () => {
@@ -241,6 +271,7 @@ describe("task_document_read tool", () => {
 
     expect(getTaskDocument).toHaveBeenCalledWith(TASK_ID, "plan");
     expect(getText(result)).toContain("Document \"plan\" not found.");
+    expect(result.details).toEqual({ key: "plan", exists: false, expectedRevision: 0 });
   });
 
   it("lists all documents when no key is provided", async () => {
@@ -257,6 +288,12 @@ describe("task_document_read tool", () => {
     expect(getText(result)).toContain("Task documents:");
     expect(getText(result)).toContain("- plan (revision 2, updated 2026-04-08T12:15:00.000Z)");
     expect(getText(result)).toContain("- research (revision 1, updated 2026-04-08T12:30:00.000Z)");
+    expect(result.details).toEqual({
+      documents: [
+        { key: "plan", revision: 2, contentHash: `sha256:${"a".repeat(64)}` },
+        { key: "research", revision: 1, contentHash: `sha256:${"a".repeat(64)}` },
+      ],
+    });
   });
 
   it("keeps the archived document registry hidden when list is empty", async () => {
@@ -302,6 +339,8 @@ describe("chat task document tools", () => {
       "fn_task_document_read",
     ]);
     expect(JSON.stringify(tools.map((tool) => tool.parameters))).not.toMatch(/archived.publication|append_content|allow_archived/i);
+    expect(tools[0]?.description).toContain("missing, create it with expected_revision=0 and omit expected_content_hash");
+    expect(tools[0]?.description).toContain("exists, pass the returned positive expected_revision and/or expected_content_hash");
   });
 
   it("writes a document to the explicit task_id", async () => {
