@@ -143,6 +143,24 @@ describe("process-supervisor", () => {
     expect(__getProcessSupervisorStateForTests().handlersInstalled).toBe(true);
   });
 
+  it("leaves SIGHUP policy to the host process", async () => {
+    /*
+    FNXC:ProcessSupervision 2026-07-31-06:55:
+    Long-running daemon, serve, and dashboard hosts deliberately survive terminal disconnects by
+    ignoring SIGHUP. The child-process supervisor must not install a second SIGHUP listener that
+    shuts down children and re-signals the host; on Windows that self-signal throws `kill ENOSYS`
+    and terminates the Fusion node.
+    */
+    const before = process.listenerCount("SIGHUP");
+
+    const child = superviseSpawn(process.execPath, [fixturePath, "exit-immediately"], {
+      stdio: "ignore",
+    });
+
+    await expect(child.waitExit()).resolves.toEqual({ code: 0, signal: null });
+    expect(process.listenerCount("SIGHUP")).toBe(before);
+  });
+
   it("uses the Windows fallback branch when process groups are unavailable", async () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
 

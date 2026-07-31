@@ -254,7 +254,14 @@ function installHandlers(): void {
   cleanupHandlers.set("exit", onExit as (...args: unknown[]) => void);
   process.on("exit", onExit);
 
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  /*
+  FNXC:ProcessSupervision 2026-07-31-06:55:
+  SIGINT and SIGTERM request host shutdown, so supervised children must follow them. SIGHUP remains
+  host-owned: Fusion's daemon, serve, and dashboard commands deliberately ignore terminal disconnects.
+  Installing a second SIGHUP listener here overrode that policy and, on Windows, the subsequent
+  `process.kill(process.pid, "SIGHUP")` failed with ENOSYS and terminated the node.
+  */
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
     const handler = makeSignalHandler(signal);
     cleanupHandlers.set(signal, handler as (...args: unknown[]) => void);
     process.on(signal, handler);
