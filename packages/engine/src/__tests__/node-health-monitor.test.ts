@@ -76,6 +76,23 @@ describe("NodeHealthMonitor", () => {
     expect(checkNodeHealthMock).not.toHaveBeenCalled();
   });
 
+  it("contains transient background sweep failures and resumes on the next interval", async () => {
+    await monitor.start();
+    listNodesMock.mockRejectedValueOnce(new Error("database connect timeout"));
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[node-health-monitor] Node health sweep failed: database connect timeout")
+    );
+    expect(checkNodeHealthMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(checkNodeHealthMock).toHaveBeenCalledTimes(1);
+    expect(checkNodeHealthMock).toHaveBeenCalledWith("node-remote");
+  });
+
   it("checkAllNodes() checks each remote node and skips local nodes", async () => {
     await monitor.start();
 

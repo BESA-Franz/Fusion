@@ -45,7 +45,11 @@ export class NodeHealthMonitor {
     }
 
     this.interval = setInterval(() => {
-      void this.checkAllNodes();
+      void this.checkAllNodes().catch((error) => {
+        nodeHealthMonitorLog.warn(
+          `Node health sweep failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
     }, this.checkIntervalMs);
 
     nodeHealthMonitorLog.log(
