@@ -2658,7 +2658,12 @@ async function readTaskDocuments(store: TaskStore, taskId: string, key?: string)
       const document: TaskDocument | null = await store.getTaskDocument(taskId, key);
       if (!document) {
         return {
-          content: [{ type: "text" as const, text: `Document "${key}" not found.` }],
+          content: [{
+            type: "text" as const,
+            text:
+              `Document "${key}" not found.\n` +
+              "Create it with expected_revision=0 and omit expected_content_hash.",
+          }],
           details: { key, exists: false, expectedRevision: 0 },
         };
       }
@@ -2669,7 +2674,10 @@ async function readTaskDocuments(store: TaskStore, taskId: string, key?: string)
           text:
             `Document: ${document.key}\n` +
             `Revision: ${document.revision}\n` +
+            `Content hash: ${document.contentHash}\n` +
             `Updated: ${document.updatedAt}\n\n` +
+            `For a safe update, pass expected_revision=${document.revision} and/or ` +
+            `expected_content_hash=${document.contentHash}.\n\n` +
             document.content,
         }],
         details: {
@@ -2689,7 +2697,10 @@ async function readTaskDocuments(store: TaskStore, taskId: string, key?: string)
       };
     }
 
-    const lines = documents.map((doc) => `- ${doc.key} (revision ${doc.revision}, updated ${doc.updatedAt})`);
+    const lines = documents.map(
+      (doc) =>
+        `- ${doc.key} (revision ${doc.revision}, content hash ${doc.contentHash}, updated ${doc.updatedAt})`,
+    );
     return {
       content: [{
         type: "text" as const,

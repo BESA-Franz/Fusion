@@ -216,7 +216,7 @@ describe("registerNodeRoutes PostgreSQL authority", () => {
       id: "node_remote",
       name: "macbook-air",
       type: "remote",
-      url: "https://macbook-air.example.test:4041",
+      url: "https://mesh-user:mesh-password@macbook-air.example.test:4041",
       apiKey: "mesh-super-secret",
       status: "online",
       maxConcurrent: 3,
@@ -224,9 +224,13 @@ describe("registerNodeRoutes PostgreSQL authority", () => {
       dockerConfig: {
         environment: {
           API_KEY: "docker-super-secret",
+          DATABASE_URL: "postgresql://db-user:db-password@database.example.test/fusion",
+          GITHUB_PAT: "github-personal-access-token",
           LOG_LEVEL: "info",
+          PRIVATE_KEY: "inline-private-key",
         },
         host: {
+          dockerHost: "tcp://docker-user:docker-password@docker.example.test:2376",
           tlsKey: "private-super-secret",
         },
       },
@@ -277,20 +281,29 @@ describe("registerNodeRoutes PostgreSQL authority", () => {
       expect(JSON.stringify(responseNode)).not.toContain("mesh-super-secret");
       expect(JSON.stringify(responseNode)).not.toContain("docker-super-secret");
       expect(JSON.stringify(responseNode)).not.toContain("private-super-secret");
+      expect(JSON.stringify(responseNode)).not.toContain("db-password");
+      expect(JSON.stringify(responseNode)).not.toContain("github-personal-access-token");
+      expect(JSON.stringify(responseNode)).not.toContain("inline-private-key");
+      expect(JSON.stringify(responseNode)).not.toContain("mesh-password");
+      expect(JSON.stringify(responseNode)).not.toContain("docker-password");
       expect(responseNode).not.toHaveProperty("apiKey");
       expect(responseNode).toMatchObject({
         id: "node_remote",
         type: "remote",
-        url: "https://macbook-air.example.test:4041",
+        url: "***",
         status: "online",
         maxConcurrent: 3,
         capabilities: ["docker", "gpu"],
         dockerConfig: {
           environment: {
             API_KEY: "***",
+            DATABASE_URL: "***",
+            GITHUB_PAT: "***",
             LOG_LEVEL: "info",
+            PRIVATE_KEY: "***",
           },
           host: {
+            dockerHost: "***",
             tlsKey: "***",
           },
         },
@@ -300,6 +313,78 @@ describe("registerNodeRoutes PostgreSQL authority", () => {
     expect(listResponse.body[0].name).toBe("macbook-air");
     expect(getResponse.body.name).toBe("macbook-air");
     expect(postResponse.body.name).toBe("macbook-air");
+  });
+
+  it("preserves stored Docker secrets when a sanitized config is patched unchanged", async () => {
+    const { app, centralCore } = createFixture();
+    const storedDockerConfig = {
+      image: "runfusion/fusion:latest",
+      volumeMounts: [],
+      environment: {
+        DATABASE_URL: "postgresql://db-user:db-password@database.example.test/fusion",
+        LOG_LEVEL: "info",
+      },
+      host: {
+        dockerHost: "tcp://docker-user:docker-password@docker.example.test:2376",
+        tlsKey: "private-key-path",
+        tlsVerify: true,
+      },
+      configVersion: 7,
+    };
+    centralCore.getNode.mockResolvedValue({
+      id: "node_remote",
+      name: "macbook-air",
+      type: "remote",
+      status: "online",
+      maxConcurrent: 1,
+      dockerConfig: storedDockerConfig,
+    });
+    centralCore.updateNode.mockImplementation(async (_id: string, updates: Record<string, unknown>) => ({
+      id: "node_remote",
+      name: "macbook-air",
+      type: "remote",
+      status: "online",
+      maxConcurrent: 1,
+      ...updates,
+    }));
+
+    const response = await request(
+      app,
+      "PATCH",
+      "/api/nodes/node_remote/docker-config",
+      JSON.stringify({
+        environment: {
+          DATABASE_URL: "***",
+          LOG_LEVEL: "debug",
+        },
+        host: {
+          dockerHost: "***",
+          tlsKey: "***",
+          tlsVerify: true,
+        },
+      }),
+      { "Content-Type": "application/json" },
+    );
+
+    expect(response.status).toBe(200);
+    expect(centralCore.updateNode).toHaveBeenCalledWith("node_remote", {
+      dockerConfig: expect.objectContaining({
+        environment: {
+          DATABASE_URL: storedDockerConfig.environment.DATABASE_URL,
+          LOG_LEVEL: "debug",
+        },
+        host: storedDockerConfig.host,
+      }),
+    });
+    expect(response.body.environment).toEqual({
+      DATABASE_URL: "***",
+      LOG_LEVEL: "debug",
+    });
+    expect(response.body.host).toMatchObject({
+      dockerHost: "***",
+      tlsKey: "***",
+      tlsVerify: true,
+    });
   });
 
   // FNXC:NodeRegistry — a route-owned fallback authority (no injected centralCore) must close on
