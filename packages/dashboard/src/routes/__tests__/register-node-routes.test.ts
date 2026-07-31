@@ -62,6 +62,15 @@ function createFixture() {
       status: "online",
       maxConcurrent: 1,
     })),
+    updateNode: vi.fn(async (_id: string, updates: Record<string, unknown>) => ({
+      id: "node_remote",
+      name: "macbook-air",
+      type: "remote",
+      url: "https://macbook-air.example.test:4041",
+      status: "online",
+      maxConcurrent: 1,
+      ...updates,
+    })),
   };
 
   return { app: buildApp(centralCore), centralCore };
@@ -194,6 +203,103 @@ describe("registerNodeRoutes PostgreSQL authority", () => {
     });
     expect(response.body).not.toHaveProperty("apiKey");
     expect(healthChecks).toBe(1);
+  });
+
+  /*
+  FNXC:NodeRegistry 2026-07-31-05:46:
+  List, detail, update, and registration responses are all NodeConfig disclosure surfaces and must
+  consistently omit the mesh API key, redact Docker secrets, and retain non-secret node fields.
+  */
+  it("redacts credentials from every NodeConfig response while preserving non-secret fields", async () => {
+    const { app, centralCore } = createFixture();
+    const nodeWithSecrets = {
+      id: "node_remote",
+      name: "macbook-air",
+      type: "remote",
+      url: "https://macbook-air.example.test:4041",
+      apiKey: "mesh-super-secret",
+      status: "online",
+      maxConcurrent: 3,
+      capabilities: ["docker", "gpu"],
+      dockerConfig: {
+        environment: {
+          API_KEY: "docker-super-secret",
+          LOG_LEVEL: "info",
+        },
+        host: {
+          tlsKey: "private-super-secret",
+        },
+      },
+    };
+    const updatedNode = { ...nodeWithSecrets, name: "renamed-node" };
+
+    centralCore.listNodes.mockResolvedValue([nodeWithSecrets]);
+    centralCore.getNode.mockResolvedValue(nodeWithSecrets);
+    centralCore.registerNode.mockResolvedValue(nodeWithSecrets);
+    centralCore.updateNode.mockResolvedValue(updatedNode);
+
+    const listResponse = await request(app, "GET", "/api/nodes");
+    const getResponse = await request(app, "GET", "/api/nodes/node_remote");
+    const patchResponse = await request(
+      app,
+      "PATCH",
+      "/api/nodes/node_remote",
+      JSON.stringify({ name: "renamed-node" }),
+      { "Content-Type": "application/json" },
+    );
+    const postResponse = await request(
+      app,
+      "POST",
+      "/api/nodes",
+      JSON.stringify({
+        name: "macbook-air",
+        type: "remote",
+        url: "https://macbook-air.example.test:4041",
+        apiKey: "mesh-super-secret",
+      }),
+      { "Content-Type": "application/json" },
+    );
+
+    expect([
+      listResponse.status,
+      getResponse.status,
+      patchResponse.status,
+      postResponse.status,
+    ]).toEqual([200, 200, 200, 201]);
+
+    const responseNodes = [
+      listResponse.body[0],
+      getResponse.body,
+      patchResponse.body,
+      postResponse.body,
+    ];
+    for (const responseNode of responseNodes) {
+      expect(JSON.stringify(responseNode)).not.toContain("mesh-super-secret");
+      expect(JSON.stringify(responseNode)).not.toContain("docker-super-secret");
+      expect(JSON.stringify(responseNode)).not.toContain("private-super-secret");
+      expect(responseNode).not.toHaveProperty("apiKey");
+      expect(responseNode).toMatchObject({
+        id: "node_remote",
+        type: "remote",
+        url: "https://macbook-air.example.test:4041",
+        status: "online",
+        maxConcurrent: 3,
+        capabilities: ["docker", "gpu"],
+        dockerConfig: {
+          environment: {
+            API_KEY: "***",
+            LOG_LEVEL: "info",
+          },
+          host: {
+            tlsKey: "***",
+          },
+        },
+      });
+    }
+    expect(patchResponse.body.name).toBe("renamed-node");
+    expect(listResponse.body[0].name).toBe("macbook-air");
+    expect(getResponse.body.name).toBe("macbook-air");
+    expect(postResponse.body.name).toBe("macbook-air");
   });
 
   // FNXC:NodeRegistry — a route-owned fallback authority (no injected centralCore) must close on

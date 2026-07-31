@@ -46,9 +46,9 @@ function isDiscoveredRemoteProject(value: unknown): value is DiscoveredRemotePro
 }
 
 /**
- * FNXC:NodeRegistry 2026-07-30-21:00:
- * Registration responses expose freshly health-checked node state, but never the stored mesh API key
- * or raw Docker environment/TLS secrets.
+ * FNXC:NodeRegistry 2026-07-31-05:46:
+ * Every NodeConfig response must preserve operational node state while omitting the stored mesh API key
+ * and redacting raw Docker environment/TLS secrets.
  */
 function sanitizeNodeConfigForResponse(node: NodeConfig): NodeConfig {
   const sanitized: NodeConfig = {
@@ -110,7 +110,7 @@ export const registerNodeRoutes: ApiRouteRegistrar = (ctx) => {
       const nodes = await withCentralCore((central) => central.listNodes());
 
       nodes.sort((a, b) => a.name.localeCompare(b.name));
-      res.json(nodes);
+      res.json(nodes.map(sanitizeNodeConfigForResponse));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
@@ -283,7 +283,7 @@ export const registerNodeRoutes: ApiRouteRegistrar = (ctx) => {
         throw notFound("Node not found");
       }
 
-      res.json(node);
+      res.json(sanitizeNodeConfigForResponse(node));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
@@ -311,7 +311,7 @@ export const registerNodeRoutes: ApiRouteRegistrar = (ctx) => {
 
       const node = await withCentralCore((central) => central.updateNode(req.params.id, updates));
 
-      res.json(node);
+      res.json(sanitizeNodeConfigForResponse(node));
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         throw err;
