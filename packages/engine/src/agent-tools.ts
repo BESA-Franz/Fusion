@@ -2268,9 +2268,25 @@ function normalizeArtifactPayloadSources(
   that adapter representation; treating them as absence preserves the documented
   exactly-one-source contract and keeps actual non-sentinel values fail-closed.
   */
-  const omitSemanticAbsence = (value: string | undefined): string | undefined => (
-    isAbsentArtifactPayloadSource(value) ? undefined : value
-  );
+  const payloadValues = [params.uri, params.content, params.dataBase64, params.path];
+  const hasConcretePayload = payloadValues.some((value) => {
+    if (value === undefined) return false;
+    const normalized = value.trim().toLowerCase();
+    return normalized.length > 0 && normalized !== "null" && normalized !== "undefined";
+  });
+  const omitSemanticAbsence = (value: string | undefined): string | undefined => {
+    if (value === undefined) return undefined;
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "null" || normalized === "undefined") return undefined;
+    /*
+    Preserve a sole blank payload so the payload-specific validator can reject it
+    (for example, whitespace-only dataBase64 must not silently become a valid
+    metadata-only artifact). Blank optionals are only discarded when a concrete
+    sibling source proves that they are adapter noise around a real payload.
+    */
+    if (normalized.length === 0 && hasConcretePayload) return undefined;
+    return value;
+  };
 
   return {
     ...params,
