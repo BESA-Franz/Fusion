@@ -2127,7 +2127,12 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     if (hybridGate.enabled) {
       try {
         const he = await phaseTime("engine: HybridExecutor.initialize", async () => {
-          const x = new HybridExecutor(centralCoreForEngine);
+          /*
+          FNXC:HybridExecutorOwnership 2026-07-31-17:18:
+          Dashboard ProjectEngineManager remains the sole local runtime owner. HybridExecutor is
+          limited to explicit remote assignments to prevent duplicate planners in multi-node mode.
+          */
+          const x = new HybridExecutor(centralCoreForEngine, { projectRuntimeScope: "remote-only" });
           await x.initialize();
           return x;
         }, logPhase);

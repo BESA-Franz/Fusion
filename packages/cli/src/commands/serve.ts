@@ -463,7 +463,13 @@ export async function runServe(
   const hybridGate = await shouldUseHybridExecutor(sharedCentralCore);
   console.log(`[serve] hybrid executor gate: enabled=${hybridGate.enabled} reason=${hybridGate.reason}`);
   if (hybridGate.enabled) {
-    hybridExecutor = new HybridExecutor(sharedCentralCore);
+    /*
+    FNXC:HybridExecutorOwnership 2026-07-31-17:18:
+    ProjectEngineManager is the sole owner of local and unassigned project runtimes in this
+    process. HybridExecutor may manage only explicitly remote projects; otherwise both managers
+    start a planner for the same shared-database task.
+    */
+    hybridExecutor = new HybridExecutor(sharedCentralCore, { projectRuntimeScope: "remote-only" });
     await hybridExecutor.initialize();
   }
 

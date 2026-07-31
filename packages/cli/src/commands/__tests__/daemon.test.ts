@@ -1187,6 +1187,10 @@ describe("runDaemon", () => {
 
     await runDaemon({});
     expect(mockHybridExecutorCtor).toHaveBeenCalledTimes(1);
+    expect(mockHybridExecutorCtor).toHaveBeenCalledWith(
+      expect.anything(),
+      { projectRuntimeScope: "remote-only" },
+    );
     expect(mockHybridExecutorInitialize).toHaveBeenCalledTimes(1);
 
     await triggerSignal("SIGTERM");

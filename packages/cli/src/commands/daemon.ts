@@ -383,7 +383,12 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   const hybridGate = await shouldUseHybridExecutor(sharedCentralCore);
   console.log(`[daemon] hybrid executor gate: enabled=${hybridGate.enabled} reason=${hybridGate.reason}`);
   if (hybridGate.enabled) {
-    hybridExecutor = new HybridExecutor(sharedCentralCore);
+    /*
+    FNXC:HybridExecutorOwnership 2026-07-31-17:18:
+    The daemon's ProjectEngineManager exclusively owns local and unassigned projects. Restrict
+    HybridExecutor to remote assignments so multi-node discovery cannot duplicate local planning.
+    */
+    hybridExecutor = new HybridExecutor(sharedCentralCore, { projectRuntimeScope: "remote-only" });
     await hybridExecutor.initialize();
   }
 

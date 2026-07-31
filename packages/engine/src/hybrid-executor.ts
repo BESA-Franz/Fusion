@@ -56,6 +56,13 @@ export interface HybridExecutorEvents {
  * Options for creating a HybridExecutor.
  */
 export interface HybridExecutorOptions {
+  /**
+   * Limit automatically managed project runtimes to projects explicitly assigned
+   * to a remote node. CLI processes that already run ProjectEngineManager use
+   * this mode so HybridExecutor can provide remote routing and node health
+   * without starting a second local runtime for the same project.
+   */
+  projectRuntimeScope?: "all" | "remote-only";
   /** Called when a task is scheduled */
   onTaskScheduled?: (projectId: string, task: Task) => void;
   /** Called when a task is blocked by dependencies */
@@ -180,6 +187,21 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
     for (const project of projects) {
       if (project.status === "active" || project.status === "initializing") {
         try {
+          /*
+          FNXC:HybridExecutorOwnership 2026-07-31-17:18:
+          A CLI process already owns every local/unassigned project through ProjectEngineManager.
+          In a multi-node registry, starting HybridExecutor's second InProcessRuntime for those same
+          projects created two independent planners, duplicate model calls, and competing worktree
+          writes. Remote-only mode keeps HybridExecutor's node-health and remote-project surfaces
+          while making local runtime ownership exclusive.
+          */
+          if (!await this.isProjectInRuntimeScope(project)) {
+            hybridExecutorLog.log(
+              `Skipping local/unassigned project runtime for ${project.name} (${project.id}); ProjectEngineManager owns it`,
+            );
+            continue;
+          }
+
           const workingDirectory = await this.centralCore.resolveLocalProjectWorkingDirectory(
             project.id,
           );
@@ -221,15 +243,35 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
    * @throws Error if project not found in CentralCore or runtime already exists
    */
   async addProject(config: ProjectRuntimeConfig): Promise<ProjectRuntime> {
+    const project = await this.centralCore.getProject(config.projectId);
+    if (!project) {
+      throw new Error(`Project not found in CentralCore: ${config.projectId}`);
+    }
+    if (!await this.isProjectInRuntimeScope(project)) {
+      throw new Error(
+        `Project ${config.projectId} is outside HybridExecutor projectRuntimeScope=${this.options.projectRuntimeScope ?? "all"}`,
+      );
+    }
+
     const runtime = await this.projectManager.addProject(config);
 
-    const project = await this.centralCore.getProject(config.projectId);
     this.emit("project:added", {
       projectId: config.projectId,
-      projectName: project?.name ?? config.projectId,
+      projectName: project.name,
     });
 
     return runtime;
+  }
+
+  private async isProjectInRuntimeScope(project: RegisteredProject): Promise<boolean> {
+    if (this.options.projectRuntimeScope !== "remote-only") {
+      return true;
+    }
+    if (!project.nodeId) {
+      return false;
+    }
+    const assignedNode = await this.centralCore.getNode(project.nodeId);
+    return assignedNode?.type === "remote";
   }
 
   /**

@@ -100,6 +100,42 @@ describe("hybrid executor startup integration", () => {
     await expect(shouldUseHybridExecutor(central)).resolves.toEqual({ enabled: true, reason: "multi-node" });
   });
 
+  it("remote-only ownership skips local projects and starts only explicit remote assignments", async () => {
+    const now = new Date().toISOString();
+    const localProject = {
+      id: "proj-local",
+      name: "Local project",
+      path: "/tmp/local",
+      status: "active",
+      isolationMode: "in-process",
+      createdAt: now,
+      updatedAt: now,
+    } as RegisteredProject;
+    const remoteProject = {
+      ...localProject,
+      id: "proj-remote",
+      name: "Remote project",
+      path: "/tmp/remote",
+      nodeId: "node-remote",
+    } as RegisteredProject;
+    const projects = [localProject, remoteProject];
+    const central = createCentralCore({
+      listProjects: async () => projects,
+    });
+    central.getProject = vi.fn(async (id: string) => projects.find((project) => project.id === id));
+    central.getNode = vi.fn(async (id: string) => (
+      id === "node-remote"
+        ? { id, type: "remote" }
+        : undefined
+    )) as CentralCore["getNode"];
+    central.resolveLocalProjectWorkingDirectory = vi.fn(async (id: string) => `/tmp/${id}`);
+
+    const executor = new HybridExecutor(central, { projectRuntimeScope: "remote-only" });
+    await executor.initialize();
+
+    expect(executor.getProjectIds()).toEqual(["proj-remote"]);
+  });
+
   it("shutdown clears initialized state", async () => {
     const central = createCentralCore();
     const executor = new HybridExecutor(central);
