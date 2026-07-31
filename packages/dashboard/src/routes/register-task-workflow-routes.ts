@@ -700,6 +700,112 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
     resolveSelfHealingManager: _resolveSelfHealingManager,
   } = deps;
   const TASK_DETAIL_ACTIVITY_LOG_LIMIT = taskDetailActivityLogLimit;
+  const TASK_OWNER_HOP_HEADER = "x-fusion-task-owner-hop";
+
+  async function forwardTaskMutationToOwner(
+    req: import("express").Request,
+    res: import("express").Response,
+    scopedStore: TaskStore,
+    task: Task,
+    operation: "move" | "pause" | "unpause",
+  ): Promise<boolean> {
+    const ownerNodeId = task.nodeId?.trim();
+    if (!ownerNodeId) return false;
+
+    const sharedCentral = options?.centralCore;
+    const central = sharedCentral
+      ?? new (await import("@fusion/core")).CentralCore(scopedStore.getGlobalSettingsDir());
+    const shouldClose = !sharedCentral;
+
+    try {
+      if (!sharedCentral || (typeof central.isInitialized === "function" && !central.isInitialized())) {
+        await central.init();
+      }
+
+      const runtimeNode = await central.getRuntimeNode();
+      if (!runtimeNode) {
+        throw new ApiError(503, `Cannot resolve the current runtime node for this task ${operation}.`);
+      }
+      if (runtimeNode.id === ownerNodeId) {
+        return false;
+      }
+
+      /*
+      FNXC:MultiNodeRouting 2026-07-31-13:20:
+      User move/pause mutations for an explicitly node-bound task must execute
+      on that node so lifecycle events reach the owning executor. Forward before
+      any local store mutation; a single-hop marker fails closed if runtime
+      identity is misconfigured instead of bouncing between dashboards.
+      */
+      if (req.get(TASK_OWNER_HOP_HEADER)) {
+        throw new ApiError(508, `Task ${operation} owner forwarding loop detected.`);
+      }
+
+      const ownerNode = await central.getNode(ownerNodeId);
+      if (!ownerNode) {
+        throw new ApiError(503, `Task owner node is unavailable: ${ownerNodeId}`);
+      }
+      if (ownerNode.status !== "online") {
+        throw new ApiError(503, `Task owner node is not online: ${ownerNodeId}`);
+      }
+      if (!ownerNode.url) {
+        throw new ApiError(503, `Task owner node has no URL configured: ${ownerNodeId}`);
+      }
+      const ownerApiKey = ownerNode.apiKey?.trim();
+      if (!ownerApiKey) {
+        throw new ApiError(503, `Task owner node has no API key configured: ${ownerNodeId}`);
+      }
+
+      const incomingUrl = new URL(req.originalUrl, "http://fusion.local");
+      const targetUrl = new URL(`${incomingUrl.pathname}${incomingUrl.search}`, ownerNode.url).toString();
+      const headers: Record<string, string> = {
+        [TASK_OWNER_HOP_HEADER]: runtimeNode.id,
+        authorization: `Bearer ${ownerApiKey}`,
+      };
+      const contentType = req.get("content-type");
+      if (contentType) {
+        headers["content-type"] = contentType;
+      }
+
+      const requestBody = req.rawBody && req.rawBody.length > 0
+        ? req.rawBody
+        : Buffer.from(JSON.stringify(req.body ?? {}));
+      let upstream: Response;
+      try {
+        upstream = await fetch(targetUrl, {
+          method: "POST",
+          headers,
+          body: requestBody as unknown as BodyInit,
+          signal: AbortSignal.timeout(30_000),
+        });
+      } catch (error) {
+        runtimeLogger.warn("Task owner mutation forwarding failed", {
+          taskId: task.id,
+          ownerNodeId,
+          operation,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw new ApiError(502, `Task owner node ${operation} request failed: ${ownerNodeId}`);
+      }
+
+      const responseBody = Buffer.from(await upstream.arrayBuffer());
+      const responseContentType = upstream.headers.get("content-type");
+      if (responseContentType) {
+        res.setHeader("content-type", responseContentType);
+      }
+      res.status(upstream.status);
+      if (responseBody.length === 0) {
+        res.end();
+      } else {
+        res.send(responseBody);
+      }
+      return true;
+    } finally {
+      if (shouldClose) {
+        await central.close();
+      }
+    }
+  }
 
   type InReviewUserCommentReengagementInput = {
     triggeringCommentType: "steering" | "task";
@@ -1706,6 +1812,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
             messageKey: "board.rejection.prOpenBlocksMoveBack",
             retryable: false,
           });
+        }
+
+        if (await forwardTaskMutationToOwner(req, res, scopedStore, guardTask, "move")) {
+          return;
         }
       }
 
@@ -3424,7 +3534,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   router.post("/tasks/:id/pause", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
-      await scopedStore.getTask(req.params.id);
+      const task = await scopedStore.getTask(req.params.id);
+      if (task && await forwardTaskMutationToOwner(req, res, scopedStore, task, "pause")) {
+        return;
+      }
       const updated = await scopedStore.pauseTask(req.params.id, true);
       res.json(updated);
     } catch (err: unknown) {
@@ -3439,7 +3552,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   router.post("/tasks/:id/unpause", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
-      await scopedStore.getTask(req.params.id);
+      const task = await scopedStore.getTask(req.params.id);
+      if (task && await forwardTaskMutationToOwner(req, res, scopedStore, task, "unpause")) {
+        return;
+      }
       const updated = await scopedStore.pauseTask(req.params.id, false);
       res.json(updated);
     } catch (err: unknown) {

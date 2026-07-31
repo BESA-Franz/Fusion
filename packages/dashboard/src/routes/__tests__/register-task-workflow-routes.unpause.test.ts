@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import express from "express";
 import type { TaskStore } from "@fusion/core";
 import { createApiRoutes } from "../../routes.js";
@@ -21,7 +21,26 @@ const makeTaskState = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 } as any);
 
-const createPauseRouteHarness = (initialTaskState: any) => {
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+const ownerAwareCentral = (
+  runtimeNodeId: string,
+  ownerNode?: {
+    id: string;
+    status: "online" | "offline" | "connecting" | "error";
+    url?: string;
+    apiKey?: string;
+  },
+) => ({
+  isInitialized: vi.fn(() => true),
+  init: vi.fn(async () => undefined),
+  getRuntimeNode: vi.fn(async () => ({ id: runtimeNodeId })),
+  getNode: vi.fn(async (nodeId: string) => ownerNode?.id === nodeId ? ownerNode : undefined),
+});
+
+const createPauseRouteHarness = (initialTaskState: any, centralCore?: Record<string, unknown>) => {
   let taskState = initialTaskState;
   const store: TaskStore = {
     getRootDir: vi.fn(() => process.cwd()),
@@ -46,7 +65,7 @@ const createPauseRouteHarness = (initialTaskState: any) => {
 
   const app = express();
   app.use(express.json());
-  app.use("/api", createApiRoutes(store));
+  app.use("/api", createApiRoutes(store, centralCore ? { centralCore: centralCore as never } : undefined));
   return { app, store, getTaskState: () => taskState };
 };
 
@@ -91,5 +110,69 @@ describe("task workflow pause routes", () => {
     expect(res.status).toBe(200);
     expect(getTaskState().paused).toBe(true);
     expect(store.pauseTask).toHaveBeenCalledWith("FN-001", true);
+  });
+
+  it.each([
+    ["pause", true],
+    ["unpause", false],
+  ] as const)("forwards remote %s with query, body, and owner auth without a local mutation", async (operation, paused) => {
+    const central = ownerAwareCentral("node-pc1", {
+      id: "node-pc3",
+      status: "online",
+      url: "https://pc3.example.test/base/",
+      apiKey: "owner-node-key",
+    });
+    const { app, store } = createPauseRouteHarness(makeTaskState({
+      nodeId: "node-pc3",
+      paused: paused ? undefined : true,
+    }), central);
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(makeTaskState({
+      nodeId: "node-pc3",
+      paused: paused ? true : undefined,
+    })), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchImpl);
+    const requestBody = { reason: "operator-control" };
+
+    const res = await REQUEST(
+      app,
+      "POST",
+      `/api/tasks/FN-001/${operation}?source=dashboard`,
+      JSON.stringify(requestBody),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(store.pauseTask).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [targetUrl, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(targetUrl).toBe(`https://pc3.example.test/api/tasks/FN-001/${operation}?source=dashboard`);
+    expect(init.headers).toMatchObject({
+      authorization: "Bearer owner-node-key",
+      "content-type": "application/json",
+      "x-fusion-task-owner-hop": "node-pc1",
+    });
+    expect(JSON.parse(Buffer.from(init.body as Buffer).toString("utf8"))).toEqual(requestBody);
+  });
+
+  it("keeps a task bound to the local runtime on the local pause path", async () => {
+    const central = ownerAwareCentral("node-pc3");
+    const { app, store, getTaskState } = createPauseRouteHarness(makeTaskState({
+      nodeId: "node-pc3",
+    }), central);
+    const fetchImpl = vi.fn();
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const res = await REQUEST(app, "POST", "/api/tasks/FN-001/pause", JSON.stringify({}), {
+      "content-type": "application/json",
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.pauseTask).toHaveBeenCalledTimes(1);
+    expect(store.pauseTask).toHaveBeenCalledWith("FN-001", true);
+    expect(getTaskState().paused).toBe(true);
   });
 });
