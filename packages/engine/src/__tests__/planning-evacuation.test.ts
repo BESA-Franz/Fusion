@@ -15,6 +15,7 @@ Invariant under test:
 import { describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type { Task, TaskStore } from "@fusion/core";
+import { TaskExecutor } from "../executor.js";
 import { TriageProcessor } from "../triage.js";
 import { hasAdvancedPastPlanning } from "../replan-target.js";
 import { SelfHealingManager } from "../self-healing.js";
@@ -84,6 +85,71 @@ describe("withdrawing a card from planning", () => {
     (processor as any).taskColumnWakeHandler({ id: "FN-1403", column: "todo" } as Task);
 
     expect(wake).toHaveBeenCalled();
+  });
+});
+
+/*
+FNXC:PlanningEvacuation 2026-07-31-09:35:
+Plan approval and replan routing move cards between triage and todo while the planning-owned
+worktree remains the authoritative checkout for Plan Review and execution. Those lane-internal
+moves must preserve worktree, custom branch, and base commit; only a real withdrawal from the
+planning lanes may release that checkout.
+*/
+describe("planning-lane task moves", () => {
+  function executorWithPlanningCheckout() {
+    const task = planningTask({
+      column: "triage",
+      status: "awaiting-approval",
+      worktree: "/wt/fn-1403",
+      branch: "fusion/fn-1403-custom",
+      baseCommitSha: "base-commit",
+    });
+    const store = makeStore({
+      getTask: vi.fn().mockResolvedValue(task),
+      getSettings: vi.fn().mockResolvedValue({}),
+    });
+    const executor = new TaskExecutor(store, "/tmp/test");
+    return { executor, store, task };
+  }
+
+  it.each([
+    ["plan approval", "triage", "todo"],
+    ["automatic replan", "todo", "triage"],
+  ])("preserves the planning checkout during %s (%s → %s)", async (_label, from, to) => {
+    const { executor, store, task } = executorWithPlanningCheckout();
+
+    store.emit("task:moved", { task: { ...task, column: to }, from, to, source: "engine" });
+    const pendingDisposal = (executor as any).pendingTaskDisposals.get(task.id) as Promise<void> | undefined;
+    if (pendingDisposal) await pendingDisposal;
+
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      task.id,
+      expect.objectContaining({
+        worktree: null,
+        branch: null,
+        baseCommitSha: null,
+      }),
+      undefined,
+    );
+  });
+
+  it("releases the planning checkout after a real withdrawal to ideas", async () => {
+    const { store, task } = executorWithPlanningCheckout();
+
+    store.emit("task:moved", { task: { ...task, column: "ideas" }, from: "todo", to: "ideas", source: "user" });
+
+    await vi.waitFor(() => {
+      expect(store.updateTask).toHaveBeenCalledWith(
+        task.id,
+        {
+          worktree: null,
+          branch: null,
+          baseCommitSha: null,
+          sessionFile: null,
+        },
+        undefined,
+      );
+    });
   });
 });
 

@@ -3332,7 +3332,14 @@ export class TaskExecutor {
             }
           }),
         );
-      } else if ((from === "todo" || from === "triage") && to !== "in-progress" && to !== "in-review" && to !== "done") {
+      } else if (
+        (from === "todo" || from === "triage")
+        && to !== "todo"
+        && to !== "triage"
+        && to !== "in-progress"
+        && to !== "in-review"
+        && to !== "done"
+      ) {
         /*
         FNXC:PlanningEvacuation 2026-07-25-23:00:
         A card pulled BACKWARD out of a planner lane (the reported case: todo → Ideas) must stop all
@@ -3341,6 +3348,11 @@ export class TaskExecutor {
         streaming against a card the operator had withdrawn. Forward transitions are excluded — those
         are the card advancing, and their own lanes own the handoff. Also release the pre-execution
         worktree acquired at planning time so a withdrawn card leaves nothing behind on disk.
+
+        FNXC:PlanningEvacuation 2026-07-31-09:38:
+        Plan approval (triage → todo) and automatic replanning (todo → triage) stay inside the
+        planning lane. Releasing their checkout erased the approved custom branch and base commit
+        before Plan Review, so both planner-lane destinations are excluded explicitly.
         */
         this.trackTaskDisposal(
           task.id,
