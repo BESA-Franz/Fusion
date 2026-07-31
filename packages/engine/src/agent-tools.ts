@@ -1879,9 +1879,13 @@ function taskDocumentWriteResult(document: TaskDocument) {
 
 function taskDocumentWriteError(error: unknown, key: string, taskId?: string) {
   if (error instanceof fusionCore.TaskDocumentPreconditionFailedError) {
+    const details = error.toDetails();
+    const message = details.currentRevision === null
+      ? `ERROR: Document "${key}" does not exist. Create it with expected_revision=0 and omit expected_content_hash.`
+      : `ERROR: Document "${key}" changed; re-read it and explicitly rebase before writing.`;
     return {
-      content: [{ type: "text" as const, text: `ERROR: Document "${key}" changed; re-read it and explicitly rebase before writing.` }],
-      details: { ...error.toDetails() },
+      content: [{ type: "text" as const, text: message }],
+      details: { ...details },
       isError: true,
     };
   }
@@ -1904,7 +1908,7 @@ export function createTaskDocumentWriteTool(store: TaskStore, taskId: string): T
     name: "fn_task_document_write",
     label: "Write Document",
     description:
-      "Save a named document for this task. Read first, then pass expected_revision and/or expected_content_hash for safe CAS publication; stale writes fail and require an explicit rebase.",
+      "Save a named document for this task. Read first. If it is missing, create it with expected_revision=0 and omit expected_content_hash. If it exists, pass the returned positive expected_revision and/or expected_content_hash; stale writes fail and require an explicit rebase.",
     parameters: taskDocumentWriteParams,
     execute: async (_id: string, params: Static<typeof taskDocumentWriteParams>) => {
       const input: TaskDocumentCreateInput = {
@@ -2074,7 +2078,7 @@ export function createChatTaskDocumentTools(store: TaskStore): ToolDefinition[] 
       name: "fn_task_document_write",
       label: "Write Document",
       description:
-        "Save a named document for an explicit task. Read first, then pass expected_revision and/or expected_content_hash for safe CAS publication; stale writes fail and require an explicit rebase. Requires task_id.",
+        "Save a named document for an explicit task. Read first. If it is missing, create it with expected_revision=0 and omit expected_content_hash. If it exists, pass the returned positive expected_revision and/or expected_content_hash; stale writes fail and require an explicit rebase. Requires task_id.",
       parameters: chatTaskDocumentWriteParams,
       execute: async (_id: string, params: Static<typeof chatTaskDocumentWriteParams>) => {
         const input: TaskDocumentCreateInput = {
@@ -2655,7 +2659,7 @@ async function readTaskDocuments(store: TaskStore, taskId: string, key?: string)
       if (!document) {
         return {
           content: [{ type: "text" as const, text: `Document "${key}" not found.` }],
-          details: {},
+          details: { key, exists: false, expectedRevision: 0 },
         };
       }
 
@@ -2668,7 +2672,12 @@ async function readTaskDocuments(store: TaskStore, taskId: string, key?: string)
             `Updated: ${document.updatedAt}\n\n` +
             document.content,
         }],
-        details: {},
+        details: {
+          key: document.key,
+          exists: true,
+          revision: document.revision,
+          contentHash: document.contentHash,
+        },
       };
     }
 
@@ -2686,7 +2695,13 @@ async function readTaskDocuments(store: TaskStore, taskId: string, key?: string)
         type: "text" as const,
         text: `Task documents:\n${lines.join("\n")}`,
       }],
-      details: {},
+      details: {
+        documents: documents.map((document) => ({
+          key: document.key,
+          revision: document.revision,
+          contentHash: document.contentHash,
+        })),
+      },
     };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
