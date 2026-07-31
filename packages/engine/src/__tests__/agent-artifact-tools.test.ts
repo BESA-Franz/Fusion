@@ -502,6 +502,68 @@ describe("artifact register tool path payloads", () => {
     expect(getText(result)).toContain("provide exactly one artifact payload source: content, uri, dataBase64, or path");
   });
 
+  it("ignores empty optional payload fields when registering a path artifact", async () => {
+    const { store, registerArtifact } = createMockStore();
+    registerArtifact.mockResolvedValue(createMockArtifact({
+      id: "art-path-empty-optionals",
+      type: "image",
+      title: "Screenshot",
+      mimeType: "image/png",
+      content: undefined,
+    }));
+    writeFileSync(join(baseDir, "shot.png"), PNG_IMAGE_BYTES);
+    const tool = createArtifactRegisterTool(store, AUTHOR_ID, undefined, { baseDir });
+
+    const result = await runTool(tool, "call-path-empty-optionals", {
+      type: "image",
+      title: "Screenshot",
+      mimeType: "image/png",
+      path: "shot.png",
+      content: "",
+      uri: "",
+      dataBase64: "",
+    });
+
+    expect(registerArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      type: "image",
+      title: "Screenshot",
+      content: undefined,
+      uri: undefined,
+      data: PNG_IMAGE_BYTES,
+    }));
+    expect(getText(result)).not.toContain("ERROR:");
+  });
+
+  it("ignores empty optional payload fields when registering inline content", async () => {
+    const { store, registerArtifact } = createMockStore();
+    registerArtifact.mockResolvedValue(createMockArtifact({
+      id: "art-content-empty-optionals",
+      type: "document",
+      title: "Receipt",
+      content: "verified receipt",
+    }));
+    const tool = createArtifactRegisterTool(store, AUTHOR_ID, undefined, { baseDir });
+
+    const result = await runTool(tool, "call-content-empty-optionals", {
+      type: "document",
+      title: "Receipt",
+      mimeType: "text/plain",
+      content: "verified receipt",
+      uri: "",
+      dataBase64: "",
+      path: "",
+    });
+
+    expect(registerArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      type: "document",
+      title: "Receipt",
+      content: "verified receipt",
+      uri: undefined,
+      data: undefined,
+    }));
+    expect(getText(result)).not.toContain("ERROR:");
+  });
+
   /*
   FNXC:ArtifactRegistry 2026-07-11-10:05:
   Containment coverage: `path` must never read files outside the session workspace directory or

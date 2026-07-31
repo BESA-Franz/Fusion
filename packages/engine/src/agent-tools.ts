@@ -2228,6 +2228,28 @@ export interface ArtifactRegisterToolOptions {
   defaultTaskId?: string;
 }
 
+function normalizeArtifactPayloadSources(
+  params: Static<typeof artifactRegisterParams>,
+): Static<typeof artifactRegisterParams> {
+  const payloadValues = [params.uri, params.content, params.dataBase64, params.path];
+  const hasNonBlankPayload = payloadValues.some(
+    (value) => value !== undefined && value.trim().length > 0,
+  );
+  if (!hasNonBlankPayload) return params;
+
+  const omitBlank = (value: string | undefined): string | undefined => (
+    value !== undefined && value.trim().length === 0 ? undefined : value
+  );
+
+  return {
+    ...params,
+    uri: omitBlank(params.uri),
+    content: omitBlank(params.content),
+    dataBase64: omitBlank(params.dataBase64),
+    path: omitBlank(params.path),
+  };
+}
+
 async function registerArtifactForAgent(
   store: TaskStore,
   authorId: string,
@@ -2237,33 +2259,40 @@ async function registerArtifactForAgent(
 ) {
   try {
     /*
+    Models and provider adapters can materialize omitted optional string fields as empty
+    strings. Treat those values as absent before enforcing the exactly-one-payload
+    contract so a valid path or inline receipt is not rejected as a mixed-source call.
+    Non-empty values remain byte-for-byte unchanged.
+    */
+    const normalizedParams = normalizeArtifactPayloadSources(params);
+    /*
     FNXC:ArtifactRegistry 2026-07-11-09:40:
     docs/agents.md promises "exactly one payload source" for fn_artifact_register. The path and
     dataBase64 readers already reject their own mixed combos with specific messages; this guard
     closes the remaining content+uri gap so both fields are never persisted on one artifact row.
     Zero payload sources stays allowed (metadata-only registrations are unchanged).
     */
-    if (params.content !== undefined && params.uri !== undefined) {
+    if (normalizedParams.content !== undefined && normalizedParams.uri !== undefined) {
       throw new Error("content cannot be combined with uri; provide exactly one artifact payload source: content, uri, dataBase64, or path.");
     }
-    const filePayload = await readArtifactFileFromPath(params, options?.baseDir);
-    const data = filePayload ? filePayload.data : decodeArtifactDataBase64(params);
+    const filePayload = await readArtifactFileFromPath(normalizedParams, options?.baseDir);
+    const data = filePayload ? filePayload.data : decodeArtifactDataBase64(normalizedParams);
     await assertReviewArtifactGenerationEligible(store, {
-      type: params.type,
-      mimeType: filePayload?.mimeType ?? params.mimeType,
-      taskId: params.taskId ?? options?.defaultTaskId,
+      type: normalizedParams.type,
+      mimeType: filePayload?.mimeType ?? normalizedParams.mimeType,
+      taskId: normalizedParams.taskId ?? options?.defaultTaskId,
     });
     const input: ArtifactCreateInput = {
-      type: params.type,
-      title: params.title,
-      description: params.description,
-      mimeType: filePayload?.mimeType ?? params.mimeType,
-      uri: params.uri,
-      content: params.content,
+      type: normalizedParams.type,
+      title: normalizedParams.title,
+      description: normalizedParams.description,
+      mimeType: filePayload?.mimeType ?? normalizedParams.mimeType,
+      uri: normalizedParams.uri,
+      content: normalizedParams.content,
       data,
       authorId,
       authorType: "agent",
-      taskId: params.taskId ?? options?.defaultTaskId,
+      taskId: normalizedParams.taskId ?? options?.defaultTaskId,
     };
 
     const artifact: Artifact = await store.registerArtifact(input);
