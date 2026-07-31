@@ -508,6 +508,65 @@ describe("POST /system/engine/restart", () => {
     expect(res.status).toBe(409);
   });
 
+  it("delegates a primary-engine restart to the supervising process without closing the HTTP-bound runtime", async () => {
+    const pauseProject = vi.fn(async () => {});
+    const resumeProject = vi.fn(async () => {});
+    const requestRestart = vi.fn(() => true);
+    const engineManager = {
+      getEngine: (id: string) => (id === "p1" ? {} : undefined),
+      pauseProject,
+      resumeProject,
+    };
+    const centralCore = {
+      listProjects: vi.fn(async () => [{ id: "p1" }]),
+    };
+    const { app } = createApp({
+      options: {
+        engine: { getProjectId: () => "p1" },
+        engineManager,
+        centralCore,
+        systemControl: { supervised: true, requestRestart },
+      },
+    });
+
+    const res = await postJson(app, "/api/system/engine/restart");
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({
+      restarted: [],
+      failed: [],
+      processRestartRequested: true,
+    });
+    expect(requestRestart).toHaveBeenCalledWith("system-panel-primary-engine-restart");
+    expect(pauseProject).not.toHaveBeenCalled();
+    expect(resumeProject).not.toHaveBeenCalled();
+  });
+
+  it("refuses to stop the HTTP-bound primary engine when process supervision is unavailable", async () => {
+    const pauseProject = vi.fn(async () => {});
+    const resumeProject = vi.fn(async () => {});
+    const engineManager = {
+      getEngine: (id: string) => (id === "p1" ? {} : undefined),
+      pauseProject,
+      resumeProject,
+    };
+    const centralCore = {
+      listProjects: vi.fn(async () => [{ id: "p1" }]),
+    };
+    const { app } = createApp({
+      options: {
+        engine: { getProjectId: () => "p1" },
+        engineManager,
+        centralCore,
+      },
+    });
+
+    const res = await postJson(app, "/api/system/engine/restart");
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("supervised process restart");
+    expect(pauseProject).not.toHaveBeenCalled();
+    expect(resumeProject).not.toHaveBeenCalled();
+  });
+
   it("pause+resumes each running project engine and reports failures", async () => {
     const pauseProject = vi.fn(async (_id: string) => {});
     const resumeProject = vi.fn(async (id: string) => {

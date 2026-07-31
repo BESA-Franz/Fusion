@@ -113,6 +113,7 @@ export function fetchCurrentSystemRebuild(): Promise<{ job: SystemRebuildJobSnap
 export function restartSystemEngines(): Promise<{
   restarted: string[];
   failed: Array<{ projectId: string; error: string }>;
+  processRestartRequested?: boolean;
 }> {
   return api("/system/engine/restart", { method: "POST" });
 }

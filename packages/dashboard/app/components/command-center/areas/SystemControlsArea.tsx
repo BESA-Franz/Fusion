@@ -420,6 +420,18 @@ export function SystemControlsArea({ projectId, addToast }: SystemControlsAreaPr
     () =>
       runAction("engine", async () => {
         const result = await restartSystemEngines();
+        if (result.processRestartRequested) {
+          prevPidRef.current = info?.pid ?? null;
+          setRestartPhase("waiting");
+          toast(
+            t(
+              "systemControls.primaryEngineRestartScheduled",
+              "The primary engine is restarting together with the server.",
+            ),
+            "success",
+          );
+          return;
+        }
         toast(
           t("systemControls.engineRestarted", "Restarted {{count}} engine(s){{failed}}", {
             count: result.restarted.length,
@@ -428,7 +440,7 @@ export function SystemControlsArea({ projectId, addToast }: SystemControlsAreaPr
           result.failed.length ? "warning" : "success",
         );
       }),
-    [runAction, t, toast],
+    [info?.pid, runAction, t, toast],
   );
 
   const doAgentsRestart = useCallback(

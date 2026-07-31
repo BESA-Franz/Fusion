@@ -592,6 +592,43 @@ export function registerSystemRoutes(ctx: ApiRoutesContext, deps: SystemRouteDep
     try {
       const projects = await centralCore.listProjects();
       const runningIds = projects.filter((p) => engineManager.getEngine(p.id)).map((p) => p.id);
+      /*
+      FNXC:PrimaryEngineRestartLifecycle 2026-07-31:
+      createServer retains the primary engine's TaskStore, PluginRunner, mission
+      services, and health layer for the lifetime of the HTTP process. An
+      in-process pause+resume replaces that engine in ProjectEngineManager while
+      every HTTP closure still points at the stopped runtime. When the primary
+      store owns its PostgreSQL pool, stop() also closes the exact layer used by
+      /api/health, producing persistent CONNECTION_ENDED failures. Delegate the
+      primary-engine case to the supervising process so the engine and all HTTP
+      bindings are rebuilt atomically. Secondary engines remain safe to bounce
+      in place because the server does not retain their runtime objects.
+      */
+      const primaryProjectId = options?.engine?.getProjectId?.();
+      if (primaryProjectId && runningIds.includes(primaryProjectId)) {
+        if (!systemControl) {
+          throw new ApiError(
+            409,
+            "Primary engine restart requires a supervised process restart. Start Fusion with supervision and retry.",
+          );
+        }
+        const accepted = systemControl.requestRestart("system-panel-primary-engine-restart");
+        if (!accepted) {
+          throw new ApiError(
+            409,
+            "Primary engine restart is unavailable because the supervising parent did not accept the restart.",
+          );
+        }
+        log.info("Primary engine restart delegated to supervised process restart", {
+          projectId: primaryProjectId,
+        });
+        res.status(202).json({
+          restarted: [],
+          failed: [],
+          processRestartRequested: true,
+        });
+        return;
+      }
       const restarted: string[] = [];
       const failed: Array<{ projectId: string; error: string }> = [];
       for (const projectId of runningIds) {
