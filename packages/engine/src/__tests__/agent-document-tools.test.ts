@@ -112,6 +112,26 @@ describe("task_document_write tool", () => {
     expect(result.details).toEqual({ key: "plan", revision: 4, contentHash: hash });
   });
 
+  it("drops an impossible content hash when revision zero creates a missing document", async () => {
+    const { store, upsertTaskDocument } = createMockStore();
+    const hash = `sha256:${"a".repeat(64)}`;
+    upsertTaskDocument.mockResolvedValue(createMockDocument({ revision: 1, contentHash: hash }));
+
+    await runTool(createTaskDocumentWriteTool(store, TASK_ID), "call-create-cas", {
+      key: "plan",
+      content: "initial",
+      expected_revision: 0,
+      expected_content_hash: hash,
+    });
+
+    expect(upsertTaskDocument).toHaveBeenCalledWith(TASK_ID, {
+      key: "plan",
+      content: "initial",
+      author: "agent",
+      expectedRevision: 0,
+    });
+  });
+
   it("returns a typed error result for stale task-bound publication", async () => {
     const { store, upsertTaskDocument } = createMockStore();
     upsertTaskDocument.mockRejectedValue(new TaskDocumentPreconditionFailedError({
@@ -382,6 +402,27 @@ describe("chat task document tools", () => {
     });
     expect(upsertTaskDocument).toHaveBeenCalledWith("FN-2020", {
       key: "plan", content: "rebased", author: "agent", expectedContentHash: hash,
+    });
+  });
+
+  it("drops an impossible content hash for explicit revision-zero creation", async () => {
+    const { store, upsertTaskDocument } = createMockStore();
+    const hash = `sha256:${"c".repeat(64)}`;
+    upsertTaskDocument.mockResolvedValue(createMockDocument({ taskId: "FN-2020", contentHash: hash, revision: 1 }));
+
+    await runTool(findChatTool("fn_task_document_write", store), "call-chat-create-cas", {
+      task_id: "FN-2020",
+      key: "plan",
+      content: "initial",
+      expected_revision: 0,
+      expected_content_hash: hash,
+    });
+
+    expect(upsertTaskDocument).toHaveBeenCalledWith("FN-2020", {
+      key: "plan",
+      content: "initial",
+      author: "agent",
+      expectedRevision: 0,
     });
   });
 

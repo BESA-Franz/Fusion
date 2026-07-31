@@ -1916,7 +1916,9 @@ export function createTaskDocumentWriteTool(store: TaskStore, taskId: string): T
         content: params.content,
         author: params.author || "agent",
         ...(params.expected_revision !== undefined ? { expectedRevision: params.expected_revision } : {}),
-        ...(params.expected_content_hash !== undefined ? { expectedContentHash: params.expected_content_hash } : {}),
+        ...(params.expected_content_hash !== undefined && params.expected_revision !== 0
+          ? { expectedContentHash: params.expected_content_hash }
+          : {}),
       };
 
       try {
@@ -2086,7 +2088,9 @@ export function createChatTaskDocumentTools(store: TaskStore): ToolDefinition[] 
           content: params.content,
           author: params.author || "agent",
           ...(params.expected_revision !== undefined ? { expectedRevision: params.expected_revision } : {}),
-          ...(params.expected_content_hash !== undefined ? { expectedContentHash: params.expected_content_hash } : {}),
+          ...(params.expected_content_hash !== undefined && params.expected_revision !== 0
+            ? { expectedContentHash: params.expected_content_hash }
+            : {}),
         };
 
         try {
