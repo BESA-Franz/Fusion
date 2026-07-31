@@ -929,6 +929,15 @@ export class TriageProcessor {
       this.activeSessions.delete(taskId);
       this.stuckAborted.delete(taskId);
       this.finalizing.delete(taskId);
+      /*
+      FNXC:ConcurrencyAdmission 2026-07-26-14:20:
+      A planner eviction must release every admission-side claim that the
+      abandoned run still owns. Otherwise the task remains filtered from
+      coordinator discovery even though its processing claim was removed,
+      and an untransferred pre-held host slot can keep capacity occupied.
+      */
+      this.coordinatorAdmittedTaskIds.delete(taskId);
+      dropPreHeldExecutorSlot(taskId, this.options.semaphore);
       evicted.add(taskId);
     }
 

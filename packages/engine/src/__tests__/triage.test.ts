@@ -15,6 +15,13 @@ import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { planLog } from "../logger.js";
+import {
+  AgentSemaphore,
+  clearPreHeldExecutorSlotsForTests,
+  dropPreHeldExecutorSlot,
+  hasPreHeldExecutorSlot,
+  registerPreHeldExecutorSlot,
+} from "../concurrency.js";
 
 const { mockReviewStep, mockCreateFnAgent } = vi.hoisted(() => ({
   mockReviewStep: vi.fn(),
@@ -6663,6 +6670,7 @@ describe("evictStaleProcessing", () => {
   });
 
   afterEach(() => {
+    clearPreHeldExecutorSlotsForTests();
     vi.useRealTimers();
   });
 
@@ -6686,9 +6694,13 @@ describe("evictStaleProcessing", () => {
 
   it("retains stale tasks with a live non-aborted triage session", () => {
     const store = createMockStore();
-    const processor = new TriageProcessor(store, "/tmp/root");
+    const semaphore = new AgentSemaphore(2);
+    const processor = new TriageProcessor(store, "/tmp/root", { semaphore });
 
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    expect(semaphore.tryAcquire()).toBe(true);
+    registerPreHeldExecutorSlot("FN-live");
+    (processor as any).coordinatorAdmittedTaskIds.add("FN-live");
     (processor as any).processing.add("FN-live");
     (processor as any).processingSince.set("FN-live", Date.now());
     (processor as any).activeSessions.set("FN-live", { dispose: vi.fn() });
@@ -6700,6 +6712,31 @@ describe("evictStaleProcessing", () => {
     expect(evicted).toEqual(new Set());
     expect(processor.getProcessingTaskIds().has("FN-live")).toBe(true);
     expect((processor as any).activeSessions.has("FN-live")).toBe(true);
+    expect((processor as any).coordinatorAdmittedTaskIds.has("FN-live")).toBe(true);
+    expect(hasPreHeldExecutorSlot("FN-live")).toBe(true);
+    expect(semaphore.activeCount).toBe(1);
+
+    dropPreHeldExecutorSlot("FN-live", semaphore);
+  });
+
+  it("releases admission claims and an untransferred host slot when evicting", () => {
+    const store = createMockStore();
+    const semaphore = new AgentSemaphore(2);
+    const processor = new TriageProcessor(store, "/tmp/root", { semaphore });
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    expect(semaphore.tryAcquire()).toBe(true);
+    registerPreHeldExecutorSlot("FN-hung");
+    (processor as any).coordinatorAdmittedTaskIds.add("FN-hung");
+    (processor as any).processing.add("FN-hung");
+    (processor as any).processingSince.set("FN-hung", Date.now());
+
+    vi.setSystemTime(new Date("2026-01-01T00:31:00.000Z"));
+
+    expect(processor.evictStaleProcessing()).toEqual(new Set(["FN-hung"]));
+    expect((processor as any).coordinatorAdmittedTaskIds.has("FN-hung")).toBe(false);
+    expect(hasPreHeldExecutorSlot("FN-hung")).toBe(false);
+    expect(semaphore.activeCount).toBe(0);
   });
 
   it("does not evict tasks that have been in processing less than 30 minutes regardless of session state", () => {
