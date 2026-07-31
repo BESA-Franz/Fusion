@@ -47,10 +47,15 @@ import { activeSessionRegistry, type ActiveSessionRegistry } from "./active-sess
 const execAsync = promisify(exec);
 
 /**
+ * FNXC:HeartbeatWorktreeSetup 2026-07-31-19:49:
+ * Every path that can create a fresh task worktree owns the same one-time
+ * bootstrap contract; resume and pool reuse remain dependency-stable no-ops.
+ *
  * Worktree acquisition contract:
  * - `runInitCommand=true` runs the init command only for newly-created worktrees (fresh, not pool/existing).
- * - Heartbeat task runs should pass `runInitCommand=false`.
- * - Executor may pass `runInitCommand=true`; if heartbeat created the worktree earlier, executor reuses it and init is skipped.
+ * - Every execution path that can create the task worktree, including heartbeat-managed agents,
+ *   must pass `runInitCommand=true` with a configured-command runner.
+ * - Resume and pool reuse still skip initialization so an existing task is not bootstrapped twice.
  */
 export interface AcquireTaskWorktreeOptions {
   task: Task;

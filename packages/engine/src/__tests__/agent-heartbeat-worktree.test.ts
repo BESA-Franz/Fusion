@@ -52,7 +52,11 @@ describe("heartbeat worktree cwd", () => {
   it("uses acquired worktree cwd for task-scoped runs", async () => {
     const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/repo" });
     await monitor.executeHeartbeat({ agentId: "a1", source: "on_demand" });
-    expect(worktreeAcquisition.acquireTaskWorktree).toHaveBeenCalled();
+    expect(worktreeAcquisition.acquireTaskWorktree).toHaveBeenCalledWith(expect.objectContaining({
+      runInitCommand: true,
+      runConfiguredCommand: expect.any(Function),
+      taskEnv: process.env,
+    }));
     expect(piModule.createFnAgent).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/tmp/wt" }));
   });
 

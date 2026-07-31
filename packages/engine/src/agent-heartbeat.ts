@@ -99,6 +99,7 @@ import { countActiveAgentMembers, decideRoomCoordination, detectTaskFilingIntent
 import { evaluateParkedAgentTaskLink, isParkedTaskColumn, type AgentTaskLinkExecutionProof } from "./task-agent-sync.js";
 import { classifyReportHealth } from "./reports-health.js";
 import { accumulateSessionTokenUsage, captureSessionTokenBaseline } from "./session-token-usage.js";
+import { resolveSandboxBackend } from "./sandbox/index.js";
 
 const promptSizeLog = createLogger("prompt-size");
 
@@ -2806,7 +2807,24 @@ export class HeartbeatMonitor {
               logger: heartbeatLog,
               audit,
               runContext,
-              runInitCommand: false,
+              /*
+              FNXC:HeartbeatWorktreeSetup 2026-07-31-19:49:
+              Durable-agent heartbeats can be the first execution path to
+              create a task worktree. Run the configured bootstrap there so
+              tests and builds never start in a dependency-empty checkout.
+              */
+              runInitCommand: true,
+              runConfiguredCommand: async (command, cwd, timeoutMs, env) => {
+                const backend = resolveSandboxBackend({ auditor: audit });
+                return backend.run(command, {
+                  cwd,
+                  timeoutMs,
+                  maxBuffer: 10 * 1024 * 1024,
+                  encoding: "utf-8",
+                  ...(env !== undefined && { env }),
+                });
+              },
+              taskEnv: process.env,
               secretsStore: this.secretsStore,
             });
             sessionCwd = acquisition.worktreePath;

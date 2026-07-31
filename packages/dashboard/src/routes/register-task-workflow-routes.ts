@@ -456,9 +456,16 @@ function extractMergeAdvanceEvent(event: RunAuditEvent): Omit<MergeAdvanceEvent,
 
 export const __fingerprintCreateLocksForTests = deterministicGuardLocks;
 
+/*
+FNXC:TaskReset 2026-07-31-19:49:
+A nuclear reset is a genuinely fresh run. Clear the captured base commit and
+all prior workflow-gate results along with the worktree so planning and review
+cannot reuse evidence from the abandoned execution.
+*/
 const RESET_TASK_FIELDS = {
   worktree: null,
   branch: null,
+  baseCommitSha: null,
   currentStep: 0,
   status: null,
   error: null,
@@ -474,6 +481,7 @@ const RESET_TASK_FIELDS = {
   checkedOutBy: null,
   executionStartedAt: null,
   sessionFile: null,
+  workflowStepResults: null,
 } as const;
 
 const RESET_DRIFT_CORRECTION_FIELDS = {
@@ -5662,7 +5670,12 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
     }
   });
 
-  // Return task to agent - clear assignee and status, move to todo
+  /*
+  FNXC:TaskReturn 2026-07-31-19:49:
+  Returning reviewed work to an agent must keep the existing task worktree and
+  completed step progress. Recreating the worktree loses unmerged remediation
+  changes and forces the worker to regenerate an already reviewed slice.
+  */
   router.post("/tasks/:id/return-to-agent", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
@@ -5673,7 +5686,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         status: null,
       });
       const unassignColumn = await resolveReboundColumnForTask(scopedStore, req.params.id);
-      const task = await scopedStore.moveTask(req.params.id, unassignColumn);
+      const task = await scopedStore.moveTask(req.params.id, unassignColumn, {
+        preserveProgress: true,
+        preserveWorktree: true,
+      });
       res.json(task);
     } catch (err: unknown) {
       if (err instanceof ApiError) {

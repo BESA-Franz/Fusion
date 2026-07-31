@@ -732,6 +732,102 @@ describe("GET /tasks/:id", () => {
   });
 });
 
+describe("task recovery routes", () => {
+  let store: TaskStore;
+
+  function buildApp() {
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store));
+    return app;
+  }
+
+  beforeEach(() => {
+    store = createMockStore({
+      updateStep: vi.fn().mockResolvedValue(undefined),
+    });
+  });
+
+  it("nuclear reset clears the captured base and prior workflow gate results", async () => {
+    const initialTask = {
+      ...FAKE_TASK_DETAIL,
+      id: "BESA-RESET",
+      branch: "fusion/besa-reset",
+      worktree: "C:/worktrees/besa-reset",
+      baseCommitSha: "old-base",
+      workflowStepResults: [{
+        workflowStepId: "plan-review",
+        workflowStepName: "Plan Review",
+        phase: "pre-merge",
+        source: "optional-group",
+        status: "passed",
+        verdict: "APPROVE",
+      }],
+      steps: [{ title: "Implementation", status: "done" }],
+    };
+    const resetTask = {
+      ...initialTask,
+      column: "todo",
+      branch: null,
+      worktree: null,
+      baseCommitSha: null,
+      workflowStepResults: undefined,
+      steps: [{ title: "Implementation", status: "pending" }],
+    };
+    (store.getTask as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(initialTask)
+      .mockResolvedValue(resetTask);
+    (store.moveTask as ReturnType<typeof vi.fn>).mockResolvedValue(resetTask);
+
+    const res = await REQUEST(
+      buildApp(),
+      "POST",
+      "/api/tasks/BESA-RESET/reset",
+      JSON.stringify({ confirm: true }),
+      { "Content-Type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    expect(store.updateTask).toHaveBeenCalledWith(
+      "BESA-RESET",
+      expect.objectContaining({
+        baseCommitSha: null,
+        workflowStepResults: null,
+      }),
+    );
+  });
+
+  it("return-to-agent preserves the task worktree and completed progress", async () => {
+    const task = {
+      ...FAKE_TASK_DETAIL,
+      id: "BESA-RETURN",
+      branch: "fusion/besa-return",
+      worktree: "C:/worktrees/besa-return",
+      steps: [{ title: "Implementation", status: "done" }],
+    };
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(task);
+    (store.moveTask as ReturnType<typeof vi.fn>).mockResolvedValue({ ...task, column: "todo" });
+
+    const res = await REQUEST(
+      buildApp(),
+      "POST",
+      "/api/tasks/BESA-RETURN/return-to-agent",
+      JSON.stringify({}),
+      { "Content-Type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    expect(store.moveTask).toHaveBeenCalledWith(
+      "BESA-RETURN",
+      "todo",
+      {
+        preserveProgress: true,
+        preserveWorktree: true,
+      },
+    );
+  });
+});
+
 describe("POST /tasks", () => {
   let store: TaskStore;
 

@@ -1494,6 +1494,25 @@ describe("File API endpoints", () => {
     });
 
     describe("GET /tasks/:id/files/:filepath", () => {
+      it("reads the complete nested wildcard path", async () => {
+        const worktree = mkdtempSync(join(tmpdir(), "fusion-task-files-read-"));
+        try {
+          mkdirSync(join(worktree, "nested", "dir"), { recursive: true });
+          writeFileSync(join(worktree, "nested", "dir", "proof.txt"), "nested proof", "utf8");
+          (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+            id: "KB-001",
+            worktree,
+          });
+
+          const res = await GET(buildApp(), "/api/tasks/KB-001/files/nested/dir/proof.txt");
+
+          expect(res.status).toBe(200);
+          expect(res.body.content).toBe("nested proof");
+        } finally {
+          rmSync(worktree, { recursive: true, force: true });
+        }
+      });
+
       it("returns 404 for non-existent file", async () => {
         (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({
           id: "FN-001",
@@ -1541,6 +1560,30 @@ describe("File API endpoints", () => {
     });
 
     describe("POST /tasks/:id/files/:filepath", () => {
+      it("writes to the complete nested wildcard path", async () => {
+        const worktree = mkdtempSync(join(tmpdir(), "fusion-task-files-write-"));
+        try {
+          mkdirSync(join(worktree, "nested", "dir"), { recursive: true });
+          (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({
+            id: "KB-001",
+            worktree,
+          });
+
+          const res = await REQUEST(
+            buildApp(),
+            "POST",
+            "/api/tasks/KB-001/files/nested/dir/proof.txt",
+            JSON.stringify({ content: "nested proof" }),
+            { "Content-Type": "application/json" },
+          );
+
+          expect(res.status).toBe(200);
+          expect(readFileSync(join(worktree, "nested", "dir", "proof.txt"), "utf8")).toBe("nested proof");
+        } finally {
+          rmSync(worktree, { recursive: true, force: true });
+        }
+      });
+
       it("requires content in body", async () => {
         (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue({
           id: "FN-001",

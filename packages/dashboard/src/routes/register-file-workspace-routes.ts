@@ -26,8 +26,18 @@ import {
 import type { ApiRoutesContext } from "./types.js";
 
 
+/**
+ * FNXC:NestedTaskFiles 2026-07-31-19:49:
+ * Express exposes a named wildcard as one path segment per array element.
+ * Preserve every segment so task attachments and other nested workspace files
+ * can be read and written through both task-scoped and project-scoped routes.
+ */
+function resolveWildcardFilePath(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? value.join("/") : value ?? "";
+}
+
 function extractFileParams(req: Request): { filePath: string; workspace: string } {
-  const filePath = Array.isArray(req.params.filepath) ? req.params.filepath[0] : req.params.filepath ?? "";
+  const filePath = resolveWildcardFilePath(req.params.filepath);
   const workspace = typeof req.query.workspace === "string" && req.query.workspace.length > 0
     ? req.query.workspace
     : "project";
@@ -109,7 +119,7 @@ export function registerFileWorkspaceRoutes(ctx: ApiRoutesContext): void {
   router.get("/tasks/:id/files/{*filepath}", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
-      const filePath = Array.isArray(req.params.filepath) ? req.params.filepath[0] : req.params.filepath ?? "";
+      const filePath = resolveWildcardFilePath(req.params.filepath);
       const result = await readFile(scopedStore, req.params.id, filePath);
       res.json(result);
     } catch (err: unknown) {
@@ -133,7 +143,7 @@ export function registerFileWorkspaceRoutes(ctx: ApiRoutesContext): void {
   router.post("/tasks/:id/files/{*filepath}", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
-      const filePath = Array.isArray(req.params.filepath) ? req.params.filepath[0] : req.params.filepath ?? "";
+      const filePath = resolveWildcardFilePath(req.params.filepath);
       const { content } = req.body;
 
       if (typeof content !== "string") {
@@ -454,7 +464,7 @@ export function registerFileWorkspaceRoutes(ctx: ApiRoutesContext): void {
   router.get("/files/{*filepath}", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
-      const filePath = Array.isArray(req.params.filepath) ? req.params.filepath[0] : req.params.filepath ?? "";
+      const filePath = resolveWildcardFilePath(req.params.filepath);
       const workspace = typeof req.query.workspace === "string" && req.query.workspace.length > 0
         ? req.query.workspace
         : "project";
@@ -512,7 +522,7 @@ export function registerFileWorkspaceRoutes(ctx: ApiRoutesContext): void {
   router.post("/files/{*filepath}", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);
-      const filePath = Array.isArray(req.params.filepath) ? req.params.filepath[0] : req.params.filepath ?? "";
+      const filePath = resolveWildcardFilePath(req.params.filepath);
       const { content } = req.body;
       const workspace = typeof req.query.workspace === "string" && req.query.workspace.length > 0
         ? req.query.workspace
