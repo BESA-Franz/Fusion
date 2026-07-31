@@ -32,6 +32,22 @@ import {
 } from "./engine-singleton-lock.js";
 import { runtimeLog } from "./logger.js";
 
+function normalizePositiveConcurrency(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 1) return undefined;
+  return Math.max(1, Math.floor(value));
+}
+
+export function resolveProcessConcurrencyLimit(
+  globalLimit: number,
+  runtimeNodeLimit?: number,
+): number {
+  const normalizedGlobal = normalizePositiveConcurrency(globalLimit) ?? 1;
+  const normalizedNode = normalizePositiveConcurrency(runtimeNodeLimit);
+  return normalizedNode === undefined
+    ? normalizedGlobal
+    : Math.min(normalizedGlobal, normalizedNode);
+}
+
 /**
  * Options shared across all engines created by the manager.
  * These are injected by the CLI layer (dashboard.ts / serve.ts).
@@ -93,7 +109,10 @@ export class ProjectEngineManager {
    */
   private globalSemaphore: AgentSemaphore;
   private currentGlobalLimit = 4;
+  private currentRuntimeNodeLimit: number | undefined;
+  private runtimeNodeId: string | undefined;
   private concurrencyListener?: (...args: unknown[]) => void;
+  private nodeUpdatedListener?: (...args: unknown[]) => void;
 
   /** Reconciliation state for background project startup. */
   private reconciliationInterval: ReturnType<typeof setInterval> | null = null;
@@ -103,8 +122,20 @@ export class ProjectEngineManager {
     private centralCore: CentralCore,
     private options: EngineManagerOptions = {},
   ) {
-    // Dynamic getter so live changes to globalMaxConcurrent take effect immediately
-    this.globalSemaphore = new AgentSemaphore(() => this.currentGlobalLimit);
+    /*
+    FNXC:NodeConcurrency 2026-07-31-11:12:
+    A dedicated Fusion worker's registered maxConcurrent is a real process-wide
+    task-agent ceiling, not dashboard metadata. The process semaphore therefore
+    uses the lower of the cluster-global and runtime-node limits across every
+    project engine on this machine. Reducing a live limit drains naturally and
+    never kills an in-flight task.
+    */
+    this.globalSemaphore = new AgentSemaphore(() =>
+      resolveProcessConcurrencyLimit(
+        this.currentGlobalLimit,
+        this.currentRuntimeNodeLimit,
+      )
+    );
 
     // Listen for concurrency changes from CentralCore
     if (typeof centralCore.on === "function") {
@@ -116,10 +147,21 @@ export class ProjectEngineManager {
         }
       };
       centralCore.on("concurrency:changed", this.concurrencyListener);
+
+      this.nodeUpdatedListener = (value: unknown) => {
+        const node = value as { id?: unknown; maxConcurrent?: unknown };
+        if (typeof node.id !== "string" || node.id !== this.runtimeNodeId) return;
+        const nextLimit = normalizePositiveConcurrency(node.maxConcurrent) ?? 1;
+        if (nextLimit === this.currentRuntimeNodeLimit) return;
+        this.currentRuntimeNodeLimit = nextLimit;
+        runtimeLog.log(`Runtime node concurrency limit updated to ${nextLimit}`);
+      };
+      centralCore.on("node:updated", this.nodeUpdatedListener);
     }
 
     // Read initial limit from CentralCore (async — updates the mutable limit)
-    this.refreshGlobalLimit();
+    void this.refreshGlobalLimit();
+    void this.refreshRuntimeNodeLimit();
   }
 
   private async refreshGlobalLimit(): Promise<void> {
@@ -128,6 +170,25 @@ export class ProjectEngineManager {
       this.currentGlobalLimit = state.globalMaxConcurrent;
     } catch {
       // Keep default of 4
+    }
+  }
+
+  private async refreshRuntimeNodeLimit(): Promise<void> {
+    try {
+      const runtimeNode = await this.centralCore.getRuntimeNode();
+      if (!runtimeNode) {
+        this.runtimeNodeId = undefined;
+        this.currentRuntimeNodeLimit = undefined;
+        return;
+      }
+
+      this.runtimeNodeId = runtimeNode.id;
+      this.currentRuntimeNodeLimit =
+        normalizePositiveConcurrency(runtimeNode.maxConcurrent) ?? 1;
+    } catch {
+      // CentralCore can attach its PostgreSQL layer during the first engine
+      // startup. Keep the prior cap and retry before/after startup and on the
+      // regular reconciliation tick.
     }
   }
 
@@ -299,6 +360,10 @@ export class ProjectEngineManager {
       this.centralCore.off("concurrency:changed", this.concurrencyListener);
       this.concurrencyListener = undefined;
     }
+    if (this.nodeUpdatedListener && typeof this.centralCore.off === "function") {
+      this.centralCore.off("node:updated", this.nodeUpdatedListener);
+      this.nodeUpdatedListener = undefined;
+    }
 
     /*
     FNXC:PostgresResourceLifecycle 2026-07-14-18:42:
@@ -430,6 +495,7 @@ export class ProjectEngineManager {
     if (this.stopped || this.reconciliationStopped) return;
 
     try {
+      await this.refreshRuntimeNodeLimit();
       const projects = await this.centralCore.listProjects();
       if (projects.length === 0) return;
 
@@ -481,6 +547,7 @@ export class ProjectEngineManager {
       throw new Error(`Project ${projectId} is paused`);
     }
 
+    await this.refreshRuntimeNodeLimit();
     const runtimeConfig = await this.buildRuntimeConfig(project);
     const engineOptions = this.buildEngineOptions(project, runtimeConfig.workingDirectory, overrides);
 
@@ -525,6 +592,7 @@ export class ProjectEngineManager {
 
     try {
       await engine.start();
+      await this.refreshRuntimeNodeLimit();
     } catch (err) {
       // If engine start fails we must release the singleton so a retry can
       // re-acquire it.

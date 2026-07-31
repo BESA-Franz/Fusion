@@ -46,9 +46,21 @@ import { ScopedAgentSemaphore } from "../concurrency.js";
 
 function createMockCentralCore(projects: RegisteredProject[]): CentralCore {
   const projectMap = new Map(projects.map((p) => [p.id, p]));
+  const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
   return {
     init: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
+    on: vi.fn().mockImplementation((event: string, listener: (...args: unknown[]) => void) => {
+      const eventListeners = listeners.get(event) ?? new Set();
+      eventListeners.add(listener);
+      listeners.set(event, eventListeners);
+    }),
+    off: vi.fn().mockImplementation((event: string, listener: (...args: unknown[]) => void) => {
+      listeners.get(event)?.delete(listener);
+    }),
+    emit: vi.fn().mockImplementation((event: string, ...args: unknown[]) => {
+      for (const listener of listeners.get(event) ?? []) listener(...args);
+    }),
     listProjects: vi.fn().mockResolvedValue(projects),
     getProject: vi.fn().mockImplementation((id: string) =>
       Promise.resolve(projectMap.get(id) ?? null),
@@ -60,6 +72,8 @@ function createMockCentralCore(projects: RegisteredProject[]): CentralCore {
     updateProjectHealth: vi.fn().mockResolvedValue(undefined),
     stopDiscovery: vi.fn(),
     markLocalNodeOffline: vi.fn().mockResolvedValue(undefined),
+    getGlobalConcurrencyState: vi.fn().mockResolvedValue({ globalMaxConcurrent: 4 }),
+    getRuntimeNode: vi.fn().mockResolvedValue(null),
     resolveLocalProjectWorkingDirectory: vi
       .fn()
       .mockImplementation((projectId: string) => Promise.resolve(`/mapped/${projectId}`)),
@@ -398,6 +412,53 @@ describe("ProjectEngineManager", () => {
       expect(engines.get("proj_aaa")).toBeDefined();
       expect(engines.get("proj_bbb")).toBeDefined();
       expect(engines.get("proj_ccc")).toBeDefined();
+    });
+  });
+
+  describe("node concurrency", () => {
+    it("caps the shared process semaphore at the runtime node maxConcurrent", async () => {
+      (centralCore.getGlobalConcurrencyState as unknown as ReturnType<typeof vi.fn>)
+        .mockResolvedValue({ globalMaxConcurrent: 6 });
+      (centralCore.getRuntimeNode as unknown as ReturnType<typeof vi.fn>)
+        .mockResolvedValue({ id: "node-worker", maxConcurrent: 2 });
+
+      const manager = new ProjectEngineManager(centralCore);
+      await manager.ensureEngine("proj_aaa");
+
+      const sharedSemaphore = (manager as any).globalSemaphore;
+      await vi.waitFor(() => expect(sharedSemaphore.limit).toBe(2));
+      expect(sharedSemaphore.tryAcquire()).toBe(true);
+      expect(sharedSemaphore.tryAcquire()).toBe(true);
+      expect(sharedSemaphore.tryAcquire()).toBe(false);
+      sharedSemaphore.release();
+      sharedSemaphore.release();
+    });
+
+    it("applies live maxConcurrent updates only for this runtime node", async () => {
+      (centralCore.getGlobalConcurrencyState as unknown as ReturnType<typeof vi.fn>)
+        .mockResolvedValue({ globalMaxConcurrent: 6 });
+      (centralCore.getRuntimeNode as unknown as ReturnType<typeof vi.fn>)
+        .mockResolvedValue({ id: "node-worker", maxConcurrent: 1 });
+
+      const manager = new ProjectEngineManager(centralCore);
+      await manager.ensureEngine("proj_aaa");
+      const sharedSemaphore = (manager as any).globalSemaphore;
+      await vi.waitFor(() => expect(sharedSemaphore.limit).toBe(1));
+
+      (centralCore.emit as unknown as ReturnType<typeof vi.fn>)(
+        "node:updated",
+        { id: "node-other", maxConcurrent: 5 },
+      );
+      expect(sharedSemaphore.limit).toBe(1);
+
+      (centralCore.emit as unknown as ReturnType<typeof vi.fn>)(
+        "node:updated",
+        { id: "node-worker", maxConcurrent: 3 },
+      );
+      expect(sharedSemaphore.limit).toBe(3);
+
+      await manager.stopAll();
+      expect(centralCore.off).toHaveBeenCalledWith("node:updated", expect.any(Function));
     });
   });
 
