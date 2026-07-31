@@ -19,6 +19,38 @@ export const FUSION_RESTART_EXIT_CODE = 86;
 /* FNXC:ProjectPartitionMerge 2026-07-20-12:00: A classified unique-constraint startup failure is deterministic, so supervised dashboard boot must stop once rather than consume the crash-restart budget. */
 export const FUSION_NON_RETRYABLE_EXIT_CODE = 87;
 
+/*
+FNXC:SystemPanel 2026-07-25-10:05:
+An inherited restart flag alone is not proof that a live supervisor will
+respawn this process. The supervisor stamps its own PID and supervision counts
+only while that process remains the direct parent and the PID still exists.
+The explicit liveness probe matters on Windows, where `process.ppid` remains
+stale after the parent exits. Older supervisors that predate the PID stamp keep
+their existing flag-only behavior.
+*/
+export function hasLiveSupervisingParent(
+  env: NodeJS.ProcessEnv = process.env,
+  ppid: number = process.ppid,
+  isProcessAlive: (pid: number) => boolean = defaultProcessLivenessProbe,
+): boolean {
+  if (env.FUSION_RESTART_SUPERVISED !== "1") return false;
+  const declaredPid = env.FUSION_SUPERVISOR_PID;
+  if (!declaredPid) return true;
+  if (!/^[1-9]\d*$/.test(declaredPid)) return false;
+  const parsed = Number(declaredPid);
+  return Number.isSafeInteger(parsed) && parsed === ppid && isProcessAlive(parsed);
+}
+
+function defaultProcessLivenessProbe(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but the caller cannot signal it.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 const DEFAULT_KILL_GRACE_MS = 2_000;
 const DEFAULT_MAX_LIFETIME_MS = 600_000;
 const MAX_KILL_WAIT_MS = 1_000;

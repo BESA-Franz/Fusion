@@ -33,6 +33,7 @@ import {
   createTaskStoreForBackend,
   FUSION_RESTART_EXIT_CODE,
   FUSION_NON_RETRYABLE_EXIT_CODE,
+  hasLiveSupervisingParent,
   isPostgresUniqueError,
   ProjectPartitionRekeyError,
 } from "@fusion/core";
@@ -1230,7 +1231,9 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   const systemControlForServer = {
     // FNXC:SystemPanel 2026-07-25-10:05: proof of a LIVE supervising parent, not
     // just an inherited env flag — see hasLiveSupervisingParent.
-    supervised: hasLiveSupervisingParent(),
+    get supervised() {
+      return hasLiveSupervisingParent();
+    },
     requestRestart: (reason: string) => (requestSelfRestart ? requestSelfRestart(reason) : false),
     sourceWorkspaceRoot: resolveFusionSourceWorkspaceRoot(),
   };
@@ -3523,22 +3526,13 @@ disappeared — which is what "the restart button does nothing" looks like from 
 browser tab that never comes back.
 
 The supervisor now also stamps its own pid (FUSION_SUPERVISOR_PID). Supervision
-counts only when that pid is our real parent: a leaked copy of the variable
-names a process that is not our parent (or a dead one — we get reparented, so
-ppid stops matching), and we correctly report unsupervised. A parent that
-predates the stamp (older scripts/dev-with-memory.mjs) sets no pid, so the flag
-alone still counts — no behavior change for it.
+counts only when that pid is our real, still-running parent: a leaked copy of
+the variable names a process that is not our parent, and an explicit signal-0
+probe detects a dead parent even on Windows where process.ppid remains stale.
+A parent that predates the stamp (older scripts/dev-with-memory.mjs) sets no
+pid, so the flag alone still counts — no behavior change for it.
 */
-export function hasLiveSupervisingParent(
-  env: NodeJS.ProcessEnv = process.env,
-  ppid: number = process.ppid,
-): boolean {
-  if (env.FUSION_RESTART_SUPERVISED !== "1") return false;
-  const declaredPid = env.FUSION_SUPERVISOR_PID;
-  if (!declaredPid) return true;
-  const parsed = Number.parseInt(declaredPid, 10);
-  return Number.isFinite(parsed) && parsed === ppid;
-}
+export { hasLiveSupervisingParent };
 
 /*
 FNXC:SystemPanel 2026-07-12-14:05:

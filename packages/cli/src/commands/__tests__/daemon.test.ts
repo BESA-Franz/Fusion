@@ -4,11 +4,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const { mockSyncStartupModels, mockShouldUseHybridExecutor, mockHybridExecutorCtor, mockHybridExecutorInitialize, mockHybridExecutorShutdown } = vi.hoisted(() => ({
+const { mockSyncStartupModels, mockShouldUseHybridExecutor, mockHybridExecutorCtor, mockHybridExecutorInitialize, mockHybridExecutorShutdown, mockHasLiveSupervisingParent } = vi.hoisted(() => ({
   mockSyncStartupModels: vi.fn().mockResolvedValue(undefined),
   mockShouldUseHybridExecutor: vi.fn().mockResolvedValue({ enabled: false, reason: "single-project-local-only" }),
   mockHybridExecutorInitialize: vi.fn().mockResolvedValue(undefined),
   mockHybridExecutorShutdown: vi.fn().mockResolvedValue(undefined),
+  mockHasLiveSupervisingParent: vi.fn().mockReturnValue(false),
   mockHybridExecutorCtor: vi.fn().mockImplementation(function () {
     return {
       initialize: mockHybridExecutorInitialize,
@@ -541,6 +542,8 @@ const mocks = vi.hoisted(() => {
       createAiPromptExecutorMock.mockClear();
       refreshAllCustomProviderModels.mockReset();
       refreshAllCustomProviderModels.mockResolvedValue({ refreshed: 0, failed: 0, skipped: 0 });
+      mockHasLiveSupervisingParent.mockReset();
+      mockHasLiveSupervisingParent.mockReturnValue(false);
       globalSettingsStoreInstance.getSettings.mockReset();
       globalSettingsStoreInstance.getSettings.mockImplementation(() => Promise.resolve({ ...globalSettingsData }));
     },
@@ -556,6 +559,8 @@ vi.mock("@fusion/core", async (importOriginal) => {
   CentralCore: mocks.centralCoreCtor,
   PluginStore: mocks.pluginStoreCtor,
   PluginLoader: mocks.pluginLoaderCtor,
+  FUSION_RESTART_EXIT_CODE: 86,
+  hasLiveSupervisingParent: mockHasLiveSupervisingParent,
   GlobalSettingsStore: vi.fn().mockImplementation(function () {
     return mocks.globalSettingsStoreInstance;
   }),
@@ -781,6 +786,7 @@ describe("runDaemon", () => {
   });
   const originalCwd = process.cwd;
   const originalExit = process.exit;
+  const originalSupervisorPid = process.env.FUSION_SUPERVISOR_PID;
 
   let signalHandlers: Record<"SIGINT" | "SIGTERM", Array<() => void>>;
   let logSpy: ReturnType<typeof vi.spyOn>;
@@ -814,6 +820,7 @@ describe("runDaemon", () => {
       return process;
     }) as typeof process.on);
     process.exit = vi.fn() as never;
+    delete process.env.FUSION_SUPERVISOR_PID;
   });
 
   afterEach(() => {
@@ -824,6 +831,11 @@ describe("runDaemon", () => {
     processOnSpy.mockRestore();
     process.cwd = originalCwd;
     process.exit = originalExit;
+    if (originalSupervisorPid === undefined) {
+      delete process.env.FUSION_SUPERVISOR_PID;
+    } else {
+      process.env.FUSION_SUPERVISOR_PID = originalSupervisorPid;
+    }
   });
 
   it("initializes stores, starts engine services, and creates a headless server with daemon auth", async () => {
@@ -889,6 +901,99 @@ describe("runDaemon", () => {
     await runDaemon({});
     await triggerSignal("SIGINT");
     expect(process.exit).toHaveBeenCalledWith(130);
+  });
+
+  it("exposes supervised restart and exits with the restart contract code", async () => {
+    process.env.FUSION_SUPERVISOR_PID = "4242";
+    mockHasLiveSupervisingParent.mockReturnValue(true);
+    vi.useFakeTimers();
+    try {
+      await runDaemon({});
+      const serverOptions = mocks.createServerMock.mock.calls[0][1];
+      expect(serverOptions.systemControl?.supervised).toBe(true);
+      expect(serverOptions.systemControl?.requestRestart("test-restart")).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(process.exit).toHaveBeenCalledWith(86);
+      expect(serverOptions.systemControl?.requestRestart("duplicate-restart")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects restart when the declared supervisor is no longer the live parent", async () => {
+    process.env.FUSION_SUPERVISOR_PID = "4242";
+    mockHasLiveSupervisingParent.mockReturnValue(true);
+    await runDaemon({});
+    const serverOptions = mocks.createServerMock.mock.calls[0][1];
+    expect(serverOptions.systemControl?.supervised).toBe(true);
+
+    mockHasLiveSupervisingParent.mockReturnValue(false);
+
+    expect(serverOptions.systemControl?.supervised).toBe(false);
+    expect(serverOptions.systemControl?.requestRestart("stale-parent")).toBe(false);
+    expect(process.exit).not.toHaveBeenCalled();
+
+    await triggerSignal("SIGINT");
+  });
+
+  it("forces the restart exit code when graceful daemon teardown hangs", async () => {
+    process.env.FUSION_SUPERVISOR_PID = "4242";
+    mockHasLiveSupervisingParent.mockReturnValue(true);
+    vi.useFakeTimers();
+    try {
+      await runDaemon({});
+      mocks.taskStores[0].close.mockImplementation(() => new Promise(() => undefined));
+      const serverOptions = mocks.createServerMock.mock.calls[0][1];
+
+      expect(serverOptions.systemControl?.requestRestart("hung-cleanup")).toBe(true);
+      await vi.advanceTimersByTimeAsync(10_300);
+
+      expect(process.exit).toHaveBeenCalledWith(86);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets SIGTERM override a pending supervised restart before teardown starts", async () => {
+    process.env.FUSION_SUPERVISOR_PID = "4242";
+    mockHasLiveSupervisingParent.mockReturnValue(true);
+    vi.useFakeTimers();
+    try {
+      await runDaemon({});
+      const serverOptions = mocks.createServerMock.mock.calls[0][1];
+      expect(serverOptions.systemControl?.requestRestart("pending-restart")).toBe(true);
+
+      signalHandlers.SIGTERM.at(-1)?.();
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(process.exit).toHaveBeenCalledWith(143);
+      expect(process.exit).not.toHaveBeenCalledWith(86);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets SIGTERM override a supervised restart during hung teardown", async () => {
+    process.env.FUSION_SUPERVISOR_PID = "4242";
+    mockHasLiveSupervisingParent.mockReturnValue(true);
+    vi.useFakeTimers();
+    try {
+      await runDaemon({});
+      mocks.taskStores[0].close.mockImplementation(() => new Promise(() => undefined));
+      const serverOptions = mocks.createServerMock.mock.calls[0][1];
+      expect(serverOptions.systemControl?.requestRestart("restart-before-signal")).toBe(true);
+      await vi.advanceTimersByTimeAsync(300);
+
+      signalHandlers.SIGTERM.at(-1)?.();
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(process.exit).toHaveBeenCalledWith(143);
+      expect(process.exit).not.toHaveBeenCalledWith(86);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("auto-loads installed plugins during startup", async () => {

@@ -37,7 +37,12 @@ describe("shouldSuperviseDashboard", () => {
   */
   it("never nests under the real supervising parent (pid matches)", () => {
     expect(
-      shouldSuperviseDashboard(["dashboard"], { FUSION_RESTART_SUPERVISED: "1", FUSION_SUPERVISOR_PID: "4242" }, [], 4242),
+      shouldSuperviseDashboard(
+        ["dashboard"],
+        { FUSION_RESTART_SUPERVISED: "1", FUSION_SUPERVISOR_PID: String(process.ppid) },
+        [],
+        process.ppid,
+      ),
     ).toBe(false);
   });
 
@@ -58,11 +63,26 @@ describe("hasLiveSupervisingParent", () => {
   });
 
   it("accepts the stamped supervisor when it is our actual parent", () => {
-    expect(hasLiveSupervisingParent({ FUSION_RESTART_SUPERVISED: "1", FUSION_SUPERVISOR_PID: "77" }, 77)).toBe(true);
+    expect(
+      hasLiveSupervisingParent(
+        { FUSION_RESTART_SUPERVISED: "1", FUSION_SUPERVISOR_PID: String(process.ppid) },
+        process.ppid,
+      ),
+    ).toBe(true);
   });
 
   it("rejects a stamped pid that is not our parent (leaked env / dead supervisor)", () => {
     expect(hasLiveSupervisingParent({ FUSION_RESTART_SUPERVISED: "1", FUSION_SUPERVISOR_PID: "77" }, 1)).toBe(false);
+  });
+
+  it("rejects a dead stamped parent even when Windows keeps process.ppid stale", () => {
+    expect(
+      hasLiveSupervisingParent(
+        { FUSION_RESTART_SUPERVISED: "1", FUSION_SUPERVISOR_PID: "77" },
+        77,
+        () => false,
+      ),
+    ).toBe(false);
   });
 
   it("rejects an unparseable pid stamp", () => {

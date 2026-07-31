@@ -112,6 +112,15 @@ export async function runAutoUpdateCycle(deps: AutoUpdateDeps): Promise<AutoUpda
   }
   if (!result.updateAvailable || !result.latestVersion) return "up-to-date";
 
+  // An update check can outlive its external supervisor. Re-read the dynamic
+  // host capability immediately before changing the installed program.
+  if (!deps.supervised) {
+    deps.log.warn("Auto-update install skipped: supervising parent is no longer available", {
+      message: "An update is available, but Fusion cannot safely restart itself. Restore supervision or update manually.",
+    });
+    return "unsupervised";
+  }
+
   deps.log.info("Auto-update installing", {
     currentVersion: result.currentVersion,
     latestVersion: result.latestVersion,

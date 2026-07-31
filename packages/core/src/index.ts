@@ -1042,7 +1042,13 @@ export {
   readProjectIdentityAsync,
   writeProjectIdentityAsync,
 } from "./project-identity.js";
-export { ProcessSupervisor, superviseSpawn, FUSION_RESTART_EXIT_CODE, FUSION_NON_RETRYABLE_EXIT_CODE } from "./process-supervisor.js";
+export {
+  ProcessSupervisor,
+  superviseSpawn,
+  FUSION_RESTART_EXIT_CODE,
+  FUSION_NON_RETRYABLE_EXIT_CODE,
+  hasLiveSupervisingParent,
+} from "./process-supervisor.js";
 export { isPostgresUniqueError } from "./postgres-errors.js";
 export type {
   SuperviseSpawnOptions,

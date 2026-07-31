@@ -1736,7 +1736,9 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
         return globalStore ? await globalStore.getSettings() : {};
       },
       currentVersion: cliPackageVersion,
-      supervised: systemControl.supervised,
+      get supervised() {
+        return systemControl.supervised;
+      },
       requestRestart: (reason) => systemControl.requestRestart(reason),
       log: {
         info: (message, context) => runtimeLogger.info(message, context),

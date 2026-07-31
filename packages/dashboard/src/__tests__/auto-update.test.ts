@@ -75,6 +75,28 @@ describe("runAutoUpdateCycle", () => {
     expect(deps.requestRestart).not.toHaveBeenCalled();
   });
 
+  it("rechecks supervision after the update check and before installing", async () => {
+    let supervised = true;
+    const deps = makeDeps();
+    Object.defineProperty(deps, "supervised", {
+      get: () => supervised,
+    });
+    deps.checkForUpdate.mockImplementation(async () => {
+      supervised = false;
+      return {
+        currentVersion: "1.0.0",
+        latestVersion: "2.0.0",
+        updateAvailable: true,
+        lastChecked: 0,
+      };
+    });
+
+    await expect(runAutoUpdateCycle(deps)).resolves.toBe("unsupervised");
+
+    expect(deps.installUpdate).not.toHaveBeenCalled();
+    expect(deps.requestRestart).not.toHaveBeenCalled();
+  });
+
   it("treats unreadable settings as opted out", async () => {
     const deps = makeDeps({
       getSettings: async () => {

@@ -26,6 +26,8 @@ import {
   reconcileClaudeCliPaths,
   registerBuiltInGrokProvider,
   registerBuiltInZaiProvider,
+  FUSION_RESTART_EXIT_CODE,
+  hasLiveSupervisingParent,
 } from "@fusion/core";
 import type { AutomationRunResult, ScheduledTask } from "@fusion/core";
 import { createServer, GitHubClient, createSkillsAdapter, getCliPackageVersion, getProjectSettingsPath, isUnresolvedCliPackageVersion, loadTlsCredentialsFromEnv, refreshAllCustomProviderModels, registerGithubTrackingHook } from "@fusion/dashboard";
@@ -836,6 +838,22 @@ export async function runDaemon(opts: DaemonOptions = {}) {
     logDiagnostics(daemonDbHealthCheck ?? undefined);
   }, DIAGNOSTIC_INTERVAL_MS).unref?.();
 
+  /*
+  FNXC:DaemonSystemRestart 2026-07-31-02:45:
+  Headless Windows nodes run behind an external Scheduled Task supervisor
+  rather than `fn dashboard --supervise`. Advertise restart support only when
+  that supervisor supplied a PID and is still the daemon's direct parent.
+  Re-evaluate on every request so a reparented daemon never exits after an
+  already-dead supervisor. Restart requests are coalesced and later use the
+  same graceful shutdown path as signals.
+  */
+  const hasLiveDaemonSupervisor = () =>
+    Boolean(process.env.FUSION_SUPERVISOR_PID?.trim()) && hasLiveSupervisingParent();
+  let shuttingDown = false;
+  let shutdownExitCode = 0;
+  let restartScheduled = false;
+  let requestSelfRestart: ((reason: string) => boolean) | null = null;
+
   const app = createServer(store, {
     engine: primaryEngine,
     engineManager,
@@ -932,6 +950,12 @@ export async function runDaemon(opts: DaemonOptions = {}) {
     },
     headless: true,
     daemon: { token: daemonToken },
+    systemControl: {
+      get supervised() {
+        return hasLiveDaemonSupervisor();
+      },
+      requestRestart: (reason: string) => (requestSelfRestart ? requestSelfRestart(reason) : false),
+    },
     skillsAdapter,
     https: loadTlsCredentialsFromEnv(),
   });
@@ -995,8 +1019,6 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   console.log(`  Press Ctrl+C to stop`);
   console.log();
 
-  let shuttingDown = false;
-
   /*
   FNXC:DaemonSignalExit 2026-07-10-14:00:
   When the host terminates the daemon under memory pressure it sends SIGTERM, which
@@ -1009,10 +1031,28 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   state regardless of exit code). A non-signal shutdown() caller still exits 0.
   */
   const SIGNAL_EXIT_CODES: Record<string, number> = { SIGINT: 130, SIGTERM: 143 };
+  const SHUTDOWN_HARD_EXIT_GRACE_MS = 10_000;
 
-  const shutdown = async (signal?: NodeJS.Signals) => {
+  const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+
+    const hardExitTimer = setTimeout(() => {
+      console.error(
+        `[daemon] graceful shutdown exceeded ${SHUTDOWN_HARD_EXIT_GRACE_MS}ms; forcing exit ${shutdownExitCode}`,
+      );
+      process.exit(shutdownExitCode);
+    }, SHUTDOWN_HARD_EXIT_GRACE_MS);
+    hardExitTimer.unref?.();
+
+    const runShutdownStep = async (name: string, step: () => Promise<void> | void) => {
+      try {
+        await step();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[daemon] shutdown step ${name} failed: ${message}`);
+      }
+    };
 
     /*
     FNXC:PostgresResourceLifecycle 2026-07-14-21:48:
@@ -1029,17 +1069,17 @@ export async function runDaemon(opts: DaemonOptions = {}) {
 
     // Stop all project engines uniformly; their runtimes own their TaskStores.
     if (hybridExecutor) {
-      await hybridExecutor.shutdown();
+      await runShutdownStep("hybridExecutor.shutdown", () => hybridExecutor!.shutdown());
     }
 
-    await engineManager.stopAll();
+    await runShutdownStep("engineManager.stopAll", () => engineManager.stopAll());
 
     /*
     FNXC:PostgresResourceLifecycle 2026-07-14-22:07:
     Preserve the command-level TaskStore close barrier before CentralCore releases its retained backend. Runtime shutdown normally closes this store first; the idempotent explicit close also covers partial-start and test-owned runtimes.
     */
-    clearHostTaskStores();
-    await store.close();
+    await runShutdownStep("clearHostTaskStores", () => clearHostTaskStores());
+    await runShutdownStep("store.close", () => store.close());
 
     // Stop peer exchange service
     if (peerExchangeService) {
@@ -1064,14 +1104,28 @@ export async function runDaemon(opts: DaemonOptions = {}) {
       // best-effort
     }
 
-    process.exit(signal ? (SIGNAL_EXIT_CODES[signal] ?? 128) : 0);
+    clearTimeout(hardExitTimer);
+    process.exit(shutdownExitCode);
+  };
+
+  requestSelfRestart = (reason: string) => {
+    if (!hasLiveDaemonSupervisor() || shuttingDown || restartScheduled) return false;
+    restartScheduled = true;
+    shutdownExitCode = FUSION_RESTART_EXIT_CODE;
+    console.log(`[daemon] restart requested (${reason}) — shutting down for supervised respawn`);
+    setTimeout(() => {
+      void shutdown();
+    }, 300);
+    return true;
   };
 
   process.on("SIGINT", () => {
-    void shutdown("SIGINT");
+    shutdownExitCode = SIGNAL_EXIT_CODES.SIGINT;
+    void shutdown();
   });
   process.on("SIGTERM", () => {
-    void shutdown("SIGTERM");
+    shutdownExitCode = SIGNAL_EXIT_CODES.SIGTERM;
+    void shutdown();
   });
 
   // Ignore SIGHUP so the daemon survives SSH session disconnects
