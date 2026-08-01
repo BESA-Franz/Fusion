@@ -55,6 +55,56 @@ function createMockTaskDetail(overrides: Partial<TaskDetail> = {}): TaskDetail {
 }
 
 describe("buildExecutionPrompt", () => {
+  it("exposes the lifecycle-current worktree and routed node as authoritative execution context", () => {
+    const task = createMockTaskDetail({
+      branch: "fusion/fn-001",
+      nodeId: "node_requested",
+      effectiveNodeId: "node_resolved",
+      effectiveNodeSource: "task-override",
+    });
+
+    const result = buildExecutionPrompt(
+      task,
+      "C:/BESA/besa-suite",
+      undefined,
+      "C:/BESA/worktrees/erp/.worktrees/amber-tiger",
+    );
+
+    expect(result).toContain("## Authoritative Execution Context");
+    expect(result).toContain("`task.worktree`: `C:/BESA/worktrees/erp/.worktrees/amber-tiger`");
+    expect(result).toContain("`effectiveNodeId`: `node_resolved`");
+    expect(result).toContain("`effectiveNodeSource`: `task-override`");
+    expect(result).toContain("assigned branch: `fusion/fn-001`");
+    expect(result).toContain("Do not read `node.env`");
+    expect(result).not.toContain("`effectiveNodeId`: `node_requested`");
+  });
+
+  it("omits authoritative execution context when no worktree was acquired", () => {
+    const task = createMockTaskDetail({ effectiveNodeId: "node_resolved" });
+
+    const result = buildExecutionPrompt(task, "C:/BESA/besa-suite");
+
+    expect(result).not.toContain("## Authoritative Execution Context");
+  });
+
+  it("shows the authoritative session project without adding it to the task contract", () => {
+    const task = createMockTaskDetail();
+
+    const result = buildExecutionPrompt(
+      task,
+      "/home/user/project",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { projectId: "proj_f2c9d44f12524e93" },
+    );
+
+    expect(result).toContain("Project ID: `proj_f2c9d44f12524e93`");
+    expect(task).not.toHaveProperty("projectId");
+  });
+
   it("includes attachment section with absolute paths for image attachments", () => {
     const task = createMockTaskDetail({
       attachments: [

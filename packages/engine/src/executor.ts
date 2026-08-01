@@ -22679,6 +22679,32 @@ export function buildExecutionPrompt(
 
   const sourceIssueRef = buildSourceIssueRef(task.sourceIssue);
 
+  /*
+   * FNXC:ExecutorRuntimeContext 2026-08-04-04:28:
+   * Plans may intentionally refer to the lifecycle-current `task.worktree`
+   * instead of hard-coding an ephemeral leaf. The executor previously knew the
+   * resolved worktree and routed node but exposed neither value to the coding
+   * agent, making a fail-closed plan impossible to execute. This section is
+   * assembled only after routing and worktree acquisition, so it is the
+   * authoritative, non-secret control-plane checkpoint for this session.
+   */
+  const effectiveNodeId = task.effectiveNodeId ?? task.nodeId ?? "local";
+  const executionContextSection = worktreePath
+    ? [
+      "## Authoritative Execution Context",
+      "",
+      "Fusion resolved this checkpoint after node routing and worktree acquisition, immediately before creating this execution session:",
+      `- \`task.worktree\`: \`${worktreePath}\``,
+      `- \`effectiveNodeId\`: \`${effectiveNodeId}\``,
+      ...(task.effectiveNodeSource ? [`- \`effectiveNodeSource\`: \`${task.effectiveNodeSource}\``] : []),
+      ...(task.branch ? [`- assigned branch: \`${task.branch}\``] : []),
+      "- the session process CWD was initialized to the resolved `task.worktree` above",
+      "",
+      "Treat these values as the authoritative control-plane assignment for this session. Re-resolve and compare the actual CWD/branch before any mutation when the task contract requires it. Do not read `node.env`, process secrets, or another secret source to rediscover this context.",
+      "",
+    ].join("\n")
+    : "";
+
   // Build step progress for resume
   const hasProgress = task.steps.length > 0 && task.steps.some((s) => s.status !== "pending");
   let progressSection = "";
@@ -22803,6 +22829,8 @@ git log --oneline
 ## Task: ${task.id}
 ${task.title ? `**${task.title}**` : ""}
 ${task.dependencies.length > 0 ? `Dependencies: ${task.dependencies.join(", ")}` : ""}
+
+${executionContextSection}
 
 ## PROMPT.md
 
