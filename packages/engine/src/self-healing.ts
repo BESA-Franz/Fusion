@@ -5509,6 +5509,11 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const worktreeReconcileReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
       for (const task of allTasks) {
         if (!task.worktree) continue;
+        /*
+        FNXC:MultiNodeWorktreeMetadata 2026-08-01-04:55:
+        Worktree paths are node-local. A process may reconcile only tasks whose effective node resolves to itself; otherwise a healthy remote Windows worktree looks missing locally and its shared control-plane metadata is incorrectly cleared or rebound.
+        */
+        if (!this.canRecoverTaskOnLocalNode(task, settings)) continue;
         if (!options?.includeTaskIds?.has(task.id) && worktreeReconcileTerminalColumns.has(task.column)) {
           continue;
         }
