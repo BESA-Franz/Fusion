@@ -281,12 +281,20 @@ export async function runDaemon(opts: DaemonOptions = {}) {
 
   // ── CentralCore: global coordination + ntfy project ID lookup ─────────
   let ntfyProjectId: string | undefined;
-  let sharedCentralCore: CentralCore | null = null;
+  const sharedCentralCore = new CentralCore();
+  /*
+  FNXC:DaemonCentralReadiness 2026-08-01-13:44:
+  PostgreSQL is the daemon's authoritative project and node store after the
+  final cutover. Never continue with a CentralCore whose initialization failed:
+  ProjectEngineManager and cwd registration both require it, and swallowing the
+  original connection error only turns it into a misleading "init() first"
+  failure. Let the supervisor retry the real startup failure instead.
+  */
   try {
-    sharedCentralCore = new CentralCore();
     await sharedCentralCore.init();
-  } catch {
-    // Central DB unavailable or project not registered — backward compatible
+  } catch (error) {
+    await migrationHoldingServer?.close().catch(() => undefined);
+    throw error;
   }
 
   // ── ProjectEngineManager: uniform engine lifecycle for all projects ──
@@ -333,24 +341,13 @@ export async function runDaemon(opts: DaemonOptions = {}) {
     }
   };
 
-  if (!sharedCentralCore) {
-    sharedCentralCore = new CentralCore();
-    try {
-      await sharedCentralCore.init();
-    } catch {
-      // Non-fatal — engine uses fallback defaults
-    }
-  }
-
-  if (sharedCentralCore) {
-    const registered = await ensureCwdProjectRegistered({
-      cwd,
-      central: sharedCentralCore,
-      logPrefix: "daemon",
-      autoRegister: !opts.noAutoRegister,
-    });
-    ntfyProjectId = registered?.id;
-  }
+  const registered = await ensureCwdProjectRegistered({
+    cwd,
+    central: sharedCentralCore,
+    logPrefix: "daemon",
+    autoRegister: !opts.noAutoRegister,
+  });
+  ntfyProjectId = registered?.id;
 
   try {
     registerGithubTrackingHook?.();

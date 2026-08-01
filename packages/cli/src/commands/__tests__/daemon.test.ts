@@ -846,6 +846,28 @@ describe("runDaemon", () => {
     await triggerSignal("SIGINT");
   });
 
+  it("surfaces central backend initialization failures before project access or server startup", async () => {
+    const initError = new Error("database temporarily unavailable");
+    const getProjectByPath = vi.fn();
+    const defaultImplementation = mocks.centralCoreCtor.getMockImplementation();
+    mocks.centralCoreCtor.mockImplementation(function () {
+      return {
+        init: vi.fn().mockRejectedValue(initError),
+        getProjectByPath,
+      };
+    });
+
+    try {
+      await expect(runDaemon({ port: 0 })).rejects.toBe(initError);
+
+      expect(getProjectByPath).not.toHaveBeenCalled();
+      expect(mocks.projectEngineCtor).not.toHaveBeenCalled();
+      expect(mocks.createServerMock).not.toHaveBeenCalled();
+    } finally {
+      mocks.centralCoreCtor.mockImplementation(defaultImplementation!);
+    }
+  });
+
   /*
    * FNXC:PluginSkillsPostgres 2026-07-14-17:47:
    * `fn daemon` skill discovery is metadata-only. Its request-scoped loader must not persist synthetic plugin starts, stops, or errors.
