@@ -1577,21 +1577,33 @@ describe("createFnAgent", () => {
     setHostExtensionPaths([]);
   });
 
-  it("still injects host extensions for coding non-merger sessions", async () => {
+  it("skips host extensions for executor sessions while preserving engine-owned tools", async () => {
     const { createFnAgent, setHostExtensionPaths } = await import("../pi.js");
     setHostExtensionPaths(["/mock/fusion-extension"]);
+    const taskShowTool = {
+      name: "fn_task_show",
+      label: "Show Task",
+      description: "Show the task from the owning engine store",
+      parameters: {},
+      execute: vi.fn(),
+    };
 
     await createFnAgent({
       cwd: "/project",
       systemPrompt: "execute",
       tools: "coding",
       sessionPurpose: "executor",
+      customTools: [taskShowTool as any],
     });
 
     const loaderOpts = resourceLoaderOptionsCapture.mock.calls.at(-1)?.[0] as {
       additionalExtensionPaths?: string[];
     };
-    expect(loaderOpts.additionalExtensionPaths).toEqual(["/mock/fusion-extension"]);
+    expect(loaderOpts.additionalExtensionPaths).toBeUndefined();
+    const createSessionArgs = createAgentSessionMock.mock.calls.at(-1)?.[0] as {
+      customTools: Array<{ name: string }>;
+    };
+    expect(createSessionArgs.customTools.map((tool) => tool.name)).toContain("fn_task_show");
 
     setHostExtensionPaths([]);
   });

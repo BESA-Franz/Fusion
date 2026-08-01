@@ -285,6 +285,7 @@ import {
   createTaskDocumentWriteTool as sharedCreateTaskDocumentWriteTool,
   createTaskPromptWriteTool as sharedCreateTaskPromptWriteTool,
   createTaskFileScopeAddTool as sharedCreateTaskFileScopeAddTool,
+  createTaskReadTools,
   createTaskLogTool as sharedCreateTaskLogTool,
   createTaskLogsReadTool as sharedCreateTaskLogsReadTool,
   createWorkflowListTool as sharedCreateWorkflowListTool,
@@ -14356,6 +14357,10 @@ export class TaskExecutor {
         ...(provisioningApprovalLayer ? { approvalRequestStore: this.approvalRequestStore } : {}),
       };
       const customTools = [
+        // Executor sessions intentionally skip path-resolved host extensions. Bind task reads
+        // to this executor's already project-scoped store so fn_task_show cannot drift into a
+        // duplicate local project partition on remote nodes.
+        ...createTaskReadTools(this.store),
         this.createTaskUpdateTool(task.id, codeReviewVerdicts, sessionRef, stuckDetector),
         this.createTaskLogTool(task.id),
         this.createTaskLogsReadTool(task.id),
@@ -19359,7 +19364,13 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
       const codingCustomTools: ToolDefinition[] = toolMode === "coding"
         ? [this.createSpawnAgentTool(task.id, worktreePath, settings, stepEnv)]
         : [];
-      const workflowCustomTools = [...planReviewPromptTools, ...codingCustomTools];
+      // Workflow executor sessions use the same project-scoped store as the owning executor.
+      // Do not reload task reads through the cwd-resolved host extension.
+      const workflowCustomTools = [
+        ...createTaskReadTools(this.store),
+        ...planReviewPromptTools,
+        ...codingCustomTools,
+      ];
       const readonlyCustomTools = toolMode === "readonly"
         ? filterCustomToolsForReadonly(workflowCustomTools, {
             allowTool: (tool) => allowPlanReviewPromptWrite && tool.name === "fn_task_prompt_write",

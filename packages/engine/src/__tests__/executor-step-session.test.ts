@@ -90,7 +90,7 @@ describe("Workflow Steps Execution", () => {
     }) as any);
   }
 
-  it("exposes artifact discovery and register tools even without an assigned agent", async () => {
+  it("exposes central task reads plus artifact tools even without an assigned agent", async () => {
     const store = createMockStore();
     const task = {
       id: "FN-ART-1",
@@ -146,6 +146,9 @@ describe("Workflow Steps Execution", () => {
     expect(toolNames).toContain("fn_artifact_list");
     expect(toolNames).toContain("fn_artifact_view");
     expect(toolNames).toContain("fn_artifact_register");
+    expect(toolNames).toContain("fn_task_list");
+    expect(toolNames).toContain("fn_task_show");
+    expect(toolNames).toContain("fn_task_search");
   });
 
   it("requeues to todo after 3 retries when the agent exits without calling fn_task_done", async () => {

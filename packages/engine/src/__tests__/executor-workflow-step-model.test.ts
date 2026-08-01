@@ -16,6 +16,7 @@ type CapturedSession = {
   fallbackModelId?: string;
   defaultThinkingLevel?: string;
   fallbackThinkingLevel?: string;
+  customToolNames?: string[];
 };
 
 function captureSession(output = '{"verdict":"APPROVE","notes":""}'): { last?: CapturedSession } {
@@ -29,6 +30,7 @@ function captureSession(output = '{"verdict":"APPROVE","notes":""}'): { last?: C
       fallbackModelId: opts.fallbackModelId,
       defaultThinkingLevel: opts.defaultThinkingLevel,
       fallbackThinkingLevel: opts.fallbackThinkingLevel,
+      customToolNames: (opts.customTools ?? []).map((tool: { name?: string }) => tool.name),
     };
 
     const listeners: Array<(event: any) => void> = [];
@@ -131,6 +133,19 @@ describe("executor workflow-step model resolution", () => {
   beforeEach(() => {
     resetExecutorMocks();
     quietGit();
+  });
+
+  it("exposes central task read tools to readonly workflow executor sessions", async () => {
+    const captured = await runStepWithSettings({
+      executionProvider: "openai",
+      executionModelId: "gpt-4o",
+    });
+
+    expect(captured.customToolNames).toEqual(expect.arrayContaining([
+      "fn_task_list",
+      "fn_task_show",
+      "fn_task_search",
+    ]));
   });
 
   it("uses the project execution lane instead of the global default when the step has no override", async () => {
