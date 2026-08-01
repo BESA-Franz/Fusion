@@ -13,7 +13,11 @@ done/in-review merge-lease exclusion, and the no-op case (task with no held path
 */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import type { TaskStore } from "@fusion/core";
+import {
+  getArchiveWorkspaceWorktreeDisposer,
+  getArchiveWorktreeDisposer,
+  type TaskStore,
+} from "@fusion/core";
 import { TaskExecutor } from "../executor.js";
 import { activeSessionRegistry, ActiveSessionPathHeldByForeignTaskError } from "../agents/active-session-registry.js";
 
@@ -304,6 +308,56 @@ describe("archiving a task releases its active-session registry entries (FN-7717
     expect(() =>
       activeSessionRegistry.registerPath(heldWorktree, { taskId: "NEXT-433", kind: "workflow-step", ownerKey: "NEXT-433#workflow-step" }),
     ).not.toThrow();
+  });
+});
+
+describe("executor archive worktree disposal respects node ownership", () => {
+  it("does not remove a remote node's singular worktree", async () => {
+    const store = createStore();
+    const executor = new TaskExecutor(store, SHARED_ROOT, {
+      getLocalNodeId: () => "node-local",
+    });
+    const removeOwnWorktree = vi
+      .spyOn(executor as any, "removeOwnWorktreeWithReconcile")
+      .mockResolvedValue(undefined);
+    const task = {
+      id: "TASK-REMOTE-ARCHIVE",
+      column: "archived",
+      nodeId: "node-local",
+      effectiveNodeId: "node-remote",
+      worktree: "/remote/worktree",
+    } as any;
+
+    await getArchiveWorktreeDisposer(store)!(task, {} as never);
+
+    expect(removeOwnWorktree).not.toHaveBeenCalled();
+    expect(task.worktree).toBe("/remote/worktree");
+  });
+
+  it("reports remote workspace paths as skipped without local cleanup", async () => {
+    const store = createStore();
+    const executor = new TaskExecutor(store, SHARED_ROOT, {
+      getLocalNodeId: () => "node-local",
+    });
+    const abortWork = vi
+      .spyOn(executor as any, "awaitAbortInFlightTaskWork")
+      .mockResolvedValue(undefined);
+    const task = {
+      id: "TASK-REMOTE-WORKSPACE-ARCHIVE",
+      column: "archived",
+      nodeId: "node-remote",
+    } as any;
+
+    const result = await getArchiveWorkspaceWorktreeDisposer(store)!(task, [{
+      repoRel: "repo-a",
+      worktreePath: "/remote/repo-a-worktree",
+      branch: "fusion/remote",
+      repoRootDir: "/local/repo-a",
+      aliasRepoRels: [],
+    }], {});
+
+    expect(result).toEqual({removed: [], skipped: ["repo-a"], failed: []});
+    expect(abortWork).not.toHaveBeenCalled();
   });
 });
 

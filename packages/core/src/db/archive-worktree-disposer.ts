@@ -30,6 +30,8 @@ export type WorkspaceDisposalPlanEntry = {
 };
 export type ArchiveWorkspaceDisposalResult = {
   removed: string[];
+  /** Repository worktrees deliberately retained because this process is not their owning node. */
+  skipped?: string[];
   failed: {repoRel: string; error: unknown}[];
 };
 export type ArchiveWorkspaceWorktreeDisposer = (

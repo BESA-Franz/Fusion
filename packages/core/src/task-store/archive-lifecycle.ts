@@ -47,12 +47,22 @@ function normalizeWorkspaceDisposalResult(plan: WorkspaceDisposalPlanEntry[], re
   const owners = new Set(plan.map((entry) => entry.repoRel));
   const counts = new Map<string, number>();
   for (const repoRel of result.removed) counts.set(repoRel, (counts.get(repoRel) ?? 0) + 1);
+  const skippedCounts = new Map<string, number>();
+  for (const repoRel of result.skipped ?? []) skippedCounts.set(repoRel, (skippedCounts.get(repoRel) ?? 0) + 1);
   const reportedFailures = new Map<string, unknown>();
   for (const failure of result.failed) if (owners.has(failure.repoRel)) reportedFailures.set(failure.repoRel, failure.error);
   const removed = new Set<string>();
   const failures = new Map<string, unknown>();
   for (const repoRel of owners) {
-    if (counts.get(repoRel) === 1 && !reportedFailures.has(repoRel)) removed.add(repoRel);
+    const removedCount = counts.get(repoRel) ?? 0;
+    const skippedCount = skippedCounts.get(repoRel) ?? 0;
+    /*
+    FNXC:MultiNodeArchiveWorktreeCleanup 2026-08-01-15:00:
+    A remote-node archive deliberately retains that node's filesystem worktree. Treat one explicit skipped outcome as complete reservation handling without misreporting a removal or quarantining a healthy remote path; duplicate, conflicting, or absent outcomes remain fail-closed.
+    */
+    const hasOneUnambiguousOutcome = (removedCount === 1 && skippedCount === 0)
+      || (removedCount === 0 && skippedCount === 1);
+    if (hasOneUnambiguousOutcome && !reportedFailures.has(repoRel)) removed.add(repoRel);
     else failures.set(repoRel, reportedFailures.get(repoRel) ?? new ArchiveWorkspaceDisposalIncompleteError(repoRel));
   }
   return {removed, failures};

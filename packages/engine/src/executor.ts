@@ -1918,6 +1918,15 @@ async function resolveReboundColumnFor(store: TaskStore, taskId: string): Promis
   }
 }
 
+function canDisposeArchivedTaskOnNode(
+  task: Pick<Task, "effectiveNodeId" | "nodeId">,
+  localNodeId: string | undefined,
+): boolean {
+  const assignedNodeId = task.effectiveNodeId?.trim() || task.nodeId?.trim();
+  if (!assignedNodeId) return true;
+  return !!localNodeId && canExecuteTaskOnNode(task, localNodeId);
+}
+
 /*
 FNXC:WorkflowExecution 2026-07-19-01:30:
 U5d (R9): explicit replacement for the deleted `graphCompletionInterceptors` Map. When this
@@ -3640,12 +3649,22 @@ export class TaskExecutor {
     /* FNXC:WorkflowLifecycle 2026-07-16-10:00: Executor replaces the baseline only for its own TaskStore, so archive awaits abort/sweep/removal before branch deletion without cross-store coupling. */
     this.unregisterArchiveWorktreeDisposer = registerArchiveWorktreeDisposer(store, async (task) => {
       if (!task.worktree || await canonicalizeWorktreePath(task.worktree) === await canonicalizeWorktreePath(this.rootDir)) return;
+      /*
+      FNXC:MultiNodeArchiveWorktreeCleanup 2026-08-01-15:42:
+      The store is shared, but persisted worktree paths are node-local. A remote
+      archive must never abort sessions or remove files on this executor. An
+      explicit owner with a missing local identity also fails closed.
+      */
+      if (!canDisposeArchivedTaskOnNode(task, this.options.getLocalNodeId?.())) return;
       await this.awaitAbortInFlightTaskWork(task.id, "task archived");
       for (const path of activeSessionRegistry.pathsForTask(task.id)) activeSessionRegistry.unregisterPath(path);
       await this.removeOwnWorktreeWithReconcile({worktreePath: task.worktree, settings: await store.getSettings(), taskId: task.id, reason: RemovalReason.ExecutorDispose});
       task.worktree = undefined;
     });
     this.unregisterArchiveWorkspaceWorktreeDisposer = registerArchiveWorkspaceWorktreeDisposer(store, async (task, plan) => {
+      if (!canDisposeArchivedTaskOnNode(task, this.options.getLocalNodeId?.())) {
+        return {removed: [], skipped: plan.map((entry) => entry.repoRel), failed: []};
+      }
       const removed: string[] = [];
       const failed: {repoRel: string; error: unknown}[] = [];
       await this.awaitAbortInFlightTaskWork(task.id, "workspace task archived");
