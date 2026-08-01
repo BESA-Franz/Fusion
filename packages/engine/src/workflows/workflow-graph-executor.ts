@@ -13,6 +13,7 @@ import { BUILTIN_CODING_WORKFLOW_IR, PLAN_REVIEW_GROUP_ID, WorkflowIrError, getW
 import { isNonPlanDefectPlanReviewFailure } from "../errors/transient-error-detector.js";
 import { isSessionContentionError } from "../errors/transient-error-patterns.js";
 import { isRequiredArtifactReadFailedValue, parseRequiredArtifactMissingValue } from "../execution/required-workflow-artifacts.js";
+import { latestPlanReviewTerminalAfterReset } from "../plan-review-log-recovery.js";
 
 import {
   createDefaultNodeHandlers,
@@ -1887,14 +1888,7 @@ function recoverPassedPlanReviewFromLatestLog(task: TaskDetail): WorkflowStepRes
    * terminal log: completed repairs the missing projection; failed still blocks
    * and reruns/replans through the normal path.
    */
-  let latest: { status: "passed" | "failed"; timestamp?: string; outcome?: string } | undefined;
-  for (const entry of task.log ?? []) {
-    if (entry.action === "[pre-merge] Workflow step completed: Plan Review") {
-      latest = { status: "passed", timestamp: entry.timestamp, outcome: entry.outcome };
-    } else if (entry.action === "[pre-merge] Workflow step failed: Plan Review") {
-      latest = { status: "failed", timestamp: entry.timestamp, outcome: entry.outcome };
-    }
-  }
+  const latest = latestPlanReviewTerminalAfterReset(task.log);
   if (latest?.status !== "passed") return undefined;
   return {
     workflowStepId: PLAN_REVIEW_GROUP_ID,

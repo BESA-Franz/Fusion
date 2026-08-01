@@ -29,6 +29,7 @@ import { finalizeProvenAutoMergeTask } from "./merge/auto-merge-finalization.js"
 import { mergeEffectiveSettings } from "./project/effective-settings.js";
 import { generateFeatureVideo, type GenerateFeatureVideoOptions } from "./review-artifacts/feature-video.js";
 import { moveTaskToReplanColumn, resolvePlannerLanes, resolvePlannerLanesForTaskAsync, resolveReplanTargetColumn } from "./execution/replan-target.js";
+import { latestPlanReviewTerminalAfterReset } from "./plan-review-log-recovery.js";
 import type { TaskStep, WorkflowIr, WorkflowFieldDefinition, WorkflowColumnAgent, EffectiveAgentInput, WorkflowWorkEngineDispatchResult, WorkflowWorkItem, TaskMoveLanes } from "@fusion/core";
 import { WorkflowGraphTaskRunner, type WorkflowGraphTaskRunResult, type WorkflowColumnBoundaryHooks } from "./workflows/workflow-graph-task-runner.js";
 import { createExecutorColumnBoundaryHooks } from "./workflow-column-boundary-hooks.js";
@@ -22938,14 +22939,7 @@ function preservePreExecutionWorkflowStepResults(task: Pick<Task, "workflowStepR
   const preserved = (task.workflowStepResults ?? []).filter((result) => result.workflowStepId === "plan-review");
   if (preserved.length > 0) return preserved;
 
-  let latest: { timestamp?: string; outcome?: string; status: "passed" | "failed" } | undefined;
-  for (const entry of task.log ?? []) {
-    if (entry.action === "[pre-merge] Workflow step completed: Plan Review") {
-      latest = { timestamp: entry.timestamp, outcome: entry.outcome, status: "passed" };
-    } else if (entry.action === "[pre-merge] Workflow step failed: Plan Review") {
-      latest = { timestamp: entry.timestamp, outcome: entry.outcome, status: "failed" };
-    }
-  }
+  const latest = latestPlanReviewTerminalAfterReset(task.log);
   if (latest?.status !== "passed") return [];
   return [
     {
