@@ -8412,7 +8412,16 @@ export class TaskExecutor {
     Compound Engineering and similar graph-native workflows execute skill nodes instead of legacy parsed task steps. The graph records those nodes as `workflowStepResults.source = "node"`; at the merge boundary, project a successful graph-native run onto the legacy checklist so `task has incomplete steps` cannot block a workflow that already completed its authoritative nodes.
     */
     const mergeProof = await this.evaluateWorkflowMergeBoundary(live, metadata.runId);
-    if (mergeProof.hasForeachStepExecute && !mergeProof.complete) {
+    /*
+    FNXC:BesaNoCommitMergeBoundary 2026-08-04-23:48:
+    An explicit noCommitsExpected task can legitimately finish the builtin foreach with no optional node results. Accept the existing checklist as the missing proof only when every item is terminal, foreach coverage is complete, all recorded results are terminal, and no skip-bypass taint exists. Every incomplete or unsafe state remains fail-closed.
+    */
+    const noCommitChecklistProof = live.noCommitsExpected === true
+      && mergeProof.allResultsTerminal
+      && mergeProof.coverageComplete
+      && (live.steps ?? []).every((step) => step.status === "done" || step.status === "skipped")
+      && !evaluateSkipBypassTaint(live).blocked;
+    if (mergeProof.hasForeachStepExecute && !mergeProof.complete && !noCommitChecklistProof) {
       const reason = !mergeProof.hasRelevantNodeResult
         ? "no pre-merge node result recorded"
         : !mergeProof.allResultsTerminal
@@ -8420,6 +8429,14 @@ export class TaskExecutor {
           : `foreach step instances incomplete at merge boundary: missing ${mergeProof.missingInstanceIds.join(", ")}`;
       await this.store.logEntry(live.id, `Workflow merge boundary blocked: ${reason}`, undefined, this.getRunContextFor(live.id));
       return live;
+    }
+    if (mergeProof.hasForeachStepExecute && !mergeProof.complete && noCommitChecklistProof) {
+      await this.store.logEntry(
+        live.id,
+        "Workflow merge boundary accepted explicit no-commit completion with terminal foreach coverage",
+        undefined,
+        this.getRunContextFor(live.id),
+      );
     }
 
     if (this.shouldCompleteChecklistAtWorkflowMerge(live, mergeProof)) {

@@ -1630,6 +1630,128 @@ describe("ProjectEngine U0 merge unification dispatch", () => {
       await engine.stop();
     });
   });
+
+  /*
+  FNXC:BesaNoCommitPullRequest 2026-08-04-23:48:
+  A non-workspace no-commit task may bypass PR creation only when local Git refs prove its branch is zero commits ahead of the integration branch. Ahead branches, Git failures, and missing branch evidence stay on the protected PR path.
+  */
+  describe("explicit empty no-commit tasks bypass PR creation", () => {
+    function installRevListResult(result: "zero" | "ahead" | "error"): void {
+      mocks.execFile.mockImplementation((
+        _file: string,
+        args: string[],
+        optionsOrCallback: unknown,
+        callback?: (error: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        const cb = (typeof optionsOrCallback === "function" ? optionsOrCallback : callback) as (
+          error: Error | null,
+          result: { stdout: string; stderr: string },
+        ) => void;
+        if (args[0] === "rev-list" && args[1] === "--count") {
+          if (result === "error") {
+            cb(new Error("git ref unavailable"), { stdout: "", stderr: "" });
+          } else {
+            cb(null, { stdout: result === "zero" ? "0\n" : "1\n", stderr: "" });
+          }
+          return {} as never;
+        }
+        cb(null, { stdout: "", stderr: "" });
+        return {} as never;
+      });
+    }
+
+    function createNoCommitPrEngine(taskId: string, taskOverrides: Record<string, unknown> = {}) {
+      const mockStore = createMockStore({
+        ...baseSettings,
+        autoMerge: true,
+        integrationBranch: "codex/erp-mvp-foundation",
+      });
+      mockStore.store.getTask.mockResolvedValue({
+        id: taskId,
+        column: "in-review",
+        paused: false,
+        mergeRetries: 0,
+        status: "queued",
+        branch: `fusion/${taskId.toLowerCase()}`,
+        noCommitsExpected: true,
+        ...taskOverrides,
+      } as any);
+      mocks.currentStore = mockStore.store;
+      mocks.runAiMerge.mockResolvedValue({
+        task: { id: taskId, column: "done" },
+        branch: `fusion/${taskId.toLowerCase()}`,
+        merged: false,
+        noOp: true,
+        ok: true,
+        worktreeRemoved: false,
+        branchDeleted: true,
+      } as any);
+      const processPullRequestMerge = vi.fn(async () => "merged" as const);
+      return {
+        engine: createEngine({ processPullRequestMerge, getMergeStrategy: () => "pull-request" }),
+        processPullRequestMerge,
+      };
+    }
+
+    it("routes a proven zero-ahead no-commit branch through no-op finalization", async () => {
+      installRevListResult("zero");
+      const { engine, processPullRequestMerge } = createNoCommitPrEngine("FN-NO-COMMIT-ZERO");
+      await engine.start();
+
+      await engine.onMerge("FN-NO-COMMIT-ZERO");
+
+      expect(processPullRequestMerge).not.toHaveBeenCalled();
+      expect(mocks.runAiMerge).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.any(String),
+        "FN-NO-COMMIT-ZERO",
+        expect.anything(),
+      );
+      await engine.stop();
+    });
+
+    it("keeps an ahead no-commit branch on the protected PR path", async () => {
+      installRevListResult("ahead");
+      const { engine, processPullRequestMerge } = createNoCommitPrEngine("FN-NO-COMMIT-AHEAD");
+      await engine.start();
+
+      await engine.onMerge("FN-NO-COMMIT-AHEAD");
+
+      expect(processPullRequestMerge).toHaveBeenCalled();
+      expect(mocks.runAiMerge).not.toHaveBeenCalled();
+      await engine.stop();
+    });
+
+    it("fails closed to the protected PR path when git cannot prove the branch is empty", async () => {
+      installRevListResult("error");
+      const { engine, processPullRequestMerge } = createNoCommitPrEngine("FN-NO-COMMIT-UNKNOWN");
+      await engine.start();
+
+      await engine.onMerge("FN-NO-COMMIT-UNKNOWN");
+
+      expect(processPullRequestMerge).toHaveBeenCalled();
+      expect(mocks.runAiMerge).not.toHaveBeenCalled();
+      await engine.stop();
+    });
+
+    it("keeps a no-commit task with missing branch evidence on the protected PR path", async () => {
+      installRevListResult("zero");
+      const { engine, processPullRequestMerge } = createNoCommitPrEngine("FN-NO-COMMIT-NO-BRANCH", { branch: undefined });
+      await engine.start();
+
+      await engine.onMerge("FN-NO-COMMIT-NO-BRANCH");
+
+      expect(processPullRequestMerge).toHaveBeenCalled();
+      expect(mocks.runAiMerge).not.toHaveBeenCalled();
+      expect(mocks.execFile).not.toHaveBeenCalledWith(
+        "git",
+        expect.arrayContaining(["rev-list", "--count"]),
+        expect.anything(),
+        expect.anything(),
+      );
+      await engine.stop();
+    });
+  });
 });
 
 /*

@@ -262,6 +262,38 @@ async function verifyMergeConfirmedReachability(args: {
   }
 }
 
+/**
+ * FNXC:BesaNoCommitPullRequest 2026-08-04-23:48:
+ * A pull-request project may finalize an explicitly no-commit, non-workspace task through the direct merger only when local refs prove its branch has zero commits outside the integration branch. The task flag is intent, not proof: a non-zero count, missing ref or branch evidence, or Git error must preserve the protected PR path.
+ */
+async function canSafelyBypassPullRequestForNoCommitTask(args: {
+  task: Task | null;
+  integrationBranch: string | undefined;
+  cwd: string;
+}): Promise<boolean> {
+  const { task, integrationBranch, cwd } = args;
+  const taskBranch = task?.branch?.trim();
+  const targetBranch = integrationBranch?.trim();
+  if (task?.noCommitsExpected !== true || !taskBranch || !targetBranch) {
+    return false;
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      [
+        "rev-list",
+        "--count",
+        `refs/heads/${targetBranch}..refs/heads/${taskBranch}`,
+      ],
+      { cwd, timeout: 10_000 },
+    );
+    return String(stdout).trim() === "0";
+  } catch {
+    return false;
+  }
+}
+
 export interface AutomationSubsystemHealth {
   status: "not-initialized" | "initializing" | "ready" | "degraded";
   message: string;
@@ -3926,6 +3958,20 @@ export class ProjectEngine {
           // per-repo PR merge for workspace tasks (master-plan U6) ships.
           const mergeCandidate = await store.getTask(taskId).catch(() => null);
           const routeWorkspaceDirect = !!mergeCandidate && isWorkspaceTask(mergeCandidate);
+          const routeProvenEmptyNoCommitDirect =
+            !routeWorkspaceDirect
+            && await canSafelyBypassPullRequestForNoCommitTask({
+              task: mergeCandidate,
+              integrationBranch:
+                settings.integrationBranch
+                ?? (typeof settings.baseBranch === "string" ? settings.baseBranch : undefined),
+              cwd,
+            });
+          if (routeProvenEmptyNoCommitDirect) {
+            runtimeLog.log(
+              `Merge routing: ${taskId} is explicitly no-commit and its branch is proven zero commits ahead; bypassing pull-request creation for safe no-op finalization.`,
+            );
+          }
 
           // FNXC:MergeQueue 2026-07-15-10:05: Wait for any orphan body from a prior abort race before claiming the next generation.
           await this.awaitPriorMergeBodySettle();
@@ -4047,7 +4093,12 @@ export class ProjectEngine {
             });
           };
 
-          if (mergeStrategy === "pull-request" && this.options.processPullRequestMerge && !routeWorkspaceDirect) {
+          if (
+            mergeStrategy === "pull-request"
+            && this.options.processPullRequestMerge
+            && !routeWorkspaceDirect
+            && !routeProvenEmptyNoCommitDirect
+          ) {
             /*
             FNXC:MergeQueue 2026-07-15-10:05:
             PR merge dispatch shares the single-flight pump. Race the PR body with abort so pause/reclaim unblocks drainMergeQueue even when processPullRequestMerge ignores cooperative abort.
