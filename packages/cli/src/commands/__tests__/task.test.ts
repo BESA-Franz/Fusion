@@ -1272,12 +1272,12 @@ describe("project-aware task command behavior", () => {
     const unarchiveTask = vi.fn().mockResolvedValue(makeTask({ id: "FN-123", column: "done" }));
     const init = vi.fn().mockResolvedValue(undefined);
     const close = vi.fn().mockResolvedValue(undefined);
-    const getRuntimeNode = vi.fn().mockResolvedValue({ id: "node-local" });
+    const listNodes = vi.fn().mockResolvedValue([{ id: "node-local", type: "local" }]);
     const getProjectNodePath = vi.fn().mockResolvedValue("C:\\projects\\local-demo");
     (CentralCore as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => ({
       init,
       close,
-      getRuntimeNode,
+      listNodes,
       getProjectNodePath,
     }));
 
@@ -1302,7 +1302,7 @@ describe("project-aware task command behavior", () => {
     await expect(archiveInstall[1].getLocalProjectPath()).resolves.toBe("C:\\projects\\local-demo");
     expect(CentralCore).toHaveBeenCalledOnce();
     expect(init).toHaveBeenCalledOnce();
-    expect(getRuntimeNode).toHaveBeenCalledOnce();
+    expect(listNodes).toHaveBeenCalledOnce();
     expect(getProjectNodePath).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
   });

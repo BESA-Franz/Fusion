@@ -1329,6 +1329,7 @@ export class InProcessRuntime
       */
       const secretsStore = await this.taskStore.getSecretsStore();
       const executorOptions: TaskExecutorOptions = {
+        projectId: this.config.projectId,
         /*
         FNXC:PlanReviewLease 2026-07-26-21:12:
         Getter, not a value: `this.localNodeId` is resolved later in start() (it needs an async

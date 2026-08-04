@@ -50,6 +50,7 @@ import {
   buildDuplicateReplanExhaustedError,
 } from "./duplicate-marker-clear.js";
 import { mergeEffectiveSettings } from "./project/effective-settings.js";
+import { canExecuteTaskOnNode } from "./project/effective-node.js";
 import { RemovalReason, classifyTaskWorktree, getRegisteredWorktreeBranchMap, getRegisteredWorktreePaths, hasUsableWorktreeShape, isUsableTaskWorktree, relocateReclaimableWorktreeIntoRoot, removeWorktree, resolveWorktreeBackend, scanIdleWorktrees, scanOrphanedBranches } from "./worktree/worktree-pool.js";
 import {
   classifyMissingWorktreeSessionStartFailure,
@@ -5513,7 +5514,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         FNXC:MultiNodeWorktreeMetadata 2026-08-01-04:55:
         Worktree paths are node-local. A process may reconcile only tasks whose effective node resolves to itself; otherwise a healthy remote Windows worktree looks missing locally and its shared control-plane metadata is incorrectly cleared or rebound.
         */
-        if (!this.canRecoverTaskOnLocalNode(task, settings)) continue;
+        if (!canExecuteTaskOnNode(task, this.options.localNodeId, settings)) continue;
         if (!options?.includeTaskIds?.has(task.id) && worktreeReconcileTerminalColumns.has(task.column)) {
           continue;
         }

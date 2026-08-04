@@ -11,6 +11,28 @@ function isSetNodeId(nodeId: string | null | undefined): nodeId is string {
   return typeof nodeId === "string" && nodeId.trim().length > 0;
 }
 
+export function resolveAssignedNodeId(
+  task: Pick<Task, "effectiveNodeId" | "nodeId">,
+  settings?: Pick<ProjectSettings, "defaultNodeId">,
+): string | undefined {
+  const effectiveNodeId = task.effectiveNodeId?.trim();
+  if (effectiveNodeId) return effectiveNodeId;
+  const nodeId = task.nodeId?.trim();
+  if (nodeId) return nodeId;
+  const defaultNodeId = settings?.defaultNodeId?.trim();
+  return defaultNodeId || undefined;
+}
+
+export function canExecuteTaskOnNode(
+  task: Pick<Task, "effectiveNodeId" | "nodeId">,
+  localNodeId: string | undefined,
+  settings?: Pick<ProjectSettings, "defaultNodeId">,
+): boolean {
+  const assignedNodeId = resolveAssignedNodeId(task, settings);
+  if (!assignedNodeId) return true;
+  return localNodeId?.trim() === assignedNodeId;
+}
+
 export function resolveEffectiveNode(
   task: Pick<Task, "nodeId">,
   settings: Pick<ProjectSettings, "defaultNodeId">,

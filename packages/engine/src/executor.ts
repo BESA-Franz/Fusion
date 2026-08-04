@@ -27,6 +27,7 @@ import {
 } from "./execution-block-classifier.js";
 import { finalizeProvenAutoMergeTask } from "./merge/auto-merge-finalization.js";
 import { mergeEffectiveSettings } from "./project/effective-settings.js";
+import { canExecuteTaskOnNode } from "./project/effective-node.js";
 import { generateFeatureVideo, type GenerateFeatureVideoOptions } from "./review-artifacts/feature-video.js";
 import { moveTaskToReplanColumn, resolvePlannerLanes, resolvePlannerLanesForTaskAsync, resolveReplanTargetColumn } from "./execution/replan-target.js";
 import { latestPlanReviewTerminalAfterReset } from "./plan-review-log-recovery.js";
@@ -1711,6 +1712,8 @@ export function getExecutorSystemPrompt(
 }
 
 export interface TaskExecutorOptions {
+  /** Stable central project identity exposed to the task session without mutating the task row. */
+  projectId?: string;
   /*
    * FNXC:PlanReviewLease 2026-07-26-21:07:
    * Resolves this engine's cluster node id for review-gate lease attribution. A GETTER, not a
@@ -14823,9 +14826,7 @@ export class TaskExecutor {
               this.options.pluginRunner,
               customFieldDefs,
               this.workspaceConfig,
-              {
-                pluginTaskContributions,
-              },
+              { pluginTaskContributions, projectId: this.options.projectId },
             );
             await promptWithFallback(session, agentPrompt);
           }
@@ -15211,9 +15212,7 @@ export class TaskExecutor {
                       this.options.pluginRunner,
                       retryCustomFieldDefs,
                       this.workspaceConfig,
-                      {
-                        pluginTaskContributions: retryPluginTaskContributions,
-                      },
+                      { pluginTaskContributions: retryPluginTaskContributions, projectId: this.options.projectId },
                     ),
                   ].join("\n");
                 } else {
@@ -15232,9 +15231,7 @@ export class TaskExecutor {
                       this.options.pluginRunner,
                       retryCustomFieldDefs,
                       this.workspaceConfig,
-                      {
-                        pluginTaskContributions: retryPluginTaskContributions,
-                      },
+                      { pluginTaskContributions: retryPluginTaskContributions, projectId: this.options.projectId },
                     ),
                   ].join("\n");
                 }
@@ -22690,7 +22687,7 @@ export function buildExecutionPrompt(
   pluginRunner?: PluginRunner,
   customFieldDefs?: WorkflowFieldDefinition[],
   workspaceConfig?: WorkspaceConfig | null,
-  options?: { pluginTaskContributions?: string },
+  options?: { pluginTaskContributions?: string; projectId?: string },
 ): string {
   const prompt = scopePromptToWorktree(task.prompt, rootDir, worktreePath, workspaceConfig);
   const reviewLevel = parseReviewLevelFromPrompt(prompt);
@@ -22719,16 +22716,18 @@ export function buildExecutionPrompt(
    * authoritative, non-secret control-plane checkpoint for this session.
    */
   const effectiveNodeId = task.effectiveNodeId ?? task.nodeId ?? "local";
-  const executionContextSection = worktreePath
+  const projectId = options?.projectId?.trim();
+  const executionContextSection = worktreePath || projectId
     ? [
       "## Authoritative Execution Context",
       "",
-      "Fusion resolved this checkpoint after node routing and worktree acquisition, immediately before creating this execution session:",
-      `- \`task.worktree\`: \`${worktreePath}\``,
-      `- \`effectiveNodeId\`: \`${effectiveNodeId}\``,
-      ...(task.effectiveNodeSource ? [`- \`effectiveNodeSource\`: \`${task.effectiveNodeSource}\``] : []),
-      ...(task.branch ? [`- assigned branch: \`${task.branch}\``] : []),
-      "- the session process CWD was initialized to the resolved `task.worktree` above",
+      "Fusion resolved this checkpoint immediately before creating this execution session:",
+      ...(projectId ? [`- Project ID: \`${projectId}\``] : []),
+      ...(worktreePath ? [`- \`task.worktree\`: \`${worktreePath}\``] : []),
+      ...(worktreePath ? [`- \`effectiveNodeId\`: \`${effectiveNodeId}\``] : []),
+      ...(worktreePath && task.effectiveNodeSource ? [`- \`effectiveNodeSource\`: \`${task.effectiveNodeSource}\``] : []),
+      ...(worktreePath && task.branch ? [`- assigned branch: \`${task.branch}\``] : []),
+      ...(worktreePath ? ["- the session process CWD was initialized to the resolved `task.worktree` above"] : []),
       "",
       "Treat these values as the authoritative control-plane assignment for this session. Re-resolve and compare the actual CWD/branch before any mutation when the task contract requires it. Do not read `node.env`, process secrets, or another secret source to rediscover this context.",
       "",

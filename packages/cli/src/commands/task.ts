@@ -175,7 +175,7 @@ function createArchiveLocalRuntimeResolver(projectId: string): () => Promise<Arc
     const central = new CentralCore();
     await central.init();
     try {
-      const nodeId = (await central.getRuntimeNode())?.id;
+      const nodeId = (await central.listNodes()).find((node) => node.type === "local")?.id;
       const projectPath = nodeId ? await central.getProjectNodePath(projectId, nodeId) : undefined;
       return {nodeId, projectPath};
     } finally {
