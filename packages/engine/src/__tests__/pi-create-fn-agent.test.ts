@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PathLike } from "node:fs";
+import { join, resolve } from "node:path";
 
 const createAgentSessionMock = vi.fn();
 const createBashToolMock = vi.fn((cwd: string, options?: any) => ({ name: "bash", cwd, options }));
@@ -395,18 +396,18 @@ describe("worktree path boundary helpers", () => {
         parameters: {},
         execute: vi.fn().mockResolvedValue({ ok: true, content: [] }),
       };
-      const worktreePath = "/var/folders/zp/fjh8794n7bl61c_pn1gmdt200000gn/T/fusion-ai-merge-fn-6085-2nTWPZ";
-      const canonicalWorktreePath = "/private/var/folders/zp/fjh8794n7bl61c_pn1gmdt200000gn/T/fusion-ai-merge-fn-6085-2nTWPZ";
+      const worktreePath = resolve("/var/folders/zp/fjh8794n7bl61c_pn1gmdt200000gn/T/fusion-ai-merge-fn-6085-2nTWPZ");
+      const canonicalWorktreePath = resolve("/private/var/folders/zp/fjh8794n7bl61c_pn1gmdt200000gn/T/fusion-ai-merge-fn-6085-2nTWPZ");
       realpathSyncNativeMock.mockImplementation((path: PathLike) => {
         const text = String(path);
-        return text.startsWith("/var/folders/") ? `/private${text}` : text;
+        return text === worktreePath ? canonicalWorktreePath : text;
       });
 
       const { wrapToolsWithBoundary } = await import("../pi.js");
       const wrapped = wrapToolsWithBoundary(
         [mockBashTool as any],
         worktreePath,
-        "/var/folders/zp/fjh8794n7bl61c_pn1gmdt200000gn/T/project",
+        resolve("/var/folders/zp/fjh8794n7bl61c_pn1gmdt200000gn/T/project"),
       );
 
       const result = await (wrapped[0] as any).execute("call-1", {
@@ -572,8 +573,9 @@ describe("worktree path boundary helpers", () => {
     });
 
     it("canonicalizes macOS-style skill roots before allowing reads", async () => {
-      const skillRoot = "/var/folders/fn-8466/plugin/skills";
-      const canonicalSkillPath = "/private/var/folders/fn-8466/plugin/skills/de-sloppify/SKILL.md";
+      const skillRoot = resolve("/var/folders/fn-8466/plugin/skills");
+      const canonicalSkillRoot = resolve("/private/var/folders/fn-8466/plugin/skills");
+      const canonicalSkillPath = join(canonicalSkillRoot, "de-sloppify", "SKILL.md");
       const mockReadTool = {
         name: "read",
         label: "Read",
@@ -583,13 +585,13 @@ describe("worktree path boundary helpers", () => {
       };
       realpathSyncNativeMock.mockImplementation((path: PathLike) => {
         const text = String(path);
-        return text.startsWith("/var/") ? `/private${text}` : text;
+        return text === skillRoot ? canonicalSkillRoot : text;
       });
       const { wrapToolsWithBoundary } = await import("../pi.js");
       const wrapped = wrapToolsWithBoundary(
         [mockReadTool as any],
-        "/project/.worktrees/fn-8466",
-        "/project",
+        resolve("/project/.worktrees/fn-8466"),
+        resolve("/project"),
         [skillRoot],
       );
 
@@ -601,8 +603,8 @@ describe("worktree path boundary helpers", () => {
     it("normalizes one stable skill-root list for resource loading and boundary wiring", async () => {
       const { normalizeAdditionalSkillPaths } = await import("../pi.js");
       expect(normalizeAdditionalSkillPaths(["/skills/plugin", "", "/skills/plugin/", "/skills/ce"])).toEqual([
-        "/skills/plugin",
-        "/skills/ce",
+        resolve("/skills/plugin"),
+        resolve("/skills/ce"),
       ]);
 
       const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -1725,22 +1727,23 @@ describe("createFnAgent", () => {
   });
 
   it("refuses to start a coding agent in an unregistered worktree", async () => {
+    const projectRoot = resolve("/project");
+    const worktree = join(projectRoot, ".worktrees", "fn-001");
     existsSyncMock.mockImplementation((path) => {
       const value = String(path);
-      return value === "/project/.worktrees/fn-001" ||
-        value === "/project/.worktrees/fn-001/.git";
+      return value === worktree || value === join(worktree, ".git");
     });
     execSyncMock.mockImplementation((cmd) => {
       if (cmd === "git rev-parse --show-toplevel") {
-        return "/project/.worktrees/fn-001\n";
+        return `${worktree}\n`;
       }
-      return "worktree /project\nHEAD abc123\nbranch refs/heads/main\n";
+      return `worktree ${projectRoot}\nHEAD abc123\nbranch refs/heads/main\n`;
     });
 
     const { createFnAgent } = await import("../pi.js");
 
     await expect(createFnAgent({
-      cwd: "/project/.worktrees/fn-001",
+      cwd: worktree,
       systemPrompt: "test",
       tools: "coding",
       defaultProvider: "openai-codex",
@@ -1751,23 +1754,24 @@ describe("createFnAgent", () => {
   });
 
   it("allows a coding agent in a registered complete worktree without a root package.json", async () => {
+    const projectRoot = resolve("/project");
+    const worktree = join(projectRoot, ".worktrees", "fn-001");
     existsSyncMock.mockImplementation((path) => {
       const value = String(path);
-      return value === "/project/.worktrees/fn-001" ||
-        value === "/project/.worktrees/fn-001/.git";
+      return value === worktree || value === join(worktree, ".git");
     });
     execSyncMock.mockImplementation((cmd) => {
       if (cmd === "git rev-parse --show-toplevel") {
-        return "/project/.worktrees/fn-001\n";
+        return `${worktree}\n`;
       }
-      return "worktree /project\nHEAD abc123\nbranch refs/heads/main\n\n" +
-        "worktree /project/.worktrees/fn-001\nHEAD def456\nbranch refs/heads/fusion/fn-001\n";
+      return `worktree ${projectRoot}\nHEAD abc123\nbranch refs/heads/main\n\n` +
+        `worktree ${worktree}\nHEAD def456\nbranch refs/heads/fusion/fn-001\n`;
     });
 
     const { createFnAgent } = await import("../pi.js");
 
     await createFnAgent({
-      cwd: "/project/.worktrees/fn-001",
+      cwd: worktree,
       systemPrompt: "test",
       tools: "coding",
       defaultProvider: "openai-codex",
@@ -1778,17 +1782,18 @@ describe("createFnAgent", () => {
   });
 
   it("resolves project root from worktree cwd for convenience skills parameter", async () => {
+    const projectRoot = resolve("/project");
+    const worktree = join(projectRoot, ".worktrees", "task-branch");
     existsSyncMock.mockImplementation((path) => {
       const value = String(path);
-      return value === "/project/.worktrees/task-branch" ||
-        value === "/project/.worktrees/task-branch/.git";
+      return value === worktree || value === join(worktree, ".git");
     });
     execSyncMock.mockImplementation((cmd) => {
       if (cmd === "git rev-parse --show-toplevel") {
-        return "/project/.worktrees/task-branch\n";
+        return `${worktree}\n`;
       }
-      return "worktree /project\nHEAD abc123\nbranch refs/heads/main\n\n" +
-        "worktree /project/.worktrees/task-branch\nHEAD def456\nbranch refs/heads/fusion/fn-001\n";
+      return `worktree ${projectRoot}\nHEAD abc123\nbranch refs/heads/main\n\n` +
+        `worktree ${worktree}\nHEAD def456\nbranch refs/heads/fusion/fn-001\n`;
     });
 
     const { createFnAgent } = await import("../pi.js");
@@ -1801,7 +1806,7 @@ describe("createFnAgent", () => {
     // except the worktree itself, it falls back to /project.
     // The session should be created successfully.
     await createFnAgent({
-      cwd: "/project/.worktrees/task-branch",
+      cwd: worktree,
       systemPrompt: "test",
       tools: "coding",
       skills: ["fusion"],
@@ -1812,17 +1817,19 @@ describe("createFnAgent", () => {
   });
 
   it("FN-3338: registerExtensionProviders receives resolved project root when cwd is a subdirectory", async () => {
+    const projectRoot = resolve("/project");
+    const subdirectory = join(projectRoot, "src", "components");
     // Simulate cwd being a subdirectory of the project. resolvePiExtensionProjectRoot
     // walks up from /project/src/components checking each dir for .fusion.
     existsSyncMock.mockImplementation((path) => {
       const value = String(path);
-      return value === "/project/.fusion";
+      return value === join(projectRoot, ".fusion");
     });
 
     const { createFnAgent } = await import("../pi.js");
 
     await createFnAgent({
-      cwd: "/project/src/components",
+      cwd: subdirectory,
       systemPrompt: "test",
       tools: "readonly",
     });
@@ -1830,24 +1837,25 @@ describe("createFnAgent", () => {
     // registerExtensionProviders should receive the resolved project root,
     // not the raw subdirectory cwd. This is verified by checking the
     // DefaultPackageManager constructor received "/project" as cwd.
-    expect(packageManagerCwdCapture).toHaveBeenCalledWith("/project");
+    expect(packageManagerCwdCapture).toHaveBeenCalledWith(projectRoot);
     expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
   });
 
   it("FN-3338: registerExtensionProviders falls back to cwd when no .fusion is found", async () => {
+    const unrelatedDirectory = resolve("/unrelated/directory");
     // No .fusion directory exists anywhere above cwd.
     existsSyncMock.mockImplementation(() => false);
 
     const { createFnAgent } = await import("../pi.js");
 
     await createFnAgent({
-      cwd: "/unrelated/directory",
+      cwd: unrelatedDirectory,
       systemPrompt: "test",
       tools: "readonly",
     });
 
     // Falls back to the raw cwd when no .fusion is found
-    expect(packageManagerCwdCapture).toHaveBeenCalledWith("/unrelated/directory");
+    expect(packageManagerCwdCapture).toHaveBeenCalledWith(unrelatedDirectory);
     expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
   });
 
@@ -1878,6 +1886,7 @@ describe("createFnAgent", () => {
   });
 
   it("registers extension providers before resolving configured models", async () => {
+    const cwd = resolve("/tmp");
     packageManagerResolveMock.mockResolvedValueOnce({
       extensions: [{ enabled: true, path: "/extensions/zai-provider" }],
     });
@@ -1897,7 +1906,7 @@ describe("createFnAgent", () => {
     const { createFnAgent } = await import("../pi.js");
 
     await createFnAgent({
-      cwd: "/tmp",
+      cwd,
       systemPrompt: "test",
       tools: "readonly",
       defaultProvider: "zai",
@@ -1906,8 +1915,8 @@ describe("createFnAgent", () => {
 
     expect(discoverAndLoadExtensionsMock).toHaveBeenCalledWith(
       ["/extensions/zai-provider"],
-      "/tmp",
-      "/tmp/.fusion/disabled-auto-extension-discovery",
+      cwd,
+      join(cwd, ".fusion", "disabled-auto-extension-discovery"),
     );
     expect(registerProviderMock).toHaveBeenNthCalledWith(1, "zai", expect.objectContaining({
       models: expect.arrayContaining([expect.objectContaining({ id: "glm-5.2" })]),

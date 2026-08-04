@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { join } from "node:path";
 
 /*
 FNXC:CliQuietMode 2026-07-25-09:05:
@@ -1047,7 +1048,7 @@ describe("project-aware task command behavior", () => {
     const promise = runTaskLogs("FN-001", { follow: true }, "demo-project");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(vi.mocked(watchFile)).toHaveBeenCalledWith(
-      expect.stringContaining("/resolved/project/.fusion/tasks/FN-001/agent.log"),
+      expect.stringContaining(join("/resolved/project", ".fusion", "tasks", "FN-001", "agent.log")),
       expect.objectContaining({ interval: 1000 }),
       expect.any(Function),
     );
