@@ -36,6 +36,8 @@ import { runtimeLog } from "./logger.js";
  * These are injected by the CLI layer (dashboard.ts / serve.ts).
  */
 export interface EngineManagerOptions {
+  /** Exact identity of this shared-database process. */
+  processNodeId?: string;
   /**
    * FNXC:StorageMigrationNotice 2026-07-12-00:00:
    * The manager carries the resolved CLI package version to each per-project engine so the one-time Postgres-migration inbox message is evaluated per project while remaining gated to the same released runtime version.
@@ -291,7 +293,8 @@ export class ProjectEngineManager {
     */
     try {
       this.centralCore.stopDiscovery();
-      await this.centralCore.markLocalNodeOffline();
+      const processNodeId = this.requireProcessNodeId();
+      await this.centralCore.updateNode(processNodeId, { status: "offline" });
     } catch (error) {
       runtimeLog.warn(`Failed to persist local node offline before engine shutdown: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -533,7 +536,11 @@ export class ProjectEngineManager {
 
     return {
       projectId: project.id,
-      workingDirectory: await this.centralCore.resolveLocalProjectWorkingDirectory(project.id),
+      processNodeId: this.requireProcessNodeId(),
+      workingDirectory: await this.centralCore.resolveProjectWorkingDirectory(
+        project.id,
+        this.requireProcessNodeId(),
+      ),
       isolationMode:
         (project.isolationMode as "in-process" | "child-process") ??
         "in-process",
@@ -541,6 +548,14 @@ export class ProjectEngineManager {
       maxWorktrees: (settings?.maxWorktrees as number) ?? 10,
       onMigrationProgress: this.options.onMigrationProgress,
     };
+  }
+
+  private requireProcessNodeId(): string {
+    const processNodeId = this.options.processNodeId?.trim() || process.env.FUSION_NODE_ID?.trim();
+    if (!processNodeId) {
+      throw new Error("FUSION_NODE_ID is required for shared-database runtime startup");
+    }
+    return processNodeId;
   }
 
   private buildEngineOptions(

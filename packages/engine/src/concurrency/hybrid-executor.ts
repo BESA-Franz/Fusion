@@ -56,6 +56,8 @@ export interface HybridExecutorEvents {
  * Options for creating a HybridExecutor.
  */
 export interface HybridExecutorOptions {
+  /** Exact registry identity used for per-node project mappings. */
+  processNodeId?: string;
   /** Called when a task is scheduled */
   onTaskScheduled?: (projectId: string, task: Task) => void;
   /** Called when a task is blocked by dependencies */
@@ -151,7 +153,7 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
     this.setMaxListeners(100);
 
     // Create internal ProjectManager
-    this.projectManager = new ProjectManager(centralCore);
+    this.projectManager = new ProjectManager(centralCore, options.processNodeId);
 
     // Set up event forwarding from ProjectManager
     this.setupEventForwarding();
@@ -180,12 +182,13 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
     for (const project of projects) {
       if (project.status === "active" || project.status === "initializing") {
         try {
-          const workingDirectory = await this.centralCore.resolveLocalProjectWorkingDirectory(
-            project.id,
-          );
+          const workingDirectory = this.options.processNodeId
+            ? await this.centralCore.resolveProjectWorkingDirectory(project.id, this.options.processNodeId)
+            : await this.centralCore.resolveLocalProjectWorkingDirectory(project.id);
 
           await this.addProject({
             projectId: project.id,
+            processNodeId: this.options.processNodeId,
             workingDirectory,
             isolationMode: project.isolationMode,
             maxConcurrent: project.settings?.maxConcurrent ?? 2,
@@ -221,7 +224,10 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
    * @throws Error if project not found in CentralCore or runtime already exists
    */
   async addProject(config: ProjectRuntimeConfig): Promise<ProjectRuntime> {
-    const runtime = await this.projectManager.addProject(config);
+    const runtime = await this.projectManager.addProject({
+      ...config,
+      processNodeId: config.processNodeId ?? this.options.processNodeId,
+    });
 
     const project = await this.centralCore.getProject(config.projectId);
     this.emit("project:added", {
@@ -287,7 +293,9 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
 
       const workingDirectory =
         config.workingDirectory ??
-        (await this.centralCore.resolveLocalProjectWorkingDirectory(projectId));
+        (this.options.processNodeId
+          ? await this.centralCore.resolveProjectWorkingDirectory(projectId, this.options.processNodeId)
+          : await this.centralCore.resolveLocalProjectWorkingDirectory(projectId));
 
       // Stop old runtime
       await this.projectManager.removeProject(projectId);
@@ -295,6 +303,7 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
       // Get the full current config
       const fullConfig: ProjectRuntimeConfig = {
         projectId,
+        processNodeId: this.options.processNodeId,
         workingDirectory,
         isolationMode: config.isolationMode,
         maxConcurrent: config.maxConcurrent ?? 2,

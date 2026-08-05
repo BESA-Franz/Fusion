@@ -123,7 +123,10 @@ export class ProjectManager extends EventEmitter<ProjectManagerEvents> {
   /**
    * @param centralCore - CentralCore reference for global coordination
    */
-  constructor(private centralCore: CentralCore) {
+  constructor(
+    private centralCore: CentralCore,
+    private processNodeId?: string,
+  ) {
     super();
     this.setMaxListeners(100);
 
@@ -467,11 +470,14 @@ export class ProjectManager extends EventEmitter<ProjectManagerEvents> {
       throw new Error(`Project not found: ${projectId}`);
     }
 
-    const workingDirectory = await this.centralCore.resolveLocalProjectWorkingDirectory(projectId);
+    const workingDirectory = this.processNodeId
+      ? await this.centralCore.resolveProjectWorkingDirectory(projectId, this.processNodeId)
+      : await this.centralCore.resolveLocalProjectWorkingDirectory(projectId);
     await this.removeProject(projectId);
 
     await this.addProject({
       projectId,
+      processNodeId: this.processNodeId,
       workingDirectory,
       isolationMode: project.isolationMode,
       maxConcurrent: project.settings?.maxConcurrent ?? 2,

@@ -26,6 +26,7 @@ import {
   isPlanReviewSatisfied,
   isTaskBlockedOnApproval,
   resolveLocalNodeId,
+  resolveProcessNodeId,
   resolveWorkflowIrForTask,
   resolveTaskLifecycleColumns,
 } from "@fusion/core";
@@ -63,6 +64,7 @@ import { PluginRunner } from "../plugins/plugin-runner.js";
 import { MissionAutopilot } from "../missions/mission-autopilot.js";
 import { MissionExecutionLoop } from "../missions/mission-execution-loop.js";
 import { TriageProcessor } from "../triage.js";
+import { canExecuteTaskOnNode } from "../project/effective-node.js";
 import { EphemeralWorkerManager } from "../agents/ephemeral-worker-manager.js";
 import { validateProjectNodeMapping } from "../project/node-dispatch-validation.js";
 import { attachAgentLinkSync } from "../agents/task-agent-sync.js";
@@ -478,7 +480,9 @@ export async function admitPlanningContinuation(input: {
   projectId: string;
   task: Task;
   item: WorkflowWorkItem;
-  dispatch: () => Promise<void>;
+  processNodeId?: string;
+  registryLocalNodeId?: string;
+  dispatch: (task: Task) => Promise<void>;
 }): Promise<boolean> {
   const runKey = `${input.projectId}:${input.task.id}`;
   // A task owns one top-level slot regardless of how many durable continuation
@@ -486,6 +490,21 @@ export async function admitPlanningContinuation(input: {
   // would attach two releasers to one task-keyed coordinator reservation.
   if (planningContinuationRuns.has(runKey)) return true;
   const settings = await input.store.getSettings();
+  const readOwnedTask = async (): Promise<Task | null> => {
+    if (!input.processNodeId) return input.task;
+    const liveTask = await input.store.getTask(input.task.id).catch(() => null);
+    if (!liveTask) return null;
+    const liveSettings = await input.store.getSettings().catch(() => null);
+    if (!liveSettings || !canExecuteTaskOnNode(
+      liveTask,
+      input.processNodeId,
+      liveSettings,
+      input.registryLocalNodeId,
+    )) return null;
+    return liveTask;
+  };
+  const initialOwnedTask = await readOwnedTask();
+  if (!initialOwnedTask) return true;
   let selected = false;
   let duplicateHandled = false;
   const loadClaimSnapshot = async (): Promise<{ count: number; ids: string[] }> => {
@@ -505,10 +524,10 @@ export async function admitPlanningContinuation(input: {
   // Resuming another node of an already-live task is a same-slot handoff, not a
   // new admission. Check only this fully hydrated task here; the project-wide
   // snapshot belongs inside the serialized coordinator drain below.
-  const taskAlreadyActive = (await persistedTopLevelAgentTaskIdsFromStore(input.store, [input.task]))
+  const taskAlreadyActive = (await persistedTopLevelAgentTaskIdsFromStore(input.store, [initialOwnedTask]))
     .includes(input.task.id);
   if (taskAlreadyActive) {
-    void input.dispatch().catch(() => {});
+    void input.dispatch(initialOwnedTask).catch(() => {});
     return true;
   }
   // This snapshot is intentionally created lazily inside the coordinator drain.
@@ -540,6 +559,11 @@ export async function admitPlanningContinuation(input: {
           // cannot release capacity owned by that still-running workflow.
           return true;
         }
+        const lockedOwnedTask = await readOwnedTask();
+        if (!lockedOwnedTask) {
+          duplicateHandled = true;
+          return true;
+        }
         selected = true;
         planningContinuationRuns.add(runKey);
         // Keep the coordinator reservation for the whole resumed run. The task
@@ -547,7 +571,7 @@ export async function admitPlanningContinuation(input: {
         // pending lease; releasing at executor entry recreates the over-cap gap.
         let run: Promise<void>;
         try {
-          run = input.dispatch();
+          run = input.dispatch(lockedOwnedTask);
         } catch (error) {
           planningContinuationRuns.delete(runKey);
           throw error;
@@ -568,6 +592,8 @@ export function createPlanningContinuationDispatcher(input: {
   store: TaskStore;
   projectId: string;
   execute: (task: Task) => Promise<void>;
+  processNodeId?: string;
+  registryLocalNodeId?: string;
   onError?: (task: Task, item: WorkflowWorkItem, error: unknown) => void;
 }): (task: Task, item: WorkflowWorkItem) => Promise<boolean> {
   return (task, item) => admitPlanningContinuation({
@@ -575,9 +601,11 @@ export function createPlanningContinuationDispatcher(input: {
     projectId: input.projectId,
     task,
     item,
-    dispatch: async () => {
-      await input.execute(task).catch((error) => {
-        input.onError?.(task, item, error);
+    processNodeId: input.processNodeId,
+    registryLocalNodeId: input.registryLocalNodeId,
+    dispatch: async (liveTask) => {
+      await input.execute(liveTask).catch((error) => {
+        input.onError?.(liveTask, item, error);
       });
     },
   });
@@ -757,6 +785,7 @@ export class InProcessRuntime
   private credentialRotator?: CredentialInstanceRotator;
   /** FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09: process identity shared by dispatch, claims, leases, and recovery. */
   private localNodeId?: string;
+  private registryLocalNodeId?: string;
   private selfHealingManager?: SelfHealingManager;
   private leaseManager?: MeshLeaseManager;
   private leaseCentralClaimStore?: AsyncCentralClaimStore;
@@ -957,8 +986,12 @@ export class InProcessRuntime
       const registeredNodes = await this.centralCore.listNodes();
       const nodeInventory = registeredNodes.map((node) => ({ id: node.id, type: node.type }));
       const registryLocalNodeId = resolveLocalNodeId(nodeInventory);
-      const localNodeId = resolveLocalNodeId(nodeInventory, "local", process.env.FUSION_NODE_ID);
+      const localNodeId = resolveProcessNodeId(
+        nodeInventory,
+        this.config.processNodeId ?? process.env.FUSION_NODE_ID,
+      );
       this.localNodeId = localNodeId;
+      this.registryLocalNodeId = registryLocalNodeId;
 
       this.messageStore = new MessageStoreClass(null, { asyncLayer: messageLayer });
 
@@ -1354,6 +1387,7 @@ export class InProcessRuntime
         attribution. Reading it lazily at runner-construction time picks up the resolved id.
         */
         getLocalNodeId: () => this.localNodeId,
+        getRegistryLocalNodeId: () => this.registryLocalNodeId,
         pool: this.worktreePool,
         usageLimitPauser: this.usageLimitPauser,
         credentialRotator: this.credentialRotator,
@@ -1725,6 +1759,7 @@ export class InProcessRuntime
       this.selfHealingManager = new SelfHealingManager(this.taskStore, {
         rootDir: this.config.workingDirectory,
         localNodeId,
+        registryLocalNodeId,
         agentStore: this.agentStore,
         isWorktreeResumeReserved: this.cliAgentRuntime?.isWorktreeResumeReserved,
         recoverCompletedTask: (task) => this.executor.recoverCompletedTask(task),
@@ -2617,6 +2652,8 @@ export class InProcessRuntime
         dispatch: createPlanningContinuationDispatcher({
           store: this.taskStore,
           projectId: this.taskStore.getRootDir(),
+          processNodeId: this.localNodeId,
+          registryLocalNodeId: this.registryLocalNodeId,
           execute: (task) => this.executor.execute(task),
           onError: (_task, item, error) => {
             runtimeLog.error(`Workflow continuation ${item.id} failed:`, error);

@@ -35,6 +35,8 @@ export interface RuntimeMetrics {
 export interface ProjectRuntimeConfig {
   /** Unique project ID (e.g., "proj_abc123") */
   projectId: string;
+  /** Exact registry identity of the process that owns this runtime. */
+  processNodeId?: string;
   /** Absolute path to the project working directory */
   workingDirectory: string;
   /** Execution isolation mode */

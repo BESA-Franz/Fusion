@@ -15,7 +15,7 @@ import { and, eq } from "drizzle-orm";
 import { ArchiveDatabase } from "../db/archive-db.js";
 import { CentralCore } from "../central/central-core.js";
 import { Database, fromJson, toJsonNullable } from "../db/db.js";
-import { reconcileTaskIdState, resolveLocalNodeId } from "../tasks/distributed-task-id.js";
+import { reconcileTaskIdState, resolveProcessNodeId } from "../tasks/distributed-task-id.js";
 import { getErrorMessage } from "../process/error-message.js";
 import { buildSnippet, extractGoalCitations } from "../goals/goal-citation-extractor.js";
 import * as schema from "../postgres/schema/index.js";
@@ -748,20 +748,7 @@ export async function resolveLocalNodeIdForTaskAllocationImpl(_store: TaskStore)
     await central.init();
     try {
       const nodes = await central.listNodes();
-      return resolveLocalNodeId(
-        nodes.map((node) => ({ id: node.id, type: node.type })),
-        "local",
-        process.env.FUSION_NODE_ID,
-      );
-    } catch (error) {
-      /*
-      FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
-      Legacy discovery stays best-effort, but an explicit process identity is
-      an ownership contract. Falling back would allocate duplicate task IDs
-      under another node while the shared registry is unavailable or mismatched.
-      */
-      if (process.env.FUSION_NODE_ID?.trim()) throw error;
-      return "local";
+      return resolveProcessNodeId(nodes, process.env.FUSION_NODE_ID);
     } finally {
       await central.close();
     }

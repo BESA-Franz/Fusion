@@ -224,6 +224,10 @@ export async function resolveScopedStore(
 }
 
 export interface ServerOptions {
+  /** Exact registry identity of this shared-database server process. */
+  processNodeId?: string;
+  /** Registry-local node that owns tasks without an explicit/default route. */
+  registryLocalNodeId?: string;
   /** Optional ProjectEngine — when provided, subsystems (onMerge, automationStore,
    *  missionAutopilot, missionExecutionLoop, heartbeatMonitor) are derived from it.
    *  Explicit options still override engine-derived values.
@@ -2908,7 +2912,9 @@ export function setupBadgeWebSocket(
     */
     try {
       options?.centralCore?.stopDiscovery();
-      await options?.centralCore?.markLocalNodeOffline();
+      if (options?.centralCore && options.processNodeId) {
+        await options.centralCore.updateNode(options.processNodeId, { status: "offline" });
+      }
     } catch (error) {
       options?.runtimeLogger?.warn("Failed to mark the dashboard node offline during shutdown", {
         ...normalizeErrorForLog(error),

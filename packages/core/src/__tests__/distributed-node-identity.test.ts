@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveLocalNodeId } from "../tasks/distributed-task-id.js";
+import { resolveLocalNodeId, resolveProcessNodeId } from "../tasks/distributed-task-id.js";
 
 const nodes = [
   { id: "node_vps", type: "local" },
@@ -12,17 +12,25 @@ describe("resolveLocalNodeId", () => {
     expect(resolveLocalNodeId(nodes)).toBe("node_vps");
   });
 
+  it("preserves the topology fallback when no registry-local node exists", () => {
+    expect(resolveLocalNodeId([], "local")).toBe("local");
+  });
+});
+
+describe("resolveProcessNodeId", () => {
   it("uses an explicitly configured process node even when the shared registry marks it remote", () => {
-    expect(resolveLocalNodeId(nodes, "local", " node_pc2 ")).toBe("node_pc2");
+    expect(resolveProcessNodeId(nodes, " node_pc2 ")).toBe("node_pc2");
   });
 
   it("fails closed when the configured process node is absent from the shared registry", () => {
-    expect(() => resolveLocalNodeId(nodes, "local", "node_unknown")).toThrow(
+    expect(() => resolveProcessNodeId(nodes, "node_unknown")).toThrow(
       "Configured Fusion node not found: node_unknown",
     );
   });
 
-  it("preserves the legacy fallback when neither identity source exists", () => {
-    expect(resolveLocalNodeId([], "local", " ")).toBe("local");
+  it("fails closed when no process identity is configured", () => {
+    expect(() => resolveProcessNodeId(nodes, " ")).toThrow(
+      "FUSION_NODE_ID is required for shared-database runtime startup",
+    );
   });
 });

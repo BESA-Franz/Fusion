@@ -80,6 +80,10 @@ export interface SlotReservation {
     effectiveNodeId: string | null;
     effectiveNodeSource: Task["effectiveNodeSource"];
   };
+  prepareLockedMove?: (live: Task) => Promise<{
+    dispatchRoute?: SlotReservation["dispatchRoute"];
+    allocateWorktree?: (reservedNames: Set<string>) => string | null;
+  } | null>;
 }
 
 /** Injected dependencies so the sweep stays unit-testable with fake timers and
@@ -853,6 +857,7 @@ async function issueRelease(
       {
         moveSource: "scheduler",
         dispatchRoute: reservation?.dispatchRoute,
+        prepareLockedMove: reservation?.prepareLockedMove,
         allocateWorktree:
           targetIsProcessing && deps.allocateWorktree
             ? (reservedNames) => deps.allocateWorktree!(task, reservedNames)

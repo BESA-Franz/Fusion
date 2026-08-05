@@ -315,6 +315,8 @@ export interface SelfHealingOptions {
    * 15-minute staleness floor. Unset (single-node, tests) keeps floor-only semantics.
    */
   localNodeId?: string;
+  /** Registry-local owner for tasks without an explicit/default route. */
+  registryLocalNodeId?: string;
   /** Optional callback to release TaskExecutor in-memory worktree ownership for a task. */
   releaseExecutorWorktreeOwnership?: (taskId: string) => void;
   /**
@@ -805,7 +807,8 @@ type RebindOutcome =
       | "no-unique-work"
       | "unsafe-to-auto-mutate:user-paused"
       | "unsafe-to-auto-mutate:checked-out"
-      | "workspace-task";
+      | "workspace-task"
+      | "foreign-node-route";
     candidates?: Array<{ branch: string; aheadCount: number }>;
   };
 
@@ -5288,6 +5291,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
       for (const task of tasks) {
         if (options?.includeTaskIds && !options.includeTaskIds.has(task.id)) continue;
+        if (!canExecuteTaskOnNode(task, this.options.localNodeId, settings, this.options.registryLocalNodeId)) {
+          result.outcomes.push({ taskId: task.id, result: "skipped", reason: "foreign-node-route" });
+          continue;
+        }
 
         /*
         FNXC:Workspace 2026-06-24-23:10:
@@ -5514,7 +5521,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         FNXC:MultiNodeWorktreeMetadata 2026-08-01-04:55:
         Worktree paths are node-local. A process may reconcile only tasks whose effective node resolves to itself; otherwise a healthy remote Windows worktree looks missing locally and its shared control-plane metadata is incorrectly cleared or rebound.
         */
-        if (!canExecuteTaskOnNode(task, this.options.localNodeId, settings)) continue;
+        if (!canExecuteTaskOnNode(task, this.options.localNodeId, settings, this.options.registryLocalNodeId)) continue;
         if (!options?.includeTaskIds?.has(task.id) && worktreeReconcileTerminalColumns.has(task.column)) {
           continue;
         }

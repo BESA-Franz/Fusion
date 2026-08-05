@@ -107,7 +107,7 @@ describe("PeerExchangeService", () => {
     globalThis.fetch = mockFetch;
 
     mockListPendingMeshWrites.mockResolvedValue([]);
-    mockGetNode.mockResolvedValue(makeNode());
+    mockGetNode.mockImplementation((id: string) => Promise.resolve(makeNode({ id })));
     mockEnqueueMeshWrite.mockResolvedValue({ id: "mq-1" });
     mockMarkMeshWriteReplayStarted.mockResolvedValue(undefined);
     mockMarkMeshWriteApplied.mockResolvedValue(undefined);
@@ -426,10 +426,12 @@ describe("PeerExchangeService", () => {
 
     it("force-disables settingsSyncEnabled even when the option is true", async () => {
       mockGetSettingsForSync.mockResolvedValue(makeSettingsPayload());
-      const service = new PeerExchangeService(mockCentralCore, { settingsSyncEnabled: true });
+      const service = new PeerExchangeService(mockCentralCore, { settingsSyncEnabled: true, processNodeId: "node_pc2" });
       setupSuccessfulSync();
       await service.syncWithNode(makeNode());
       expect(mockGetSettingsForSync).not.toHaveBeenCalled();
+      expect(mockReportMeshState).toHaveBeenCalledWith("node_pc2");
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).senderNodeId).toBe("node_pc2");
     });
 
     it("enqueues retryable peer failures as mesh.topology / topology-sync", async () => {
@@ -440,7 +442,7 @@ describe("PeerExchangeService", () => {
       mockFetch.mockResolvedValue({ ok: false, status: 503, statusText: "Service Unavailable" });
       mockEnqueueMeshWrite.mockResolvedValue({ id: "mq-topo-1" });
 
-      const service = new PeerExchangeService(mockCentralCore);
+      const service = new PeerExchangeService(mockCentralCore, { processNodeId: "node_pc2" });
       const result = await service.syncWithNode(node);
 
       expect(result.queuedWriteId).toBe("mq-topo-1");
@@ -493,7 +495,7 @@ describe("PeerExchangeService", () => {
         },
       ]);
 
-      const service = new PeerExchangeService(mockCentralCore);
+      const service = new PeerExchangeService(mockCentralCore, { processNodeId: "node_pc2" });
       const result = await service.syncWithNode(node);
 
       expect(result.replaySummary).toEqual({
@@ -604,6 +606,7 @@ describe("PeerExchangeService", () => {
       });
 
       const service = new PeerExchangeService(mockCentralCore, {
+        processNodeId: "node_pc2",
         settingsSyncEnabled: true, // forced off by backendMode
         settingsSyncAuth: true,
         providerAuth: { anthropic: { type: "api_key", key: "sk-ant" } },

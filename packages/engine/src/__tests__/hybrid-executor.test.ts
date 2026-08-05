@@ -149,6 +149,9 @@ describe("HybridExecutor", () => {
       resolveLocalProjectWorkingDirectory: vi
         .fn()
         .mockResolvedValue("/mapped/local/project-root"),
+      resolveProjectWorkingDirectory: vi
+        .fn()
+        .mockResolvedValue("/mapped/node-pc2/project-root"),
       removeAllListeners: vi.fn(),
       on: vi.fn().mockReturnThis(),
     } as unknown as CentralCore;
@@ -182,6 +185,26 @@ describe("HybridExecutor", () => {
     it("should load existing projects on initialize", async () => {
       await executor.initialize();
       expect(mockCentralCore.listProjects).toHaveBeenCalled();
+    });
+
+    it("uses the configured process node for project mapping and runtime identity", async () => {
+      await executor.shutdown();
+      executor = new HybridExecutor(mockCentralCore, { processNodeId: "node-pc2" });
+
+      await executor.initialize();
+
+      expect(mockCentralCore.resolveProjectWorkingDirectory).toHaveBeenCalledWith(
+        "proj_test123",
+        "node-pc2",
+      );
+      expect(mockCentralCore.resolveLocalProjectWorkingDirectory).not.toHaveBeenCalled();
+      expect(mockProjectManagerInstances.at(-1)?.addProject).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "proj_test123",
+          processNodeId: "node-pc2",
+          workingDirectory: "/mapped/node-pc2/project-root",
+        }),
+      );
     });
 
     it("should forward remote-node assigned projects to ProjectManager for routing", async () => {

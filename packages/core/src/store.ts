@@ -277,6 +277,15 @@ export interface MoveTaskOptions {
     effectiveNodeSource: Task["effectiveNodeSource"];
   };
   allocateWorktree?: (reservedNames: Set<string>) => string | null;
+  /**
+   * Recomputes route and allocator from the authoritative task row while the
+   * PostgreSQL advisory lock is held. Returning null aborts the conditional
+   * move without publishing a stale route.
+   */
+  prepareLockedMove?: (live: Task) => Promise<{
+    dispatchRoute?: MoveTaskOptions["dispatchRoute"];
+    allocateWorktree?: MoveTaskOptions["allocateWorktree"];
+  } | null>;
   moveSource?: "user" | "engine" | "scheduler";
   workflowMoveActor?: WorkflowMovePolicyInput["actor"];
   workflowMoveSource?: string;
@@ -301,6 +310,7 @@ export interface MoveTaskInternalOptions {
     toColumn: string;
     workflowSignature: string;
   };
+  expectedTaskVersion?: Pick<Task, "column" | "updatedAt" | "nodeId">;
 }
 
 export const WORKFLOW_MOVE_POLICY_TIMEOUT_MS = 5000;

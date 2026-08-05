@@ -1455,12 +1455,16 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
   /**
    * Collect a fresh local mesh state snapshot.
    */
-  async reportMeshState(): Promise<NodeMeshState> {
+  async reportMeshState(processNodeId?: string): Promise<NodeMeshState> {
     this.ensureInitialized();
 
-    const localNode = await this.getLocalNode();
+    const localNode = processNodeId?.trim()
+      ? await this.getNode(processNodeId.trim())
+      : await this.getLocalNode();
     if (!localNode) {
-      throw new Error("Local node not found");
+      throw new Error(processNodeId?.trim()
+        ? `Configured Fusion node not found: ${processNodeId.trim()}`
+        : "Local node not found");
     }
 
     const metrics = await collectSystemMetrics(this.getDatabasePath());
@@ -1648,16 +1652,20 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
   /**
    * Start mDNS/DNS-SD node discovery for this process.
    */
-  async startDiscovery(config: DiscoveryConfig): Promise<NodeDiscovery> {
+  async startDiscovery(config: DiscoveryConfig, processNodeId?: string): Promise<NodeDiscovery> {
     this.ensureInitialized();
 
     if (this.nodeDiscovery) {
       return this.nodeDiscovery;
     }
 
-    const localNode = (await this.listNodes()).find((node) => node.type === "local");
+    const localNode = processNodeId?.trim()
+      ? await this.getNode(processNodeId.trim())
+      : (await this.listNodes()).find((node) => node.type === "local");
     if (!localNode) {
-      throw new Error("Local node not found");
+      throw new Error(processNodeId?.trim()
+        ? `Configured Fusion node not found: ${processNodeId.trim()}`
+        : "Local node not found");
     }
 
     this.discoveryConfig = {

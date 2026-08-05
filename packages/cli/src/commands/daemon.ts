@@ -27,6 +27,7 @@ import {
   registerBuiltInGrokProvider,
   registerBuiltInZaiProvider,
   resolveLocalNodeId,
+  resolveProcessNodeId,
 } from "@fusion/core";
 import type { AutomationRunResult, ScheduledTask } from "@fusion/core";
 import { createServer, GitHubClient, createSkillsAdapter, getCliPackageVersion, getProjectSettingsPath, isUnresolvedCliPackageVersion, loadTlsCredentialsFromEnv, refreshAllCustomProviderModels, registerGithubTrackingHook } from "@fusion/dashboard";
@@ -299,13 +300,11 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   }
 
   let processNodeId: string;
+  let registryLocalNodeId: string;
   try {
     const nodes = await sharedCentralCore.listNodes();
-    processNodeId = resolveLocalNodeId(
-      nodes.map((node) => ({ id: node.id, type: node.type })),
-      "local",
-      process.env.FUSION_NODE_ID,
-    );
+    processNodeId = resolveProcessNodeId(nodes, process.env.FUSION_NODE_ID);
+    registryLocalNodeId = resolveLocalNodeId(nodes.map((node) => ({ id: node.id, type: node.type })));
   } catch (error) {
     await migrationHoldingServer?.close().catch(() => undefined);
     await sharedCentralCore.close().catch(() => undefined);
@@ -374,6 +373,7 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   const cliPackageVersion = isUnresolvedCliPackageVersion(resolvedCliPackageVersion) ? undefined : resolvedCliPackageVersion;
 
   const engineManager = new ProjectEngineManager(sharedCentralCore, {
+    processNodeId,
     onMigrationProgress: (event) => migrationHoldingServer?.setMigrationProgress(event),
     cliPackageVersion,
     getMergeStrategy,
@@ -393,7 +393,7 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   const hybridGate = await shouldUseHybridExecutor(sharedCentralCore);
   console.log(`[daemon] hybrid executor gate: enabled=${hybridGate.enabled} reason=${hybridGate.reason}`);
   if (hybridGate.enabled) {
-    hybridExecutor = new HybridExecutor(sharedCentralCore);
+    hybridExecutor = new HybridExecutor(sharedCentralCore, { processNodeId });
     await hybridExecutor.initialize();
   }
 
@@ -418,7 +418,7 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   // ── PeerExchangeService: gossip protocol for mesh peer discovery ──────
   let peerExchangeService: PeerExchangeService | null = null;
   if (sharedCentralCore) {
-    peerExchangeService = new PeerExchangeService(sharedCentralCore);
+    peerExchangeService = new PeerExchangeService(sharedCentralCore, { processNodeId });
     try {
       peerExchangeService.start();
     } catch (err) {
@@ -852,6 +852,8 @@ export async function runDaemon(opts: DaemonOptions = {}) {
     engine: primaryEngine,
     engineManager,
     centralCore: sharedCentralCore ?? undefined,
+    processNodeId,
+    registryLocalNodeId,
     onMerge: (taskId) => primaryEngine.onMerge(taskId),
     authStorage: dashboardAuthStorage,
     modelRegistry,
@@ -1029,7 +1031,7 @@ export async function runDaemon(opts: DaemonOptions = {}) {
     */
     if (centralCore) {
       try {
-        await centralCore.markLocalNodeOffline();
+        await centralCore.updateNode(processNodeId, { status: "offline" });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn(`[daemon] Failed to set local node offline: ${message}`);

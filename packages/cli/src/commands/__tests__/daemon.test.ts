@@ -1,8 +1,19 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+
+const originalProcessNodeId = process.env.FUSION_NODE_ID;
+
+beforeAll(() => {
+  process.env.FUSION_NODE_ID = "node-local";
+});
+
+afterAll(() => {
+  if (originalProcessNodeId === undefined) delete process.env.FUSION_NODE_ID;
+  else process.env.FUSION_NODE_ID = originalProcessNodeId;
+});
 
 const { mockSyncStartupModels, mockShouldUseHybridExecutor, mockHybridExecutorCtor, mockHybridExecutorInitialize, mockHybridExecutorShutdown } = vi.hoisted(() => ({
   mockSyncStartupModels: vi.fn().mockResolvedValue(undefined),
@@ -874,6 +885,21 @@ describe("runDaemon", () => {
     try {
       await expect(runDaemon({ port: 0 })).rejects.toThrow("Configured Fusion node not found: missing-node");
 
+      expect(mocks.projectEngineCtor).not.toHaveBeenCalled();
+      expect(mocks.createServerMock).not.toHaveBeenCalled();
+    } finally {
+      if (previousNodeId === undefined) delete process.env.FUSION_NODE_ID;
+      else process.env.FUSION_NODE_ID = previousNodeId;
+    }
+  });
+
+  it("fails closed before engine or HTTP startup when process node identity is missing", async () => {
+    const previousNodeId = process.env.FUSION_NODE_ID;
+    delete process.env.FUSION_NODE_ID;
+    try {
+      await expect(runDaemon({ port: 0 })).rejects.toThrow(
+        "FUSION_NODE_ID is required for shared-database runtime startup",
+      );
       expect(mocks.projectEngineCtor).not.toHaveBeenCalled();
       expect(mocks.createServerMock).not.toHaveBeenCalled();
     } finally {

@@ -27,8 +27,9 @@ export function canExecuteTaskOnNode(
   task: Pick<Task, "effectiveNodeId" | "nodeId">,
   localNodeId: string | undefined,
   settings?: Pick<ProjectSettings, "defaultNodeId">,
+  registryLocalNodeId?: string,
 ): boolean {
-  const assignedNodeId = resolveAssignedNodeId(task, settings);
+  const assignedNodeId = resolveAssignedNodeId(task, settings) ?? registryLocalNodeId?.trim();
   if (!assignedNodeId) return true;
   return localNodeId?.trim() === assignedNodeId;
 }

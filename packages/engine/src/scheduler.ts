@@ -3178,6 +3178,8 @@ export class Scheduler {
               await this.store.logEntry(task.id, `symbol-lock admission acquired: ${missionAdmission.symbols.join(", ")}`);
             }
 
+            reservedWorktreeSlots += 1;
+            reservedConcurrentSlots += 1;
             dispatchPrepByTaskId.set(task.id, {
               baseBranch: this.resolveBaseBranch(freshTask, tasks, isReviewColumnTask),
               dispatchStormCount: nextDispatchStormCount,
@@ -3186,14 +3188,66 @@ export class Scheduler {
               effectiveNodeSource: effectiveNode.source,
               task: freshTask,
             });
-
-            reservedWorktreeSlots += 1;
-            reservedConcurrentSlots += 1;
             let released = false;
             return {
+              // Compatibility fallback for stores without the locked-preparation
+              // extension; the authoritative PostgreSQL path always invokes the
+              // preparation below and overrides this snapshot.
               dispatchRoute: {
                 effectiveNodeId: effectiveNode.nodeId ?? null,
                 effectiveNodeSource: effectiveNode.source,
+              },
+              prepareLockedMove: async (lockedTask) => {
+                const lockedSettings = await this.store.getSettings();
+                if (lockedSettings.globalPause || lockedSettings.enginePaused || lockedTask.paused || lockedTask.userPaused) {
+                  return null;
+                }
+
+                let lockedEffectiveNode = resolveEffectiveNode(lockedTask, lockedSettings);
+                if (lockedEffectiveNode.nodeId !== undefined && this.options.validateNodeDispatch) {
+                  const validation = await this.options.validateNodeDispatch(lockedEffectiveNode.nodeId);
+                  if (!validation.allowed) return null;
+                }
+                if (lockedEffectiveNode.nodeId !== undefined && this.options.nodeHealthMonitor) {
+                  const decision = applyUnavailableNodePolicy({
+                    effectiveNode: lockedEffectiveNode,
+                    nodeHealth: this.options.nodeHealthMonitor.getNodeHealth(lockedEffectiveNode.nodeId),
+                    policy: lockedSettings.unavailableNodePolicy,
+                  });
+                  if (!decision.allowed) return null;
+                  if (decision.fallbackToLocal) lockedEffectiveNode = { nodeId: undefined, source: "local" };
+                }
+                if (
+                  this.options.localNodeId
+                  && !isProcessEligibleForEffectiveNode(
+                    lockedEffectiveNode,
+                    this.options.localNodeId,
+                    this.options.registryLocalNodeId ?? this.options.localNodeId,
+                  )
+                ) {
+                  return null;
+                }
+
+                dispatchPrepByTaskId.set(task.id, {
+                  baseBranch: this.resolveBaseBranch(lockedTask, tasks, isReviewColumnTask),
+                  dispatchStormCount: nextDispatchStormCount,
+                  dispatchTimestamp,
+                  effectiveNodeId: lockedEffectiveNode.nodeId ?? null,
+                  effectiveNodeSource: lockedEffectiveNode.source,
+                  task: lockedTask,
+                });
+                return {
+                  dispatchRoute: {
+                    effectiveNodeId: lockedEffectiveNode.nodeId ?? null,
+                    effectiveNodeSource: lockedEffectiveNode.source,
+                  },
+                  allocateWorktree: (reservedNames) => this.planWorktreePath(
+                    lockedTask,
+                    lockedSettings.worktreeNaming,
+                    reservedNames,
+                    lockedSettings,
+                  ),
+                };
               },
               release: () => {
                 if (released) return;
@@ -3239,8 +3293,12 @@ export class Scheduler {
         FNXC:WorkflowScheduling 2026-06-23-22:36:
         Persist dispatch metadata before executor handoff when possible, but isolate update/log failures per task. A metadata failure must not block later released tasks or strand an already released task without onSchedule handoff.
         */
-        schedulerLog.log(`Starting ${taskId}: ${prep.task.title || taskId} (deps satisfied)`);
         const latest = await this.store.getTask(taskId).catch(() => null);
+        if (!latest) {
+          schedulerLog.warn(`Released task ${taskId} could not be re-read; executor handoff skipped`);
+          continue;
+        }
+        schedulerLog.log(`Starting ${taskId}: ${latest.title || taskId} (deps satisfied)`);
         const dispatchUpdate = {
           status: null,
           blockedBy: null,
@@ -3249,17 +3307,9 @@ export class Scheduler {
           dispatchStormCount: prep.dispatchStormCount,
           lastDispatchAt: prep.dispatchTimestamp,
         };
-        const scheduledTask = {
-          ...(latest?.id === taskId ? latest : prep.task),
-          ...dispatchUpdate,
-          status: undefined,
-          blockedBy: undefined,
-          effectiveNodeId: prep.effectiveNodeId ?? undefined,
-          effectiveNodeSource: prep.effectiveNodeSource as Task["effectiveNodeSource"],
-          column: "in-progress" as const,
-        };
+        let scheduledTask: Task = latest;
         try {
-          await this.store.updateTask(taskId, dispatchUpdate);
+          scheduledTask = await this.store.updateTask(taskId, dispatchUpdate);
         } catch (error) {
           schedulerLog.error(`Post-release dispatch metadata update failed for ${taskId}:`, error);
         }
@@ -3275,7 +3325,7 @@ export class Scheduler {
         this.wasPermanentAgentUnavailable.delete(taskId);
         this.clearDispatchQueuedReasonMemo(taskId);
         try {
-          await this.store.logEntry(taskId, `Node routing resolved: ${prep.effectiveNodeId ?? "local"} (source: ${prep.effectiveNodeSource})`);
+          await this.store.logEntry(taskId, `Node routing resolved: ${scheduledTask.effectiveNodeId ?? "local"} (source: ${scheduledTask.effectiveNodeSource})`);
         } catch (error) {
           schedulerLog.error(`Post-release dispatch log failed for ${taskId}:`, error);
         }

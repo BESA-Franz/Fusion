@@ -4113,6 +4113,37 @@ describe("SelfHealingManager", () => {
       managerWithRecovery.stop();
     });
 
+    it("does not clear or rebind worktree metadata owned by another node", async () => {
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        localNodeId: "node-pc2",
+        registryLocalNodeId: "node-vps",
+      });
+      mockedExistsSync.mockReturnValue(false);
+      mockedGetRegisteredWorktreeBranchMap.mockResolvedValue(new Map<string, string>());
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([{
+        id: "FN-FOREIGN-WORKTREE",
+        column: "in-review",
+        paused: false,
+        status: "merging-fix",
+        scopeOverride: true,
+        worktree: "/tmp/project/.worktrees/foreign",
+        branch: "fusion/FN-FOREIGN-WORKTREE",
+        sessionFile: "/tmp/project/.fusion/sessions/foreign.json",
+        dependencies: [],
+        steps: [{ status: "done" }],
+        log: [],
+      }]);
+
+      await expect(managerWithRecovery.reconcileTaskWorktreeMetadata()).resolves.toBe(0);
+      await expect(managerWithRecovery.reconcileInReviewBranchRebind()).resolves.toEqual({
+        repaired: 0,
+        outcomes: [{ taskId: "FN-FOREIGN-WORKTREE", result: "skipped", reason: "foreign-node-route" }],
+      });
+      expect(store.updateTask).not.toHaveBeenCalled();
+      managerWithRecovery.stop();
+    });
+
     it("does NOT clear worktree metadata for a scopeOverride task that is genuinely in-progress (FN-5256 guard)", async () => {
       const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
       mockedExistsSync.mockReturnValue(false);

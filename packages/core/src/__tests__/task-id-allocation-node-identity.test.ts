@@ -52,4 +52,13 @@ describe("task ID allocation node identity", () => {
     );
     expect(central.close).toHaveBeenCalledOnce();
   });
+
+  it("fails closed when no process node is configured", async () => {
+    delete process.env.FUSION_NODE_ID;
+
+    await expect(resolveLocalNodeIdForTaskAllocationImpl({} as never)).rejects.toThrow(
+      "FUSION_NODE_ID is required for shared-database runtime startup",
+    );
+    expect(central.close).toHaveBeenCalledOnce();
+  });
 });

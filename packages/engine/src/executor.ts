@@ -1722,6 +1722,8 @@ export interface TaskExecutorOptions {
    * undefined. Read at runner-construction time instead.
    */
   getLocalNodeId?: () => string | undefined;
+  /** Registry-local owner used only for tasks with no explicit/default route. */
+  getRegistryLocalNodeId?: () => string | undefined;
   semaphore?: AgentSemaphore;
   /** Worktree pool for recycling idle worktrees across tasks. */
   pool?: WorktreePool;
@@ -6144,6 +6146,12 @@ export class TaskExecutor {
     const isDispatchable = (task: Task): boolean =>
       !task.deletedAt
       && !task.paused
+      && canExecuteTaskOnNode(
+        task,
+        this.options.getLocalNodeId?.(),
+        settings,
+        this.options.getRegistryLocalNodeId?.(),
+      )
       && !this.executing.has(task.id)
       && !this.activeSessions.has(task.id)
       && !this.activeStepExecutors.has(task.id)
@@ -6280,9 +6288,11 @@ export class TaskExecutor {
       ? (fn: () => void) => { setTimeout(fn, resumeDelayMs); }
       : (fn: () => void) => { fn(); };
     let yieldNext = false;
-    for (const task of inProgress) {
+    for (const candidate of inProgress) {
       if (yieldNext) await yieldEventLoop();
       yieldNext = true;
+      const task = await this.loadAuthoritativeTaskIfOwned(candidate.id);
+      if (!task) continue;
       // Fast-path: if the task already completed its work (all steps done),
       // move it directly to in-review instead of re-executing from scratch.
       if (this.isTaskWorkComplete(task) && !task.mergeDetails) {
@@ -12828,9 +12838,44 @@ export class TaskExecutor {
   */
   async execute(task: Task): Promise<void> {
     try {
-      await this.executeCore(task);
+      const ownedTask = await this.loadAuthoritativeTaskIfOwned(task.id);
+      if (!ownedTask) return;
+      await this.executeCore(ownedTask);
     } finally {
       if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
+    }
+  }
+
+  private async loadAuthoritativeTaskIfOwned(taskId: string): Promise<Task | null> {
+    // Legacy/local-only callers that do not configure cluster identity keep
+    // their existing behavior; every shared runtime wires both getters.
+    if (!this.options.getLocalNodeId) {
+      return await this.store.getTask(taskId);
+    }
+    const processNodeId = this.options.getLocalNodeId()?.trim();
+    if (!processNodeId) {
+      executorLog.warn(`${taskId}: refusing execute — process node identity is unavailable`);
+      return null;
+    }
+    try {
+      const [liveTask, settings] = await Promise.all([
+        this.store.getTask(taskId),
+        this.store.getSettings(),
+      ]);
+      if (!liveTask) return null;
+      if (!canExecuteTaskOnNode(
+        liveTask,
+        processNodeId,
+        settings,
+        this.options.getRegistryLocalNodeId?.(),
+      )) {
+        executorLog.log(`${taskId}: refusing execute — task is routed to another node`);
+        return null;
+      }
+      return liveTask;
+    } catch (error) {
+      executorLog.warn(`${taskId}: refusing execute — authoritative routing read failed: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
     }
   }
 

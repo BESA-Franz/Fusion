@@ -1064,6 +1064,7 @@ export {
   createDistributedTaskIdAllocator,
   formatDistributedTaskId,
   resolveLocalNodeId,
+  resolveProcessNodeId,
   DistributedTaskIdError,
 } from "./tasks/distributed-task-id.js";
 export type { DistributedTaskIdAllocator } from "./tasks/distributed-task-id.js";

@@ -95,6 +95,29 @@ describe("node-exclusive triage planning", () => {
     expect(updateTaskAtomic).toHaveBeenCalledOnce();
   });
 
+  it("reads the current project default immediately before the planning claim", async () => {
+    const live = task();
+    const updateTaskAtomic = vi.fn(async (
+      _id: string,
+      updater: (current: Task) => unknown,
+    ) => {
+      await updater(live);
+      return live;
+    });
+    const getSettings = vi.fn(async () => settings("node-pc3"));
+    const processor = processorFor("node-pc2", "node-vps", {
+      getSettings,
+      updateTaskAtomic,
+    } as Partial<TaskStore>);
+    const claim = (processor as unknown as {
+      claimPlanningIfOwned(task: Task): Promise<boolean>;
+    }).claimPlanningIfOwned.bind(processor);
+
+    await expect(claim(task())).resolves.toBe(false);
+    expect(getSettings).toHaveBeenCalledOnce();
+    expect(updateTaskAtomic).toHaveBeenCalledOnce();
+  });
+
   it("does not clear another node's stale planning marker", async () => {
     const updateTask = vi.fn();
     const processor = processorFor("node-pc1", "node-vps", {

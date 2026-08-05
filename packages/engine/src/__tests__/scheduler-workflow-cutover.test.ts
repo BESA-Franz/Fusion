@@ -85,13 +85,22 @@ function storeWith(
           effectiveNodeId: string | null;
           effectiveNodeSource: NonNullable<Task["effectiveNodeSource"]>;
         };
+        prepareLockedMove?: (live: Task) => Promise<{
+          dispatchRoute?: {
+            effectiveNodeId: string | null;
+            effectiveNodeSource: NonNullable<Task["effectiveNodeSource"]>;
+          };
+        } | null>;
       },
     ) => {
       const current = byId.get(id)!;
       if (!await predicate(current) || current.column === column) return { task: current, moved: false };
-      if (options?.dispatchRoute) {
-        current.effectiveNodeId = options.dispatchRoute.effectiveNodeId ?? undefined;
-        current.effectiveNodeSource = options.dispatchRoute.effectiveNodeSource;
+      const prepared = options?.prepareLockedMove ? await options.prepareLockedMove(current) : undefined;
+      if (options?.prepareLockedMove && prepared === null) return { task: current, moved: false };
+      const route = prepared?.dispatchRoute ?? options?.dispatchRoute;
+      if (route) {
+        current.effectiveNodeId = route.effectiveNodeId ?? undefined;
+        current.effectiveNodeSource = route.effectiveNodeSource;
       }
       current.column = column;
       return { task: current, moved: true };
@@ -294,6 +303,52 @@ describe("Scheduler workflow cutover", () => {
     expect(onSchedule).not.toHaveBeenCalled();
   });
 
+  it("does not dispatch when task node ownership changes at the locked move boundary", async () => {
+    const ready = task({ id: "FN-NODE-RACE" });
+    const store = storeWith([ready]);
+    const originalMove = vi.mocked(store.moveTaskIf).getMockImplementation()!;
+    vi.mocked(store.moveTaskIf).mockImplementation(async (...args) => {
+      ready.nodeId = "node-pc2";
+      ready.updatedAt = "2026-06-23T00:00:01.000Z";
+      return originalMove(...args);
+    });
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, {
+      localNodeId: "node-vps",
+      registryLocalNodeId: "node-vps",
+      onSchedule,
+    });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(ready.column).toBe("todo");
+    expect(onSchedule).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch when the project default route changes at the locked move boundary", async () => {
+    const ready = task({ id: "FN-DEFAULT-NODE-RACE" });
+    const mutableSettings: Record<string, unknown> = {};
+    const store = storeWith([ready], mutableSettings);
+    const originalMove = vi.mocked(store.moveTaskIf).getMockImplementation()!;
+    vi.mocked(store.moveTaskIf).mockImplementation(async (...args) => {
+      mutableSettings.defaultNodeId = "node-pc2";
+      return originalMove(...args);
+    });
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, {
+      localNodeId: "node-vps",
+      registryLocalNodeId: "node-vps",
+      onSchedule,
+    });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(ready.column).toBe("todo");
+    expect(onSchedule).not.toHaveBeenCalled();
+  });
+
   /*
   FNXC:WorkflowScheduling 2026-07-07-00:00:
   FN-7648 regression: a custom workflow's intake column can be renamed away from
@@ -399,13 +454,15 @@ describe("Scheduler workflow cutover", () => {
     expect(onSchedule).toHaveBeenCalledWith(expect.objectContaining({
       id: "FN-201",
       column: "in-progress",
-      status: undefined,
+      // The metadata write failed, so handoff receives the authoritative moved
+      // row rather than a synthetic task that pretends the queued flag cleared.
+      status: "queued",
       effectiveNodeSource: "local",
     }));
     expect(onSchedule).toHaveBeenCalledWith(expect.objectContaining({
       id: "FN-202",
       column: "in-progress",
-      status: undefined,
+      status: null,
       effectiveNodeSource: "local",
     }));
     const secondDispatchPatch = vi.mocked(store.updateTask).mock.calls

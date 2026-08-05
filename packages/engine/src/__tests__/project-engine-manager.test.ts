@@ -59,9 +59,9 @@ function createMockCentralCore(projects: RegisteredProject[]): CentralCore {
     ),
     updateProject: vi.fn().mockResolvedValue(undefined),
     updateProjectHealth: vi.fn().mockResolvedValue(undefined),
+    updateNode: vi.fn().mockResolvedValue(undefined),
     stopDiscovery: vi.fn(),
-    markLocalNodeOffline: vi.fn().mockResolvedValue(undefined),
-    resolveLocalProjectWorkingDirectory: vi
+    resolveProjectWorkingDirectory: vi
       .fn()
       .mockImplementation((projectId: string) => Promise.resolve(`/mapped/${projectId}`)),
   } as unknown as CentralCore;
@@ -87,6 +87,7 @@ describe("ProjectEngineManager", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.FUSION_NODE_ID = "node_pc2";
     centralCore = createMockCentralCore([projectA, projectB, projectC]);
   });
 
@@ -98,12 +99,13 @@ describe("ProjectEngineManager", () => {
       expect(engine).toBeDefined();
       expect(engine.start).toHaveBeenCalledOnce();
       expect(
-        (centralCore.resolveLocalProjectWorkingDirectory as unknown as ReturnType<typeof vi.fn>),
-      ).toHaveBeenCalledWith("proj_aaa");
+        (centralCore.resolveProjectWorkingDirectory as unknown as ReturnType<typeof vi.fn>),
+      ).toHaveBeenCalledWith("proj_aaa", "node_pc2");
       expect(ProjectEngine).toHaveBeenCalledWith(
         expect.objectContaining({
           projectId: "proj_aaa",
           workingDirectory: "/mapped/proj_aaa",
+          processNodeId: "node_pc2",
           isolationMode: "in-process",
         }),
         centralCore,
@@ -308,7 +310,7 @@ describe("ProjectEngineManager", () => {
       await expect(manager.ensureEngine("proj_aaa")).rejects.toThrow(
         "ProjectEngineManager is stopped",
       );
-      expect(centralCore.markLocalNodeOffline).not.toHaveBeenCalled();
+      expect(centralCore.updateNode).not.toHaveBeenCalled();
     });
 
     it("continues draining other engines when one engine throws", async () => {
@@ -348,8 +350,8 @@ describe("ProjectEngineManager", () => {
 
       await manager.stopAll();
 
-      expect(centralCore.markLocalNodeOffline).toHaveBeenCalledTimes(1);
-      const offlineOrder = (centralCore.markLocalNodeOffline as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+      expect(centralCore.updateNode).toHaveBeenCalledWith("node_pc2", { status: "offline" });
+      const offlineOrder = (centralCore.updateNode as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
       const engineStopOrder = (engineA.stop as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
       expect(offlineOrder).toBeLessThan(engineStopOrder);
     });
@@ -583,7 +585,7 @@ describe("ProjectEngineManager", () => {
           Promise.resolve(projectMap.get(id) ?? null),
         ),
         getProjectByPath: vi.fn().mockResolvedValue(null),
-        resolveLocalProjectWorkingDirectory: vi
+        resolveProjectWorkingDirectory: vi
           .fn()
           .mockImplementation((projectId: string) => Promise.resolve(`/mapped/${projectId}`)),
       } as unknown as CentralCore;

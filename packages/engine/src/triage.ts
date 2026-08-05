@@ -2542,11 +2542,7 @@ export class TriageProcessor {
         */
         let planningClaimed = false;
         try {
-          planningClaimed = await this.updatePlanningStateIfStillCurrent(
-            task,
-            { status: "planning" },
-            (liveTask) => this.isTaskEligibleForThisProcess(liveTask, settings),
-          );
+          planningClaimed = await this.claimPlanningIfOwned(task);
         } finally {
           releasePreHeldAdmissionReservation(task.id);
         }
@@ -3935,6 +3931,17 @@ export class TriageProcessor {
    * provider response. `updateTaskAtomic` holds the task lock across the live-row
    * predicate and patch, closing the scheduler-transition race.
    */
+  private async claimPlanningIfOwned(task: Task): Promise<boolean> {
+    // Admission/semaphore waits can be long. Settings captured before them are
+    // not ownership evidence at the mutation boundary.
+    const claimRoutingSettings = await this.store.getSettings();
+    return this.updatePlanningStateIfStillCurrent(
+      task,
+      { status: "planning" },
+      (liveTask) => this.isTaskEligibleForThisProcess(liveTask, claimRoutingSettings),
+    );
+  }
+
   private async updatePlanningStateIfStillCurrent(
     task: Task,
     patch: Parameters<TaskStore["updateTask"]>[1] | ((live: Task) => Parameters<TaskStore["updateTask"]>[1]),

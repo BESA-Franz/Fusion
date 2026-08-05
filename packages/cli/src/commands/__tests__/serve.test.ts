@@ -1,8 +1,19 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+
+const originalProcessNodeId = process.env.FUSION_NODE_ID;
+
+beforeAll(() => {
+  process.env.FUSION_NODE_ID = "node-local";
+});
+
+afterAll(() => {
+  if (originalProcessNodeId === undefined) delete process.env.FUSION_NODE_ID;
+  else process.env.FUSION_NODE_ID = originalProcessNodeId;
+});
 
 function makeConstructibleMock<T extends (...args: any[]) => unknown>(impl?: T) {
   const mock = vi.fn(function () {});
@@ -1025,6 +1036,22 @@ describe("runServe", () => {
     }
   });
 
+  it("fails closed before engine or HTTP startup when process node identity is missing", async () => {
+    const previousNodeId = process.env.FUSION_NODE_ID;
+    delete process.env.FUSION_NODE_ID;
+    try {
+      await expect(runServe(0, {})).rejects.toThrow(
+        "FUSION_NODE_ID is required for shared-database runtime startup",
+      );
+      expect(mocks.projectEngineCtor).not.toHaveBeenCalled();
+      expect(mocks.createServerMock).not.toHaveBeenCalled();
+      expect(mocks.backendShutdowns[0]).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousNodeId === undefined) delete process.env.FUSION_NODE_ID;
+      else process.env.FUSION_NODE_ID = previousNodeId;
+    }
+  });
+
   /*
    * FNXC:PluginSkillsPostgres 2026-07-14-17:47:
    * `fn serve` skill discovery is metadata-only. Its request-scoped loader must not persist synthetic plugin starts, stops, or errors.
@@ -1812,6 +1839,7 @@ describe("runServe — Peer exchange and discovery", () => {
         port: 4040,
         staleTimeoutMs: 300_000,
       }),
+      "node-local",
     );
 
     await triggerSignal("SIGINT");
@@ -1840,6 +1868,7 @@ describe("runServe — Peer exchange and discovery", () => {
       expect.objectContaining({
         port: 5050,
       }),
+      "node-local",
     );
 
     await triggerSignal("SIGINT");
