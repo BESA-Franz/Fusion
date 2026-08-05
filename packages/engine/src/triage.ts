@@ -146,6 +146,7 @@ import {
   resolvePlanningThinkingLevel,
 } from "./agents/agent-session-helpers.js";
 import { mergeEffectiveSettings } from "./project/effective-settings.js";
+import { canExecuteTaskOnNode } from "./project/effective-node.js";
 import { detectDanglingTaskDocReferences, formatDanglingDiagnostic } from "./spec-validation/task-document-references.js";
 import { buildSessionSkillContext } from "./cli-runtime/session-skill-context.js";
 import {
@@ -276,6 +277,10 @@ export interface TriageProcessorOptions {
   planning falls back to the repo root exactly as before.
   */
   acquirePlanningWorktree?: (taskId: string) => Promise<string | null>;
+  /** Process-scoped node identity used to keep planning on the routed machine. */
+  getLocalNodeId?: () => string | undefined;
+  /** Registry-local fallback target for tasks without an explicit node override. */
+  getRegistryLocalNodeId?: () => string | undefined;
 }
 
 /**
@@ -446,6 +451,21 @@ export class TriageProcessor {
   private taskEvacuatedFromPlanningHandler?: (task: Task, meta?: { lanes?: TaskMoveLanes }) => void;
   private _approvalRequestStore?: ApprovalRequestStore;
 
+  /*
+  FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
+  Planning is an execution lane and must obey the same shared-database owner as
+  scheduling. Unbound work belongs to the registry-local process so two
+  processes cannot plan it concurrently.
+  */
+  private isTaskEligibleForThisProcess(task: Task, settings: Settings): boolean {
+    const processNodeId = this.options.getLocalNodeId?.();
+    if (!processNodeId) return true;
+    const registryLocalNodeId = this.options.getRegistryLocalNodeId?.() ?? processNodeId;
+    return canExecuteTaskOnNode(task, processNodeId, {
+      defaultNodeId: settings.defaultNodeId?.trim() || registryLocalNodeId,
+    });
+  }
+
   /**
    * @param store — Task store instance (also used to listen for `settings:updated` events)
    * @param rootDir — Project root directory
@@ -575,6 +595,7 @@ export class TriageProcessor {
         const tasks = await this.discoverReadyPlanningTasks(
           await this.store.listTasks({ slim: true, includeArchived: false }),
           now,
+          settings,
         );
         return tasks.filter((task) => !this.coordinatorAdmittedTaskIds.has(task.id)).map((task) => ({
           taskId: task.id, projectId: this.rootDir, lane: "planning", createdAt: task.createdAt,
@@ -837,6 +858,8 @@ export class TriageProcessor {
   */
   private async sweepStalePlanningStatuses(allTasks: Task[], now: number): Promise<void> {
     try {
+      const processNodeId = this.options.getLocalNodeId?.();
+      const routingSettings = processNodeId ? await this.store.getSettings() : undefined;
       /*
       FNXC:WorkflowResolvedColumns 2026-07-31-23:59 (SYNC -> ASYNC, same unblock as recoverApprovedTask):
       The lane test resolved through `resolvePlannerLanes`, which answers with the DEFAULT board under
@@ -857,6 +880,7 @@ export class TriageProcessor {
       const staleIrCache = new Map<string, WorkflowIr>();
       const stale: Task[] = [];
       for (const t of allTasks) {
+        if (routingSettings && !this.isTaskEligibleForThisProcess(t, routingSettings)) continue;
         if (t.status !== "planning") continue;
         if (this.processing.has(t.id)) continue;
         if (t.userPaused === true || t.paused === true) continue;
@@ -934,8 +958,11 @@ export class TriageProcessor {
     const swept = await Promise.all(
       sweepColumns.map((column) => this.store.listTasks({ column, slim: true })),
     );
+    const processNodeId = this.options.getLocalNodeId?.();
+    const routingSettings = processNodeId ? await this.store.getSettings() : undefined;
     const seen = new Set<string>();
     const stale = swept.flat().filter((t) => {
+      if (routingSettings && !this.isTaskEligibleForThisProcess(t, routingSettings)) return false;
       if (t.status !== "planning" || this.processing.has(t.id)) return false;
       if (seen.has(t.id)) return false;
       seen.add(t.id);
@@ -1245,6 +1272,15 @@ export class TriageProcessor {
    * Do not recover `needs-replan` / `plan-review-unavailable`.
    */
   async recoverApprovedTask(task: Task): Promise<boolean> {
+    const processNodeId = this.options.getLocalNodeId?.();
+    if (processNodeId) {
+      const liveTask = await this.store.getTask(task.id).catch(() => null);
+      if (!liveTask) return false;
+      const routingSettings = await this.store.getSettings();
+      if (!this.isTaskEligibleForThisProcess(liveTask, routingSettings)) return false;
+      task = liveTask;
+    }
+
     /*
     FNXC:PlanningDependencyReseed 2026-08-04-00:30:
     A dependency reseed from older writers could clear status after the planner
@@ -1696,7 +1732,7 @@ export class TriageProcessor {
    * refresh. Keeping the seed-prompt checks here makes the cross-lane admission
    * union include cards before their planner writes status:"planning".
    */
-  private async discoverReadyPlanningTasks(allTasks: Task[], now: number): Promise<Task[]> {
+  private async discoverReadyPlanningTasks(allTasks: Task[], now: number, settings?: Settings): Promise<Task[]> {
     /*
     FNXC:MergedPlanningColumn 2026-07-28-15:10 (U11):
     Planning discovery has TWO admission rules, and they were selected by hardcoded column id:
@@ -1749,7 +1785,10 @@ export class TriageProcessor {
     EITHER branch, so it never justifies a workflow-selection read. Kept deliberately in sync with
     the two filters below — anything cheap that appears there should appear here.
     */
+    const processNodeId = this.options.getLocalNodeId?.();
+    const routingSettings = processNodeId ? (settings ?? await this.store.getSettings()) : settings;
     const couldBeCandidate = (t: Task): boolean => {
+      if (routingSettings && !this.isTaskEligibleForThisProcess(t, routingSettings)) return false;
       if (this.processing.has(t.id) || this.hasLivePlanningWork(t.id) || t.paused) return false;
       if (t.status === "awaiting-approval" || t.status === "failed" || t.status === "stuck-killed") return false;
       if (t.nextRecoveryAt && new Date(t.nextRecoveryAt).getTime() > now) return false;
@@ -2074,7 +2113,7 @@ export class TriageProcessor {
         this.idleSemaphoreLeakCandidateSince = result.candidateSinceMs;
       }
 
-      const triageTasks = await this.discoverReadyPlanningTasks(allTasks, now);
+      const triageTasks = await this.discoverReadyPlanningTasks(allTasks, now, settings);
 
       /*
       FNXC:ConcurrencyAdmission 2026-08-03-12:00:
@@ -2400,6 +2439,23 @@ export class TriageProcessor {
   }
 
   async specifyTask(task: Task): Promise<void> {
+    const processNodeId = this.options.getLocalNodeId?.();
+    if (processNodeId) {
+      const routedTask = await this.store.getTask(task.id).catch((error) => {
+        planLog.warn(
+          `${task.id}: refusing planning preflight — authoritative task refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return null;
+      });
+      const routingSettings = await this.store.getSettings();
+      if (!routedTask || !this.isTaskEligibleForThisProcess(routedTask, routingSettings)) {
+        if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
+        this.coordinatorAdmittedTaskIds.delete(task.id);
+        return;
+      }
+      task = routedTask;
+    }
+
     /*
     FNXC:TriageStuckKill 2026-07-18-21:05:
     Refuse a second planner when finalize/Plan Review is still live even if
@@ -2486,7 +2542,11 @@ export class TriageProcessor {
         */
         let planningClaimed = false;
         try {
-          planningClaimed = await this.updatePlanningStateIfStillCurrent(task, { status: "planning" });
+          planningClaimed = await this.updatePlanningStateIfStillCurrent(
+            task,
+            { status: "planning" },
+            (liveTask) => this.isTaskEligibleForThisProcess(liveTask, settings),
+          );
         } finally {
           releasePreHeldAdmissionReservation(task.id);
         }
@@ -3878,12 +3938,13 @@ export class TriageProcessor {
   private async updatePlanningStateIfStillCurrent(
     task: Task,
     patch: Parameters<TaskStore["updateTask"]>[1] | ((live: Task) => Parameters<TaskStore["updateTask"]>[1]),
+    guard?: (live: Task) => boolean,
   ): Promise<boolean> {
     if (typeof this.store.updateTaskAtomic !== "function") {
       // Compatibility adapters used by older embedded hosts do not expose the
       // core task lock; current TaskStore implementations always take the atomic path.
       const liveTask = await Promise.resolve(this.store.getTask(task.id)).catch(() => task) ?? task;
-      if (!isTaskStillInPlanningStage(liveTask)) {
+      if (!isTaskStillInPlanningStage(liveTask) || (guard && !guard(liveTask))) {
         return false;
       }
       await this.store.updateTask(task.id, typeof patch === "function" ? patch(liveTask) : patch);
@@ -3892,7 +3953,7 @@ export class TriageProcessor {
 
     let persisted = false;
     await this.store.updateTaskAtomic(task.id, (liveTask) => {
-      if (!isTaskStillInPlanningStage(liveTask)) {
+      if (!isTaskStillInPlanningStage(liveTask) || (guard && !guard(liveTask))) {
         /*
          * FNXC:Triage 2026-07-15-16:35:
          * FN-7977: a provider or validation failure must never overwrite an

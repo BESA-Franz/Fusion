@@ -23,6 +23,7 @@ import {
   mergeBuiltInZaiProviderModels,
   registerBuiltInGrokProvider,
   registerBuiltInZaiProvider,
+  resolveLocalNodeId,
 } from "@fusion/core";
 import type { AutomationRunResult, ScheduledTask } from "@fusion/core";
 import { createServer, GitHubClient, createSkillsAdapter, getCliPackageVersion, getProjectSettingsPath, isUnresolvedCliPackageVersion, loadTlsCredentialsFromEnv, refreshAllCustomProviderModels, registerGithubTrackingHook } from "@fusion/dashboard";
@@ -349,6 +350,18 @@ export async function runServe(
 
   let startupEngineManager: ProjectEngineManager | undefined;
   try {
+
+  /*
+  FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
+  Validate before registration, engine construction, discovery, or listen so
+  an explicit unknown identity cannot create local side effects under the
+  registry-local node.
+  */
+  const processNodeId = resolveLocalNodeId(
+    (await sharedCentralCore.listNodes()).map((node) => ({ id: node.id, type: node.type })),
+    "local",
+    process.env.FUSION_NODE_ID,
+  );
 
   // ── ProjectEngineManager: uniform engine lifecycle for all projects ──
   //
@@ -1128,16 +1141,11 @@ export async function runServe(
   // If it wasn't initialized successfully, create a new one for node registration.
   //
   let centralCore: CentralCore | null = sharedCentralCore;
-  let localNodeId: string | undefined;
+  const localNodeId = processNodeId;
 
   try {
     if (centralCore) {
-      const nodes = await centralCore.listNodes();
-      const localNode = nodes.find((node) => node.type === "local");
-      if (localNode) {
-        localNodeId = localNode.id;
-        await centralCore.updateNode(localNode.id, { status: "online" });
-      }
+      await centralCore.updateNode(localNodeId, { status: "online" });
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

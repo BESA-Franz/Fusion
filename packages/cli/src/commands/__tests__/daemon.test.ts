@@ -868,6 +868,20 @@ describe("runDaemon", () => {
     }
   });
 
+  it("fails closed before engine or HTTP startup when process node identity is unknown", async () => {
+    const previousNodeId = process.env.FUSION_NODE_ID;
+    process.env.FUSION_NODE_ID = "missing-node";
+    try {
+      await expect(runDaemon({ port: 0 })).rejects.toThrow("Configured Fusion node not found: missing-node");
+
+      expect(mocks.projectEngineCtor).not.toHaveBeenCalled();
+      expect(mocks.createServerMock).not.toHaveBeenCalled();
+    } finally {
+      if (previousNodeId === undefined) delete process.env.FUSION_NODE_ID;
+      else process.env.FUSION_NODE_ID = previousNodeId;
+    }
+  });
+
   /*
    * FNXC:PluginSkillsPostgres 2026-07-14-17:47:
    * `fn daemon` skill discovery is metadata-only. Its request-scoped loader must not persist synthetic plugin starts, stops, or errors.

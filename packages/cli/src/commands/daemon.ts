@@ -26,6 +26,7 @@ import {
   reconcileClaudeCliPaths,
   registerBuiltInGrokProvider,
   registerBuiltInZaiProvider,
+  resolveLocalNodeId,
 } from "@fusion/core";
 import type { AutomationRunResult, ScheduledTask } from "@fusion/core";
 import { createServer, GitHubClient, createSkillsAdapter, getCliPackageVersion, getProjectSettingsPath, isUnresolvedCliPackageVersion, loadTlsCredentialsFromEnv, refreshAllCustomProviderModels, registerGithubTrackingHook } from "@fusion/dashboard";
@@ -294,6 +295,20 @@ export async function runDaemon(opts: DaemonOptions = {}) {
     await sharedCentralCore.init();
   } catch (error) {
     await migrationHoldingServer?.close().catch(() => undefined);
+    throw error;
+  }
+
+  let processNodeId: string;
+  try {
+    const nodes = await sharedCentralCore.listNodes();
+    processNodeId = resolveLocalNodeId(
+      nodes.map((node) => ({ id: node.id, type: node.type })),
+      "local",
+      process.env.FUSION_NODE_ID,
+    );
+  } catch (error) {
+    await migrationHoldingServer?.close().catch(() => undefined);
+    await sharedCentralCore.close().catch(() => undefined);
     throw error;
   }
 
@@ -965,11 +980,7 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   }
   try {
     if (centralCore) {
-      const nodes = await centralCore.listNodes();
-      const localNode = nodes.find((node) => node.type === "local");
-      if (localNode) {
-        await centralCore.updateNode(localNode.id, { status: "online" });
-      }
+      await centralCore.updateNode(processNodeId, { status: "online" });
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

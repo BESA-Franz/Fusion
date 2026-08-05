@@ -73,6 +73,78 @@ describe("task move route — bypassGuards is not forwardable", () => {
   });
 });
 
+describe("task move route — node-local worktree allocation", () => {
+  function makeStore(nodeId: string) {
+    const moveTask = vi.fn(async (_id: string, column: string, _options?: Record<string, unknown>) => ({
+      id: "FN-REMOTE",
+      column,
+      nodeId,
+      dependencies: [],
+      steps: [],
+      currentStep: 0,
+    }));
+    const store: TaskStore = {
+      getRootDir: vi.fn(() => "C:\\pc1\\project"),
+      getProjectScopedPluginMcpServers: vi.fn(async () => []),
+      getTask: vi.fn(async () => ({ id: "FN-REMOTE", column: "todo", nodeId })),
+      getSettings: vi.fn(async () => ({})),
+      moveTask,
+    } as unknown as TaskStore;
+    return { moveTask, store };
+  }
+
+  function makeCentralCore(processNodeId: string) {
+    return {
+      listNodes: vi.fn(async () => [
+        { id: processNodeId, name: "this process", type: "local", status: "online" },
+        { id: "node-pc2", name: "other process", type: "remote", status: "online" },
+      ]),
+    };
+  }
+
+  it("does not allocate the request-serving PC's path for a task routed to another node", async () => {
+    const { moveTask, store } = makeStore("node-pc2");
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store, {
+      centralCore: makeCentralCore("node-pc1") as never,
+    }));
+
+    const res = await REQUEST(
+      app,
+      "POST",
+      "/api/tasks/FN-REMOTE/move",
+      JSON.stringify({ column: "in-progress" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    const passedOptions = moveTask.mock.calls[0]?.[2] as Record<string, unknown> | undefined;
+    expect(passedOptions?.allocateWorktree).toBeUndefined();
+  });
+
+  it("keeps local worktree allocation when the request-serving process owns the target", async () => {
+    const { moveTask, store } = makeStore("node-pc1");
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store, {
+      centralCore: makeCentralCore("node-pc1") as never,
+    }));
+
+    const res = await REQUEST(
+      app,
+      "POST",
+      "/api/tasks/FN-REMOTE/move",
+      JSON.stringify({ column: "in-progress" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    const passedOptions = moveTask.mock.calls[0]?.[2] as Record<string, unknown> | undefined;
+    expect(passedOptions?.allocateWorktree).toEqual(expect.any(Function));
+  });
+});
+
 /*
 FNXC:WorkflowLifecycleColumns 2026-08-03-00:35 (added while fixing the red above):
 

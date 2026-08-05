@@ -75,6 +75,11 @@ const strandedHoldWarningMemo = new Set<string>();
  *  sweep calls `release()` if the subsequent move rejects on capacity. */
 export interface SlotReservation {
   release(): void;
+  /** Route persisted atomically by moveTaskIf before task:moved is emitted. */
+  dispatchRoute?: {
+    effectiveNodeId: string | null;
+    effectiveNodeSource: Task["effectiveNodeSource"];
+  };
 }
 
 /** Injected dependencies so the sweep stays unit-testable with fake timers and
@@ -847,6 +852,7 @@ async function issueRelease(
         && !(targetIsProcessing && !options.allowUnplanned && isTaskBlockedOnApproval(live)),
       {
         moveSource: "scheduler",
+        dispatchRoute: reservation?.dispatchRoute,
         allocateWorktree:
           targetIsProcessing && deps.allocateWorktree
             ? (reservedNames) => deps.allocateWorktree!(task, reservedNames)

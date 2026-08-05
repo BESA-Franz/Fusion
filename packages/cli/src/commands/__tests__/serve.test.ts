@@ -985,6 +985,7 @@ describe("runServe", () => {
     // server can expose incomplete migration status on the dashboard.
     expect(mocks.createTaskStoreForBackendMock).toHaveBeenCalledWith({
       rootDir: "/repo",
+      consumerId: "engine",
       onMigrationProgress: expect.any(Function),
     });
     expect(mocks.taskStoreCtor).toHaveBeenCalledTimes(1);
@@ -1007,6 +1008,21 @@ describe("runServe", () => {
     expect(mocks.executorInstances[0].resumeOrphaned).toHaveBeenCalledTimes(1);
 
     await triggerSignal("SIGINT");
+  });
+
+  it("fails closed before engine or HTTP startup when process node identity is unknown", async () => {
+    const previousNodeId = process.env.FUSION_NODE_ID;
+    process.env.FUSION_NODE_ID = "missing-node";
+    try {
+      await expect(runServe(0, {})).rejects.toThrow("Configured Fusion node not found: missing-node");
+
+      expect(mocks.projectEngineCtor).not.toHaveBeenCalled();
+      expect(mocks.createServerMock).not.toHaveBeenCalled();
+      expect(mocks.backendShutdowns[0]).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousNodeId === undefined) delete process.env.FUSION_NODE_ID;
+      else process.env.FUSION_NODE_ID = previousNodeId;
+    }
   });
 
   /*

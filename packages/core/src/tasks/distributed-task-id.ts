@@ -25,7 +25,19 @@ export interface DistributedTaskIdAllocator {
 export function resolveLocalNodeId(
   nodes: Array<{ id: string; type: string }> | undefined,
   fallback = "local",
+  configuredNodeId?: string,
 ): string {
+  /*
+  FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
+  Registry type describes topology, not process identity. A shared-database
+  process may therefore be registered as remote from another process' view.
+  Explicit identity is authoritative and an unknown value must fail closed.
+  */
+  const configured = configuredNodeId?.trim();
+  if (configured) {
+    if (nodes?.some((node) => node.id === configured)) return configured;
+    throw new Error(`Configured Fusion node not found: ${configured}`);
+  }
   const localNode = nodes?.find((node) => node.type === "local");
   return localNode?.id ?? fallback;
 }

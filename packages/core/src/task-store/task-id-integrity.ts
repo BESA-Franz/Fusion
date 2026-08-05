@@ -748,8 +748,19 @@ export async function resolveLocalNodeIdForTaskAllocationImpl(_store: TaskStore)
     await central.init();
     try {
       const nodes = await central.listNodes();
-      return resolveLocalNodeId(nodes.map((node) => ({ id: node.id, type: node.type })));
-    } catch {
+      return resolveLocalNodeId(
+        nodes.map((node) => ({ id: node.id, type: node.type })),
+        "local",
+        process.env.FUSION_NODE_ID,
+      );
+    } catch (error) {
+      /*
+      FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
+      Legacy discovery stays best-effort, but an explicit process identity is
+      an ownership contract. Falling back would allocate duplicate task IDs
+      under another node while the shared registry is unavailable or mismatched.
+      */
+      if (process.env.FUSION_NODE_ID?.trim()) throw error;
       return "local";
     } finally {
       await central.close();

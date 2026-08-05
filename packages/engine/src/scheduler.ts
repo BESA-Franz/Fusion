@@ -68,6 +68,14 @@ function logTaskRouting(taskId: string, node: EffectiveNode): void {
   schedulerLog.log(message);
 }
 
+function isProcessEligibleForEffectiveNode(
+  effectiveNode: EffectiveNode,
+  processNodeId: string,
+  registryLocalNodeId: string,
+): boolean {
+  return (effectiveNode.nodeId ?? registryLocalNodeId).trim() === processNodeId.trim();
+}
+
 function shouldRunWorkflowColumnScheduler(_settings: Settings): boolean {
   /*
   FNXC:WorkflowScheduling 2026-06-22-00:00:
@@ -863,6 +871,8 @@ export interface SchedulerOptions {
   validateNodeDispatch?: (nodeId: string) => Promise<NodeDispatchValidationResult>;
   /** Local node identifier used to distinguish self-owned leases from foreign-owned leases. Default: "local". */
   localNodeId?: string;
+  /** Registry-local control-plane node that owns tasks without an explicit node route. */
+  registryLocalNodeId?: string;
   /** Optional shared auto-claim snapshot manager for invalidation on task mutations. */
   snapshotManager?: AutoClaimSnapshotManager;
   /**
@@ -931,6 +941,8 @@ export class Scheduler {
   private wasNodeBlocked = new Set<string>();
   /** Tracks tasks blocked by missing project-node mapping to deduplicate block log entries. */
   private wasNodeDispatchValidationBlocked = new Set<string>();
+  /** Tracks tasks routed to another process to avoid repeating diagnostics every tick. */
+  private wasNodeRouteDeferred = new Set<string>();
   /** Tracks tasks queued due to missing permanent executors when ephemeral workers are disabled. */
   private wasPermanentAgentUnavailable = new Set<string>();
   /** Tracks dispatch-queued reason signatures to avoid per-tick log spam. */
@@ -1409,6 +1421,7 @@ export class Scheduler {
       this.recentEngineTodoRequeues.delete(task.id);
       this.wasNodeDispatchValidationBlocked.delete(task.id);
       this.wasNodeBlocked.delete(task.id);
+      this.wasNodeRouteDeferred.delete(task.id);
       this.wasPermanentAgentUnavailable.delete(task.id);
       this.clearDispatchQueuedReasonMemo(task.id);
 
@@ -1604,6 +1617,7 @@ export class Scheduler {
     this.failedTaskIds.clear();
     this.wasNodeBlocked.clear();
     this.wasNodeDispatchValidationBlocked.clear();
+    this.wasNodeRouteDeferred.clear();
     this.wasPermanentAgentUnavailable.clear();
     this.wasDispatchQueuedReasonLogged.clear();
     schedulerLog.log("Stopped");
@@ -2385,8 +2399,111 @@ export class Scheduler {
 
       const result = await runHoldReleaseSweep(this.store, {
         now: () => Date.now(),
-        reserveSlot: async (task): Promise<SlotReservation | null> => {
+        reserveSlot: async (sweepTask): Promise<SlotReservation | null> => {
           let reservedScope = false;
+
+          /*
+          FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
+          A sweep row is only a candidate snapshot. Refresh ownership before any
+          local filesystem read or mutation; shared-database read failures defer
+          dispatch instead of falling back to this process.
+          */
+          let task: typeof sweepTask;
+          try {
+            const authoritativeTask = await this.store.getTask(sweepTask.id);
+            if (!authoritativeTask || authoritativeTask.column !== sweepTask.column || authoritativeTask.paused) {
+              return null;
+            }
+            task = authoritativeTask;
+          } catch (error) {
+            schedulerLog.warn(
+              `Task ${sweepTask.id} authoritative preflight refresh failed — dispatch deferred: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            return null;
+          }
+
+          let preflightEffectiveNode = resolveEffectiveNode(task, settings);
+          if (this.options.localNodeId && this.options.nodeHealthMonitor) {
+            const localNodeId = this.options.localNodeId;
+            const registryLocalNodeId = this.options.registryLocalNodeId ?? localNodeId;
+            if (task.checkoutNodeId && task.checkedOutBy && task.checkoutNodeId !== localNodeId) {
+              const ownerNodeHealth = this.options.nodeHealthMonitor.getNodeHealth(task.checkoutNodeId);
+              const handoffDecision = decideOwningNodeHandoff({
+                task,
+                ownerNodeId: task.checkoutNodeId,
+                ownerNodeHealth,
+                localNodeId,
+                handoffPolicy: settings.owningNodeHandoffPolicy,
+              });
+              if (handoffDecision.action === "park") {
+                if (localNodeId === registryLocalNodeId && !this.wasNodeBlocked.has(task.id)) {
+                  this.wasNodeBlocked.add(task.id);
+                  if (ownerNodeHealth === "offline" || ownerNodeHealth === "error" || ownerNodeHealth === "online") {
+                    await this.emitNodeUnreachableRecoveryAudit(task, {
+                      ownerNodeId: task.checkoutNodeId,
+                      ownerNodeHealth,
+                      handoffAction: "park",
+                      handoffReason: handoffDecision.reason,
+                      decisionPath: "scheduler-handoff-park",
+                      newColumn: task.column,
+                      dispatchNodeBefore: preflightEffectiveNode.nodeId,
+                      dispatchNodeAfter: preflightEffectiveNode.nodeId,
+                    });
+                  }
+                  const reason = `Owning-node handoff parked dispatch: ${handoffDecision.reason}`;
+                  await this.store.logEntry(task.id, reason);
+                }
+                return null;
+              }
+              if (handoffDecision.action === "reassign-local") {
+                preflightEffectiveNode = { nodeId: undefined, source: "local" };
+              }
+            }
+
+            if (preflightEffectiveNode.nodeId !== undefined) {
+              const decision = applyUnavailableNodePolicy({
+                effectiveNode: preflightEffectiveNode,
+                nodeHealth: this.options.nodeHealthMonitor.getNodeHealth(preflightEffectiveNode.nodeId),
+                policy: settings.unavailableNodePolicy,
+              });
+              if (!decision.allowed) {
+                if (localNodeId === registryLocalNodeId && !this.wasNodeBlocked.has(task.id)) {
+                  this.wasNodeBlocked.add(task.id);
+                  schedulerLog.log(`Task ${task.id} dispatch blocked — ${decision.reason}`);
+                  await this.store.logEntry(task.id, decision.reason);
+                }
+                return null;
+              }
+              if (decision.fallbackToLocal) {
+                preflightEffectiveNode = { nodeId: undefined, source: "local" };
+              }
+            }
+          }
+
+          if (
+            this.options.localNodeId
+            && !isProcessEligibleForEffectiveNode(
+              preflightEffectiveNode,
+              this.options.localNodeId,
+              this.options.registryLocalNodeId ?? this.options.localNodeId,
+            )
+          ) {
+            if (!this.wasNodeRouteDeferred.has(task.id)) {
+              this.wasNodeRouteDeferred.add(task.id);
+              schedulerLog.log(
+                `Task ${task.id} preflight deferred before local filesystem checks — routed to ${preflightEffectiveNode.nodeId ?? this.options.registryLocalNodeId ?? this.options.localNodeId}; current process is ${this.options.localNodeId}`,
+              );
+            }
+            return null;
+          }
+
+          if (task.userPaused) {
+            if (task.status !== "queued") {
+              await this.store.updateTask(task.id, { status: "queued" });
+              await this.logDispatchQueuedReason(task.id, "queued — user paused (manual move to todo)");
+            }
+            return null;
+          }
 
           /*
           FNXC:WorkflowScheduling 2026-07-07-00:00:
@@ -2689,6 +2806,24 @@ export class Scheduler {
               }
             }
           }
+
+          if (
+            this.options.localNodeId
+            && !isProcessEligibleForEffectiveNode(
+              effectiveNode,
+              this.options.localNodeId,
+              this.options.registryLocalNodeId ?? this.options.localNodeId,
+            )
+          ) {
+            if (!this.wasNodeRouteDeferred.has(task.id)) {
+              this.wasNodeRouteDeferred.add(task.id);
+              schedulerLog.log(
+                `Task ${task.id} dispatch deferred — routed to ${effectiveNode.nodeId ?? this.options.registryLocalNodeId ?? this.options.localNodeId}; current process is ${this.options.localNodeId}`,
+              );
+            }
+            return null;
+          }
+          this.wasNodeRouteDeferred.delete(task.id);
 
           if (latestSettings.ephemeralAgentsEnabled === false && !freshTask.assignedAgentId) {
             /*
@@ -3056,6 +3191,10 @@ export class Scheduler {
             reservedConcurrentSlots += 1;
             let released = false;
             return {
+              dispatchRoute: {
+                effectiveNodeId: effectiveNode.nodeId ?? null,
+                effectiveNodeSource: effectiveNode.source,
+              },
               release: () => {
                 if (released) return;
                 released = true;
@@ -3106,8 +3245,6 @@ export class Scheduler {
           status: null,
           blockedBy: null,
           executionStartBranch: prep.baseBranch ?? undefined,
-          effectiveNodeId: prep.effectiveNodeId,
-          effectiveNodeSource: prep.effectiveNodeSource,
           mergeRetries: 0,
           dispatchStormCount: prep.dispatchStormCount,
           lastDispatchAt: prep.dispatchTimestamp,
@@ -3134,6 +3271,7 @@ export class Scheduler {
         this.recentEngineTodoRequeues.delete(taskId);
         this.wasNodeBlocked.delete(taskId);
         this.wasNodeDispatchValidationBlocked.delete(taskId);
+        this.wasNodeRouteDeferred.delete(taskId);
         this.wasPermanentAgentUnavailable.delete(taskId);
         this.clearDispatchQueuedReasonMemo(taskId);
         try {

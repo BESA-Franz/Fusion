@@ -37,6 +37,7 @@ import {
   isPostgresUniqueError,
   ProjectPartitionRekeyError,
   resolveTaskLifecycleColumns,
+  resolveLocalNodeId,
   type WorkflowIr,
 } from "@fusion/core";
 
@@ -1023,13 +1024,35 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   // constructor. Without this, the dashboard boots but project registration
   // is completely broken (POST /api/projects returns 500), blocking the
   // kanban board and all dashboard UI flows.
-  const centralCoreInitPromise = !noEngine
-    ? (async () => {
-        const core = new CentralCore(undefined, { asyncLayer: dashboardLayer });
-        try { await core.init(); } catch { /* non-fatal — fallback defaults */ }
-        return core;
-      })()
-    : undefined;
+  const configuredProcessNodeId = process.env.FUSION_NODE_ID?.trim();
+  const centralCoreInitPromise = (async () => {
+    const core = new CentralCore(undefined, { asyncLayer: dashboardLayer });
+    try {
+      await core.init();
+    } catch (error) {
+      if (configuredProcessNodeId) throw error;
+    }
+    if (configuredProcessNodeId) {
+      const nodes = await core.listNodes();
+      resolveLocalNodeId(
+        nodes.map((node) => ({ id: node.id, type: node.type })),
+        "local",
+        configuredProcessNodeId,
+      );
+    }
+    return core;
+  })();
+  if (configuredProcessNodeId) {
+    try {
+      await centralCoreInitPromise;
+    } catch (error) {
+      await migrationHoldingServer?.close().catch(() => undefined);
+      clearHostTaskStores();
+      await store.close().catch(() => undefined);
+      await dashboardBackendShutdown().catch(() => undefined);
+      throw error;
+    }
+  }
 
   // FNXC:PostgresFinalCutover 2026-07-14-17:20: Initialize the PostgreSQL-backed
   // store and satellite adapters so each receives the live AsyncDataLayer before
@@ -2114,7 +2137,12 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     //
     const githubClient = new GitHubClient();
 
-    const centralCoreForEngine = await phaseTime("centralCore.init (await)", () => centralCoreInitPromise!, logPhase);
+    const centralCoreForEngine = await phaseTime("centralCore.init (await)", () => centralCoreInitPromise, logPhase);
+    localNodeIdForMesh = resolveLocalNodeId(
+      (await centralCoreForEngine.listNodes()).map((node) => ({ id: node.id, type: node.type })),
+      "local",
+      process.env.FUSION_NODE_ID,
+    );
 
     try {
       registerGithubTrackingHook?.();
@@ -2502,8 +2530,12 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     // instance for peer exchange and mDNS discovery.
     //
     try {
-      centralCoreForMesh = new CentralCore(undefined, { asyncLayer: dashboardLayer });
-      await centralCoreForMesh.init();
+      centralCoreForMesh = await centralCoreInitPromise;
+      localNodeIdForMesh = resolveLocalNodeId(
+        (await centralCoreForMesh.listNodes()).map((node) => ({ id: node.id, type: node.type })),
+        "local",
+        process.env.FUSION_NODE_ID,
+      );
 
       peerExchangeService = new PeerExchangeService(centralCoreForMesh);
       peerExchangeService.start();
@@ -2939,12 +2971,12 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     //
     if (centralCoreForMesh) {
       try {
-        const nodes = await centralCoreForMesh.listNodes();
-        const localNode = nodes.find((node) => node.type === "local");
-        if (localNode) {
-          localNodeIdForMesh = localNode.id;
-          await centralCoreForMesh.updateNode(localNode.id, { status: "online" });
-        }
+        localNodeIdForMesh ??= resolveLocalNodeId(
+          (await centralCoreForMesh.listNodes()).map((node) => ({ id: node.id, type: node.type })),
+          "local",
+          process.env.FUSION_NODE_ID,
+        );
+        await centralCoreForMesh.updateNode(localNodeIdForMesh, { status: "online" });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         logSink.warn(`Failed to set local node online: ${message}`, "dashboard");

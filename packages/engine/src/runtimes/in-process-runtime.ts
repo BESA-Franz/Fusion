@@ -25,6 +25,7 @@ import {
   isEphemeralAgent,
   isPlanReviewSatisfied,
   isTaskBlockedOnApproval,
+  resolveLocalNodeId,
   resolveWorkflowIrForTask,
   resolveTaskLifecycleColumns,
 } from "@fusion/core";
@@ -754,7 +755,7 @@ export class InProcessRuntime
   private usageLimitPauser?: UsageLimitPauser;
   /** One runtime-owned cooldown map keeps executor and recovery paths coherent. */
   private credentialRotator?: CredentialInstanceRotator;
-  /** FNXC:PlanReviewLease 2026-07-26-20:42: cluster node id stamped onto review-gate leases; undefined until start() resolves it, or if resolution fails. */
+  /** FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09: process identity shared by dispatch, claims, leases, and recovery. */
   private localNodeId?: string;
   private selfHealingManager?: SelfHealingManager;
   private leaseManager?: MeshLeaseManager;
@@ -947,6 +948,18 @@ export class InProcessRuntime
         }
       }
 
+      /*
+      FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
+      Resolve immediately after the shared backend is attached and before any
+      local store, plugin, or worktree side effect. A configured but unknown
+      process node is a fatal startup error.
+      */
+      const registeredNodes = await this.centralCore.listNodes();
+      const nodeInventory = registeredNodes.map((node) => ({ id: node.id, type: node.type }));
+      const registryLocalNodeId = resolveLocalNodeId(nodeInventory);
+      const localNodeId = resolveLocalNodeId(nodeInventory, "local", process.env.FUSION_NODE_ID);
+      this.localNodeId = localNodeId;
+
       this.messageStore = new MessageStoreClass(null, { asyncLayer: messageLayer });
 
       /*
@@ -1075,6 +1088,7 @@ export class InProcessRuntime
           taskStore: this.taskStore,
           claimStore: this.leaseCentralClaimStore,
           projectId: this.config.projectId,
+          nodeId: localNodeId,
           ...(agentLayer ? { asyncLayer: agentLayer } : {}),
         });
         await agentStoreForReflection.init();
@@ -1178,6 +1192,7 @@ export class InProcessRuntime
       this.leaseManager = new MeshLeaseManager({
         taskStore: this.taskStore,
         agentStore: this.agentStore,
+        localNodeId,
         getHandoffPolicy: () => this.taskStore.getSettings().then((settings) => settings.owningNodeHandoffPolicy),
         getExecutingTaskIds: () => this.executor?.getExecutingTaskIds() ?? new Set<string>(),
         centralClaimStore: this.leaseCentralClaimStore,
@@ -1202,6 +1217,8 @@ export class InProcessRuntime
         missionAutopilot,
         missionExecutionLoop,
         leaseManager: this.leaseManager,
+        localNodeId,
+        registryLocalNodeId,
         onTaskFailed: (taskId) => {
           if (missionAutopilot) {
             void missionAutopilot.handleTaskFailure(taskId);
@@ -1620,6 +1637,8 @@ export class InProcessRuntime
           // FNXC:NodeWorktreeIsolation 2026-07-25-22:10: planning acquires (or reuses) the task's own
           // worktree through the executor's acquisition path, so no lane runs in the shared checkout.
           acquirePlanningWorktree: (taskId) => this.executor.ensureTaskWorktreeForPlanning(taskId),
+          getLocalNodeId: () => this.localNodeId,
+          getRegistryLocalNodeId: () => registryLocalNodeId,
           onSpecifyStart: (t) => {
             this.recordActivity();
             /*
@@ -1703,23 +1722,6 @@ export class InProcessRuntime
         if (!chatLayer2) throw new Error("Self-healing ChatStore requires the project PostgreSQL AsyncDataLayer");
         this.chatStore ??= new ChatStore(chatLayer2);
       }
-      /*
-      FNXC:PlanReviewLease 2026-07-26-20:40:
-      Resolve this engine's cluster node id once at start so review-gate leases can be attributed.
-      Attribution is what lets self-healing tell "a lease my own dead process left behind" from "a
-      peer node's lease that is genuinely running" — the former is reclaimed immediately, the latter
-      keeps the 15-minute staleness floor. Fail-soft: on any error the id stays undefined, leases are
-      written unattributed, and floor-only semantics (the pre-existing behavior) apply.
-      */
-      let localNodeId: string | undefined;
-      try {
-        const registeredNodes = await this.centralCore.listNodes();
-        localNodeId = registeredNodes.find((node) => node.type === "local")?.id;
-      } catch (error) {
-        runtimeLog.warn(`Could not resolve local node id for review-gate lease attribution: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      this.localNodeId = localNodeId;
-
       this.selfHealingManager = new SelfHealingManager(this.taskStore, {
         rootDir: this.config.workingDirectory,
         localNodeId,

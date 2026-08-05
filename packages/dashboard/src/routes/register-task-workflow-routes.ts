@@ -79,6 +79,7 @@ import {
   getPlannerInterventionTimeline,
   isBuiltinWorkflowId,
   resolveProjectColumnsForRoles,
+  resolveLocalNodeId,
   type NearDuplicateCandidate,
   type ThinkingLevel,
 } from "@fusion/core";
@@ -2242,9 +2243,33 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         const existing = await scopedStore.getTask(req.params.id);
         if (existing) {
           const settings = await scopedStore.getSettings();
-          const rootDir = scopedStore.getRootDir();
-          allocateWorktree = (reservedNames) =>
-            planTaskWorktreePath(existing, rootDir, settings.worktreeNaming, reservedNames, settings);
+          /*
+          FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
+          A request process may move a task owned by another node. Only the
+          effective target may allocate a machine-local path; a remote target
+          receives the WIP move without a path and acquires it in its executor.
+          */
+          let processNodeId: string | undefined;
+          let registryLocalNodeId: string | undefined;
+          if (options?.centralCore) {
+            try {
+              const nodes = await options.centralCore.listNodes();
+              const inventory = nodes.map((node) => ({ id: node.id, type: node.type }));
+              processNodeId = resolveLocalNodeId(inventory, "local", process.env.FUSION_NODE_ID);
+              registryLocalNodeId = resolveLocalNodeId(inventory);
+            } catch (error) {
+              if (process.env.FUSION_NODE_ID?.trim()) throw error;
+            }
+          }
+          const targetNodeId = existing.nodeId?.trim()
+            || settings.defaultNodeId?.trim()
+            || registryLocalNodeId;
+          const currentProcessOwnsTarget = !processNodeId || targetNodeId === processNodeId;
+          if (currentProcessOwnsTarget) {
+            const rootDir = scopedStore.getRootDir();
+            allocateWorktree = (reservedNames) =>
+              planTaskWorktreePath(existing, rootDir, settings.worktreeNaming, reservedNames, settings);
+          }
         }
       }
 

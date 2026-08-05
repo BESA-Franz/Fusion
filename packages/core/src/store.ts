@@ -267,6 +267,15 @@ export interface MoveTaskOptions {
    * Never SETS a pause — only prevents the reopen block from clearing one.
    */
   preservePause?: boolean;
+  /**
+   * FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
+   * Scheduler ownership stamped under the same task lock and persistence
+   * transaction as the column move, before task:moved becomes observable.
+   */
+  dispatchRoute?: {
+    effectiveNodeId: string | null;
+    effectiveNodeSource: Task["effectiveNodeSource"];
+  };
   allocateWorktree?: (reservedNames: Set<string>) => string | null;
   moveSource?: "user" | "engine" | "scheduler";
   workflowMoveActor?: WorkflowMovePolicyInput["actor"];

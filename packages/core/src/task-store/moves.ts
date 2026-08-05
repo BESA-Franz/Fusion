@@ -916,6 +916,10 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
     task.column = toColumn;
     task.columnMovedAt = movedAt;
     task.updatedAt = movedAt;
+    if (options?.dispatchRoute) {
+      task.effectiveNodeId = options.dispatchRoute.effectiveNodeId ?? undefined;
+      task.effectiveNodeSource = options.dispatchRoute.effectiveNodeSource;
+    }
 
     /*
     FNXC:WorkflowColumns 2026-07-30-04:00 (U12 — the compatibility flag is RESOLVED):
