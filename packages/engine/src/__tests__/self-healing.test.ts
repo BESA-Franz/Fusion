@@ -296,6 +296,49 @@ describe("SelfHealingManager", () => {
     nodeScoped.stop();
   });
 
+  it("does not mutate a limbo snapshot after another node wins the live row", async () => {
+    const snapshot = {
+      id: "FN-LIMBO-RACE",
+      lineageId: "lineage-limbo-race",
+      title: "Limbo race",
+      column: "in-progress",
+      nodeId: "node-vps",
+      status: null,
+      paused: false,
+      dependencies: [],
+      steps: [{ id: "step-1", title: "Pending", status: "pending" }],
+      currentStep: 0,
+      log: [],
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    } as unknown as Task;
+    const foreignLive = { ...snapshot, nodeId: "node-pc2" };
+    const updateTaskAtomic = vi.fn(async (_id: string, updater: (live: Task) => Promise<unknown>) => {
+      await updater(foreignLive);
+      return foreignLive;
+    });
+    const moveTaskIf = vi.fn();
+    store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({ globalPause: false, enginePaused: false } as Settings),
+      listTasks: vi.fn().mockResolvedValue([snapshot]),
+      updateTaskAtomic,
+      moveTaskIf,
+      withPlanningLifecycleLock: vi.fn(async (_id: string, callback: () => Promise<unknown>) => callback()),
+      withTaskMutationLock: vi.fn(async (_id: string, callback: () => Promise<unknown>) => callback()),
+    });
+    const nodeScoped = new SelfHealingManager(store, {
+      rootDir: "/tmp/test-project",
+      localNodeId: "node-vps",
+      registryLocalNodeId: "node-vps",
+    });
+
+    await expect(nodeScoped.recoverInProgressLimbo()).resolves.toBe(0);
+    expect(updateTaskAtomic).toHaveBeenCalledOnce();
+    expect(moveTaskIf).not.toHaveBeenCalled();
+    expect(store.updateTask).not.toHaveBeenCalledWith(snapshot.id, expect.objectContaining({ worktree: null }));
+    nodeScoped.stop();
+  });
+
   // ── Auto-unpause ─────────────────────────────────────────────────
 
   describe("auto-unpause", () => {

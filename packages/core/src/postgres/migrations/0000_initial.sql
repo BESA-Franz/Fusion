@@ -1753,6 +1753,7 @@ CREATE TABLE IF NOT EXISTS central.nodes (
   plugin_versions jsonb,
   docker_config jsonb,
   max_concurrent integer NOT NULL DEFAULT 2,
+  runtime_lease_generation bigint NOT NULL DEFAULT 0,
   created_at text NOT NULL,
   updated_at text NOT NULL,
   CONSTRAINT nodes_type_check CHECK (type IN ('local', 'remote'))

@@ -222,6 +222,25 @@ pgDescribe("CentralCore backend mode (PostgreSQL)", () => {
     await expect(ctx.central.getNode(localNode.id)).resolves.toMatchObject({ status: "offline" });
   });
 
+  it("keeps a runtime lease releasable across normal metrics writes", async () => {
+    ctx = await setupCtx();
+    const localNode = (await ctx.central.listNodes()).find((node) => node.type === "local")!;
+    const lease = await ctx.central.acquireNodeRuntimeLease(localNode.id);
+
+    await ctx.central.updateNodeMetrics(localNode.id, {
+      cpuUsage: 12,
+      memoryUsed: 1_024,
+      memoryTotal: 8_192,
+      storageUsed: 4_096,
+      storageTotal: 16_384,
+      uptime: 60_000,
+      reportedAt: new Date().toISOString(),
+    });
+
+    await expect(ctx.central.releaseNodeRuntimeLease(lease)).resolves.toBe(true);
+    await expect(ctx.central.getNode(localNode.id)).resolves.toMatchObject({ status: "offline" });
+  });
+
   it("logs and reads activity through PostgreSQL", async () => {
     ctx = await setupCtx();
     const projectPath = makeProjectDir(ctx, "gamma");

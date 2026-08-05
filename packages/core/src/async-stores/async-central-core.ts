@@ -887,19 +887,37 @@ export async function updateNodeColumns(
     .where(eq(schema.central.nodes.id, id));
 }
 
-export async function updateNodeStatusIfVersion(
+/** Atomically mark a node online and advance its dedicated runtime fence. */
+export async function acquireNodeRuntimeLeaseGeneration(
   handle: QueryHandle,
   id: string,
-  expectedUpdatedAt: string,
-  status: string,
-  nextUpdatedAt: string,
+  updatedAt: string,
+): Promise<number | null> {
+  const rows = await handle
+    .update(schema.central.nodes)
+    .set({
+      status: "online",
+      updatedAt,
+      runtimeLeaseGeneration: sql`${schema.central.nodes.runtimeLeaseGeneration} + 1`,
+    })
+    .where(eq(schema.central.nodes.id, id))
+    .returning({ generation: schema.central.nodes.runtimeLeaseGeneration });
+  return rows[0]?.generation ?? null;
+}
+
+/** Mark a node offline only while the caller still owns its generation. */
+export async function releaseNodeRuntimeLeaseGeneration(
+  handle: QueryHandle,
+  id: string,
+  expectedGeneration: number,
+  updatedAt: string,
 ): Promise<boolean> {
   const rows = await handle
     .update(schema.central.nodes)
-    .set({ status, updatedAt: nextUpdatedAt })
+    .set({ status: "offline", updatedAt })
     .where(and(
       eq(schema.central.nodes.id, id),
-      eq(schema.central.nodes.updatedAt, expectedUpdatedAt),
+      eq(schema.central.nodes.runtimeLeaseGeneration, expectedGeneration),
     ))
     .returning({ id: schema.central.nodes.id });
   return rows.length === 1;

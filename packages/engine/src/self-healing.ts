@@ -12826,25 +12826,94 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             }
           }
 
-          const stepStatuses = task.steps.map((step) => step.status);
-          const ageMs = Math.max(0, now - new Date(task.updatedAt).getTime());
-          await this.store.updateTask(task.id, {
-            status: null,
-            error: null,
-            worktree: null,
-            branch: null,
-            checkedOutBy: null,
-            executionStartedAt: null,
-            worktreeSessionRetryCount: null,
-            taskDoneRetryCount: null,
-            sessionFile: null,
-          });
+          const commitRecovery = async (): Promise<{ prior: Task; recovered: Task } | null> => {
+            const liveSettings = await this.store.getSettings();
+            let applied = false;
+            let prior: Task | null = null;
+            const updated = await this.store.withTaskMutationLock(task.id, async () =>
+              this.store.updateTaskAtomic(task.id, async (live) => {
+                const liveExecutionSignal = this.getFalsePositiveRequeueSignal(live, {
+                  executingIds,
+                  activeHeartbeatTaskIds,
+                  graceMs: ORPHANED_EXECUTION_RECOVERY_GRACE_MS,
+                });
+                const liveLanes = limboLanes.get(live.id) ?? new Set(limboWipColumns);
+                const structurallyStranded = liveLanes.has(live.column)
+                  && !live.paused
+                  && (!live.worktree || !existsSync(live.worktree))
+                  && !(typeof live.branch === "string" && live.branch.trim().length > 0)
+                  && live.steps.every((step) => step.status === "pending")
+                  && Date.now() - new Date(live.updatedAt).getTime() >= ORPHANED_EXECUTION_RECOVERY_GRACE_MS;
+                if (
+                  liveExecutionSignal
+                  || !structurallyStranded
+                  || live.checkedOutBy
+                  || (this.options.localNodeId && !canExecuteTaskOnNode(
+                    live,
+                    this.options.localNodeId,
+                    liveSettings,
+                    this.options.registryLocalNodeId ?? this.options.localNodeId,
+                  ))
+                ) {
+                  return null;
+                }
+                applied = true;
+                prior = live;
+                return {
+                  status: null,
+                  error: null,
+                  worktree: null,
+                  branch: null,
+                  checkedOutBy: null,
+                  executionStartedAt: null,
+                  worktreeSessionRetryCount: null,
+                  taskDoneRetryCount: null,
+                  sessionFile: null,
+                };
+              }),
+            );
+            if (!applied || !prior) return null;
+
+            const target = await resolveReboundTargetForTask(this.store, task.id);
+            const moved = await this.store.moveTaskIf(
+              task.id,
+              target,
+              (live) =>
+                live.updatedAt === updated.updatedAt
+                && (limboLanes.get(live.id) ?? new Set(limboWipColumns)).has(live.column)
+                && !live.paused
+                && !live.worktree
+                && !live.branch
+                && !live.checkedOutBy
+                && live.steps.every((step) => step.status === "pending")
+                && (!this.options.localNodeId || canExecuteTaskOnNode(
+                  live,
+                  this.options.localNodeId,
+                  liveSettings,
+                  this.options.registryLocalNodeId ?? this.options.localNodeId,
+                )),
+              { preserveProgress: true, moveSource: "engine", recoveryRehome: true },
+            );
+            return moved.moved ? { prior, recovered: moved.task } : null;
+          };
+
+          /*
+          FNXC:SharedDatabaseNodeOwnership 2026-08-05-02:53:
+          Couple the authoritative-row ownership predicate and metadata mutation
+          under the lifecycle + task-mutation locks. The conditional move then
+          fences any mutation that wins after the patch but before the rehome.
+          */
+          const recovery = await this.store.withPlanningLifecycleLock(task.id, commitRecovery);
+          if (!recovery) continue;
+
+          const stepStatuses = recovery.prior.steps.map((step) => step.status);
+          const ageMs = Math.max(0, now - new Date(recovery.prior.updatedAt).getTime());
           await this.store.logEntry(
             task.id,
-            `Auto-recovered in-progress limbo — ${describeWorktreeState(task)}/null branch with no step progress, moved back to todo`,
+            `Auto-recovered in-progress limbo — ${describeWorktreeState(recovery.prior)}/null branch with no step progress, moved back to todo`,
             JSON.stringify({
-              priorWorktree: task.worktree ?? null,
-              priorBranch: task.branch ?? null,
+              priorWorktree: recovery.prior.worktree ?? null,
+              priorBranch: recovery.prior.branch ?? null,
               ageMs,
               stepStatuses,
             }),
@@ -12853,20 +12922,18 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             runId: generateSyntheticRunId("self-healing-in-progress-limbo", task.id),
             agentId: "self-healing",
             taskId: task.id,
-            taskLineageId: task.lineageId,
+            taskLineageId: recovery.recovered.lineageId,
             phase: "recover-in-progress-limbo",
           }).database({
             type: "task:auto-recover-in-progress-limbo",
             target: task.id,
             metadata: {
-              priorWorktree: task.worktree ?? null,
-              priorBranch: task.branch ?? null,
+              priorWorktree: recovery.prior.worktree ?? null,
+              priorBranch: recovery.prior.branch ?? null,
               ageMs,
               stepStatuses,
             },
           });
-          // #1411: backward recovery — skip order-derived adjacency.
-          await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, moveSource: "engine", recoveryRehome: true });
           recovered++;
         } catch (err: unknown) {
           const errorMessage = err instanceof Error ? err.message : String(err);

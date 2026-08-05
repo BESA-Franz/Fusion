@@ -64,7 +64,7 @@ const engineMocks = vi.hoisted(() => {
     init: vi.fn(async () => undefined),
     close: vi.fn(async () => undefined),
     listNodes: vi.fn(async () => [{ id: "node-local", type: "local" }]),
-    acquireNodeRuntimeLease: vi.fn(async () => ({ nodeId: "node-local", token: "lease-1" })),
+    acquireNodeRuntimeLease: vi.fn(async () => ({ nodeId: "node-local", generation: 1 })),
     releaseNodeRuntimeLease: vi.fn(async () => true),
     listProjects: vi.fn(async () => [] as Array<{ id: string; name: string; path: string; status: string }>),
   };
@@ -539,7 +539,7 @@ describe("LocalRuntimeManager", () => {
       expect.objectContaining({
         authStorage: expect.objectContaining({ __wrapped: true }),
         processNodeId: "node-local",
-        nodeRuntimeLease: { nodeId: "node-local", token: "lease-1" },
+        registryLocalNodeId: "node-local",
       }),
     );
 
@@ -547,8 +547,9 @@ describe("LocalRuntimeManager", () => {
     expect(engineMocks.seedDashboardProvidersDispose).toHaveBeenCalledTimes(1);
     expect(engineMocks.centralCore.releaseNodeRuntimeLease).toHaveBeenCalledWith({
       nodeId: "node-local",
-      token: "lease-1",
+      generation: 1,
     });
+    expect(engineMocks.centralCore.releaseNodeRuntimeLease).toHaveBeenCalledTimes(1);
   });
 
   /*

@@ -6,7 +6,15 @@ import type { AddressInfo } from "node:net";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import * as os from "node:os";
-import { CentralCore, PluginLoader, createTaskStoreForBackend, type TaskStore } from "@fusion/core";
+import {
+  CentralCore,
+  PluginLoader,
+  createTaskStoreForBackend,
+  resolveLocalNodeId,
+  resolveProcessNodeId,
+  type NodeRuntimeLease,
+  type TaskStore,
+} from "@fusion/core";
 import { createServer } from "@fusion/dashboard";
 import { ProjectEngineManager } from "@fusion/engine";
 import { ensureCwdProjectRegistered } from "./ensure-project-registered.js";
@@ -27,6 +35,7 @@ interface DashboardRuntime {
   port: number;
   engineManager?: ProjectEngineManager;
   centralCore?: CentralCore;
+  nodeRuntimeLease?: NodeRuntimeLease;
   /** Releases the PostgreSQL backend pool / embedded cluster (backend mode only). */
   backendShutdown: () => Promise<void>;
 }
@@ -48,6 +57,7 @@ async function startDashboardRuntime(rootDir: string, paused: boolean, noAuth: b
   let server: import("node:http").Server | null = null;
   let engineManager: ProjectEngineManager | undefined;
   let centralCore: CentralCore | undefined;
+  let nodeRuntimeLease: NodeRuntimeLease | undefined;
   try {
     await store.init();
     await store.watch();
@@ -60,15 +70,28 @@ async function startDashboardRuntime(rootDir: string, paused: boolean, noAuth: b
      * FNXC:DesktopRuntime 2026-06-20-23:39:
      * Desktop local mode must start the same project engine lifecycle as CLI dashboard mode; a desktop window without engines leaves users with a live dashboard that cannot execute tasks.
      */
-    centralCore = new CentralCore();
+    const asyncLayer = store.getAsyncLayer();
+    if (!asyncLayer) throw new Error("Desktop runtime requires the PostgreSQL async data layer");
+    centralCore = new CentralCore(undefined, { asyncLayer });
     await centralCore.init();
+    // FNXC:DesktopNodeIdentity 2026-08-05-02:53: Published CLI Desktop resolves engine and registry identities once and passes both through every consumer.
+    const nodes = await centralCore.listNodes();
+    const registryLocalNodeId = resolveLocalNodeId(nodes.map((node) => ({ id: node.id, type: node.type })));
+    const configuredProcessNodeId = process.env.FUSION_NODE_ID?.trim()
+      ? resolveProcessNodeId(nodes, process.env.FUSION_NODE_ID)
+      : registryLocalNodeId;
+    if (configuredProcessNodeId !== registryLocalNodeId) {
+      throw new Error(`Desktop runtime node must be registry-local: ${configuredProcessNodeId}`);
+    }
+    const processNodeId = registryLocalNodeId;
+    nodeRuntimeLease = await centralCore.acquireNodeRuntimeLease(processNodeId);
     const cwdRegistered = await ensureCwdProjectRegistered({
       cwd: rootDir,
       central: centralCore,
       logPrefix: "desktop",
       autoRegister: true,
     });
-    engineManager = new ProjectEngineManager(centralCore);
+    engineManager = new ProjectEngineManager(centralCore, { processNodeId });
     await engineManager.startAll();
     engineManager.startReconciliation();
     const cwdEngine = cwdRegistered
@@ -94,6 +117,8 @@ async function startDashboardRuntime(rootDir: string, paused: boolean, noAuth: b
       engine: cwdEngine,
       engineManager,
       centralCore,
+      processNodeId,
+      registryLocalNodeId,
       pluginStore,
       pluginLoader,
       /*
@@ -127,6 +152,7 @@ async function startDashboardRuntime(rootDir: string, paused: boolean, noAuth: b
       port: address.port,
       engineManager,
       centralCore,
+      nodeRuntimeLease,
       backendShutdown,
     };
   } catch (error) {
@@ -134,6 +160,11 @@ async function startDashboardRuntime(rootDir: string, paused: boolean, noAuth: b
       if (server) await new Promise<void>((resolve) => server?.close(() => resolve()));
     } finally {
       await engineManager?.stopAll().catch(() => undefined);
+      if (centralCore && nodeRuntimeLease) {
+        const ownedLease = nodeRuntimeLease;
+        nodeRuntimeLease = undefined;
+        await centralCore.releaseNodeRuntimeLease(ownedLease).catch(() => undefined);
+      }
       await centralCore?.close?.().catch(() => undefined);
       /* FNXC:PostgresDesktopLifecycle 2026-07-14-19:10: The startup-factory shutdown is the sole TaskStore/pool/postmaster owner and must run even when earlier server, engine, or CentralCore cleanup fails. */
       await backendShutdown().catch(() => undefined);
@@ -149,6 +180,11 @@ async function closeDashboardRuntime(runtime: DashboardRuntime): Promise<void> {
     });
   } finally {
     await runtime.engineManager?.stopAll().catch(() => undefined);
+    const ownedLease = runtime.nodeRuntimeLease;
+    runtime.nodeRuntimeLease = undefined;
+    if (runtime.centralCore && ownedLease) {
+      await runtime.centralCore.releaseNodeRuntimeLease(ownedLease).catch(() => undefined);
+    }
     await runtime.centralCore?.close?.().catch(() => undefined);
     await runtime.backendShutdown().catch(() => undefined);
   }

@@ -287,16 +287,11 @@ export class ProjectEngineManager {
   async stopAll(): Promise<void> {
     this.beginDrain();
 
-    /*
-    FNXC:PostgresResourceLifecycle 2026-07-14-18:42:
-    Project runtimes own the PostgreSQL pools CentralCore may have adopted. Persist mesh-offline state before stopping any engine so runtime backend shutdown cannot race the final central write against a closed pool.
-    */
+    // FNXC:NodeRuntimeLease 2026-08-05-02:53: The startup lifecycle that acquired the fenced lease is its sole releaser; an engine manager must never make a newer rolling-restart process offline.
     try {
       this.centralCore.stopDiscovery();
-      const processNodeId = this.requireProcessNodeId();
-      await this.centralCore.updateNode(processNodeId, { status: "offline" });
     } catch (error) {
-      runtimeLog.warn(`Failed to persist local node offline before engine shutdown: ${error instanceof Error ? error.message : String(error)}`);
+      runtimeLog.warn(`Failed to stop node discovery before engine shutdown: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     const stops = Array.from(this.engines.entries()).map(

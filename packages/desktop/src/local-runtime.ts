@@ -4,7 +4,7 @@ import type { Server } from "node:http";
 import type { AsyncDataLayer, LoadedPluginSchemaContract } from "@fusion/core";
 import type { AddressInfo } from "node:net";
 
-import { resolveDesktopProcessNodeId, resolveDesktopRuntimePrimaryProject } from "./engine-runtime.js";
+import { resolveDesktopNodeIdentity, resolveDesktopRuntimePrimaryProject } from "./engine-runtime.js";
 import { resolveDesktopBundlePluginDirs } from "./bundled-plugin-dirs.js";
 
 /*
@@ -204,16 +204,25 @@ async function createDashboardServerDefault(store: TaskStoreLike, rootDir: strin
   let nodeRuntimeLease: Awaited<ReturnType<InstanceType<typeof CentralCore>["acquireNodeRuntimeLease"]>> | undefined;
   const providerSeeding: { dispose?: () => void } = {};
   const cleanup = async () => {
-    providerSeeding.dispose?.();
-    await engineManager?.stopAll();
-    if (nodeRuntimeLease) await centralCore.releaseNodeRuntimeLease(nodeRuntimeLease);
-    await centralCore.close?.();
+    try {
+      providerSeeding.dispose?.();
+      await engineManager?.stopAll();
+    } finally {
+      const ownedLease = nodeRuntimeLease;
+      nodeRuntimeLease = undefined;
+      try {
+        if (ownedLease) await centralCore.releaseNodeRuntimeLease(ownedLease);
+      } finally {
+        await centralCore.close?.();
+      }
+    }
   };
 
   try {
     strace("createDashboardServer: centralCore.init");
     await centralCore.init();
-    const processNodeId = await resolveDesktopProcessNodeId(centralCore);
+    // FNXC:DesktopNodeIdentity 2026-08-05-02:53: Reuse one resolved identity for the process lease, engines, and registry-local API authorization.
+    const { processNodeId, registryLocalNodeId } = await resolveDesktopNodeIdentity(centralCore);
     nodeRuntimeLease = await centralCore.acquireNodeRuntimeLease(processNodeId);
     engineManager = new ProjectEngineManager(centralCore, { processNodeId });
     const activeEngineManager = engineManager;
@@ -349,7 +358,7 @@ async function createDashboardServerDefault(store: TaskStoreLike, rootDir: strin
       engineManager: activeEngineManager,
       centralCore,
       processNodeId,
-      nodeRuntimeLease,
+      registryLocalNodeId,
       authStorage: wrappedAuthStorage,
       modelRegistry,
       ...(pluginStore && pluginLoader ? { pluginStore: pluginStore as never, pluginLoader, pluginRunner: pluginLoader } : {}),

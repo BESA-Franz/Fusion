@@ -54,4 +54,41 @@ describe("Scheduler post-release node ownership", () => {
     expect(withPlanningLifecycleLock).toHaveBeenCalledWith(live.id, expect.any(Function));
     expect(withTaskMutationLock).toHaveBeenCalledWith(live.id, expect.any(Function));
   });
+
+  it("keeps the persisted locked-move route when project settings change before handoff", async () => {
+    const live = task({
+      nodeId: undefined,
+      effectiveNodeId: "node-vps",
+    });
+    const updateTaskAtomic = vi.fn(async (_id: string, updater: (current: Task) => Promise<unknown>) => {
+      const patch = await updater(live);
+      return patch ? { ...live, ...(patch as object) } : live;
+    });
+    const store = {
+      // This changed after the locked move persisted effectiveNodeId=node-vps.
+      getSettings: vi.fn(async () => ({ defaultNodeId: "node-pc2" })),
+      getTask: vi.fn(async () => live),
+      updateTaskAtomic,
+      withPlanningLifecycleLock: vi.fn(async (_id: string, callback: () => Promise<Task | null>) => callback()),
+      withTaskMutationLock: vi.fn(async (_id: string, callback: () => Promise<Task | null>) => callback()),
+      getTaskWorkflowSelectionAsync: vi.fn(async () => undefined),
+      getWorkflowDefinition: vi.fn(async () => undefined),
+      getRootDir: vi.fn(() => "/tmp/project"),
+      on: vi.fn(),
+      off: vi.fn(),
+    } as unknown as TaskStore;
+    const scheduler = new Scheduler(store, {
+      localNodeId: "node-vps",
+      registryLocalNodeId: "node-vps",
+    });
+    const persist = (scheduler as unknown as {
+      persistReleasedDispatchIfStillOwned(id: string, patch: { status: null }): Promise<Task | null>;
+    }).persistReleasedDispatchIfStillOwned.bind(scheduler);
+
+    await expect(persist(live.id, { status: null })).resolves.toMatchObject({
+      effectiveNodeId: "node-vps",
+      status: null,
+    });
+    expect(updateTaskAtomic).toHaveBeenCalledOnce();
+  });
 });

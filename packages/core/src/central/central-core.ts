@@ -207,13 +207,8 @@ export interface CentralCoreOptions {
 
 export interface NodeRuntimeLease {
   nodeId: string;
-  /** Monotonic node-row version captured by the process that marked it online. */
-  token: string;
-}
-
-function nextNodeRuntimeLeaseToken(previous: string): string {
-  const previousMs = Date.parse(previous);
-  return new Date(Math.max(Date.now(), Number.isFinite(previousMs) ? previousMs + 1 : 0)).toISOString();
+  /** Monotonic dedicated generation captured by the process that marked it online. */
+  generation: number;
 }
 
 export class CentralCore extends EventEmitter<CentralCoreEvents> {
@@ -1030,40 +1025,31 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
 }
 
   /**
-   * Mark a runtime node online and return a fencing token for this process.
-   * Every acquisition advances the row version, including a rolling restart
+   * Mark a runtime node online and return a fencing generation for this process.
+   * Every acquisition advances the dedicated generation, including a rolling restart
    * that begins while the prior process is still shutting down.
    */
   async acquireNodeRuntimeLease(id: string): Promise<NodeRuntimeLease> {
     this.ensureInitialized();
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const current = await this.getNode(id);
-      if (!current) throw new Error(`Node not found: ${id}`);
-      const token = nextNodeRuntimeLeaseToken(current.updatedAt);
-      if (await asyncCentralCore.updateNodeStatusIfVersion(
-        this.backendHandle,
-        id,
-        current.updatedAt,
-        "online",
-        token,
-      )) {
-        const updated = { ...current, status: "online" as const, updatedAt: token };
-        this.emit("node:updated", updated);
-        return { nodeId: id, token };
-      }
-    }
-    throw new Error(`Could not acquire runtime lease for node: ${id}`);
+    const generation = await asyncCentralCore.acquireNodeRuntimeLeaseGeneration(
+      this.backendHandle,
+      id,
+      new Date().toISOString(),
+    );
+    if (generation === null) throw new Error(`Node not found: ${id}`);
+    const updated = await this.getNode(id);
+    if (updated) this.emit("node:updated", updated);
+    return { nodeId: id, generation };
   }
 
-  /** Mark the node offline only when this process still owns its lease token. */
+  /** Mark the node offline only when this process still owns its lease generation. */
   async releaseNodeRuntimeLease(lease: NodeRuntimeLease): Promise<boolean> {
     this.ensureInitialized();
-    const released = await asyncCentralCore.updateNodeStatusIfVersion(
+    const released = await asyncCentralCore.releaseNodeRuntimeLeaseGeneration(
       this.backendHandle,
       lease.nodeId,
-      lease.token,
-      "offline",
-      nextNodeRuntimeLeaseToken(lease.token),
+      lease.generation,
+      new Date().toISOString(),
     );
     if (released) {
       const updated = await this.getNode(lease.nodeId);

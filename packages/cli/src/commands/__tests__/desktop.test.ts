@@ -97,6 +97,7 @@ const mocks = vi.hoisted(() => {
     watch: vi.fn().mockResolvedValue(undefined),
     updateSettings: vi.fn().mockResolvedValue(undefined),
     getPluginStore: vi.fn(() => pluginStore),
+    getAsyncLayer: vi.fn(() => ({ projectId: "project-1" })),
     close: vi.fn(),
   };
   const backendShutdown = vi.fn(async () => undefined);
@@ -110,6 +111,9 @@ const mocks = vi.hoisted(() => {
   const centralCore = {
     init: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
+    listNodes: vi.fn().mockResolvedValue([{ id: "node-local", type: "local" }]),
+    acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", generation: 1 }),
+    releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
   };
   const engine = { id: "engine-1" };
   const engineMap = new Map([[project.id, engine]]);
@@ -184,6 +188,8 @@ vi.mock("@fusion/core", () => ({
   TaskStore: mocks.taskStoreCtor,
   CentralCore: mocks.centralCoreCtor,
   createTaskStoreForBackend: mocks.createTaskStoreForBackend,
+  resolveLocalNodeId: (nodes: Array<{ id: string; type: string }>) => nodes.find((node) => node.type === "local")?.id ?? "local",
+  resolveProcessNodeId: (nodes: Array<{ id: string }>, configured: string) => nodes.some((node) => node.id === configured) ? configured : (() => { throw new Error("unknown node"); })(),
   // FNXC:PluginSubsystem 2026-07-08-00:00: desktop.ts imports PluginLoader
   // from @fusion/core and constructs it for the embedded dashboard server.
   PluginLoader: vi.fn(),
@@ -273,7 +279,9 @@ describe("runDesktop", () => {
     expect(mocks.ensureCwdProjectRegistered).toHaveBeenCalledWith(
       expect.objectContaining({ cwd: "/repo", central: mocks.centralCore, autoRegister: true }),
     );
-    expect(mocks.projectEngineManagerCtor).toHaveBeenCalledWith(mocks.centralCore);
+    expect(mocks.centralCoreCtor).toHaveBeenCalledWith(undefined, { asyncLayer: mocks.store.getAsyncLayer() });
+    expect(mocks.centralCore.acquireNodeRuntimeLease).toHaveBeenCalledWith("node-local");
+    expect(mocks.projectEngineManagerCtor).toHaveBeenCalledWith(mocks.centralCore, { processNodeId: "node-local" });
     expect(mocks.engineManager.startAll).toHaveBeenCalled();
     expect(mocks.engineManager.ensureEngine).toHaveBeenCalledWith("project-1");
     expect(mocks.createServer).toHaveBeenCalledWith(
@@ -282,6 +290,8 @@ describe("runDesktop", () => {
         engine: mocks.engine,
         engineManager: mocks.engineManager,
         centralCore: mocks.centralCore,
+        processNodeId: "node-local",
+        registryLocalNodeId: "node-local",
       }),
     );
     expect(mocks.app.listen).toHaveBeenCalledWith(0);
@@ -301,6 +311,26 @@ describe("runDesktop", () => {
 
     mocks.state.electronChild.emit("exit", 0);
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("passes one resolved node identity to the published CLI desktop engine and API", async () => {
+    await runDesktop();
+
+    expect(mocks.centralCoreCtor).toHaveBeenCalledWith(undefined, { asyncLayer: mocks.store.getAsyncLayer() });
+    expect(mocks.centralCore.acquireNodeRuntimeLease).toHaveBeenCalledWith("node-local");
+    expect(mocks.projectEngineManagerCtor).toHaveBeenCalledWith(mocks.centralCore, { processNodeId: "node-local" });
+    expect(mocks.createServer).toHaveBeenCalledWith(
+      mocks.store,
+      expect.objectContaining({
+        processNodeId: "node-local",
+        registryLocalNodeId: "node-local",
+      }),
+    );
+
+    mocks.state.electronChild.emit("exit", 0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.centralCore.releaseNodeRuntimeLease).toHaveBeenCalledWith({ nodeId: "node-local", generation: 1 });
+    expect(mocks.centralCore.releaseNodeRuntimeLease).toHaveBeenCalledTimes(1);
   });
 
   it("supports --dev mode by skipping build and pointing at Vite URL", async () => {
@@ -424,6 +454,7 @@ describe("runDesktop", () => {
 
     expect(mocks.server.close).toHaveBeenCalledTimes(1);
     expect(mocks.engineManager.stopAll).toHaveBeenCalledTimes(1);
+    expect(mocks.centralCore.releaseNodeRuntimeLease).toHaveBeenCalledWith({ nodeId: "node-local", generation: 1 });
     expect(mocks.store.close).not.toHaveBeenCalled();
     expect(mocks.backendShutdown).toHaveBeenCalledTimes(1);
     expect(process.exit).toHaveBeenCalledWith(7);

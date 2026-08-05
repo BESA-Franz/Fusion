@@ -343,17 +343,49 @@ describe("ProjectEngineManager", () => {
       expect(manager.getAllEngines().size).toBe(0);
     });
 
-    it("persists the local node offline before engine backends stop", async () => {
+    it("leaves node status to the fenced lifecycle owner during a rolling restart", async () => {
       const manager = new ProjectEngineManager(centralCore);
       await manager.startAll();
       const engineA = manager.getEngine("proj_aaa")!;
 
       await manager.stopAll();
 
-      expect(centralCore.updateNode).toHaveBeenCalledWith("node_pc2", { status: "offline" });
-      const offlineOrder = (centralCore.updateNode as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
-      const engineStopOrder = (engineA.stop as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
-      expect(offlineOrder).toBeLessThan(engineStopOrder);
+      expect(centralCore.stopDiscovery).toHaveBeenCalledOnce();
+      expect(centralCore.updateNode).not.toHaveBeenCalled();
+      expect(engineA.stop).toHaveBeenCalledOnce();
+    });
+
+    it("cannot make a newer manager lifecycle offline during a rolling restart", async () => {
+      let generation = 0;
+      let status: "online" | "offline" = "offline";
+      const acquireNodeRuntimeLease = vi.fn(async (nodeId: string) => {
+        status = "online";
+        generation += 1;
+        return { nodeId, generation };
+      });
+      const releaseNodeRuntimeLease = vi.fn(async (lease: { nodeId: string; generation: number }) => {
+        if (lease.generation !== generation) return false;
+        status = "offline";
+        return true;
+      });
+      Object.assign(centralCore, { acquireNodeRuntimeLease, releaseNodeRuntimeLease });
+
+      const oldLease = await acquireNodeRuntimeLease("node_pc2");
+      const oldManager = new ProjectEngineManager(centralCore, { processNodeId: "node_pc2" });
+      await oldManager.startAll();
+      const newLease = await acquireNodeRuntimeLease("node_pc2");
+      const newManager = new ProjectEngineManager(centralCore, { processNodeId: "node_pc2" });
+      await newManager.startAll();
+
+      await oldManager.stopAll();
+      expect(status).toBe("online");
+      await expect(releaseNodeRuntimeLease(oldLease)).resolves.toBe(false);
+      expect(status).toBe("online");
+
+      await newManager.stopAll();
+      await expect(releaseNodeRuntimeLease(newLease)).resolves.toBe(true);
+      expect(status).toBe("offline");
+      expect(centralCore.updateNode).not.toHaveBeenCalled();
     });
 
 

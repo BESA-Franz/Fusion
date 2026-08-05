@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveDesktopProcessNodeId, resolveDesktopRuntimePrimaryProject } from "../engine-runtime";
+import { resolveDesktopNodeIdentity, resolveDesktopProcessNodeId, resolveDesktopRuntimePrimaryProject } from "../engine-runtime";
 
 describe("resolveDesktopProcessNodeId", () => {
   const central = {
@@ -13,8 +13,17 @@ describe("resolveDesktopProcessNodeId", () => {
     await expect(resolveDesktopProcessNodeId(central, undefined)).resolves.toBe("node-local");
   });
 
-  it("honors an explicit desktop process node", async () => {
-    await expect(resolveDesktopProcessNodeId(central, "node-pc2")).resolves.toBe("node-pc2");
+  it("rejects an explicit remote process node instead of splitting Desktop identity", async () => {
+    await expect(resolveDesktopProcessNodeId(central, "node-pc2")).rejects.toThrow(
+      "Desktop runtime node must be registry-local: node-pc2",
+    );
+  });
+
+  it("returns process and registry-local identities from the same node snapshot", async () => {
+    await expect(resolveDesktopNodeIdentity(central, "node-local")).resolves.toEqual({
+      processNodeId: "node-local",
+      registryLocalNodeId: "node-local",
+    });
   });
 });
 

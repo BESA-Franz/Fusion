@@ -66,7 +66,7 @@ const mocks = vi.hoisted(() => {
     init: vi.fn(async () => undefined),
     close: vi.fn(async () => undefined),
     listNodes: vi.fn(async () => [{ id: "node-local", type: "local" }]),
-    acquireNodeRuntimeLease: vi.fn(async () => ({ nodeId: "node-local", token: "lease-1" })),
+    acquireNodeRuntimeLease: vi.fn(async () => ({ nodeId: "node-local", generation: 1 })),
     releaseNodeRuntimeLease: vi.fn(async () => true),
     getProjectByPath: vi.fn(async () => ({ id: "project-1", name: "Repo", path: "/repo", status: "active" })),
     // Default: an operator who already onboarded a project. resolveDesktopRuntimePrimaryProject
@@ -202,7 +202,7 @@ describe("DesktopLocalServerManager", () => {
         engineManager: mocks.engineManager,
         centralCore: mocks.centralCore,
         processNodeId: "node-local",
-        nodeRuntimeLease: { nodeId: "node-local", token: "lease-1" },
+        registryLocalNodeId: "node-local",
       }),
     );
   });
@@ -217,8 +217,9 @@ describe("DesktopLocalServerManager", () => {
     expect(mocks.engineManager.stopAll).toHaveBeenCalled();
     expect(mocks.centralCore.releaseNodeRuntimeLease).toHaveBeenCalledWith({
       nodeId: "node-local",
-      token: "lease-1",
+      generation: 1,
     });
+    expect(mocks.centralCore.releaseNodeRuntimeLease).toHaveBeenCalledTimes(1);
     expect(mocks.centralCore.close).toHaveBeenCalled();
     expect(mocks.store.close).toHaveBeenCalled();
     expect(manager.getState().status).toBe("idle");

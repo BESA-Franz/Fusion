@@ -32,7 +32,7 @@ import { type PrMonitor, type PrComment } from "./merge/pr-monitor.js";
 import { reconcileMissionFeatureState } from "./missions/mission-feature-sync.js";
 import { resolveDedicatedPlannerColumnsForTask, resolvePlannerLanesForTask } from "./planner-lane-resolution.js";
 import { evaluateSpecStaleness, getPromptPath } from "./execution/spec-staleness.js";
-import { resolveEffectiveNode, type EffectiveNode } from "./project/effective-node.js";
+import { canExecuteTaskOnNode, resolveEffectiveNode, type EffectiveNode } from "./project/effective-node.js";
 import { applyUnavailableNodePolicy, decideOwningNodeHandoff } from "./project/node-routing-policy.js";
 import type { NodeDispatchValidationResult } from "./project/node-dispatch-validation.js";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
@@ -2197,9 +2197,11 @@ export class Scheduler {
         const column = (ir as WorkflowIrV2 | null)?.columns?.find((candidate) => candidate.id === live.column);
         if (!isWipColumnRole(column ? resolveColumnFlags(column) : undefined, live.column)) return false;
         if (!this.options.localNodeId) return true;
-        return isProcessEligibleForEffectiveNode(
-          resolveEffectiveNode(live, currentSettings),
+        // FNXC:SharedDatabaseNodeOwnership 2026-08-05-02:53: The locked move already persisted its routing decision; a later settings change must not replace effectiveNodeId during handoff validation.
+        return canExecuteTaskOnNode(
+          live,
           this.options.localNodeId,
+          currentSettings,
           this.options.registryLocalNodeId ?? this.options.localNodeId,
         );
       };

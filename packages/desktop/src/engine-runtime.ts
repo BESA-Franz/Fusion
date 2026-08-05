@@ -1,13 +1,34 @@
 import { resolveLocalNodeId, resolveProcessNodeId, type CentralCore, type RegisteredProject } from "@fusion/core";
 
+export interface DesktopNodeIdentity {
+  processNodeId: string;
+  registryLocalNodeId: string;
+}
+
+/** Resolve the single node identity contract shared by Desktop engine and API startup. */
+export async function resolveDesktopNodeIdentity(
+  centralCore: CentralCore,
+  configuredNodeId = process.env.FUSION_NODE_ID,
+): Promise<DesktopNodeIdentity> {
+  const nodes = await centralCore.listNodes();
+  const registryLocalNodeId = resolveLocalNodeId(nodes.map((node) => ({ id: node.id, type: node.type })));
+  const configuredProcessNodeId = configuredNodeId?.trim()
+    ? resolveProcessNodeId(nodes, configuredNodeId)
+    : registryLocalNodeId;
+  if (configuredProcessNodeId !== registryLocalNodeId) {
+    throw new Error(`Desktop runtime node must be registry-local: ${configuredProcessNodeId}`);
+  }
+  return {
+    processNodeId: registryLocalNodeId,
+    registryLocalNodeId,
+  };
+}
+
 export async function resolveDesktopProcessNodeId(
   centralCore: CentralCore,
   configuredNodeId = process.env.FUSION_NODE_ID,
 ): Promise<string> {
-  const nodes = await centralCore.listNodes();
-  return configuredNodeId?.trim()
-    ? resolveProcessNodeId(nodes, configuredNodeId)
-    : resolveLocalNodeId(nodes.map((node) => ({ id: node.id, type: node.type })));
+  return (await resolveDesktopNodeIdentity(centralCore, configuredNodeId)).processNodeId;
 }
 
 /*

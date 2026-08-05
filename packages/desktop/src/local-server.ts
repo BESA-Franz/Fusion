@@ -3,7 +3,7 @@ import { once } from "node:events";
 import type { Server } from "node:http";
 import type { AsyncDataLayer, LoadedPluginSchemaContract } from "@fusion/core";
 
-import { resolveDesktopProcessNodeId, resolveDesktopRuntimePrimaryProject } from "./engine-runtime.js";
+import { resolveDesktopNodeIdentity, resolveDesktopRuntimePrimaryProject } from "./engine-runtime.js";
 import { resolveDesktopBundlePluginDirs } from "./bundled-plugin-dirs.js";
 import { resolveDesktopSystemControl } from "./local-runtime.js";
 
@@ -106,13 +106,22 @@ export class DesktopLocalServerManager {
       let nodeRuntimeLease: Awaited<ReturnType<InstanceType<typeof CentralCore>["acquireNodeRuntimeLease"]>> | undefined;
       const providerSeeding: { dispose?: () => void } = {};
       cleanup = async () => {
-        providerSeeding.dispose?.();
-        await engineManager?.stopAll();
-        if (nodeRuntimeLease) await centralCore.releaseNodeRuntimeLease(nodeRuntimeLease);
-        await centralCore.close?.();
+        try {
+          providerSeeding.dispose?.();
+          await engineManager?.stopAll();
+        } finally {
+          const ownedLease = nodeRuntimeLease;
+          nodeRuntimeLease = undefined;
+          try {
+            if (ownedLease) await centralCore.releaseNodeRuntimeLease(ownedLease);
+          } finally {
+            await centralCore.close?.();
+          }
+        }
       };
       await centralCore.init();
-      const processNodeId = await resolveDesktopProcessNodeId(centralCore);
+      // FNXC:DesktopNodeIdentity 2026-08-05-02:53: Engine ownership and task-workflow routing must receive one resolution result, including the registry-local identity.
+      const { processNodeId, registryLocalNodeId } = await resolveDesktopNodeIdentity(centralCore);
       nodeRuntimeLease = await centralCore.acquireNodeRuntimeLease(processNodeId);
       engineManager = new ProjectEngineManager(centralCore, { processNodeId });
       const activeEngineManager = engineManager;
@@ -198,7 +207,7 @@ export class DesktopLocalServerManager {
         engineManager: activeEngineManager,
         centralCore,
         processNodeId,
-        nodeRuntimeLease,
+        registryLocalNodeId,
         authStorage: wrappedAuthStorage,
         modelRegistry,
         ...(pluginStore && pluginLoader ? { pluginStore: pluginStore as never, pluginLoader, pluginRunner: pluginLoader } : {}),

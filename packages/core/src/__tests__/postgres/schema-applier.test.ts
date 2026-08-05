@@ -87,6 +87,7 @@ import {
   VALIDATOR_INPUT_FINGERPRINT_VERSION,
   UNPLANNED_EXECUTION_BLOCK_DEDUPE_VERSION,
   QUEUED_EPISODE_SIGNATURE_VERSION,
+  NODE_RUNTIME_LEASE_GENERATION_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -107,7 +108,8 @@ describe("schema-applier: immutable migration identities", () => {
     expect(VALIDATOR_INPUT_FINGERPRINT_VERSION).toBe("0042");
     expect(UNPLANNED_EXECUTION_BLOCK_DEDUPE_VERSION).toBe("0043");
     expect(QUEUED_EPISODE_SIGNATURE_VERSION).toBe("0044");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0044");
+    expect(NODE_RUNTIME_LEASE_GENERATION_VERSION).toBe("0045");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0045");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -803,6 +805,26 @@ pgDescribe("schema-applier: VAL-SCHEMA-001 final-schema parity (table counts)", 
     await expect(applySchemaBaseline(ctx.db, { pluginHooks: [] })).resolves.toEqual({ applied: true, pluginHooksRun: 0 });
     expect(await getAppliedMigrations(ctx.db)).toContain(TASK_LIFECYCLE_OUTBOX_VERSION);
     await assertTaskLifecycleOutboxOwnershipContract(ctx);
+  });
+
+  it("upgrades existing nodes with a defaulted runtime lease generation", async () => {
+    ctx = await setupFreshDb();
+    await applySchemaBaseline(ctx.db, { pluginHooks: [] });
+    await ctx.db.execute(sql.raw(`
+      INSERT INTO central.nodes (id, name, type, created_at, updated_at)
+      VALUES ('node-upgrade', 'Upgrade Node', 'local', '2026-08-05T00:00:00.000Z', '2026-08-05T00:00:00.000Z');
+      DELETE FROM public.fusion_schema_migrations WHERE version = '0045';
+      ALTER TABLE central.nodes DROP COLUMN runtime_lease_generation;
+    `));
+
+    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [] })).resolves.toEqual({ applied: true, pluginHooksRun: 0 });
+    const rows = (await ctx.db.execute(sql`
+      SELECT runtime_lease_generation
+      FROM central.nodes
+    `)) as unknown as Array<{ runtime_lease_generation: string | number }>;
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => Number(row.runtime_lease_generation) === 0)).toBe(true);
+    expect(await getAppliedMigrations(ctx.db)).toContain(NODE_RUNTIME_LEASE_GENERATION_VERSION);
   });
 
   /*
