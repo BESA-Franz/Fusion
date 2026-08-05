@@ -43,6 +43,7 @@ import {readProjectConfig, writeProjectConfig} from "./async/async-settings.js";
 import {publishSettingsUpdated} from "./settings-ops.js";
 import type {ConfigChangedBy, ConfigurationRevision} from "../types.js";
 import { resolveArchivedLanes } from "../project-lane-vocabulary.js";
+import {acquireTaskAdvisoryXactLock} from "./task-advisory-lock.js";
 
 export function getTaskSelectClauseWithActivityLogLimitImpl(store: TaskStore, limit: number): string {
     const columns = [
@@ -324,9 +325,11 @@ export async function renewCheckoutLeaseImpl(store: TaskStore, taskId: string, u
      * In backend mode, read-check-update inside a transactionImmediate so the
      * soft-delete resurrection guard (R7) and the active-task filter both hold.
      */
-        const layer = store.asyncLayer!;
+    const layer = store.asyncLayer!;
     const dir = store.taskDir(taskId);
     const outcome = await layer.transactionImmediate(async (tx) => {
+      /* Renewal writes participate in the same checkout/recovery/move mutex. */
+      await acquireTaskAdvisoryXactLock(tx, layer.projectId, taskId);
       const row = await readTaskRowInTransaction(tx, taskId, { includeDeleted: true }, layer.projectId);
       if (row?.deletedAt) {
         return { deletedAt: row.deletedAt as string, current: undefined };

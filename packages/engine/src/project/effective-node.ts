@@ -24,11 +24,24 @@ export function resolveAssignedNodeId(
 }
 
 export function canExecuteTaskOnNode(
-  task: Pick<Task, "effectiveNodeId" | "nodeId">,
+  task: Pick<Task, "effectiveNodeId" | "nodeId"> & Partial<Pick<Task, "effectiveNodeSource">>,
   localNodeId: string | undefined,
   settings?: Pick<ProjectSettings, "defaultNodeId">,
   registryLocalNodeId?: string,
 ): boolean {
+  /*
+  FNXC:SharedDatabaseNodeOwnership 2026-08-05-04:30:
+  Once a locked move stamps an effective source, that persisted route is the
+  decision. In particular `{ effectiveNodeSource: "local", effectiveNodeId:
+  null }` means the registry-local node; it must not fall through to a stale
+  task override or to project settings changed after the move.
+  */
+  if (task.effectiveNodeSource) {
+    const persistedNodeId = task.effectiveNodeId?.trim()
+      || (task.effectiveNodeSource === "local" ? registryLocalNodeId?.trim() : undefined);
+    if (!persistedNodeId) return false;
+    return localNodeId?.trim() === persistedNodeId;
+  }
   const assignedNodeId = resolveAssignedNodeId(task, settings) ?? registryLocalNodeId?.trim();
   if (!assignedNodeId) return true;
   return localNodeId?.trim() === assignedNodeId;

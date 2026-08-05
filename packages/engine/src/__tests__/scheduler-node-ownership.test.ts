@@ -91,4 +91,42 @@ describe("Scheduler post-release node ownership", () => {
     });
     expect(updateTaskAtomic).toHaveBeenCalledOnce();
   });
+
+  it("keeps a persisted local route despite stale task routing and changed settings", async () => {
+    const live = task({
+      nodeId: "node-remote-override",
+      effectiveNodeId: undefined,
+      effectiveNodeSource: "local",
+    });
+    const updateTaskAtomic = vi.fn(async (_id: string, updater: (current: Task) => Promise<unknown>) => {
+      const patch = await updater(live);
+      return patch ? { ...live, ...(patch as object) } : live;
+    });
+    const store = {
+      // Neither legacy input may replace the route persisted by the locked move.
+      getSettings: vi.fn(async () => ({ defaultNodeId: "node-changed-default" })),
+      getTask: vi.fn(async () => live),
+      updateTaskAtomic,
+      withPlanningLifecycleLock: vi.fn(async (_id: string, callback: () => Promise<Task | null>) => callback()),
+      withTaskMutationLock: vi.fn(async (_id: string, callback: () => Promise<Task | null>) => callback()),
+      getTaskWorkflowSelectionAsync: vi.fn(async () => undefined),
+      getWorkflowDefinition: vi.fn(async () => undefined),
+      getRootDir: vi.fn(() => "/tmp/project"),
+      on: vi.fn(),
+      off: vi.fn(),
+    } as unknown as TaskStore;
+    const scheduler = new Scheduler(store, {
+      localNodeId: "node-registry-local",
+      registryLocalNodeId: "node-registry-local",
+    });
+    const persist = (scheduler as unknown as {
+      persistReleasedDispatchIfStillOwned(id: string, patch: { status: null }): Promise<Task | null>;
+    }).persistReleasedDispatchIfStillOwned.bind(scheduler);
+
+    await expect(persist(live.id, { status: null })).resolves.toMatchObject({
+      effectiveNodeSource: "local",
+      status: null,
+    });
+    expect(updateTaskAtomic).toHaveBeenCalledOnce();
+  });
 });

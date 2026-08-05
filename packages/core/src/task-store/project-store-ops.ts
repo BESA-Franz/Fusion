@@ -45,6 +45,7 @@ import {isPlanReviewSatisfied} from "../planner/plan-approval.js";
 import {recordRunAuditEvent as recordRunAuditEventAsync} from "../postgres/data-layer.js";
 import {listGoalCitations as listGoalCitationsAsync} from "./async/async-events.js";
 import type {RunAuditEventRow} from "../task-store/row-types.js";
+import {acquireTaskAdvisoryXactLock} from "./task-advisory-lock.js";
 
 export async function getOrCreateForProjectImpl(store: typeof TaskStore, projectId?: string, centralCore?: CentralCore, globalSettingsDir?: string, asyncLayer?: AsyncDataLayer, consumerId?: string,): Promise<TaskStore> {
     if (!asyncLayer) {
@@ -363,41 +364,49 @@ export async function listStrandedRefinementsImpl(store: TaskStore, options?: { 
   }
 
 export async function tryClaimCheckoutImpl(store: TaskStore, taskId: string, claim: { agentId: string; nodeId: string; runId: string | null; leaseEpoch: number; renewedAt: string; }, precondition: CheckoutClaimPrecondition,): Promise<{ ok: true; task: Task } | { ok: false; reason: "row_not_found" | "precondition_failed"; current: Task | null }> {
-    const current = await store.getTask(taskId);
-    if (!current) {
-      return { ok: false, reason: "row_not_found", current: null };
-    }
-
     // FNXC:AgentRoutingBackend 2026-07-12-00:00: PG backend branch for
     // tryClaimCheckout — the SQLite path below is unreachable in backend mode.
-        const layer = store.asyncLayer!;
+    const layer = store.asyncLayer!;
     const now = new Date().toISOString();
     const projectScope = layer.projectId ? sql`AND project_id = ${layer.projectId}` : sql``;
-    const rows = await layer.db.execute(sql`
-      UPDATE project.tasks SET
-        checked_out_by = ${claim.agentId},
-        checked_out_at = COALESCE(checked_out_at, ${now}),
-        checkout_node_id = ${claim.nodeId},
-        checkout_run_id = ${claim.runId},
-        checkout_lease_renewed_at = ${claim.renewedAt},
-        checkout_lease_epoch = ${claim.leaseEpoch}
-      WHERE id = ${taskId}
-        ${projectScope}
-        AND deleted_at IS NULL
-        AND COALESCE(checked_out_by, '') = COALESCE(${precondition.expectedCheckedOutBy ?? ''}, '')
-        AND COALESCE(checkout_node_id, '') = COALESCE(${precondition.expectedNodeId ?? ''}, '')
-        AND COALESCE(checkout_lease_epoch, 0) = COALESCE(${precondition.expectedLeaseEpoch ?? 0}, 0)
-      RETURNING id
-    `);
-    const changes = (rows as unknown[]).length;
-    const post = await store.getTask(taskId);
-    if (changes === 0) {
-      return { ok: false, reason: "precondition_failed", current: post };
-    }
-    if (!post) {
+    /*
+    FNXC:SharedDatabaseNodeOwnership 2026-08-05-04:45:
+    Claim acquisition is a task mutation, not an isolated checkout tuple. Take
+    the same transaction advisory key as moveTask and the recovery mutation
+    session before evaluating the CAS. `updated_at` is part of moveTaskIf's
+    version fence, so a claim that wins after its predicate also invalidates a
+    stale conditional move.
+    */
+    const outcome = await layer.transactionImmediate(async (tx) => {
+      await acquireTaskAdvisoryXactLock(tx, layer.projectId, taskId);
+      const rows = await tx.execute(sql`
+        UPDATE project.tasks SET
+          checked_out_by = ${claim.agentId},
+          checked_out_at = COALESCE(checked_out_at, ${now}),
+          checkout_node_id = ${claim.nodeId},
+          checkout_run_id = ${claim.runId},
+          checkout_lease_renewed_at = ${claim.renewedAt},
+          checkout_lease_epoch = ${claim.leaseEpoch},
+          updated_at = ${now}
+        WHERE id = ${taskId}
+          ${projectScope}
+          AND deleted_at IS NULL
+          AND COALESCE(checked_out_by, '') = COALESCE(${precondition.expectedCheckedOutBy ?? ''}, '')
+          AND COALESCE(checkout_node_id, '') = COALESCE(${precondition.expectedNodeId ?? ''}, '')
+          AND COALESCE(checkout_lease_epoch, 0) = COALESCE(${precondition.expectedLeaseEpoch ?? 0}, 0)
+        RETURNING id
+      `);
+      const row = await readTaskRowInTransaction(tx, taskId, { includeDeleted: true }, layer.projectId);
+      return { changed: (rows as unknown[]).length > 0, row };
+    });
+    if (!outcome.row) {
       return { ok: false, reason: "row_not_found", current: null };
     }
-    return { ok: true, task: post };
+    const current = store.rowToTask(store.pgRowToTaskRow(outcome.row));
+    if (!outcome.changed) {
+      return { ok: false, reason: "precondition_failed", current };
+    }
+    return { ok: true, task: current };
 }
 
 export async function evaluateWorkflowMovePoliciesImpl(store: TaskStore, input: WorkflowMovePolicyInput): Promise<void> {

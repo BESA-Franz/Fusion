@@ -287,6 +287,9 @@ export async function moveTaskIfImpl(
           column: live.column,
           updatedAt: live.updatedAt,
           nodeId: live.nodeId,
+          checkedOutBy: live.checkedOutBy,
+          checkoutNodeId: live.checkoutNodeId,
+          checkoutLeaseEpoch: live.checkoutLeaseEpoch,
         },
       }, live);
       return { task, moved: true };
@@ -1131,6 +1134,9 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         lockedTask.column !== expected.column
         || lockedTask.updatedAt !== expected.updatedAt
         || lockedTask.nodeId !== expected.nodeId
+        || lockedTask.checkedOutBy !== expected.checkedOutBy
+        || lockedTask.checkoutNodeId !== expected.checkoutNodeId
+        || lockedTask.checkoutLeaseEpoch !== expected.checkoutLeaseEpoch
       )) {
         throw new ConditionalMoveConflict();
       }

@@ -313,7 +313,10 @@ export interface MoveTaskInternalOptions {
     toColumn: string;
     workflowSignature: string;
   };
-  expectedTaskVersion?: Pick<Task, "column" | "updatedAt" | "nodeId">;
+  expectedTaskVersion?: Pick<
+    Task,
+    "column" | "updatedAt" | "nodeId" | "checkedOutBy" | "checkoutNodeId" | "checkoutLeaseEpoch"
+  >;
 }
 
 export const WORKFLOW_MOVE_POLICY_TIMEOUT_MS = 5000;
