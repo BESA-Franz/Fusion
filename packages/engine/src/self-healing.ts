@@ -12727,6 +12727,14 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
       const now = Date.now();
 
       const stranded = tasks.filter((task) => {
+        if (this.options.localNodeId && !canExecuteTaskOnNode(
+          task,
+          this.options.localNodeId,
+          settings,
+          this.options.registryLocalNodeId ?? this.options.localNodeId,
+        )) {
+          return false;
+        }
         if (!(limboLanes.get(task.id) ?? limboWipColumns).has(task.column) || task.paused) {
           return false;
         }

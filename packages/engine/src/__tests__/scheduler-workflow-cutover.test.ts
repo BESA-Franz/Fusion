@@ -478,6 +478,28 @@ describe("Scheduler workflow cutover", () => {
     );
   });
 
+  it("skips post-release handoff when the task is rerouted before metadata commit", async () => {
+    const ready = task({ id: "FN-NODE-SWITCH", nodeId: "node-vps" });
+    const store = storeWith([ready], { maxConcurrent: 4, maxWorktrees: 4 });
+    const moveImpl = vi.mocked(store.moveTaskIf).getMockImplementation()!;
+    vi.mocked(store.moveTaskIf).mockImplementation(async (...args) => {
+      const result = await moveImpl(...args);
+      if (result.moved) ready.nodeId = "node-pc2";
+      return result;
+    });
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, {
+      onSchedule,
+      localNodeId: "node-vps",
+      registryLocalNodeId: "node-vps",
+    });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(onSchedule).not.toHaveBeenCalled();
+  });
+
   it("keeps dependency-blocked todo tasks queued on the workflow sweep path", async () => {
     const blocker = task({ id: "FN-001", column: "todo" });
     const dependent = task({ id: "FN-002", dependencies: ["FN-001"] });

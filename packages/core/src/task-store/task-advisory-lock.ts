@@ -1,5 +1,8 @@
 import { sql } from "drizzle-orm";
 import type { DbTransaction } from "../postgres/data-layer.js";
+import { taskAdvisoryLockKey } from "../postgres/advisory-locks.js";
+
+export { taskAdvisoryLockKey } from "../postgres/advisory-locks.js";
 
 /*
 FNXC:WorkflowCapacity 2026-07-28-18:05 (PR #2499 review — cross-process selection race):
@@ -32,20 +35,10 @@ shape for pin-mutation serialization.
 */
 
 /**
- * Namespaced advisory-lock key for one task.
- *
- * Project-scoped because shared PostgreSQL deployments reuse task ids across
- * projects (FNXC:WorkflowModelLanes) — an unscoped key would make two unrelated
- * projects' tasks contend, and would let one project's move serialize against
- * another's selection write.
- */
-export function taskAdvisoryLockKey(projectId: string | undefined, taskId: string): string {
-  const scopedProjectId = projectId?.trim() || "__legacy_unscoped__";
-  return `task:${scopedProjectId}:${taskId}`;
-}
-
-/**
  * Take the per-task advisory lock for the remainder of `tx`.
+ *
+ * The shared key is project-scoped because PostgreSQL deployments reuse task
+ * ids across projects; unrelated projects must neither contend nor serialize.
  *
  * Blocks until any other holder's transaction commits or rolls back. Callers that
  * then read state and act on it are guaranteed that state cannot change under

@@ -2186,6 +2186,67 @@ export class Scheduler {
     }
   }
 
+  private async persistReleasedDispatchIfStillOwned(
+    taskId: string,
+    dispatchUpdate: Parameters<TaskStore["updateTask"]>[1],
+  ): Promise<Task | null> {
+    const commit = async (): Promise<Task | null> => {
+      const currentSettings = await this.store.getSettings();
+      const remainsDispatchable = async (live: Task): Promise<boolean> => {
+        const ir = await resolveWorkflowIrForTask(this.store, live.id).catch(() => null);
+        const column = (ir as WorkflowIrV2 | null)?.columns?.find((candidate) => candidate.id === live.column);
+        if (!isWipColumnRole(column ? resolveColumnFlags(column) : undefined, live.column)) return false;
+        if (!this.options.localNodeId) return true;
+        return isProcessEligibleForEffectiveNode(
+          resolveEffectiveNode(live, currentSettings),
+          this.options.localNodeId,
+          this.options.registryLocalNodeId ?? this.options.localNodeId,
+        );
+      };
+
+      if (typeof this.store.updateTaskAtomic === "function") {
+        let applied = false;
+        try {
+          const updated = await this.store.updateTaskAtomic(taskId, async (live) => {
+            if (!await remainsDispatchable(live)) return null;
+            applied = true;
+            return dispatchUpdate;
+          });
+          return applied ? updated : null;
+        } catch (error) {
+          schedulerLog.error(`Post-release dispatch metadata update failed for ${taskId}:`, error);
+          const live = await this.store.getTask(taskId).catch(() => null);
+          return live && await remainsDispatchable(live) ? live : null;
+        }
+      }
+      const live = await this.store.getTask(taskId).catch(() => null);
+      if (!live || !await remainsDispatchable(live)) return null;
+      try {
+        return await this.store.updateTask(taskId, dispatchUpdate);
+      } catch (error) {
+        schedulerLog.error(`Post-release dispatch metadata update failed for ${taskId}:`, error);
+        const reRead = await this.store.getTask(taskId).catch(() => null);
+        return reRead && await remainsDispatchable(reRead) ? reRead : null;
+      }
+    };
+
+    /*
+    FNXC:SharedDatabaseNodeOwnership 2026-08-05-01:57:
+    The release lock used to end before getTask/updateTask/onSchedule. Re-enter
+    the lifecycle lock to exclude node reroutes, then the task-mutation lock to
+    exclude moveTask, and re-check WIP plus ownership before the handoff write.
+    This callback never moves the task, so the shared move key cannot self-deadlock.
+    */
+    const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
+    const taskMutationLock = (this.store as Partial<TaskStore>).withTaskMutationLock;
+    const commitAgainstMoves = taskMutationLock
+      ? () => this.store.withTaskMutationLock(taskId, commit)
+      : commit;
+    return lifecycleLock
+      ? await this.store.withPlanningLifecycleLock(taskId, commitAgainstMoves)
+      : await commitAgainstMoves();
+  }
+
   private async runHoldReleaseSweepPass(tasks: Task[], settings: Settings): Promise<void> {
     try {
       // FNXC:CapacityModel 2026-07-28-11:35: null = worktrees are not a capacity
@@ -3293,12 +3354,6 @@ export class Scheduler {
         FNXC:WorkflowScheduling 2026-06-23-22:36:
         Persist dispatch metadata before executor handoff when possible, but isolate update/log failures per task. A metadata failure must not block later released tasks or strand an already released task without onSchedule handoff.
         */
-        const latest = await this.store.getTask(taskId).catch(() => null);
-        if (!latest) {
-          schedulerLog.warn(`Released task ${taskId} could not be re-read; executor handoff skipped`);
-          continue;
-        }
-        schedulerLog.log(`Starting ${taskId}: ${latest.title || taskId} (deps satisfied)`);
         const dispatchUpdate = {
           status: null,
           blockedBy: null,
@@ -3307,12 +3362,17 @@ export class Scheduler {
           dispatchStormCount: prep.dispatchStormCount,
           lastDispatchAt: prep.dispatchTimestamp,
         };
-        let scheduledTask: Task = latest;
+        let scheduledTask: Task | null = null;
         try {
-          scheduledTask = await this.store.updateTask(taskId, dispatchUpdate);
+          scheduledTask = await this.persistReleasedDispatchIfStillOwned(taskId, dispatchUpdate);
         } catch (error) {
-          schedulerLog.error(`Post-release dispatch metadata update failed for ${taskId}:`, error);
+          schedulerLog.error(`Post-release dispatch ownership check failed for ${taskId}:`, error);
         }
+        if (!scheduledTask) {
+          schedulerLog.warn(`Released task ${taskId} changed WIP lane or node ownership; executor handoff skipped`);
+          continue;
+        }
+        schedulerLog.log(`Starting ${taskId}: ${scheduledTask.title || taskId} (deps satisfied)`);
         try {
           this.options.onSchedule?.(scheduledTask);
         } catch (error) {

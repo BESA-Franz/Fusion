@@ -63,6 +63,9 @@ const engineMocks = vi.hoisted(() => {
   const centralCore = {
     init: vi.fn(async () => undefined),
     close: vi.fn(async () => undefined),
+    listNodes: vi.fn(async () => [{ id: "node-local", type: "local" }]),
+    acquireNodeRuntimeLease: vi.fn(async () => ({ nodeId: "node-local", token: "lease-1" })),
+    releaseNodeRuntimeLease: vi.fn(async () => true),
     listProjects: vi.fn(async () => [] as Array<{ id: string; name: string; path: string; status: string }>),
   };
   const engineManager = {
@@ -116,6 +119,8 @@ vi.mock("@fusion/core", () => ({
   PluginLoader: engineMocks.PluginLoader,
   ensureBundledPluginInstalled: engineMocks.ensureBundledPluginInstalled,
   isBundledPluginId: engineMocks.isBundledPluginId,
+  resolveLocalNodeId: (nodes: Array<{ id: string; type: string }>) => nodes.find((node) => node.type === "local")?.id ?? "local",
+  resolveProcessNodeId: (nodes: Array<{ id: string }>, configured: string) => nodes.some((node) => node.id === configured) ? configured : (() => { throw new Error("unknown node"); })(),
 }));
 vi.mock("../bundled-plugin-dirs.js", () => ({ resolveDesktopBundlePluginDirs: engineMocks.resolveDesktopBundlePluginDirs }));
 vi.mock("@fusion/dashboard", () => ({ createServer: engineMocks.createServer }));
@@ -520,17 +525,30 @@ describe("LocalRuntimeManager", () => {
     await manager.startLocal();
 
     expect(engineMocks.CentralCore).toHaveBeenCalledWith(undefined, { asyncLayer: store.getAsyncLayer() });
+    expect(engineMocks.centralCore.acquireNodeRuntimeLease).toHaveBeenCalledWith("node-local");
+    expect(engineMocks.ProjectEngineManager).toHaveBeenCalledWith(
+      engineMocks.centralCore,
+      { processNodeId: "node-local" },
+    );
 
     expect(engineMocks.seedDashboardProviders).toHaveBeenCalledWith(
       expect.objectContaining({ authStorage: expect.anything(), modelRegistry: expect.anything() }),
     );
     expect(engineMocks.createServer).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ authStorage: expect.objectContaining({ __wrapped: true }) }),
+      expect.objectContaining({
+        authStorage: expect.objectContaining({ __wrapped: true }),
+        processNodeId: "node-local",
+        nodeRuntimeLease: { nodeId: "node-local", token: "lease-1" },
+      }),
     );
 
     await manager.stopLocal();
     expect(engineMocks.seedDashboardProvidersDispose).toHaveBeenCalledTimes(1);
+    expect(engineMocks.centralCore.releaseNodeRuntimeLease).toHaveBeenCalledWith({
+      nodeId: "node-local",
+      token: "lease-1",
+    });
   });
 
   /*

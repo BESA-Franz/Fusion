@@ -3389,11 +3389,8 @@ export class TriageProcessor {
           Every triage planning exit path, including APPROVE, retry, pause/stuck abort, split/delete, and rate-limit wrapper attempts, records the active session's actual model before disposal so by-model analytics do not collapse triage usage to missing buckets.
           */
           await this.recordTriageSessionTokenUsage(task.id, session, { agentId: triageRunContext.agentId });
-          const livePlanningTask = await this.store.getTask(task.id);
-          if (livePlanningTask) {
-            const planningEnd = finalizePlanningSegment(livePlanningTask);
-            if (planningEnd.planningStartedAt === null) await this.store.updateTask(task.id, planningEnd);
-          }
+          await this.updateTaskStateIfOwned(task, (livePlanningTask) =>
+            finalizePlanningSegment(livePlanningTask));
           session.dispose();
         }
       };
@@ -3947,36 +3944,85 @@ export class TriageProcessor {
     patch: Parameters<TaskStore["updateTask"]>[1] | ((live: Task) => Parameters<TaskStore["updateTask"]>[1]),
     guard?: (live: Task) => boolean,
   ): Promise<boolean> {
-    if (typeof this.store.updateTaskAtomic !== "function") {
-      // Compatibility adapters used by older embedded hosts do not expose the
-      // core task lock; current TaskStore implementations always take the atomic path.
-      const liveTask = await Promise.resolve(this.store.getTask(task.id)).catch(() => task) ?? task;
-      if (!isTaskStillInPlanningStage(liveTask) || (guard && !guard(liveTask))) {
-        return false;
+    const updateUnderOwnershipLock = async (): Promise<boolean> => {
+      if (typeof this.store.updateTaskAtomic !== "function") {
+        // Compatibility adapters used by older embedded hosts do not expose the
+        // core task lock; current TaskStore implementations always take the atomic path.
+        const liveTask = await Promise.resolve(this.store.getTask(task.id)).catch(() => task) ?? task;
+        if (!isTaskStillInPlanningStage(liveTask) || (guard && !guard(liveTask))) {
+          return false;
+        }
+        await this.store.updateTask(task.id, typeof patch === "function" ? patch(liveTask) : patch);
+        return true;
       }
-      await this.store.updateTask(task.id, typeof patch === "function" ? patch(liveTask) : patch);
-      return true;
-    }
 
-    let persisted = false;
-    await this.store.updateTaskAtomic(task.id, (liveTask) => {
-      if (!isTaskStillInPlanningStage(liveTask) || (guard && !guard(liveTask))) {
-        /*
-         * FNXC:Triage 2026-07-15-16:35:
-         * FN-7977: a provider or validation failure must never overwrite an
-         * advanced task with planning/failed/retry state. Evaluate this predicate
-         * under the task lock so scheduler advancement cannot race the recovery write.
-         *
-         * FNXC:Triage 2026-07-15-17:20:
-         * FN-8024: skipping a stale recovery write is the expected outcome of a normal
-         * scheduler advancement, not an anomaly — do not log it.
-         */
-        return null;
+      let persisted = false;
+      await this.store.updateTaskAtomic(task.id, (liveTask) => {
+        if (!isTaskStillInPlanningStage(liveTask) || (guard && !guard(liveTask))) {
+          /*
+           * FNXC:Triage 2026-07-15-16:35:
+           * FN-7977: a provider or validation failure must never overwrite an
+           * advanced task with planning/failed/retry state. Evaluate this predicate
+           * under the task lock so scheduler advancement cannot race the recovery write.
+           *
+           * FNXC:Triage 2026-07-15-17:20:
+           * FN-8024: skipping a stale recovery write is the expected outcome of a normal
+           * scheduler advancement, not an anomaly — do not log it.
+           */
+          return null;
+        }
+        persisted = true;
+        return typeof patch === "function" ? patch(liveTask) : patch;
+      });
+      return persisted;
+    };
+
+    const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
+    const taskMutationLock = (this.store as Partial<TaskStore>).withTaskMutationLock;
+    const updateAgainstMoves = taskMutationLock
+      ? () => this.store.withTaskMutationLock(task.id, updateUnderOwnershipLock)
+      : updateUnderOwnershipLock;
+    /*
+    FNXC:SharedDatabaseNodeOwnership 2026-08-05-01:57:
+    updateTaskAtomic is only an in-process mutex. The lifecycle lock excludes
+    node reroutes; the narrower task-mutation lock excludes moveTask while the
+    live-row predicate and patch commit. Finalization already owns lifecycle,
+    but still takes and releases the mutation lock around each non-move update.
+    */
+    if (!lifecycleLock || this.finalizing.has(task.id)) {
+      return await updateAgainstMoves();
+    }
+    return await this.store.withPlanningLifecycleLock(task.id, updateAgainstMoves);
+  }
+
+  private async updateTaskStateIfOwned(
+    task: Task,
+    patch: Parameters<TaskStore["updateTask"]>[1] | ((live: Task) => Parameters<TaskStore["updateTask"]>[1]),
+  ): Promise<boolean> {
+    const update = async (): Promise<boolean> => {
+      const routingSettings = await this.store.getSettings();
+      let persisted = false;
+      if (typeof this.store.updateTaskAtomic === "function") {
+        await this.store.updateTaskAtomic(task.id, (live) => {
+          if (!this.isTaskEligibleForThisProcess(live, routingSettings)) return null;
+          persisted = true;
+          return typeof patch === "function" ? patch(live) : patch;
+        });
+        return persisted;
       }
-      persisted = true;
-      return typeof patch === "function" ? patch(liveTask) : patch;
-    });
-    return persisted;
+      const live = await this.store.getTask(task.id).catch(() => null);
+      if (!live || !this.isTaskEligibleForThisProcess(live, routingSettings)) return false;
+      await this.store.updateTask(task.id, typeof patch === "function" ? patch(live) : patch);
+      return true;
+    };
+    const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
+    const taskMutationLock = (this.store as Partial<TaskStore>).withTaskMutationLock;
+    const updateAgainstMoves = taskMutationLock
+      ? () => this.store.withTaskMutationLock(task.id, update)
+      : update;
+    return lifecycleLock
+      ? await this.store.withPlanningLifecycleLock(task.id, updateAgainstMoves)
+      : await updateAgainstMoves();
   }
 
   /**
@@ -4161,6 +4207,8 @@ export class TriageProcessor {
         if (reRead === null) return report;
         const live = reRead ?? task;
         if (live.status === "needs-replan") return report;
+        const liveRoutingSettings = await this.store.getSettings().catch(() => settings);
+        if (!this.isTaskEligibleForThisProcess(live, liveRoutingSettings)) return report;
         await this.finalizeApprovedTaskBody(live, writtenInput, settings, options, report);
       } finally {
         this.finalizing.delete(task.id);

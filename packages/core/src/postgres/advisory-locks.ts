@@ -32,6 +32,12 @@ export class PlanningLifecycleLockTransportError extends Error {
 
 const DEFAULT_PLANNING_LIFECYCLE_LOCK_TIMEOUT_MS = 5_000;
 
+/** One database-wide mutex namespace for every mutation of a project task. */
+export function taskAdvisoryLockKey(projectId: string | undefined, taskId: string): string {
+  const scopedProjectId = projectId?.trim() || "__legacy_unscoped__";
+  return `task:${scopedProjectId}:${taskId}`;
+}
+
 type DedicatedPostgresClient = ReturnType<typeof postgres>;
 type PostgresBackendIdentity = {
   database: string;
@@ -84,8 +90,7 @@ async function runBoundedTransportPhase<T>(
  * Never use the runtime pool: a transaction pooler can change sessions between
  * lock and unlock and silently defeat session advisory locking.
  */
-export async function withPlanningLifecycleAdvisoryLock<T>(
-  input: {
+type DedicatedTaskLockInput = {
     projectId: string;
     taskId: string;
     directSessionUrl: string | null;
@@ -96,7 +101,41 @@ export async function withPlanningLifecycleAdvisoryLock<T>(
     timeoutMs?: number;
     /** @internal Test seam fired when the driver dispatches the lock query. */
     onLockAcquisitionAttempt?: () => void;
-  },
+};
+
+export async function withPlanningLifecycleAdvisoryLock<T>(
+  input: DedicatedTaskLockInput,
+  callback: () => Promise<T>,
+): Promise<T> {
+  return withDedicatedTaskAdvisoryLock(
+    input,
+    `fusion:planning-lifecycle:${input.projectId}:${input.taskId}`,
+    "legacy-hashtext",
+    callback,
+  );
+}
+
+/**
+ * Serialize a short read/predicate/write decision against transaction-scoped
+ * task moves. The callback must not call moveTask: the move transaction needs
+ * this same advisory key and would otherwise wait on its own outer session.
+ */
+export async function withTaskMutationAdvisoryLock<T>(
+  input: DedicatedTaskLockInput,
+  callback: () => Promise<T>,
+): Promise<T> {
+  return withDedicatedTaskAdvisoryLock(
+    input,
+    taskAdvisoryLockKey(input.projectId, input.taskId),
+    "extended-hashtext",
+    callback,
+  );
+}
+
+async function withDedicatedTaskAdvisoryLock<T>(
+  input: DedicatedTaskLockInput,
+  key: string,
+  hashMode: "legacy-hashtext" | "extended-hashtext",
   callback: () => Promise<T>,
 ): Promise<T> {
   const directUrl = input.directSessionUrl;
@@ -144,7 +183,6 @@ export async function withPlanningLifecycleAdvisoryLock<T>(
         }
       : undefined,
   });
-  const key = `fusion:planning-lifecycle:${input.projectId}:${input.taskId}`;
   let acquired = false;
   try {
     /*
@@ -211,7 +249,9 @@ export async function withPlanningLifecycleAdvisoryLock<T>(
       timeoutMs,
       `Planning lifecycle lock acquisition timed out after ${timeoutMs}ms`,
       "Planning lifecycle lock acquisition failed",
-      () => client`SELECT pg_advisory_lock(hashtext(${key}))`,
+      () => hashMode === "extended-hashtext"
+        ? client`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`
+        : client`SELECT pg_advisory_lock(hashtext(${key}))`,
     );
     acquired = true;
     return await callback();
@@ -223,7 +263,9 @@ export async function withPlanningLifecycleAdvisoryLock<T>(
           timeoutMs,
           `Planning lifecycle lock cleanup timed out after ${timeoutMs}ms`,
           "Planning lifecycle lock cleanup failed",
-          () => client`SELECT pg_advisory_unlock(hashtext(${key}))`,
+          () => hashMode === "extended-hashtext"
+            ? client`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`
+            : client`SELECT pg_advisory_unlock(hashtext(${key}))`,
         ).catch(() => undefined);
       }
     } finally {

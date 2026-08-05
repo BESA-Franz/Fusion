@@ -205,6 +205,17 @@ export interface CentralCoreOptions {
   asyncLayer?: AsyncDataLayer;
 }
 
+export interface NodeRuntimeLease {
+  nodeId: string;
+  /** Monotonic node-row version captured by the process that marked it online. */
+  token: string;
+}
+
+function nextNodeRuntimeLeaseToken(previous: string): string {
+  const previousMs = Date.parse(previous);
+  return new Date(Math.max(Date.now(), Number.isFinite(previousMs) ? previousMs + 1 : 0)).toISOString();
+}
+
 export class CentralCore extends EventEmitter<CentralCoreEvents> {
   private db: CentralDatabase | null = null;
   private readonly globalDir: string;
@@ -1017,6 +1028,49 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
     this.emit("node:updated", updated);
     return updated;
 }
+
+  /**
+   * Mark a runtime node online and return a fencing token for this process.
+   * Every acquisition advances the row version, including a rolling restart
+   * that begins while the prior process is still shutting down.
+   */
+  async acquireNodeRuntimeLease(id: string): Promise<NodeRuntimeLease> {
+    this.ensureInitialized();
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const current = await this.getNode(id);
+      if (!current) throw new Error(`Node not found: ${id}`);
+      const token = nextNodeRuntimeLeaseToken(current.updatedAt);
+      if (await asyncCentralCore.updateNodeStatusIfVersion(
+        this.backendHandle,
+        id,
+        current.updatedAt,
+        "online",
+        token,
+      )) {
+        const updated = { ...current, status: "online" as const, updatedAt: token };
+        this.emit("node:updated", updated);
+        return { nodeId: id, token };
+      }
+    }
+    throw new Error(`Could not acquire runtime lease for node: ${id}`);
+  }
+
+  /** Mark the node offline only when this process still owns its lease token. */
+  async releaseNodeRuntimeLease(lease: NodeRuntimeLease): Promise<boolean> {
+    this.ensureInitialized();
+    const released = await asyncCentralCore.updateNodeStatusIfVersion(
+      this.backendHandle,
+      lease.nodeId,
+      lease.token,
+      "offline",
+      nextNodeRuntimeLeaseToken(lease.token),
+    );
+    if (released) {
+      const updated = await this.getNode(lease.nodeId);
+      if (updated) this.emit("node:updated", updated);
+    }
+    return released;
+  }
 
   /**
    * Create a managed Docker node record.

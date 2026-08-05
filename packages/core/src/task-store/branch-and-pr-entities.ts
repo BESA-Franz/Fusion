@@ -620,7 +620,13 @@ export async function updateTaskImpl(store: TaskStore,
     updates: Parameters<TaskStore["updateTask"]>[1],
     runContext?: RunMutationContext,
   ): Promise<Task> {
-  if (updates.dependencies !== undefined) {
+  if (updates.dependencies !== undefined || updates.nodeId !== undefined) {
+    /*
+    FNXC:SharedDatabaseNodeOwnership 2026-08-05-01:57:
+    A node reroute is a planning/execution ownership transfer. Put it behind
+    the lifecycle advisory lock used by triage finalization and ownership
+    claims so a stale process cannot publish after a guarded decision.
+    */
     return store.withPlanningLifecycleLock(id, () => updateTaskWithTaskLockImpl(store, id, updates, runContext));
   }
   return updateTaskWithTaskLockImpl(store, id, updates, runContext);

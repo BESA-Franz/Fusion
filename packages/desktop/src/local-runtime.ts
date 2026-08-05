@@ -4,7 +4,7 @@ import type { Server } from "node:http";
 import type { AsyncDataLayer, LoadedPluginSchemaContract } from "@fusion/core";
 import type { AddressInfo } from "node:net";
 
-import { resolveDesktopRuntimePrimaryProject } from "./engine-runtime.js";
+import { resolveDesktopProcessNodeId, resolveDesktopRuntimePrimaryProject } from "./engine-runtime.js";
 import { resolveDesktopBundlePluginDirs } from "./bundled-plugin-dirs.js";
 
 /*
@@ -200,17 +200,23 @@ async function createDashboardServerDefault(store: TaskStoreLike, rootDir: strin
    */
   /* FNXC:PostgresDesktopLifecycle 2026-07-14-19:10: Desktop engines and the dashboard share the TaskStore's AsyncDataLayer; constructing a layerless CentralCore would boot a second pool and repeat schema initialization. */
   const centralCore = new CentralCore(undefined, { asyncLayer: store.getAsyncLayer() });
-  const engineManager = new ProjectEngineManager(centralCore);
+  let engineManager: InstanceType<typeof ProjectEngineManager> | undefined;
+  let nodeRuntimeLease: Awaited<ReturnType<InstanceType<typeof CentralCore>["acquireNodeRuntimeLease"]>> | undefined;
   const providerSeeding: { dispose?: () => void } = {};
   const cleanup = async () => {
     providerSeeding.dispose?.();
-    await engineManager.stopAll();
+    await engineManager?.stopAll();
+    if (nodeRuntimeLease) await centralCore.releaseNodeRuntimeLease(nodeRuntimeLease);
     await centralCore.close?.();
   };
 
   try {
     strace("createDashboardServer: centralCore.init");
     await centralCore.init();
+    const processNodeId = await resolveDesktopProcessNodeId(centralCore);
+    nodeRuntimeLease = await centralCore.acquireNodeRuntimeLease(processNodeId);
+    engineManager = new ProjectEngineManager(centralCore, { processNodeId });
+    const activeEngineManager = engineManager;
     /*
      * FNXC:DesktopRuntime 2026-07-03-03:30:
      * Do NOT auto-register the home directory as a project. Start engines for whatever projects the
@@ -221,12 +227,12 @@ async function createDashboardServerDefault(store: TaskStoreLike, rootDir: strin
      */
     void rootDir; // runtime root no longer implies a project; kept for signature/back-compat.
     strace("createDashboardServer: startAll");
-    await engineManager.startAll();
+    await activeEngineManager.startAll();
     strace("createDashboardServer: startAll DONE; startReconciliation");
-    engineManager.startReconciliation();
+    activeEngineManager.startReconciliation();
     const rootProject = await resolveDesktopRuntimePrimaryProject(centralCore);
     strace(`createDashboardServer: primaryProject=${rootProject?.id ?? "none"}`);
-    const primaryEngine = rootProject ? await engineManager.ensureEngine(rootProject.id) : undefined;
+    const primaryEngine = rootProject ? await activeEngineManager.ensureEngine(rootProject.id) : undefined;
     /*
      * FNXC:DesktopRuntime 2026-07-07-00:00:
      * FN-7622: wire an auth storage into the embedded server AND run it through the same
@@ -340,13 +346,15 @@ async function createDashboardServerDefault(store: TaskStoreLike, rootDir: strin
     strace("createDashboardServer: createServer");
     const app = createServer(store as never, {
       ...(primaryEngine ? { engine: primaryEngine } : {}),
-      engineManager,
+      engineManager: activeEngineManager,
       centralCore,
+      processNodeId,
+      nodeRuntimeLease,
       authStorage: wrappedAuthStorage,
       modelRegistry,
       ...(pluginStore && pluginLoader ? { pluginStore: pluginStore as never, pluginLoader, pluginRunner: pluginLoader } : {}),
       ...(ensureBundledPluginInstalledCallback ? { ensureBundledPluginInstalled: ensureBundledPluginInstalledCallback } : {}),
-      onProjectFirstAccessed: (projectId: string) => engineManager.onProjectAccessed(projectId),
+      onProjectFirstAccessed: (projectId: string) => activeEngineManager.onProjectAccessed(projectId),
       ...(await resolveDesktopSystemControl()),
     });
 

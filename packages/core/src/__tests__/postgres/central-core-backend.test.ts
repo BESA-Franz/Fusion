@@ -209,6 +209,19 @@ pgDescribe("CentralCore backend mode (PostgreSQL)", () => {
     expect(updated.status).toBe("online");
   });
 
+  it("fences an older process from marking a rolling-restart node offline", async () => {
+    ctx = await setupCtx();
+    const localNode = (await ctx.central.listNodes()).find((node) => node.type === "local")!;
+
+    const oldProcess = await ctx.central.acquireNodeRuntimeLease(localNode.id);
+    const newProcess = await ctx.central.acquireNodeRuntimeLease(localNode.id);
+
+    await expect(ctx.central.releaseNodeRuntimeLease(oldProcess)).resolves.toBe(false);
+    await expect(ctx.central.getNode(localNode.id)).resolves.toMatchObject({ status: "online" });
+    await expect(ctx.central.releaseNodeRuntimeLease(newProcess)).resolves.toBe(true);
+    await expect(ctx.central.getNode(localNode.id)).resolves.toMatchObject({ status: "offline" });
+  });
+
   it("logs and reads activity through PostgreSQL", async () => {
     ctx = await setupCtx();
     const projectPath = makeProjectDir(ctx, "gamma");

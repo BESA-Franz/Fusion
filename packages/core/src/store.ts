@@ -60,7 +60,10 @@ import { GlobalSettingsStore } from "./config/global-settings.js";
 import { Database } from "./db/db.js";
 import { ArchiveDatabase } from "./db/archive-db.js";
 import type { AsyncDataLayer, DbTransaction } from "./postgres/data-layer.js";
-import { withPlanningLifecycleAdvisoryLock } from "./postgres/advisory-locks.js";
+import {
+  withPlanningLifecycleAdvisoryLock,
+  withTaskMutationAdvisoryLock,
+} from "./postgres/advisory-locks.js";
 import { MissionStore } from "./missions/mission-store.js";
 import { AsyncMissionStore } from "./async-stores/async-mission-store.js";
 import { AsyncIdeationStore } from "./async-stores/async-ideation-store.js";
@@ -858,6 +861,39 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     }
     const projectId = this.asyncLayer?.projectId ?? this.rootDir;
     const key = `${projectId}:${id}`;
+    const prior = planningLifecycleLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    planningLifecycleLocks.set(key, current);
+    await prior;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (planningLifecycleLocks.get(key) === current) planningLifecycleLocks.delete(key);
+    }
+  }
+
+  /**
+   * FNXC:SharedDatabaseNodeOwnership 2026-08-05-01:57:
+   * A short ownership predicate/write must also exclude moveTask transactions.
+   * Keep this distinct from the lifecycle lock: finalization legitimately calls
+   * moveTask while holding the lifecycle lock and must never hold this lock then.
+   */
+  public async withTaskMutationLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const backend = this.asyncLayer?.backend;
+    if (this.asyncLayer && backend) {
+      return await withTaskMutationAdvisoryLock({
+        projectId: this.asyncLayer.projectId ?? this.rootDir,
+        taskId: id,
+        directSessionUrl: backend.directSessionUrl ?? null,
+        provenance: backend.directSessionProvenance ?? null,
+        runtimeUrl: backend.runtimeUrl,
+        migrationUrl: backend.migrationUrl,
+      }, fn);
+    }
+    const projectId = this.asyncLayer?.projectId ?? this.rootDir;
+    const key = `task-mutation:${projectId}:${id}`;
     const prior = planningLifecycleLocks.get(key) ?? Promise.resolve();
     let release!: () => void;
     const current = new Promise<void>((resolve) => { release = resolve; });

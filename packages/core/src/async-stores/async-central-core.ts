@@ -887,6 +887,24 @@ export async function updateNodeColumns(
     .where(eq(schema.central.nodes.id, id));
 }
 
+export async function updateNodeStatusIfVersion(
+  handle: QueryHandle,
+  id: string,
+  expectedUpdatedAt: string,
+  status: string,
+  nextUpdatedAt: string,
+): Promise<boolean> {
+  const rows = await handle
+    .update(schema.central.nodes)
+    .set({ status, updatedAt: nextUpdatedAt })
+    .where(and(
+      eq(schema.central.nodes.id, id),
+      eq(schema.central.nodes.updatedAt, expectedUpdatedAt),
+    ))
+    .returning({ id: schema.central.nodes.id });
+  return rows.length === 1;
+}
+
 // ── Managed Docker Nodes ────────────────────────────────────────────────────
 
 export async function getManagedDockerNode(

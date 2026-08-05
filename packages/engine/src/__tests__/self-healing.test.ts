@@ -267,6 +267,35 @@ describe("SelfHealingManager", () => {
     vi.useRealTimers();
   });
 
+  it("does not recover an in-progress limbo task owned by another node", async () => {
+    const foreign = {
+      id: "FN-FOREIGN-LIMBO",
+      lineageId: "lineage-foreign-limbo",
+      title: "Foreign limbo",
+      column: "in-progress",
+      nodeId: "node-pc2",
+      status: null,
+      paused: false,
+      dependencies: [],
+      steps: [{ id: "step-1", title: "Pending", status: "pending" }],
+      currentStep: 0,
+      log: [],
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    } as unknown as Task;
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({ globalPause: false, enginePaused: false } as Settings);
+    (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([foreign]);
+    const nodeScoped = new SelfHealingManager(store, {
+      rootDir: "/tmp/test-project",
+      localNodeId: "node-vps",
+      registryLocalNodeId: "node-vps",
+    });
+
+    await expect(nodeScoped.recoverInProgressLimbo()).resolves.toBe(0);
+    expect(store.moveTask).not.toHaveBeenCalledWith(foreign.id, expect.anything(), expect.anything());
+    nodeScoped.stop();
+  });
+
   // ── Auto-unpause ─────────────────────────────────────────────────
 
   describe("auto-unpause", () => {

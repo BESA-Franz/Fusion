@@ -65,6 +65,9 @@ const mocks = vi.hoisted(() => {
   const centralCore = {
     init: vi.fn(async () => undefined),
     close: vi.fn(async () => undefined),
+    listNodes: vi.fn(async () => [{ id: "node-local", type: "local" }]),
+    acquireNodeRuntimeLease: vi.fn(async () => ({ nodeId: "node-local", token: "lease-1" })),
+    releaseNodeRuntimeLease: vi.fn(async () => true),
     getProjectByPath: vi.fn(async () => ({ id: "project-1", name: "Repo", path: "/repo", status: "active" })),
     // Default: an operator who already onboarded a project. resolveDesktopRuntimePrimaryProject
     // picks the first one; the runtime NEVER auto-registers the runtime root.
@@ -153,6 +156,8 @@ vi.mock("@fusion/core", () => ({
   PluginLoader: mocks.PluginLoader,
   ensureBundledPluginInstalled: mocks.ensureBundledPluginInstalled,
   isBundledPluginId: mocks.isBundledPluginId,
+  resolveLocalNodeId: (nodes: Array<{ id: string; type: string }>) => nodes.find((node) => node.type === "local")?.id ?? "local",
+  resolveProcessNodeId: (nodes: Array<{ id: string }>, configured: string) => nodes.some((node) => node.id === configured) ? configured : (() => { throw new Error("unknown node"); })(),
 }));
 vi.mock("../bundled-plugin-dirs.js", () => ({ resolveDesktopBundlePluginDirs: mocks.resolveDesktopBundlePluginDirs }));
 vi.mock("@fusion/dashboard", () => ({ createServer: mocks.createServer }));
@@ -182,6 +187,11 @@ describe("DesktopLocalServerManager", () => {
     expect(manager.getState().status).toBe("ready");
     expect(mocks.engineManager.startAll).toHaveBeenCalledTimes(1);
     expect(mocks.CentralCore).toHaveBeenCalledWith(undefined, { asyncLayer: mocks.store.getAsyncLayer() });
+    expect(mocks.centralCore.acquireNodeRuntimeLease).toHaveBeenCalledWith("node-local");
+    expect(mocks.ProjectEngineManager).toHaveBeenCalledWith(
+      mocks.centralCore,
+      { processNodeId: "node-local" },
+    );
     // No auto-registration of the runtime root; the primary engine is the first existing project.
     expect(mocks.centralCore.registerProject).not.toHaveBeenCalled();
     expect(mocks.engineManager.ensureEngine).toHaveBeenCalledWith("project-1");
@@ -191,6 +201,8 @@ describe("DesktopLocalServerManager", () => {
         engine: mocks.engine,
         engineManager: mocks.engineManager,
         centralCore: mocks.centralCore,
+        processNodeId: "node-local",
+        nodeRuntimeLease: { nodeId: "node-local", token: "lease-1" },
       }),
     );
   });
@@ -203,6 +215,10 @@ describe("DesktopLocalServerManager", () => {
     await manager.stop();
 
     expect(mocks.engineManager.stopAll).toHaveBeenCalled();
+    expect(mocks.centralCore.releaseNodeRuntimeLease).toHaveBeenCalledWith({
+      nodeId: "node-local",
+      token: "lease-1",
+    });
     expect(mocks.centralCore.close).toHaveBeenCalled();
     expect(mocks.store.close).toHaveBeenCalled();
     expect(manager.getState().status).toBe("idle");

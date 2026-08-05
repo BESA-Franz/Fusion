@@ -95,6 +95,45 @@ describe("node-exclusive triage planning", () => {
     expect(updateTaskAtomic).toHaveBeenCalledOnce();
   });
 
+  it("serializes the planning ownership predicate with the cross-process lifecycle lock", async () => {
+    const live = task("node-pc2");
+    const withPlanningLifecycleLock = vi.fn(async (_id: string, callback: () => Promise<boolean>) => callback());
+    const withTaskMutationLock = vi.fn(async (_id: string, callback: () => Promise<boolean>) => callback());
+    const updateTaskAtomic = vi.fn(async (_id: string, updater: (current: Task) => unknown) => {
+      await updater(live);
+      return live;
+    });
+    const processor = processorFor("node-pc2", "node-vps", {
+      withPlanningLifecycleLock,
+      withTaskMutationLock,
+      updateTaskAtomic,
+      getSettings: vi.fn(async () => settings()),
+    } as Partial<TaskStore>);
+    const claim = (processor as unknown as { claimPlanningIfOwned(task: Task): Promise<boolean> })
+      .claimPlanningIfOwned.bind(processor);
+
+    await expect(claim(live)).resolves.toBe(true);
+    expect(withPlanningLifecycleLock).toHaveBeenCalledWith(live.id, expect.any(Function));
+    expect(withTaskMutationLock).toHaveBeenCalledWith(live.id, expect.any(Function));
+  });
+
+  it("does not publish cleanup state after ownership moved to another node", async () => {
+    const live = task("node-pc3");
+    const updateTaskAtomic = vi.fn(async (_id: string, updater: (current: Task) => unknown) => {
+      await updater(live);
+      return live;
+    });
+    const processor = processorFor("node-pc2", "node-vps", {
+      getSettings: vi.fn(async () => settings()),
+      updateTaskAtomic,
+    } as Partial<TaskStore>);
+    const updateOwned = (processor as unknown as {
+      updateTaskStateIfOwned(task: Task, patch: { planningStartedAt: null }): Promise<boolean>;
+    }).updateTaskStateIfOwned.bind(processor);
+
+    await expect(updateOwned(task("node-pc2"), { planningStartedAt: null })).resolves.toBe(false);
+  });
+
   it("reads the current project default immediately before the planning claim", async () => {
     const live = task();
     const updateTaskAtomic = vi.fn(async (

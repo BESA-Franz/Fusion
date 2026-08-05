@@ -252,6 +252,8 @@ const mocks = vi.hoisted(() => {
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
       updateNode: vi.fn().mockResolvedValue(undefined),
+      acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+      releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
       startDiscovery: vi.fn().mockResolvedValue({}),
       stopDiscovery: vi.fn(),
     };
@@ -1123,11 +1125,11 @@ describe("runServe", () => {
 
     const nodeCentral = mocks.centralInstances.find((instance) => instance.listNodes.mock.calls.length > 0);
     expect(nodeCentral).toBeDefined();
-    expect(nodeCentral.updateNode).toHaveBeenCalledWith("node-local", { status: "online" });
+    expect(nodeCentral.acquireNodeRuntimeLease).toHaveBeenCalledWith("node-local");
 
     await triggerSignal("SIGINT");
 
-    expect(nodeCentral.updateNode).toHaveBeenCalledWith("node-local", { status: "offline" });
+    expect(nodeCentral.releaseNodeRuntimeLease).toHaveBeenCalledWith({ nodeId: "node-local", token: "lease-1" });
   });
 
   it("stops engine services during shutdown", async () => {
@@ -1440,6 +1442,8 @@ describe("runServe — Memory Insight Automation wiring", () => {
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
       updateNode: vi.fn().mockResolvedValue(undefined),
+      acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+      releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
       startDiscovery: vi.fn().mockResolvedValue({}),
       stopDiscovery: vi.fn(),
     };
@@ -1603,6 +1607,8 @@ describe("runServe — Semaphore boundary (task lanes only)", () => {
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
       updateNode: vi.fn().mockResolvedValue(undefined),
+      acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+      releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
       startDiscovery: vi.fn().mockResolvedValue({}),
       stopDiscovery: vi.fn(),
     };
@@ -1794,6 +1800,8 @@ describe("runServe — Peer exchange and discovery", () => {
           { id: "node-local", name: "local", type: "local", status: "offline" },
         ]),
         updateNode: vi.fn().mockResolvedValue(undefined),
+        acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+        releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
         startDiscovery: vi.fn().mockResolvedValue({}),
         stopDiscovery: vi.fn(),
       };
@@ -1914,12 +1922,12 @@ describe("runServe — Peer exchange and discovery", () => {
     expect(nodeCentral).toBeDefined();
 
     // Reset to isolate shutdown behavior
-    nodeCentral.updateNode.mockClear();
+    nodeCentral.releaseNodeRuntimeLease.mockClear();
 
     await triggerSignal("SIGTERM");
 
     // Should have been called twice: once to set online, once to set offline
-    expect(nodeCentral.updateNode).toHaveBeenCalledWith("node-local", { status: "offline" });
+    expect(nodeCentral.releaseNodeRuntimeLease).toHaveBeenCalledWith({ nodeId: "node-local", token: "lease-1" });
   });
 });
 
@@ -1980,6 +1988,8 @@ describe("runServe --daemon flag", () => {
           { id: "node-local", name: "local", type: "local", status: "offline" },
         ]),
         updateNode: vi.fn().mockResolvedValue(undefined),
+        acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+        releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
         startDiscovery: vi.fn().mockResolvedValue({}),
         stopDiscovery: vi.fn(),
       };
@@ -2182,6 +2192,8 @@ describe("runServe — multi-project cwd/default engine resolution", () => {
           { id: "node-local", name: "local", type: "local", status: "offline" },
         ]),
         updateNode: vi.fn().mockResolvedValue(undefined),
+        acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+        releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
         startDiscovery: vi.fn().mockResolvedValue({}),
         stopDiscovery: vi.fn(),
       };

@@ -2117,6 +2117,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   let peerExchangeService: PeerExchangeService | null = null;
   let centralCoreForMesh: CentralCore | null = null;
   let localNodeIdForMesh: string | undefined;
+  let nodeRuntimeLease: Awaited<ReturnType<CentralCore["acquireNodeRuntimeLease"]>> | null = null;
 
   // Start the AI engine unless the caller explicitly requested a UI-only process.
   if (tui) tui.setLoadingStatus(DASHBOARD_STARTUP_STATUS.startingEngine);
@@ -2336,6 +2337,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       hybridExecutor,
       centralCore: centralCoreForEngine,
       processNodeId,
+      getNodeRuntimeLease: () => nodeRuntimeLease ?? undefined,
       registryLocalNodeId,
       authStorage: dashboardAuthStorage,
       modelRegistry,
@@ -2474,9 +2476,11 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
         await timeShutdownStep("mesh.stopDiscovery", () => {
           centralCoreForMesh!.stopDiscovery();
         });
-        await timeShutdownStep("mesh.setNodeOffline", async () => {
-          await centralCoreForMesh!.updateNode(localNodeIdForMesh!, { status: "offline" });
-        });
+        if (nodeRuntimeLease) {
+          await timeShutdownStep("mesh.setNodeOffline", async () => {
+            await centralCoreForMesh!.releaseNodeRuntimeLease(nodeRuntimeLease!);
+          });
+        }
       }
 
       await timeShutdownStep("closeCentralCore", () =>
@@ -2669,6 +2673,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       onMerge: uiOnlyOnMerge,
       centralCore: centralCoreForMesh ?? undefined,
       processNodeId,
+      getNodeRuntimeLease: () => nodeRuntimeLease ?? undefined,
       registryLocalNodeId,
       authStorage: dashboardAuthStorage,
       modelRegistry,
@@ -2823,9 +2828,11 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
         await timeShutdownStep("mesh.stopDiscovery", () => {
           centralCoreForMesh!.stopDiscovery();
         });
-        await timeShutdownStep("mesh.setNodeOffline", async () => {
-          await centralCoreForMesh!.updateNode(localNodeIdForMesh!, { status: "offline" });
-        });
+        if (nodeRuntimeLease) {
+          await timeShutdownStep("mesh.setNodeOffline", async () => {
+            await centralCoreForMesh!.releaseNodeRuntimeLease(nodeRuntimeLease!);
+          });
+        }
       }
 
       if (centralCoreForMesh) {
@@ -2961,7 +2968,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     if (centralCoreForMesh) {
       try {
         localNodeIdForMesh ??= processNodeId;
-        await centralCoreForMesh.updateNode(localNodeIdForMesh, { status: "online" });
+        nodeRuntimeLease = await centralCoreForMesh.acquireNodeRuntimeLease(localNodeIdForMesh);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         logSink.warn(`Failed to set local node online: ${message}`, "dashboard");

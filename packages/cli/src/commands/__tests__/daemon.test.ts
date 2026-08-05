@@ -202,6 +202,8 @@ const mocks = vi.hoisted(() => {
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
       updateNode: vi.fn().mockResolvedValue(undefined),
+      acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+      releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
       startDiscovery: vi.fn().mockResolvedValue({}),
       stopDiscovery: vi.fn(),
     };

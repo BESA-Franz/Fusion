@@ -980,9 +980,10 @@ export async function runDaemon(opts: DaemonOptions = {}) {
       centralCore = null;
     }
   }
+  let nodeRuntimeLease: Awaited<ReturnType<CentralCore["acquireNodeRuntimeLease"]>> | null = null;
   try {
     if (centralCore) {
-      await centralCore.updateNode(processNodeId, { status: "online" });
+      nodeRuntimeLease = await centralCore.acquireNodeRuntimeLease(processNodeId);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1029,9 +1030,9 @@ export async function runDaemon(opts: DaemonOptions = {}) {
     FNXC:PostgresResourceLifecycle 2026-07-14-21:48:
     CentralCore adopts an engine TaskStore layer but retains ownership of its original embedded backend lifecycle. Persist the local-node offline state while the adopted pool is live, then stop engine-owned stores, and only then close CentralCore so its retained backend lifecycle cannot terminate PostgreSQL under a live engine.
     */
-    if (centralCore) {
+    if (centralCore && nodeRuntimeLease) {
       try {
-        await centralCore.updateNode(processNodeId, { status: "offline" });
+        await centralCore.releaseNodeRuntimeLease(nodeRuntimeLease);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn(`[daemon] Failed to set local node offline: ${message}`);

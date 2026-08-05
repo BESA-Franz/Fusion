@@ -4598,7 +4598,7 @@ export class TaskExecutor {
 
         let currentTask: Task | null = null;
         try {
-          currentTask = await this.store.getTask(taskId);
+          currentTask = await this.loadAuthoritativeTaskIfOwned(taskId);
         } catch (err: unknown) {
           const errorMessage = err instanceof Error ? err.message : String(err);
           executorLog.warn(`${taskId}: completed-task watchdog could not read latest task state: ${errorMessage}`);
@@ -4989,7 +4989,7 @@ export class TaskExecutor {
       return false;
     }
 
-    const liveTask = await this.store.getTask(task.id);
+    const liveTask = await this.loadAuthoritativeTaskIfOwned(task.id);
     const nonContinuableLanes = await this.resolveResumeLanes(task.id);
     if (!liveTask || !this.isTaskAlreadyCompleteForNonContinuableSession(liveTask, taskDone, nonContinuableLanes.review)) {
       return false;
@@ -5308,6 +5308,9 @@ export class TaskExecutor {
    */
   async recoverCompletedTask(task: Task): Promise<boolean> {
     try {
+      const ownedTask = await this.loadAuthoritativeTaskIfOwned(task.id);
+      if (!ownedTask) return false;
+      task = ownedTask;
       if (
         this.executing.has(task.id)
         || this.activeSessions.has(task.id)
@@ -5339,7 +5342,8 @@ export class TaskExecutor {
         executorLog.debug(`${task.id}: skipping recoverCompletedTask — workflow remediation bounce already scheduled`);
         return false;
       }
-      const liveForCompletenessCheck = await this.store.getTask(task.id).catch(() => task);
+      const liveForCompletenessCheck = await this.loadAuthoritativeTaskIfOwned(task.id);
+      if (!liveForCompletenessCheck) return false;
       if (
         liveForCompletenessCheck
         && (liveForCompletenessCheck.steps?.length ?? 0) > 0
@@ -12840,6 +12844,11 @@ export class TaskExecutor {
     try {
       const ownedTask = await this.loadAuthoritativeTaskIfOwned(task.id);
       if (!ownedTask) return;
+      const executionLanes = await this.resolveResumeLanes(task.id);
+      if (ownedTask.column !== executionLanes.wip) {
+        executorLog.log(`${task.id}: refusing execute — task is no longer in the WIP lane`);
+        return;
+      }
       await this.executeCore(ownedTask);
     } finally {
       if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
@@ -15535,7 +15544,11 @@ export class TaskExecutor {
         FNXC:ExecutorSessionRecovery 2026-07-14-06:19:
         Deferred self-requeues must mark the workflow graph recovery and release the active worktree slot after the executor lock drops; otherwise graph failure cleanup can overwrite the recovery and the parked task can keep consuming maxWorktrees capacity.
         */
-        const liveTask = await this.store.getTask(task.id);
+        const liveTask = await this.loadAuthoritativeTaskIfOwned(task.id);
+        if (!liveTask) {
+          executorLog.log(`${task.id}: stale assistant-continuation recovery skipped — task ownership moved to another node`);
+          return;
+        }
         const decision = computeRecoveryDecision({
           recoveryRetryCount: liveTask.recoveryRetryCount,
           nextRecoveryAt: liveTask.nextRecoveryAt,
@@ -16307,27 +16320,31 @@ export class TaskExecutor {
         } else {
           let cleanupLockHeld = true;
           try {
-            const latestTask = await this.store.getTask(task.id);
-            const continuationLanes = await this.resolveResumeLanes(task.id);
-            if (latestTask.column === continuationLanes.wip || latestTask.column === continuationLanes.hold) {
-              await this.store.updateTask(task.id, {
-                sessionFile: null,
-                status: null,
-                error: null,
-              });
-              const continuationReboundColumn = await resolveReboundColumnFor(this.store, task.id);
-              if (latestTask.column !== continuationReboundColumn) {
-                this.markGraphExecuteSelfRequeued(task.id);
-                this.activeWorktrees.delete(task.id);
-                executingTaskLock.release(task.id);
-                cleanupLockHeld = false;
-                await this.store.moveTask(task.id, continuationReboundColumn, { preserveResumeState: true });
-              } else {
-                this.activeWorktrees.delete(task.id);
-              }
-              executorLog.log(`${task.id} stale assistant-continuation session cleared — requeued to ${continuationReboundColumn} with progress preserved`);
+            const latestTask = await this.loadAuthoritativeTaskIfOwned(task.id);
+            if (!latestTask) {
+              executorLog.log(`${task.id}: stale assistant-continuation requeue skipped — task ownership moved to another node`);
             } else {
-              executorLog.debug(`${task.id} stale assistant-continuation requeue skipped — task is now in '${latestTask.column}'`);
+              const continuationLanes = await this.resolveResumeLanes(task.id);
+              if (latestTask.column === continuationLanes.wip || latestTask.column === continuationLanes.hold) {
+                await this.store.updateTask(task.id, {
+                  sessionFile: null,
+                  status: null,
+                  error: null,
+                });
+                const continuationReboundColumn = await resolveReboundColumnFor(this.store, task.id);
+                if (latestTask.column !== continuationReboundColumn) {
+                  this.markGraphExecuteSelfRequeued(task.id);
+                  this.activeWorktrees.delete(task.id);
+                  executingTaskLock.release(task.id);
+                  cleanupLockHeld = false;
+                  await this.store.moveTask(task.id, continuationReboundColumn, { preserveResumeState: true });
+                } else {
+                  this.activeWorktrees.delete(task.id);
+                }
+                executorLog.log(`${task.id} stale assistant-continuation session cleared — requeued to ${continuationReboundColumn} with progress preserved`);
+              } else {
+                executorLog.debug(`${task.id} stale assistant-continuation requeue skipped — task is now in '${latestTask.column}'`);
+              }
             }
           } catch (err: unknown) {
             const errorMessage = err instanceof Error ? err.message : String(err);

@@ -1149,10 +1149,11 @@ export async function runServe(
   //
   let centralCore: CentralCore | null = sharedCentralCore;
   const localNodeId = processNodeId;
+  let nodeRuntimeLease: Awaited<ReturnType<CentralCore["acquireNodeRuntimeLease"]>> | null = null;
 
   try {
     if (centralCore) {
-      await centralCore.updateNode(localNodeId, { status: "online" });
+      nodeRuntimeLease = await centralCore.acquireNodeRuntimeLease(localNodeId);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1247,9 +1248,9 @@ export async function runServe(
       }
     }
 
-    if (centralCore && localNodeId) {
+    if (centralCore && nodeRuntimeLease) {
       try {
-        await centralCore.updateNode(localNodeId, { status: "offline" });
+        await centralCore.releaseNodeRuntimeLease(nodeRuntimeLease);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn(`[serve] Failed to set local node offline: ${message}`);

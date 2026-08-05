@@ -1,4 +1,14 @@
-import type { CentralCore, RegisteredProject } from "@fusion/core";
+import { resolveLocalNodeId, resolveProcessNodeId, type CentralCore, type RegisteredProject } from "@fusion/core";
+
+export async function resolveDesktopProcessNodeId(
+  centralCore: CentralCore,
+  configuredNodeId = process.env.FUSION_NODE_ID,
+): Promise<string> {
+  const nodes = await centralCore.listNodes();
+  return configuredNodeId?.trim()
+    ? resolveProcessNodeId(nodes, configuredNodeId)
+    : resolveLocalNodeId(nodes.map((node) => ({ id: node.id, type: node.type })));
+}
 
 /*
  * FNXC:DesktopRuntime 2026-07-03-03:30:

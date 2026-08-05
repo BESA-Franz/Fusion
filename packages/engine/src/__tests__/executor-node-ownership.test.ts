@@ -55,4 +55,39 @@ describe("TaskExecutor node ownership", () => {
 
     expect(executeCore).not.toHaveBeenCalled();
   });
+
+  it("refuses completed-task recovery after ownership moved to another node", async () => {
+    const store = {
+      on: vi.fn(),
+      off: vi.fn(),
+      getTask: vi.fn(async () => makeTask("node-pc2")),
+      getSettings: vi.fn(async () => ({})),
+    } as unknown as TaskStore;
+    const executor = new TaskExecutor(store, "/tmp/executor-node-owner", {
+      getLocalNodeId: () => "node-vps",
+      getRegistryLocalNodeId: () => "node-vps",
+    });
+
+    await expect(executor.recoverCompletedTask(makeTask("node-vps"))).resolves.toBe(false);
+  });
+
+  it("refuses an owned task that left the WIP lane before execute", async () => {
+    const review = { ...makeTask("node-vps"), column: "in-review" } as Task;
+    const store = {
+      on: vi.fn(),
+      off: vi.fn(),
+      getTask: vi.fn(async () => review),
+      getSettings: vi.fn(async () => ({})),
+    } as unknown as TaskStore;
+    const executor = new TaskExecutor(store, "/tmp/executor-node-owner", {
+      getLocalNodeId: () => "node-vps",
+      getRegistryLocalNodeId: () => "node-vps",
+    });
+    vi.spyOn(executor as never, "resolveResumeLanes" as never).mockResolvedValue({ wip: "in-progress" } as never);
+    const executeCore = vi.spyOn(executor as never, "executeCore" as never).mockResolvedValue(undefined as never);
+
+    await executor.execute(review);
+
+    expect(executeCore).not.toHaveBeenCalled();
+  });
 });
