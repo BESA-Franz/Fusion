@@ -35,6 +35,9 @@ describe("TaskExecutor lease renewal fallback", () => {
     expect(store.renewCheckoutLease).toHaveBeenCalledWith(
       "FN-5945",
       expect.objectContaining({
+        agentId: "agent-1",
+        nodeId: "node-1",
+        leaseEpoch: 3,
         checkoutRunId: "run-1",
         checkoutLeaseRenewedAt: expect.any(String),
       }),

@@ -1413,7 +1413,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async tryClaimCheckout( taskId: string, claim: { agentId: string; nodeId: string; runId: string | null; leaseEpoch: number; renewedAt: string; }, precondition: CheckoutClaimPrecondition, ): Promise<{ ok: true; task: Task } | { ok: false; reason: "row_not_found" | "precondition_failed"; current: Task | null }> {
     return tryClaimCheckoutImpl(this, taskId, claim, precondition);
   }
-  async renewCheckoutLease( taskId: string, update: { checkoutRunId: string | null; checkoutLeaseRenewedAt: string; }, ): Promise<Task> {
+  async renewCheckoutLease( taskId: string, update: { agentId: string; nodeId: string; leaseEpoch: number; checkoutRunId: string | null; checkoutLeaseRenewedAt: string; }, ): Promise<Task> {
     return renewCheckoutLeaseImpl(this, taskId, update);
   }
   async selectNextTaskForAgent( agentId: string, agent?: Pick<Agent, "id" | "role"> & Partial<Pick<Agent, "runtimeConfig">>, ): Promise<InboxTask | null> {

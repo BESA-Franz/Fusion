@@ -95,7 +95,7 @@ describe("Scheduler post-release node ownership", () => {
   it("keeps a persisted local route despite stale task routing and changed settings", async () => {
     const live = task({
       nodeId: "node-remote-override",
-      effectiveNodeId: undefined,
+      effectiveNodeId: null as unknown as string,
       effectiveNodeSource: "local",
     });
     const updateTaskAtomic = vi.fn(async (_id: string, updater: (current: Task) => Promise<unknown>) => {

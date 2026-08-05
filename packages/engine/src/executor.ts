@@ -2461,7 +2461,16 @@ export class TaskExecutor {
       );
       return;
     }
+    /*
+    FNXC:SharedDatabaseNodeOwnership 2026-08-05-03:55:
+    The TaskStore fallback renews only the exact executor claim. Passing the
+    captured owner, node, and epoch prevents a superseded timer from extending
+    a replacement or recovery-cleared lease.
+    */
     await this.store.renewCheckoutLease(taskId, {
+      agentId,
+      nodeId,
+      leaseEpoch,
       checkoutRunId: runId ?? null,
       checkoutLeaseRenewedAt: renewedAt,
     });

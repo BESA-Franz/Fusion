@@ -86,7 +86,7 @@ describe("node-local task ownership", () => {
 
   it("treats a persisted local route as registry-local without legacy fallback", () => {
     const task = {
-      effectiveNodeId: undefined,
+      effectiveNodeId: null as unknown as string,
       effectiveNodeSource: "local" as const,
       nodeId: "node-stale-override",
     };
@@ -95,6 +95,19 @@ describe("node-local task ownership", () => {
     expect(canExecuteTaskOnNode(task, "node-registry-local", changedSettings, "node-registry-local")).toBe(true);
     expect(canExecuteTaskOnNode(task, "node-stale-override", changedSettings, "node-registry-local")).toBe(false);
     expect(canExecuteTaskOnNode(task, "node-new-default", changedSettings, "node-registry-local")).toBe(false);
+  });
+
+  it.each([
+    ["triage", ["node-process", { defaultNodeId: "node-changed-default" }]],
+    ["archive disposer", ["node-process"]],
+  ] as const)("treats a persisted local route as executable in the %s caller shape", (_shape, args) => {
+    const task = {
+      effectiveNodeId: undefined,
+      effectiveNodeSource: "local" as const,
+      nodeId: "node-stale-override",
+    };
+
+    expect(canExecuteTaskOnNode(task, ...args)).toBe(true);
   });
 
   it("fails closed when a persisted route cannot be resolved", () => {

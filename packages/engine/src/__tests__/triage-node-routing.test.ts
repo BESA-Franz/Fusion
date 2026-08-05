@@ -66,6 +66,19 @@ describe("node-exclusive triage planning", () => {
     expect(vps.isTaskEligibleForThisProcess(task(), settings())).toBe(true);
   });
 
+  it("honors a persisted local route without falling back to stale routing inputs", () => {
+    const local = processorFor("node-vps", "node-vps") as unknown as {
+      isTaskEligibleForThisProcess(task: Task, settings: Settings): boolean;
+    };
+    const persistedLocal = {
+      ...task("node-stale-override"),
+      effectiveNodeId: null as unknown as string,
+      effectiveNodeSource: "local",
+    } as Task;
+
+    expect(local.isTaskEligibleForThisProcess(persistedLocal, settings("node-changed-default"))).toBe(true);
+  });
+
   it("rechecks the authoritative node route inside the planning claim", async () => {
     const live = task("node-pc3");
     const updateTaskAtomic = vi.fn(async (

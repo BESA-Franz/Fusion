@@ -46,7 +46,7 @@ async function createRepositoryFixture(label: string): Promise<{rootDir: string;
   return {rootDir, worktreePath};
 }
 
-function taskWith(input: Pick<Task, "id" | "worktree" | "nodeId" | "effectiveNodeId">): Task {
+function taskWith(input: Pick<Task, "id" | "worktree" | "nodeId" | "effectiveNodeId" | "effectiveNodeSource">): Task {
   return input as Task;
 }
 
@@ -140,6 +140,36 @@ describe("baseline archive worktree disposer node ownership", () => {
       rootDir: fixture.rootDir,
       worktreePath: fixture.worktreePath,
       taskId: "FN-LOCAL",
+    }));
+    expect(task.worktree).toBeUndefined();
+  });
+
+  it("removes a persisted local route without falling back to a stale task override", async () => {
+    const fixture = await createRepositoryFixture("persisted-local-owner");
+    const store = {} as TaskStore;
+    const unregister = installBaselineArchiveWorktreeDisposer(store, {
+      rootDir: fixture.rootDir,
+      getSettings: async () => ({}),
+      getLocalNodeId: () => "node-local",
+    });
+    const task = taskWith({
+      id: "FN-PERSISTED-LOCAL",
+      worktree: fixture.worktreePath,
+      nodeId: "node-stale-override",
+      effectiveNodeId: null as unknown as string,
+      effectiveNodeSource: "local",
+    });
+
+    try {
+      await getArchiveWorktreeDisposer(store)!(task, {} as never);
+    } finally {
+      unregister();
+    }
+
+    expect(removeWorktreeMock).toHaveBeenCalledWith(expect.objectContaining({
+      rootDir: fixture.rootDir,
+      worktreePath: fixture.worktreePath,
+      taskId: "FN-PERSISTED-LOCAL",
     }));
     expect(task.worktree).toBeUndefined();
   });

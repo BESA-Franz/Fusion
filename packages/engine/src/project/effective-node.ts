@@ -37,8 +37,14 @@ export function canExecuteTaskOnNode(
   task override or to project settings changed after the move.
   */
   if (task.effectiveNodeSource) {
+    /*
+    FNXC:SharedDatabaseNodeOwnership 2026-08-05-03:55:
+    Callers that already pass the process's registry-local identity as
+    localNodeId (triage and archive disposal) need the same persisted-local
+    decision as the scheduler's explicit four-argument shape.
+    */
     const persistedNodeId = task.effectiveNodeId?.trim()
-      || (task.effectiveNodeSource === "local" ? registryLocalNodeId?.trim() : undefined);
+      || (task.effectiveNodeSource === "local" ? (registryLocalNodeId ?? localNodeId)?.trim() : undefined);
     if (!persistedNodeId) return false;
     return localNodeId?.trim() === persistedNodeId;
   }

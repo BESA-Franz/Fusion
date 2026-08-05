@@ -132,4 +132,89 @@ pgDescribe("checkout task advisory lock (PostgreSQL)", () => {
       checkoutNodeId: "node-between-predicate-and-move",
     });
   });
+
+  it("rejects an old executor renewal after recovery clears or replaces its lease", async () => {
+    const store = h.store();
+    const task = await store.createTaskWithReservedId(
+      { description: "checkout renewal recovery race", column: "in-progress" },
+      { taskId: "FN-CHECKOUT-RENEWAL-RACE", applyDefaultWorkflowSteps: false },
+    );
+    await expect(store.tryClaimCheckout(task.id, {
+      agentId: "agent-old",
+      nodeId: "node-old",
+      runId: "run-old",
+      leaseEpoch: 1,
+      renewedAt: "2026-08-05T05:20:00.000Z",
+    }, {
+      expectedCheckedOutBy: null,
+      expectedNodeId: null,
+      expectedLeaseEpoch: 0,
+    })).resolves.toMatchObject({ ok: true });
+
+    let renewalSettled = false;
+    let renewalPromise!: ReturnType<typeof store.renewCheckoutLease>;
+    await store.withTaskMutationLock(task.id, async () => {
+      renewalPromise = store.renewCheckoutLease(task.id, {
+        agentId: "agent-old",
+        nodeId: "node-old",
+        leaseEpoch: 1,
+        checkoutRunId: "run-old-late",
+        checkoutLeaseRenewedAt: "2026-08-05T05:30:00.000Z",
+      });
+      void renewalPromise.then(
+        () => { renewalSettled = true; },
+        () => { renewalSettled = true; },
+      );
+
+      await waitForBlockedAdvisoryLock();
+      expect(renewalSettled).toBe(false);
+      await store.updateTaskAtomic(task.id, (live) => ({
+        checkedOutBy: null,
+        checkoutNodeId: null,
+        checkoutRunId: null,
+        checkoutLeaseRenewedAt: null,
+        checkoutLeaseEpoch: (live.checkoutLeaseEpoch ?? 0) + 1,
+      }));
+    });
+
+    await expect(renewalPromise).rejects.toThrow(/renewal precondition failed/i);
+    store.taskCache.delete(task.id);
+    await expect(store.getTask(task.id)).resolves.toMatchObject({
+      checkoutLeaseEpoch: 2,
+    });
+    const current = await store.getTask(task.id);
+    expect(current.checkedOutBy).toBeUndefined();
+    expect(current.checkoutNodeId).toBeUndefined();
+    expect(current.checkoutRunId).toBeUndefined();
+    expect(current.checkoutLeaseRenewedAt).toBeUndefined();
+
+    await expect(store.tryClaimCheckout(task.id, {
+      agentId: "agent-new",
+      nodeId: "node-new",
+      runId: "run-new",
+      leaseEpoch: 3,
+      renewedAt: "2026-08-05T05:40:00.000Z",
+    }, {
+      expectedCheckedOutBy: null,
+      expectedNodeId: null,
+      expectedLeaseEpoch: 2,
+    })).resolves.toMatchObject({ ok: true });
+
+    await expect(store.renewCheckoutLease(task.id, {
+      agentId: "agent-old",
+      nodeId: "node-old",
+      leaseEpoch: 1,
+      checkoutRunId: "run-old-after-reclaim",
+      checkoutLeaseRenewedAt: "2026-08-05T05:50:00.000Z",
+    })).rejects.toThrow(/renewal precondition failed/i);
+
+    store.taskCache.delete(task.id);
+    await expect(store.getTask(task.id)).resolves.toMatchObject({
+      checkedOutBy: "agent-new",
+      checkoutNodeId: "node-new",
+      checkoutRunId: "run-new",
+      checkoutLeaseEpoch: 3,
+      checkoutLeaseRenewedAt: "2026-08-05T05:40:00.000Z",
+    });
+  });
 });

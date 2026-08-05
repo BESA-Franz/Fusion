@@ -317,7 +317,7 @@ export async function listTasksModifiedSinceImpl2(store: TaskStore, since: strin
     return store.listTasksModifiedSince(since, limit, opts);
   }
 
-export async function renewCheckoutLeaseImpl(store: TaskStore, taskId: string, update: { checkoutRunId: string | null; checkoutLeaseRenewedAt: string; },): Promise<Task> {
+export async function renewCheckoutLeaseImpl(store: TaskStore, taskId: string, update: { agentId: string; nodeId: string; leaseEpoch: number; checkoutRunId: string | null; checkoutLeaseRenewedAt: string; },): Promise<Task> {
     /*
      * FNXC:SqliteFinalRemoval 2026-06-26:
      * P1 fix: no backendMode branch existed, so checkout lease renewal threw in
@@ -328,7 +328,12 @@ export async function renewCheckoutLeaseImpl(store: TaskStore, taskId: string, u
     const layer = store.asyncLayer!;
     const dir = store.taskDir(taskId);
     const outcome = await layer.transactionImmediate(async (tx) => {
-      /* Renewal writes participate in the same checkout/recovery/move mutex. */
+      /*
+      FNXC:SharedDatabaseNodeOwnership 2026-08-05-03:55:
+      Renewal writes participate in the same checkout/recovery/move mutex and
+      CAS the executor's owner/node/epoch. An old timer must not renew a new
+      claim or an ownerless lease after recovery clears it.
+      */
       await acquireTaskAdvisoryXactLock(tx, layer.projectId, taskId);
       const row = await readTaskRowInTransaction(tx, taskId, { includeDeleted: true }, layer.projectId);
       if (row?.deletedAt) {
@@ -341,12 +346,20 @@ export async function renewCheckoutLeaseImpl(store: TaskStore, taskId: string, u
           checkoutLeaseRenewedAt: update.checkoutLeaseRenewedAt,
           updatedAt: update.checkoutLeaseRenewedAt,
         })
-        .where(and(eq(schema.project.tasks.id, taskId), isNull(schema.project.tasks.deletedAt)));
+        .where(and(
+          eq(schema.project.tasks.id, taskId),
+          taskProjectScope(layer),
+          isNull(schema.project.tasks.deletedAt),
+          eq(schema.project.tasks.checkedOutBy, update.agentId),
+          eq(schema.project.tasks.checkoutNodeId, update.nodeId),
+          eq(schema.project.tasks.checkoutLeaseEpoch, update.leaseEpoch),
+        ))
+        .returning({ id: schema.project.tasks.id });
       if (result.length === 0) {
-        return { deletedAt: undefined, current: undefined };
+        return { deletedAt: undefined, current: row, renewed: false };
       }
       const fresh = await readTaskRowInTransaction(tx, taskId, undefined, layer.projectId);
-      return { deletedAt: undefined, current: fresh };
+      return { deletedAt: undefined, current: fresh, renewed: true };
     });
 
     if (outcome.deletedAt) {
@@ -356,6 +369,9 @@ export async function renewCheckoutLeaseImpl(store: TaskStore, taskId: string, u
     }
     if (!outcome.current) {
       throw new Error(`Task ${taskId} not found`);
+    }
+    if (!outcome.renewed) {
+      throw new Error(`Checkout lease renewal precondition failed for task ${taskId}`);
     }
     const current = store.rowToTask(store.pgRowToTaskRow(outcome.current));
     await store.writeTaskJsonFile(dir, current);
