@@ -56,6 +56,33 @@ describe("heartbeat worktree cwd", () => {
     expect(piModule.createFnAgent).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/tmp/wt" }));
   });
 
+  it("does not acquire a worktree for a task routed to another process node", async () => {
+    taskStore.getTask.mockResolvedValue({
+      id: "FN-1",
+      title: "t",
+      description: "d",
+      column: "todo",
+      dependencies: [],
+      steps: [],
+      log: [],
+      nodeId: "node-remote",
+      effectiveNodeId: "node-remote",
+      effectiveNodeSource: "task-override",
+    });
+    const monitor = new HeartbeatMonitor({
+      store,
+      taskStore,
+      rootDir: "/repo",
+      processNodeId: "node-local",
+    });
+
+    await monitor.executeHeartbeat({ agentId: "a1", source: "on_demand" });
+
+    expect(worktreeAcquisition.acquireTaskWorktree).not.toHaveBeenCalled();
+    expect(piModule.createFnAgent).not.toHaveBeenCalled();
+    expect(store.endHeartbeatRun).toHaveBeenCalled();
+  });
+
   it("uses rootDir for no-task runs", async () => {
     store.getAgent.mockResolvedValue({ ...agent, taskId: undefined, soul: "x" });
     const monitor = new HeartbeatMonitor({ store, taskStore, rootDir: "/repo" });

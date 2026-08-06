@@ -102,6 +102,7 @@ import { trimPromptMd, trimTaskDescription, trimTriggeringComments } from "./age
 import { detectDeicticReference, extractAntecedentCandidates, renderAmbiguityPromptBlock, scoreReferentConfidence } from "./triage-domain/room-ambiguity.js";
 import { countActiveAgentMembers, decideRoomCoordination, detectTaskFilingIntent, renderRoomCoordinationPromptBlock } from "./triage-domain/room-coordination.js";
 import { evaluateParkedAgentTaskLink, isParkedTaskColumn, type AgentTaskLinkExecutionProof } from "./agents/task-agent-sync.js";
+import { canExecuteTaskOnNode } from "./project/effective-node.js";
 
 /*
 FNXC:WorkflowLifecycleColumns 2026-07-28-09:25 (U11 conversion):
@@ -198,6 +199,10 @@ export interface HeartbeatMonitorOptions {
   heartbeatTimeoutMs?: number;
   /** Max concurrent runs per agent (default: 1) */
   maxConcurrentRuns?: number;
+  /** Registry node served by this process. Used to keep shared-database heartbeats node-local. */
+  processNodeId?: string;
+  /** Registry-local node identity used when a persisted route explicitly selects the local node. */
+  registryLocalNodeId?: string;
   /** Callback when an agent misses its heartbeat */
   onMissed?: (agentId: string, reason: string) => void;
   /** Callback when an agent recovers after a missed heartbeat */
@@ -735,6 +740,8 @@ export class HeartbeatMonitor {
   private approvalRequestStore?: ApprovalRequestStore;
   private snapshotManager?: AutoClaimSnapshotManager;
   private secretsStore?: Pick<import("@fusion/core").SecretsStore, "listEnvExportable">;
+  private processNodeId?: string;
+  private registryLocalNodeId?: string;
 
   private trackedAgents: Map<string, TrackedAgent> = new Map();
   private agentStartLocks: Map<string, Promise<unknown>> = new Map();
@@ -775,6 +782,21 @@ export class HeartbeatMonitor {
     this.credentialRotator = options.credentialRotator;
     this.snapshotManager = options.snapshotManager ?? (this.taskStore ? new AutoClaimSnapshotManager({ taskStore: this.taskStore }) : undefined);
     this.secretsStore = options.secretsStore;
+    this.processNodeId = options.processNodeId?.trim() || undefined;
+    this.registryLocalNodeId = options.registryLocalNodeId?.trim() || undefined;
+  }
+
+  /**
+   * Shared PostgreSQL is visible to every Fusion process. A heartbeat monitor
+   * must therefore refuse a task whose persisted route belongs to another
+   * process before acquiring a worktree or starting a model session.
+   */
+  private isTaskOwnedByProcess(
+    task: Pick<TaskDetail, "effectiveNodeId" | "nodeId" | "effectiveNodeSource">,
+    settings?: Pick<Settings, "defaultNodeId">,
+  ): boolean {
+    if (!this.processNodeId) return true;
+    return canExecuteTaskOnNode(task, this.processNodeId, settings, this.registryLocalNodeId);
   }
 
   getChatStore(): ChatStore | undefined {
@@ -1271,6 +1293,11 @@ export class HeartbeatMonitor {
         const activeRun = await this.store.getActiveHeartbeatRun(agent.id);
         if (!isEphemeralAgent(agent) && agent.taskId && this.taskStore) {
           linkedTask = await this.taskStore.getTask(agent.taskId);
+          if (linkedTask && !this.isTaskOwnedByProcess(linkedTask)) {
+            // The task is owned by another Fusion process sharing this database.
+            // Do not reconcile or clear its agent state from this node.
+            continue;
+          }
           parkedProof = evaluateParkedAgentTaskLink({
             agent,
             linkedTask,
@@ -2394,6 +2421,27 @@ export class HeartbeatMonitor {
             }
           }
           if (inboxSelection) {
+            if (!this.isTaskOwnedByProcess(inboxSelection.task, heartbeatModelSettings)) {
+              const routedNode = inboxSelection.task.effectiveNodeId?.trim()
+                || inboxSelection.task.nodeId?.trim()
+                || heartbeatModelSettings?.defaultNodeId?.trim()
+                || "local";
+              heartbeatLog.debug(
+                `Agent ${agentId} skipped inbox task ${inboxSelection.task.id}: routed to ${routedNode}, process node is ${this.processNodeId ?? "unknown"}`,
+              );
+              await this.completeRun(agentId, run.id, {
+                status: "completed",
+                resultJson: {
+                  reason: "foreign_node_route",
+                  taskId: inboxSelection.task.id,
+                  routedNode,
+                  processNodeId: this.processNodeId ?? null,
+                },
+                skipStateTransition: true,
+              });
+              return (await this.store.getRunDetail(agentId, run.id))!;
+            }
+
             taskId = inboxSelection.task.id;
             heartbeatLog.log(`Inbox selected task ${taskId} (priority: ${inboxSelection.priority}) for agent ${agentId}`);
 
@@ -2526,6 +2574,27 @@ export class HeartbeatMonitor {
             await this.completeRun(agentId, run.id, {
               status: "completed",
               resultJson: { reason: "task_not_found", taskId: resolvedTaskId },
+            });
+            return (await this.store.getRunDetail(agentId, run.id))!;
+          }
+
+          if (!this.isTaskOwnedByProcess(taskDetail, heartbeatModelSettings)) {
+            const routedNode = taskDetail.effectiveNodeId?.trim()
+              || taskDetail.nodeId?.trim()
+              || heartbeatModelSettings?.defaultNodeId?.trim()
+              || "local";
+            heartbeatLog.debug(
+              `Heartbeat for ${agentId} skipped before worktree acquisition: task ${resolvedTaskId} is routed to ${routedNode}, process node is ${this.processNodeId ?? "unknown"}`,
+            );
+            await this.completeRun(agentId, run.id, {
+              status: "completed",
+              resultJson: {
+                reason: "foreign_node_route",
+                taskId: resolvedTaskId,
+                routedNode,
+                processNodeId: this.processNodeId ?? null,
+              },
+              skipStateTransition: true,
             });
             return (await this.store.getRunDetail(agentId, run.id))!;
           }
@@ -4510,6 +4579,7 @@ export class HeartbeatTriggerScheduler {
   private store: AgentStore;
   private callback: TriggerCallback;
   private taskStore?: TaskStore;
+  private processNodeId?: string;
   private timers: Map<string, AgentTimer> = new Map();
   private errorRecoveryLimit = MAX_HEARTBEAT_ERROR_RECOVERY_ATTEMPTS;
   private pendingAssignments: Map<string, PendingAssignment> = new Map();
@@ -4579,12 +4649,13 @@ export class HeartbeatTriggerScheduler {
   private static readonly DEFAULT_REPAIR_STALE_MULTIPLIER = 2;
   private static readonly DEFAULT_HEARTBEAT_TIMEOUT_MS = 60_000;
 
-  constructor(store: AgentStore, callback: TriggerCallback, taskStore?: TaskStore, options?: { isTaskExecuting?: (taskId: string) => boolean; isAgentEffectivelyExecuting?: (agentId: string) => boolean }) {
+  constructor(store: AgentStore, callback: TriggerCallback, taskStore?: TaskStore, options?: { isTaskExecuting?: (taskId: string) => boolean; isAgentEffectivelyExecuting?: (agentId: string) => boolean; processNodeId?: string }) {
     this.store = store;
     this.callback = callback;
     this.taskStore = taskStore;
     this.isTaskExecuting = options?.isTaskExecuting;
     this.isAgentEffectivelyExecuting = options?.isAgentEffectivelyExecuting;
+    this.processNodeId = options?.processNodeId?.trim() || undefined;
   }
 
   /**
@@ -4973,6 +5044,11 @@ export class HeartbeatTriggerScheduler {
           return;
         }
 
+        if (!this.isAgentOwnedByProcess(agent)) {
+          heartbeatLog.debug(`Assignment trigger skipped for ${agent.id} (agent bound to another process node)`);
+          return;
+        }
+
         const runtimeConfig = (agent.runtimeConfig ?? {}) as { enabled?: boolean; allowParallelExecution?: boolean };
         if (runtimeConfig.enabled === false) {
           heartbeatLog.debug(`Assignment trigger skipped for ${agent.id} (disabled)`);
@@ -5172,7 +5248,14 @@ export class HeartbeatTriggerScheduler {
   private isTimerEligibleAgent(agent: Agent): boolean {
     return isHeartbeatManaged(agent)
       && agent.runtimeConfig?.enabled !== false
+      && this.isAgentOwnedByProcess(agent)
       && (isTickableState(agent.state) || isErrorRecoveryEligible(agent, this.errorRecoveryLimit));
+  }
+
+  private isAgentOwnedByProcess(agent: Agent): boolean {
+    if (!this.processNodeId) return true;
+    const configuredNode = (agent.runtimeConfig as Record<string, unknown> | undefined)?.nodeId;
+    return typeof configuredNode !== "string" || configuredNode.trim().length === 0 || configuredNode.trim() === this.processNodeId;
   }
 
   private getAgentTimerConfig(agent: Agent): AgentHeartbeatConfig {
@@ -5653,6 +5736,11 @@ export class HeartbeatTriggerScheduler {
         this.unregisterAgent(agentId);
         return;
       }
+      if (!this.isAgentOwnedByProcess(agent)) {
+        heartbeatLog.debug(`Timer tick skipped for ${agentId} (agent bound to another process node)`);
+        this.unregisterAgent(agentId);
+        return;
+      }
       if (!isHeartbeatManaged(agent) || (agent.state !== "error" && !isTickableState(agent.state))) {
         heartbeatLog.debug(`Timer tick skipped for ${agentId} (state=${agent.state})`);
         this.unregisterAgent(agentId);
@@ -5713,6 +5801,7 @@ export class HeartbeatTriggerScheduler {
           heartbeatLog.debug(`Timer tick skipped for ${agentId} (active run)`);
           return;
         }
+
         heartbeatLog.log(
           `Heartbeat tick resumed after stale-run reap reason=tick-proceeded-after-reap agentId=${agentId} runId=${activeRun.id} elapsedMs=${reapResult.elapsedMs} thresholdMs=${reapResult.thresholdMs}`,
         );

@@ -1530,6 +1530,8 @@ export class InProcessRuntime
           credentialRotator: this.credentialRotator,
           secretsStore,
           snapshotManager: autoClaimSnapshotManager,
+          processNodeId: this.localNodeId,
+          registryLocalNodeId: this.registryLocalNodeId,
           onMissed: (agentId, reason) => {
             runtimeLog.warn(`Agent ${agentId} missed heartbeat: ${reason}`);
           },
@@ -1593,6 +1595,7 @@ export class InProcessRuntime
             // — an override/defer column agent must not heartbeat concurrently with a
             // column-bound session it runs but is not assigned to.
             isAgentEffectivelyExecuting: (agentId) => this.executor.isAgentEffectivelyExecuting(agentId),
+            processNodeId: this.localNodeId,
           },
         );
         this.triggerScheduler.start();
@@ -1604,7 +1607,11 @@ export class InProcessRuntime
         const isTickableHeartbeatState = (state: import("@fusion/core").AgentState) =>
           state === "active" || state === "running" || state === "idle";
         const isTimerManagedAgent = (agent: import("@fusion/core").Agent) =>
-          isHeartbeatEnabledAgent(agent) && isTickableHeartbeatState(agent.state);
+          isHeartbeatEnabledAgent(agent)
+          && isTickableHeartbeatState(agent.state)
+          && (typeof agent.runtimeConfig?.nodeId !== "string"
+            || !this.localNodeId
+            || agent.runtimeConfig.nodeId.trim() === this.localNodeId.trim());
 
         // Wire the ephemeral worker manager (now that the executor exists, so
         // its spawned-child pending-deletion set can be consulted) and run
