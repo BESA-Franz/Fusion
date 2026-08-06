@@ -575,8 +575,8 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
       logger,
       runContext,
     });
-    const baseRefresh = await refreshExistingWorktree(path);
     await ensureWorktreeProjectStateLinks({ rootDir, worktreePath: path, taskId: task.id, logger });
+    const baseRefresh = await refreshExistingWorktree(path);
     return guardAcquisitionReturn({ worktreePath: path, branch: resumedBranch, source, hydrated, isResume: true, baseRefresh });
   };
 
@@ -702,8 +702,8 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
       runContext,
     });
     // FN-4912: resume path reuses the prior on-disk .env (and its fingerprint sidecar). Rewrite is owned by the next fresh acquisition.
-    const baseRefresh = await refreshExistingWorktree(worktreePath);
     await ensureWorktreeProjectStateLinks({ rootDir, worktreePath, taskId: task.id, logger });
+    const baseRefresh = await refreshExistingWorktree(worktreePath);
     return guardAcquisitionReturn({ worktreePath, branch: resumedBranch, source: "existing", hydrated, isResume: true, baseRefresh });
   }
 
