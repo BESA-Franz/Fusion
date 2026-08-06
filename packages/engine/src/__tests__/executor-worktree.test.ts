@@ -13,6 +13,7 @@ import { WorktreePool } from "../worktree/worktree-pool.js";
 import * as worktreePoolModule from "../worktree/worktree-pool.js";
 import { BranchConflictError } from "../execution/branch-conflicts.js";
 import * as branchConflictModule from "../execution/branch-conflicts.js";
+import * as integrationBranchModule from "../merge/integration-branch.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { ActiveSessionWorktreeRemovalError } from "../worktree/worktree-backend.js";
 import { generateWorktreeName, slugify } from "../worktree/worktree-names.js";
@@ -1094,6 +1095,55 @@ describe("TaskExecutor worktree recovery", () => {
     );
     // onError no longer fires for the recoverable branch-conflict-unrecoverable path.
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("rebinds a protected foreign branch without deleting its checkout", async () => {
+    const store = createMockStore();
+    const executor = new TaskExecutor(store, "/tmp/test");
+    const task = { ...makeTask("FN-257"), branch: "fusion/fn-257", worktree: "/tmp/test/.worktrees/besa-257" };
+    const createSpy = vi.spyOn(executor as any, "tryCreateWorktree").mockResolvedValue({
+      path: "/tmp/test/.worktrees/recovery-branch",
+      branch: "fusion/fn-257-recovery-2",
+    });
+    const integrationSpy = vi.spyOn(integrationBranchModule, "resolveIntegrationBranch").mockResolvedValue("main");
+    const cleanupSpy = vi.spyOn(executor as any, "cleanupConflictingWorktree");
+
+    const result = await (executor as any).handleBranchConflict(
+      task,
+      new BranchConflictError({
+        branchName: "fusion/fn-257",
+        conflictingWorktreePath: "/tmp/test/.worktrees/besa-257",
+        existingTipSha: "deadbeef1234",
+        strandedCommits: [{ sha: "deadbeef1234", subject: "foreign work" }],
+        startPoint: "codex/erp-mvp-foundation",
+        recommendedAction: "Preserve this unregistered branch and inspect its foreign or unattributed commits before retrying.",
+      }),
+    );
+
+    expect(result).toBe("retry");
+    expect(createSpy).toHaveBeenCalledWith(
+      "fusion/fn-257-recovery-2",
+      expect.stringContaining("recovery-2"),
+      "FN-257",
+      "main",
+      0,
+      0,
+      true,
+      expect.any(Object),
+    );
+    expect(cleanupSpy).not.toHaveBeenCalled();
+    expect(store.updateTask).toHaveBeenCalledWith("FN-257", expect.objectContaining({
+      branch: "fusion/fn-257-recovery-2",
+      worktree: "/tmp/test/.worktrees/recovery-branch",
+      sessionFile: null,
+    }));
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-257",
+      expect.stringContaining("preserved protected foreign branch fusion/fn-257"),
+      undefined,
+      undefined,
+    );
+    integrationSpy.mockRestore();
   });
 
   it("FN-4397 reproduces repeated branch-conflict recovery-required emissions for the same task", async () => {

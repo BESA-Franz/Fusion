@@ -19920,6 +19920,74 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
     await this.store.appendAgentLog(task.id, "Branch conflict auto-recovery", "status", message, "executor");
   }
 
+  /**
+   * Rebind a task whose canonical branch is protected because it contains
+   * foreign/unattributed history. The old branch and checkout are deliberately
+   * left untouched; the task receives a clean, uniquely named branch from the
+   * current integration ref instead. This keeps recovery autonomous without
+   * turning an unregistered branch with potentially valuable work into data
+   * loss.
+   */
+  private async rebindProtectedForeignBranch(
+    task: Task,
+    error: BranchConflictError,
+    settings: Partial<Settings>,
+  ): Promise<"retry" | null> {
+    const integrationRef = await resolveIntegrationBranch(this.rootDir, settings);
+    const branchStem = `${error.branchName}-recovery`;
+
+    for (let suffix = 2; suffix <= 6; suffix += 1) {
+      const candidateBranch = `${branchStem}-${suffix}`;
+      const worktreeName = `${generateWorktreeName(this.rootDir, settings)}-recovery-${suffix}`;
+      const candidatePath = resolveTaskWorktreePath(this.rootDir, settings, worktreeName);
+
+      try {
+        const created = await this.tryCreateWorktree(
+          candidateBranch,
+          candidatePath,
+          task.id,
+          integrationRef,
+          0,
+          0,
+          true,
+          settings,
+        );
+        await this.store.updateTask(task.id, {
+          worktree: created.path,
+          branch: created.branch,
+          baseCommitSha: null,
+          sessionFile: null,
+          paused: false,
+          pausedReason: null,
+        });
+        const message = `[recovery] preserved protected foreign branch ${error.branchName} at ${error.conflictingWorktreePath}; `
+          + `rebound ${task.id} to ${created.branch} at ${created.path} from ${integrationRef}`;
+        await this.store.logEntry(task.id, message, undefined, this.getRunContextFor(task.id));
+        await this.store.appendAgentLog(task.id, "Branch conflict auto-recovery", "status", message, "executor");
+        return "retry";
+      } catch (recoveryError) {
+        if (isBranchConflictError(recoveryError) || /already (?:used by worktree|checked out)|branch .* already exists/i.test(String(recoveryError))) {
+          continue;
+        }
+        await this.store.logEntry(
+          task.id,
+          `[recovery] protected foreign branch rebind failed for ${candidateBranch}`,
+          recoveryError instanceof Error ? recoveryError.message : String(recoveryError),
+          this.getRunContextFor(task.id),
+        );
+        return null;
+      }
+    }
+
+    await this.store.logEntry(
+      task.id,
+      `[recovery] protected foreign branch rebind exhausted for ${error.branchName}; old branch preserved`,
+      undefined,
+      this.getRunContextFor(task.id),
+    );
+    return null;
+  }
+
   private async handleBranchConflict(task: Task, error: BranchConflictError): Promise<"retry" | "reclaimed" | "sticky"> {
     // FN-4811: Before invoking inspection-based recovery (which may force-remove the
     // conflicting worktree), verify the conflict isn't currently bound to a live session.
@@ -19933,6 +20001,15 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
       return "sticky";
     }
     const settings = await mergeEffectiveSettings(this.store, task, await this.store.getSettings());
+
+    // The backend intentionally refuses to attach/delete an unregistered
+    // branch with foreign or unattributed commits. Rebind only that explicit
+    // protected-branch disposition; all other collision classes keep their
+    // existing liveness and reclaim rules below.
+    if (/Preserve this unregistered branch/i.test(error.recommendedAction)) {
+      const rebound = await this.rebindProtectedForeignBranch(task, error, settings);
+      if (rebound) return rebound;
+    }
 
     const integrationRef = task.mergeDetails?.mergeTargetBranch ?? task.baseBranch ?? task.executionStartBranch ?? await resolveIntegrationBranch(this.rootDir, undefined);
     const inspection = await inspectBranchConflict({
