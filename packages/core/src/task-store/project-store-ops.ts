@@ -73,7 +73,7 @@ export async function getOrCreateForProjectImpl(store: typeof TaskStore, project
 
     try {
       const compat = new BackwardCompat(central);
-      const context = await compat.resolveProjectContext(process.cwd(), projectId);
+      const context = await compat.resolveProjectContext(process.cwd(), projectId, process.env.FUSION_NODE_ID);
       const resolvedGlobalSettingsDir = globalSettingsDir
         ?? (process.env.VITEST === "true"
           ? join(context.workingDirectory, ".fusion-global-settings")
