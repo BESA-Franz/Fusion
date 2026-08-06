@@ -608,8 +608,12 @@ describe("buildExecutionPrompt", () => {
       const task = createMockTaskDetail();
       const result = buildExecutionPrompt(task, "/project", {
         memoryEnabled: true,
+        memoryBackendType: "file",
       } as any);
       expect(result).toContain("`.fusion/memory/`");
+      expect(result).toContain("\\project\\.fusion\\memory\\MEMORY.md");
+      expect(result).toMatch(/shared project root, not the disposable task worktree/i);
+      expect(result).toMatch(/never create project-memory files inside the task worktree/i);
     });
   });
 
