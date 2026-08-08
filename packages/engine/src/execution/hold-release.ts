@@ -614,6 +614,23 @@ export async function runHoldReleaseSweep(
   }
   const prefetchMs = deps.now() - prefetchStartedMs;
 
+  // Resolve distinct workflow definitions before walking the task snapshot.
+  // Custom definitions are remote reads too; resolving them one task at a time
+  // would reintroduce board-size latency even after selection prefetching.
+  const workflowIds = [
+    ...new Set(
+      [...workflowSelectionByTask.values()]
+        .filter((selection) => !selection.readFailed)
+        .map((selection) => selection.workflowId ?? "builtin:coding"),
+    ),
+  ];
+  const irPrefetchStartedMs = deps.now();
+  for (let offset = 0; offset < workflowIds.length; offset += PREFETCH_CONCURRENCY) {
+    const batch = workflowIds.slice(offset, offset + PREFETCH_CONCURRENCY);
+    await Promise.all(batch.map((workflowId) => resolveWorkflowIrById(store, workflowId, irCache)));
+  }
+  const irPrefetchMs = deps.now() - irPrefetchStartedMs;
+
   for (const task of allTasks) {
     // Skip paused / recovery-backoff tasks exactly as the legacy scheduler does.
     if (task.paused || task.userPaused) {
@@ -726,7 +743,7 @@ export async function runHoldReleaseSweep(
     return entry ? Math.max(max, deps.now() - entry.sinceMs) : max;
   }, 0);
   const summary =
-    `Hold-release sweep: ${sweepMs}ms (prefetch ${prefetchMs}ms over ${allTasks.length} tasks), `
+    `Hold-release sweep: ${sweepMs}ms (prefetch ${prefetchMs}ms, ir-prefetch ${irPrefetchMs}ms over ${allTasks.length} tasks), `
     + `released=${result.released.length}, held=${result.held.length}`
     + (longestHeldMs > 0 ? `, longest held ${longestHeldMs}ms` : "");
   if (sweepMs >= SLOW_SWEEP_WARN_MS) {
