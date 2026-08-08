@@ -6858,7 +6858,24 @@ export class TaskExecutor {
             lastError: null,
           });
         }
-        result = await runner.run(detail, settings, continuation?.nodeId);
+        /*
+         * A durable continuation may record a node from a foreach template.
+         * Such a template node is not a legal top-level resume point; let the
+         * interpreter re-enter at the column contract and resume the materialized
+         * instance from its durable row instead of terminalizing a healthy card.
+         */
+        const continuationNodeId = continuation?.nodeId;
+        const resumeNodeId = continuationNodeId
+          && columnAgentIr?.nodes.some((candidate) => candidate.id === continuationNodeId)
+          ? continuationNodeId
+          : undefined;
+        if (continuationNodeId && resumeNodeId === undefined) {
+          executorLog.debug(
+            `[workflow-graph] ${task.id}: continuation node '${continuationNodeId}' is not a top-level graph node `
+            + "— re-entering at the column resume node",
+          );
+        }
+        result = await runner.run(detail, settings, resumeNodeId);
       } catch (err) {
         if (continuation) {
           await this.store.transitionWorkflowWorkItem(continuation.id, "failed", {
