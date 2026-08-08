@@ -44,7 +44,11 @@ afterAll(() => {
 });
 
 function git(cwd: string, args: string): string {
-  return execSync(`git ${args}`, { cwd, encoding: "utf-8" }).trim();
+  // The fixtures intentionally use single quotes in a few commit messages. `cmd.exe` treats
+  // those as literal characters, so normalize them only for the Windows shell while keeping
+  // the Unix command form unchanged.
+  const commandArgs = process.platform === "win32" ? args.replace(/'([^']*)'/g, '"$1"') : args;
+  return execSync(`git ${commandArgs}`, { cwd, encoding: "utf-8" }).trim();
 }
 
 /** A repo on `main` with one base commit + a task branch carrying one change. */
@@ -739,6 +743,40 @@ describe("runAiMerge", () => {
     expect(result.ok).toBe(true);
     expect(task.column).toBe("done");
     expect(store.moveTask).toHaveBeenCalledWith("FN-1", "done", expect.objectContaining({ moveSource: "engine", preserveProgress: true }));
+  });
+
+  it("finalizes a verified intentional no-op instead of bouncing it back to todo", async () => {
+    const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+    git(dir, "merge -q fusion/fn-1");
+    const { store, task } = makeStore(dir, {
+      noCommitsExpected: true,
+      steps: [
+        { name: "Preflight", status: "done" },
+        { name: "Restore the invariant if needed", status: "skipped" },
+        { name: "Apply the invariant everywhere", status: "skipped" },
+        { name: "Add regressions if needed", status: "skipped" },
+        { name: "Testing & Verification", status: "done" },
+        { name: "Documentation & Delivery", status: "done" },
+      ],
+    });
+
+    const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+      mergeAgent: vi.fn(async () => { /* nothing to do */ }),
+      reviewAgent: vi.fn(async () => "REVIEW_VERDICT: approve"),
+    });
+
+    expect(result).toMatchObject({ noOp: true, merged: false, ok: true });
+    expect(task.column).toBe("done");
+    expect(store.moveTask).toHaveBeenCalledWith(
+      "FN-1",
+      "done",
+      expect.objectContaining({ moveSource: "engine", preserveProgress: true }),
+    );
+    expect(store.moveTask).not.toHaveBeenCalledWith(
+      "FN-1",
+      "todo",
+      expect.anything(),
+    );
   });
 
   /*
