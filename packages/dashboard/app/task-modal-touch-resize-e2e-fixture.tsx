@@ -165,7 +165,7 @@ function TaskDetailTitleListHarness() {
 function TaskDetailTitleDockHarness() {
   localStorage.setItem("fusion:right-dock-open", "true");
   localStorage.setItem("fusion:right-dock-view", "tasks");
-  const dock = useRightDockController({ active: true, projectId: "fixture", tasks: [fixtureTask], addToast: noop, settingsLoaded: true, researchReadinessVersion: 0, workflowSteps: [], subscribePluginEvents: () => noop, openDetailTask: noop, openTaskPopup: noop, openMobileTasksInPopup: false, openFileInBrowser: noop, onMoveTask: asyncTask, onDeleteTask: asyncTask, onMergeTask: asyncMerge, openSettings: noop, onSendSelectionToTask: noop, onCreateTaskFromInsight: noop, onNavigateToMission: noop, onTaskCreated: noop, prAuthAvailable: false, autoMerge: true, taskDetailChatFirst: false, visibilityOptions: {}, footerVisible: false });
+  const dock = useRightDockController({ active: true, projectId: "fixture", tasks: [fixtureTask], addToast: noop, columnFlagsByTaskId: new Map(), settingsLoaded: true, researchReadinessVersion: 0, workflowSteps: [], subscribePluginEvents: () => noop, openDetailTask: noop, openTaskPopup: noop, openMobileTasksInPopup: false, openFileInBrowser: noop, onMoveTask: asyncTask, onDeleteTask: asyncTask, onMergeTask: asyncMerge, openSettings: noop, onSendSelectionToTask: noop, onCreateTaskFromInsight: noop, onNavigateToMission: noop, onTaskCreated: noop, prAuthAvailable: false, autoMerge: true, taskDetailChatFirst: false, visibilityOptions: {}, footerVisible: false });
   React.useEffect(() => { dock.openTaskInDock(fixtureTask); }, []);
   return <div data-testid="title-host-dock" className="fn-8806-constrained-title-host">{dock.dock}</div>;
 }
