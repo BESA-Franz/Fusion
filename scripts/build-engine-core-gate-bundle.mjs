@@ -1,4 +1,6 @@
-#!/usr/bin/env node
+// Intentionally no shebang: Vitest imports this `.mjs` file as a globalSetup
+// module and Vite's SSR transform can place imports before the first source
+// line. Keeping it valid ESM in that path also preserves direct `node` use.
 /**
  * FNXC:EngineTests 2026-07-08-04:10:
  * FN-7669 prototypes the #1 lever FN-7668 ranked: the `engine-core` merge

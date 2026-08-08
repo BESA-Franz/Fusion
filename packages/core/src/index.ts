@@ -1714,6 +1714,7 @@ export {
   VALIDATOR_RUN_STATUSES,
   VALIDATION_DIAGNOSTICS_MAX_EVIDENCE_PER_ASSERTION,
   VALIDATION_DIAGNOSTICS_MAX_TEXT_BYTES,
+  selectNextSerialMissionSlice,
   normalizeValidationDiagnostics,
   renderValidationFailureDescription,
   renderValidationCause,
