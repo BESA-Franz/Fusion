@@ -20,6 +20,15 @@ import { applyPromptOverridesToIr } from "./workflow-prompt-overrides.js";
 import type { WorkflowIr } from "./workflow-ir-types.js";
 
 /*
+ * A caller-scoped IR cache is shared by several concurrent admission reads.
+ * The value cache alone does not coalesce the first wave: two callers can both
+ * miss before either remote definition read resolves. Keep the in-flight
+ * promises beside (not inside) the public value cache so existing callers and
+ * tests continue to see `Map<string, WorkflowIr>` only.
+ */
+const inFlightIrResolutions = new WeakMap<Map<string, WorkflowIr>, Map<string, Promise<WorkflowIr>>>();
+
+/*
 FNXC:WorkflowIrPin 2026-07-18-20:20:
 KTD-3 — a task pins its resolved workflow IR when it ENTERS a node, and holds
 that resolution until the node settles. The pin is a durable seam: the field
@@ -181,54 +190,72 @@ export async function resolveWorkflowIrById(
   const cached = irCache?.get(cacheKey);
   if (cached) return cached;
 
-  if (isBuiltinWorkflowId(workflowId)) {
-    const builtin = getBuiltinWorkflow(workflowId);
-    /*
-    FNXC:WorkflowLifecycleColumns 2026-08-01-01:15 (PR #2815 review — greptile P1, and it corrects me):
-    THE FOURTH DEGRADATION PATH, and the only one that was never branded. An id that LOOKS builtin but
-    is not registered — a workflow removed between releases, a typo'd selection — lands here, finds no
-    `builtin.ir`, and silently substitutes the default coding IR.
+  const pendingByKey = irCache
+    ? (inFlightIrResolutions.get(irCache) ?? (() => {
+      const created = new Map<string, Promise<WorkflowIr>>();
+      inFlightIrResolutions.set(irCache, created);
+      return created;
+    })())
+    : undefined;
+  const pending = pendingByKey?.get(cacheKey);
+  if (pending) return pending;
 
-    That matters to this PR specifically. Deleting the id cross-check was justified on the grounds
-    that every fallback is branded and the brand is checked first; this path is the counterexample, so
-    the deletion would have turned an unmarked fallback into a reported `source: "selection"` — the
-    lying signal this API exists to prevent, arriving through the one door I had not checked. My claim
-    that the id comparison "caught nothing the marker misses" was wrong: it caught exactly this,
-    because the default IR's id differs from the requested one.
+  const resolution = (async (): Promise<WorkflowIr> => {
+    if (isBuiltinWorkflowId(workflowId)) {
+      const builtin = getBuiltinWorkflow(workflowId);
+      /*
+      FNXC:WorkflowLifecycleColumns 2026-08-01-01:15 (PR #2815 review — greptile P1, and it corrects me):
+      THE FOURTH DEGRADATION PATH, and the only one that was never branded. An id that LOOKS builtin but
+      is not registered — a workflow removed between releases, a typo'd selection — lands here, finds no
+      `builtin.ir`, and silently substitutes the default coding IR.
 
-    Branding it is the right repair rather than restoring the id check, because it fixes the cause —
-    the resolver knew it was substituting and did not say so — instead of re-adding an inference that
-    misfires on every authored workflow (see the note below).
-    */
-    const fellBackToDefault = !builtin?.ir;
-    const ir = builtin?.ir ?? defaultCodingWorkflowIr();
-    const resolved = typeof ir === "string" ? parseWorkflowIr(ir) : ir;
-    const overrides = projectId
-      ? await (store.getWorkflowPromptOverridesAsync?.(workflowId, projectId)
-        ?? store.getWorkflowPromptOverrides?.(workflowId, projectId))
-      : undefined;
-    // FNXC:CustomWorkflows 2026-06-21-19:12:
-    // Public IR resolution must see the same project-scoped built-in prompt overrides as task execution, while callers without the new store methods keep the canonical built-in IR.
-    /*
-    Marked AFTER the overrides are applied, because `applyPromptOverridesToIr` may return a new object
-    and a non-enumerable brand does not survive a copy. Marking earlier would leave the returned and
-    cached IR unbranded, which is the bug this fixes wearing a different shape.
-    */
-    const effective = applyPromptOverridesToIr(resolved, overrides);
-    /* Branded BEFORE caching, so a later cache hit on this key reports the fallback too. */
-    const answer = fellBackToDefault ? markFellBack(effective) : effective;
+      That matters to this PR specifically. Deleting the id cross-check was justified on the grounds
+      that every fallback is branded and the brand is checked first; this path is the counterexample, so
+      the deletion would have turned an unmarked fallback into a reported `source: "selection"` — the
+      lying signal this API exists to prevent, arriving through the one door I had not checked. My claim
+      that the id comparison "caught nothing the marker misses" was wrong: it caught exactly this,
+      because the default IR's id differs from the requested one.
+
+      Branding it is the right repair rather than restoring the id check, because it fixes the cause —
+      the resolver knew it was substituting and did not say so — instead of re-adding an inference that
+      misfires on every authored workflow (see the note below).
+      */
+      const fellBackToDefault = !builtin?.ir;
+      const ir = builtin?.ir ?? defaultCodingWorkflowIr();
+      const resolved = typeof ir === "string" ? parseWorkflowIr(ir) : ir;
+      const overrides = projectId
+        ? await (store.getWorkflowPromptOverridesAsync?.(workflowId, projectId)
+          ?? store.getWorkflowPromptOverrides?.(workflowId, projectId))
+        : undefined;
+      // FNXC:CustomWorkflows 2026-06-21-19:12:
+      // Public IR resolution must see the same project-scoped built-in prompt overrides as task execution, while callers without the new store methods keep the canonical built-in IR.
+      /*
+      Marked AFTER the overrides are applied, because `applyPromptOverridesToIr` may return a new object
+      and a non-enumerable brand does not survive a copy. Marking earlier would leave the returned and
+      cached IR unbranded, which is the bug this fixes wearing a different shape.
+      */
+      const effective = applyPromptOverridesToIr(resolved, overrides);
+      /* Branded BEFORE caching, so a later cache hit on this key reports the fallback too. */
+      return fellBackToDefault ? markFellBack(effective) : effective;
+    }
+
+    try {
+      const def = await store.getWorkflowDefinition(workflowId);
+      if (!def) return markFellBack(defaultCodingWorkflowIr());
+      return typeof def.ir === "string" ? parseWorkflowIr(def.ir) : def.ir;
+    } catch {
+      return markFellBack(defaultCodingWorkflowIr());
+    }
+  })();
+
+  if (!pendingByKey) return resolution;
+  pendingByKey.set(cacheKey, resolution);
+  try {
+    const answer = await resolution;
     irCache?.set(cacheKey, answer);
     return answer;
-  }
-
-  try {
-    const def = await store.getWorkflowDefinition(workflowId);
-    if (!def) return markFellBack(defaultCodingWorkflowIr());
-    const ir = typeof def.ir === "string" ? parseWorkflowIr(def.ir) : def.ir;
-    irCache?.set(cacheKey, ir);
-    return ir;
-  } catch {
-    return markFellBack(defaultCodingWorkflowIr());
+  } finally {
+    if (pendingByKey.get(cacheKey) === resolution) pendingByKey.delete(cacheKey);
   }
 }
 
