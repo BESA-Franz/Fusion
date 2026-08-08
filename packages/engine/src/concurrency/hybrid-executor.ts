@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { Task, CentralCore, RegisteredProject, IsolationMode } from "@fusion/core";
+import type { Task, TaskMoveLanes, CentralCore, RegisteredProject, IsolationMode } from "@fusion/core";
 import { ProjectManager } from "../project/project-manager.js";
 import { NodeHealthMonitor } from "../project/node-health-monitor.js";
 import type {
@@ -25,6 +25,7 @@ export interface HybridExecutorEvents {
       task: Task;
       from: string;
       to: string;
+      lanes?: TaskMoveLanes;
     }
   ];
   /** Emitted when a task is updated in any project */

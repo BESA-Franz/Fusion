@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { NodeConfig, Task, TaskStore } from "@fusion/core";
+import type { NodeConfig, Task, TaskMoveLanes, TaskStore } from "@fusion/core";
 import type { Scheduler } from "../scheduler.js";
 import type {
   ProjectRuntime,
@@ -250,11 +250,12 @@ export class RemoteNodeRuntime
         this.emit("task:created", event.payload as Task);
         break;
       case "task:moved": {
-        const payload = event.payload as { task: Task; from: string; to: string };
+        const payload = event.payload as { task: Task; from: string; to: string; lanes?: TaskMoveLanes };
         this.emit("task:moved", {
           task: payload.task,
           from: payload.from,
           to: payload.to,
+          ...(payload.lanes ? { lanes: payload.lanes } : {}),
         });
         break;
       }

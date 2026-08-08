@@ -291,7 +291,12 @@ export class ChildProcessRuntime
     });
 
     this.ipcHost.on(TASK_MOVED, (payload: TaskMovedPayload) => {
-      this.emit("task:moved", { task: payload.task, from: payload.from, to: payload.to });
+      this.emit("task:moved", {
+        task: payload.task,
+        from: payload.from,
+        to: payload.to,
+        ...(payload.lanes ? { lanes: payload.lanes } : {}),
+      });
     });
 
     this.ipcHost.on(TASK_UPDATED, (payload: TaskUpdatedPayload) => {

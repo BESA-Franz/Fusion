@@ -190,7 +190,12 @@ describe("RemoteNodeRuntime", () => {
           },
           {
             type: "task:moved",
-            payload: { task: { id: "KB-1" }, from: "todo", to: "in-progress" },
+            payload: {
+              task: { id: "KB-1" },
+              from: "todo",
+              to: "in-progress",
+              lanes: { hold: "backlog", intake: "todo", wip: "in-progress", review: "review", terminal: ["done"] },
+            },
             timestamp: NOW,
           },
           {
@@ -233,6 +238,7 @@ describe("RemoteNodeRuntime", () => {
         task: { id: "KB-1" },
         from: "todo",
         to: "in-progress",
+        lanes: { hold: "backlog", intake: "todo", wip: "in-progress", review: "review", terminal: ["done"] },
       });
       expect(updatedHandler).toHaveBeenCalledWith({ id: "KB-1", column: "done" });
       expect(assignedHandler).toHaveBeenCalledWith({

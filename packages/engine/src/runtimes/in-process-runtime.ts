@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import type {
   TaskStore,
   Task,
+  TaskMoveLanes,
   CentralCore,
   AgentStore,
   HeartbeatInvocationSource,
@@ -2825,7 +2826,7 @@ export class InProcessRuntime
     });
 
     // Forward task:moved events
-    this.taskStore.on("task:moved", (data: { task: Task; from: string; to: string }) => {
+    this.taskStore.on("task:moved", (data: { task: Task; from: string; to: string; lanes?: TaskMoveLanes }) => {
       this.recordActivity();
       /*
       FNXC:TaskDetailPlannerChatRetention 2026-06-30-18:45:
