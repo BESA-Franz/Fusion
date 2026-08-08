@@ -22,6 +22,7 @@ import {
 import type { WorkflowRuntimePrimitives } from "../execution/runtime-primitives.js";
 import { ensureWorkflowCompletionSummary } from "./workflow-completion-summary.js";
 import { requiresNonEmptyWorkflowArtifact } from "../execution/required-workflow-artifacts.js";
+import { schedulerLog } from "../logger.js";
 
 export type WorkflowTaskRuntimeDisposition = "completed" | "failed" | "manual-required";
 
@@ -254,10 +255,15 @@ export class WorkflowTaskRuntime {
   }
 
   private failWorkItem(workItem: WorkflowWorkItem, reason: string): WorkflowTaskRuntimeResult {
-    this.deps.store.transitionWorkflowWorkItem!(workItem.id, "failed", {
+    void Promise.resolve(this.deps.store.transitionWorkflowWorkItem!(workItem.id, "failed", {
       leaseOwner: null,
       leaseExpiresAt: null,
       lastError: reason,
+    })).catch((err: unknown) => {
+      schedulerLog.warn(
+        `[workflow-task-runtime] could not mark work item ${workItem.id} failed (${reason}): `
+        + `${err instanceof Error ? err.message : String(err)}`,
+      );
     });
     this.emit("terminal", workItem.taskId, `work-item:failed:${reason}`);
     return {

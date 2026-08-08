@@ -6891,23 +6891,32 @@ export class TaskExecutor {
       if (result.disposition === "suspended") {
         return;
       }
-      if (result.disposition === "failed") {
-        if (continuation) {
-          await this.store.transitionWorkflowWorkItem(continuation.id, "failed", {
+      /*
+       * Closing a continuation is bookkeeping, not the lifecycle action. A graph fence may
+       * already have retired this row atomically before the interpreter returns, so a second
+       * transition can legitimately hit the store's terminal guard. That must never suppress
+       * the failure handler or leave the task parked without an error.
+       */
+      const closeContinuation = async (state: "failed" | "succeeded"): Promise<void> => {
+        if (!continuation || typeof this.store.transitionWorkflowWorkItem !== "function") return;
+        try {
+          await this.store.transitionWorkflowWorkItem(continuation.id, state, {
             leaseOwner: null,
             leaseExpiresAt: null,
-            lastError: "workflow-continuation-failed",
+            lastError: state === "failed" ? "workflow-continuation-failed" : null,
           });
+        } catch (closeErr) {
+          executorLog.debug(
+            `[workflow-graph] ${task.id}: continuation ${continuation.id} could not be closed as ${state} `
+            + `(likely already terminal): ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+          );
         }
+      };
+      if (result.disposition === "failed") {
+        await closeContinuation("failed");
         await this.handleGraphFailure(task, result);
       } else if (result.disposition === "completed") {
-        if (continuation) {
-          await this.store.transitionWorkflowWorkItem(continuation.id, "succeeded", {
-            leaseOwner: null,
-            leaseExpiresAt: null,
-            lastError: null,
-          });
-        }
+        await closeContinuation("succeeded");
         const live = await this.store.getTask(task.id).catch(() => task);
         if ((live as TaskDetail).mergeDetails?.mergeConfirmed === true && (live as TaskDetail).column !== await resolveCompleteColumnFor(this.store, task.id)) {
           await this.finalizeMergeConfirmedWorkflowGraphTask(task.id, "graph-completed");

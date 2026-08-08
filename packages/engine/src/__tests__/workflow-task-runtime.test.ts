@@ -621,6 +621,49 @@ describe("WorkflowTaskRuntime", () => {
     ]);
   });
 
+  it("does not leak a rejected work-item transition after returning failure", async () => {
+    const transitionWorkflowWorkItem = vi.fn().mockRejectedValue(new Error("already terminal"));
+    const workItem = {
+      id: "work-transition-race",
+      runId: "run-transition-race",
+      taskId: task.id,
+      nodeId: "execute",
+      kind: "task",
+      state: "running",
+      attempt: 0,
+      retryAfter: null,
+      leaseOwner: "scheduler-a",
+      leaseExpiresAt: "2026-06-09T00:01:00.000Z",
+      lastError: null,
+      blockedReason: null,
+      createdAt: "2026-06-09T00:00:00.000Z",
+      updatedAt: "2026-06-09T00:00:00.000Z",
+    } satisfies WorkflowWorkItem;
+    const runtime = new WorkflowTaskRuntime({
+      store: {
+        getTask: async () => task,
+        getTaskWorkflowSelection: () => ({ workflowId: "WF-001", stepIds: [] }),
+        getWorkflowDefinition: async () => ({ ir: selectedIr() }),
+        transitionWorkflowWorkItem,
+      },
+      primitives: recordingPrimitives([], { execute: { outcome: "failure", value: "implementation-incomplete" } }),
+      runCustomNode: async () => ({ outcome: "success" }),
+    });
+
+    const result = await runtime.runWorkItem(workItem, flagOff);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(result).toEqual(expect.objectContaining({
+      disposition: "failed",
+      reason: "implementation-incomplete",
+    }));
+    expect(transitionWorkflowWorkItem).toHaveBeenCalledWith("work-transition-race", "failed", {
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      lastError: "implementation-incomplete",
+    });
+  });
+
   it("routes merge-gate work items off when task auto-merge is disabled", async () => {
     const transitions: Array<{ id: string; state: WorkflowWorkItemState; patch?: Record<string, unknown> }> = [];
     const workItem = {
