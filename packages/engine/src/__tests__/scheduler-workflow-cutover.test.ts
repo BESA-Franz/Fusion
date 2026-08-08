@@ -465,7 +465,13 @@ describe("Scheduler workflow cutover", () => {
     const moveImpl = vi.mocked(store.moveTaskIf).getMockImplementation()!;
     vi.mocked(store.moveTaskIf).mockImplementation(async (...args) => {
       const result = await moveImpl(...args);
-      if (result.moved) ready.nodeId = "node-pc2";
+      if (result.moved) {
+        // The durable route written by moveTaskIf is authoritative once the
+        // task leaves the queue; emulate a concurrent reroute by changing that
+        // field, not only the legacy nodeId fallback.
+        ready.effectiveNodeId = "node-pc2";
+        ready.effectiveNodeSource = "task-override";
+      }
       return result;
     });
     const onSchedule = vi.fn();
