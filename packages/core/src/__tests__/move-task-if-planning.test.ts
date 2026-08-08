@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { pgDescribe, createSharedPgTaskStoreTestHarness } from "../__test-utils__/pg-test-harness.js";
 
 /*
@@ -47,5 +47,67 @@ pgDescribe("moveTaskIf live storage path", () => {
     const sameColumn = await store.moveTaskIf(staleTask.id, "in-progress", () => true);
     expect(sameColumn.moved).toBe(false);
     expect(sameColumn.task.column).toBe("in-progress");
+  });
+
+  /*
+  FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
+  The scheduler route and column transition form one ownership decision. Event
+  consumers must never observe the new processing column with the old route.
+  */
+  it("commits the dispatch route before emitting task:moved", async () => {
+    const store = harness.store();
+    const task = await store.createTask({ description: "atomic route move" });
+    let emittedRoute: { id?: string; source?: string } | undefined;
+    store.on("task:moved", ({ task: moved }) => {
+      emittedRoute = {
+        id: moved.effectiveNodeId,
+        source: moved.effectiveNodeSource,
+      };
+    });
+
+    const result = await store.moveTaskIf(task.id, "in-progress", () => true, {
+      moveSource: "scheduler",
+      dispatchRoute: {
+        effectiveNodeId: "node_pc3",
+        effectiveNodeSource: "task-override",
+      },
+    });
+
+    expect(result.task).toMatchObject({
+      column: "in-progress",
+      effectiveNodeId: "node_pc3",
+      effectiveNodeSource: "task-override",
+    });
+    expect(emittedRoute).toEqual({ id: "node_pc3", source: "task-override" });
+  });
+
+  it("does not overwrite a route changed by another TaskStore after the predicate snapshot", async () => {
+    const store = harness.store();
+    const { TaskStore } = await import("../store.js");
+    const otherStore = new TaskStore(harness.rootDir(), undefined, { asyncLayer: harness.layer() });
+    const task = await store.createTask({ description: "cross-process route race" });
+    let releasePredicate!: () => void;
+    let predicateStarted!: () => void;
+    const started = new Promise<void>((resolve) => { predicateStarted = resolve; });
+    const gate = new Promise<void>((resolve) => { releasePredicate = resolve; });
+    const prepareLockedMove = vi.fn(async () => ({
+      dispatchRoute: {
+        effectiveNodeId: "node_vps",
+        effectiveNodeSource: "local" as const,
+      },
+    }));
+
+    const moving = store.moveTaskIf(task.id, "in-progress", async () => {
+      predicateStarted();
+      await gate;
+      return true;
+    }, { moveSource: "scheduler", prepareLockedMove });
+    await started;
+    await otherStore.updateTask(task.id, { nodeId: "node_pc2" });
+    releasePredicate();
+
+    const result = await moving;
+    expect(result).toMatchObject({ moved: false, task: { column: "todo", nodeId: "node_pc2" } });
+    expect(prepareLockedMove).not.toHaveBeenCalled();
   });
 });

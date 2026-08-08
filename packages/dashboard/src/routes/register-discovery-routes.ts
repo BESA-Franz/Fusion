@@ -72,7 +72,12 @@ export const registerDiscoveryRoutes: ApiRouteRegistrar = (ctx) => {
       const shouldClose = !options?.centralCore;
       if (shouldClose) await central.init();
 
-      await central.startDiscovery(config);
+      const processNodeId = options?.processNodeId
+        ?? (await import("@fusion/core")).resolveProcessNodeId(
+          await central.listNodes(),
+          process.env.FUSION_NODE_ID,
+        );
+      await central.startDiscovery(config, processNodeId);
       if (shouldClose) await central.close();
 
       res.json({ success: true, config });

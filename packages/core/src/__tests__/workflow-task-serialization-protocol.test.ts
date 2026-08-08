@@ -53,8 +53,7 @@ describe("FN-8592 workflow task serialization protocol", () => {
       [persistenceSource, "atomicWriteTaskJsonImpl2"],
     ] as const) {
       const body = exportedBody(source, writer);
-      expect(body).toContain('workflowStepId === "plan-review"');
-      expect(body).toContain('status === "passed"');
+      expect(body).toContain("isPlanReviewSatisfied");
       expect(body).toContain("withTaskWorkflowSerialization");
     }
   });
@@ -81,6 +80,7 @@ describe("FN-8592 workflow task serialization protocol", () => {
     const allowed = new Set([
       join(taskStore, "async", "async-workflow-workitems.ts"),
       join(taskStore, "workflow-workitems-ops-2.ts"),
+      join(taskStore, "project-store-ops.ts"),
     ]);
     const activeMutationMarkers = [
       ".insert(schema.project.workflowWorkItems)",

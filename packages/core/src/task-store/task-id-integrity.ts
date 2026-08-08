@@ -15,7 +15,7 @@ import { and, eq } from "drizzle-orm";
 import { ArchiveDatabase } from "../db/archive-db.js";
 import { CentralCore } from "../central/central-core.js";
 import { Database, fromJson, toJsonNullable } from "../db/db.js";
-import { reconcileTaskIdState, resolveLocalNodeId } from "../tasks/distributed-task-id.js";
+import { reconcileTaskIdState, resolveProcessNodeId } from "../tasks/distributed-task-id.js";
 import { getErrorMessage } from "../process/error-message.js";
 import { buildSnippet, extractGoalCitations } from "../goals/goal-citation-extractor.js";
 import * as schema from "../postgres/schema/index.js";
@@ -748,9 +748,7 @@ export async function resolveLocalNodeIdForTaskAllocationImpl(_store: TaskStore)
     await central.init();
     try {
       const nodes = await central.listNodes();
-      return resolveLocalNodeId(nodes.map((node) => ({ id: node.id, type: node.type })));
-    } catch {
-      return "local";
+      return resolveProcessNodeId(nodes, process.env.FUSION_NODE_ID);
     } finally {
       await central.close();
     }

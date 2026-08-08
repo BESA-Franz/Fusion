@@ -10,6 +10,8 @@ import type { NodeConfig, PeerSyncRequest, PeerSyncResponse } from "@fusion/core
 import { peerExchangeLog } from "../logger.js";
 
 export interface PeerExchangeServiceOptions {
+  /** Exact registry identity of this process. Required in shared-Postgres mode. */
+  processNodeId?: string;
   /** Interval between peer sync cycles in milliseconds. Default: 120000 (2 minutes) */
   syncIntervalMs?: number;
   /** When true, include settings and model auth data in peer sync exchanges. Default: false. */
@@ -77,6 +79,7 @@ export class PeerExchangeService {
   private settingsSyncAuth: boolean;
   /** Provider auth credentials provided via options. */
   private providerAuth?: Record<string, { type: "api_key" | "oauth"; key?: string; accessToken?: string; authenticated?: boolean }>;
+  private processNodeId?: string;
 
   /**
    * Create a PeerExchangeService.
@@ -86,6 +89,10 @@ export class PeerExchangeService {
    */
   constructor(centralCore: CentralCore, options: PeerExchangeServiceOptions = {}) {
     this.centralCore = centralCore;
+    this.processNodeId = options.processNodeId?.trim() || process.env.FUSION_NODE_ID?.trim();
+    if (centralCore.backendMode && !this.processNodeId) {
+      throw new Error("FUSION_NODE_ID is required for shared-database runtime startup");
+    }
     this.syncIntervalMs = options.syncIntervalMs ?? 120_000; // 2 minute default
     /*
     FNXC:PostgresCutover 2026-07-10:
@@ -290,11 +297,10 @@ export class PeerExchangeService {
     try {
       // Build the sync request
       // Refresh local metrics first to ensure freshness
-      await this.centralCore.reportMeshState();
+      await this.centralCore.reportMeshState(this.processNodeId);
 
       // Get local node info
-      const nodes = await this.centralCore.listNodes();
-      const localNode = nodes.find((n) => n.type === "local");
+      const localNode = await this.getProcessNode();
       if (!localNode) {
         return { nodeId: node.id, success: false, added: 0, updated: 0, error: "Local node not found" };
       }
@@ -622,7 +628,7 @@ export class PeerExchangeService {
       return undefined;
     }
 
-    const localNode = (await this.centralCore.listNodes()).find((n) => n.type === "local");
+    const localNode = await this.getProcessNode();
     if (!localNode) {
       return undefined;
     }
@@ -660,6 +666,13 @@ export class PeerExchangeService {
     });
 
     return entry.id;
+  }
+
+  private async getProcessNode(): Promise<NodeConfig | undefined> {
+    if (this.processNodeId) {
+      return (await this.centralCore.getNode(this.processNodeId)) ?? undefined;
+    }
+    return (await this.centralCore.listNodes()).find((node) => node.type === "local");
   }
 
   private async getSharedStateSettingsBundle(): Promise<SharedMeshStatePayload | undefined> {

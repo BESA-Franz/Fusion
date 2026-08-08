@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import express from "express";
-import type { TaskStore } from "@fusion/core";
+import type { Task, TaskStore } from "@fusion/core";
 import { createApiRoutes } from "../../routes.js";
 import { request as REQUEST } from "../../test-request.js";
 
@@ -59,7 +59,7 @@ describe("task move route — bypassGuards is not forwardable", () => {
       is not forwarded — and it is a forward move from `todo`, so the R16 backward-move PR guard stays out of
       the way. The point was never which column.
       */
-      JSON.stringify({ column: "in-progress", bypassGuards: true, moveSource: "engine" }),
+      JSON.stringify({ column: "in-review", bypassGuards: true, moveSource: "engine" }),
       { "content-type": "application/json" },
     );
 
@@ -70,6 +70,224 @@ describe("task move route — bypassGuards is not forwardable", () => {
     expect(passedOptions?.bypassGuards).toBeUndefined();
     // The route hardcodes moveSource: "user" — the body's "engine" is ignored.
     expect(passedOptions?.moveSource).toBe("user");
+  });
+});
+
+describe("task move route — node-local worktree allocation", () => {
+  function makeStore(nodeId: string) {
+    const live = {
+      id: "FN-REMOTE",
+      title: "Remote",
+      description: "",
+      column: "todo",
+      nodeId,
+      dependencies: [],
+      steps: [],
+      currentStep: 0,
+      workflowStepResults: [{
+        workflowStepId: "plan-review",
+        workflowStepName: "Plan Review",
+        status: "passed",
+        source: "node",
+        phase: "pre-merge",
+      }],
+      createdAt: "2026-08-05T00:00:00.000Z",
+      updatedAt: "2026-08-05T00:00:00.000Z",
+    } as Task;
+    let prepared: { dispatchRoute?: { effectiveNodeId: string | null; effectiveNodeSource: string }; allocateWorktree?: unknown } | null | undefined;
+    const moveTaskIf = vi.fn(async (_id: string, column: string, predicate: (task: Task) => boolean | Promise<boolean>, options?: {
+      prepareLockedMove?: (task: Task) => Promise<typeof prepared>;
+    }) => {
+      if (!await predicate(live)) return { task: live, moved: false };
+      prepared = await options?.prepareLockedMove?.(live);
+      if (prepared === null) return { task: live, moved: false };
+      Object.assign(live, {
+        column,
+        effectiveNodeId: prepared?.dispatchRoute?.effectiveNodeId ?? undefined,
+        effectiveNodeSource: prepared?.dispatchRoute?.effectiveNodeSource,
+      });
+      return { task: live, moved: true };
+    });
+    const store: TaskStore = {
+      getRootDir: vi.fn(() => "C:\\pc1\\project"),
+      getProjectScopedPluginMcpServers: vi.fn(async () => []),
+      getTask: vi.fn(async () => live),
+      getSettings: vi.fn(async () => ({})),
+      getSettingsFast: vi.fn(async () => ({})),
+      getTaskWorkflowSelectionAsync: vi.fn(async () => undefined),
+      moveTaskIf,
+    } as unknown as TaskStore;
+    return { live, moveTaskIf, store, getPrepared: () => prepared };
+  }
+
+  function makeCentralCore(processNodeId: string) {
+    return {
+      listNodes: vi.fn(async () => [
+        { id: processNodeId, name: "this process", type: "local", status: "online" },
+        { id: "node-pc2", name: "other process", type: "remote", status: "online" },
+      ]),
+      getNode: vi.fn(async (id: string) => ({ id, url: "http://node-pc2.test", status: "online" })),
+    };
+  }
+
+  it("does not allocate the request-serving PC's path for a task routed to another node", async () => {
+    const { store, getPrepared } = makeStore("node-pc2");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, status: 200 } as Response);
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store, {
+      centralCore: makeCentralCore("node-pc1") as never,
+      processNodeId: "node-pc1",
+      registryLocalNodeId: "node-pc1",
+    }));
+
+    const res = await REQUEST(
+      app,
+      "POST",
+      "/api/tasks/FN-REMOTE/move",
+      JSON.stringify({ column: "in-progress" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    expect(getPrepared()?.allocateWorktree).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    fetchMock.mockRestore();
+  });
+
+  it("keeps local worktree allocation when the request-serving process owns the target", async () => {
+    const { store, getPrepared } = makeStore("node-pc1");
+    const execute = vi.fn(async () => undefined);
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store, {
+      centralCore: makeCentralCore("node-pc1") as never,
+      processNodeId: "node-pc1",
+      registryLocalNodeId: "node-pc1",
+      engine: { getRuntime: () => ({ getExecutor: () => ({ execute }) }) } as never,
+    }));
+
+    const res = await REQUEST(
+      app,
+      "POST",
+      "/api/tasks/FN-REMOTE/move",
+      JSON.stringify({ column: "in-progress" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    expect(getPrepared()?.allocateWorktree).toEqual(expect.any(Function));
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it("uses the live node route when ownership changes after the request snapshot", async () => {
+    const { live, moveTaskIf, store, getPrepared } = makeStore("node-pc1");
+    const originalMove = moveTaskIf.getMockImplementation()!;
+    moveTaskIf.mockImplementation(async (...args) => {
+      live.nodeId = "node-pc2";
+      live.updatedAt = "2026-08-05T00:00:01.000Z";
+      return originalMove(...args);
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, status: 200 } as Response);
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store, {
+      centralCore: makeCentralCore("node-pc1") as never,
+      processNodeId: "node-pc1",
+      registryLocalNodeId: "node-pc1",
+    }));
+
+    const res = await REQUEST(
+      app,
+      "POST",
+      "/api/tasks/FN-REMOTE/move",
+      JSON.stringify({ column: "in-progress" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    expect(getPrepared()?.dispatchRoute?.effectiveNodeId).toBe("node-pc2");
+    expect(getPrepared()?.allocateWorktree).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    fetchMock.mockRestore();
+  });
+
+  it("does not dispatch when a concurrent task change aborts the WIP move", async () => {
+    const { live, moveTaskIf, store } = makeStore("node-pc1");
+    moveTaskIf.mockResolvedValue({ task: live, moved: false });
+    const execute = vi.fn(async () => undefined);
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store, {
+      centralCore: makeCentralCore("node-pc1") as never,
+      processNodeId: "node-pc1",
+      registryLocalNodeId: "node-pc1",
+      engine: { getRuntime: () => ({ getExecutor: () => ({ execute }) }) } as never,
+    }));
+
+    const res = await REQUEST(
+      app,
+      "POST",
+      "/api/tasks/FN-REMOTE/move",
+      JSON.stringify({ column: "in-progress" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(409);
+    expect(execute).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockRestore();
+  });
+
+  it("rejects a target wake after the task leaves its WIP column", async () => {
+    const { store } = makeStore("node-pc1");
+    const execute = vi.fn(async () => undefined);
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store, {
+      centralCore: makeCentralCore("node-pc1") as never,
+      processNodeId: "node-pc1",
+      registryLocalNodeId: "node-pc1",
+      engine: { getRuntime: () => ({ getExecutor: () => ({ execute }) }) } as never,
+    }));
+
+    const res = await REQUEST(
+      app,
+      "POST",
+      "/api/tasks/FN-REMOTE/dispatch",
+      JSON.stringify({ expectedNodeId: "node-pc1" }),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(409);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("promotes a remote-owned hold without allocating locally and wakes the target", async () => {
+    const { store, getPrepared } = makeStore("node-pc2");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, status: 200 } as Response);
+    const app = express();
+    app.use(express.json());
+    app.use("/api", createApiRoutes(store, {
+      centralCore: makeCentralCore("node-pc1") as never,
+      processNodeId: "node-pc1",
+      registryLocalNodeId: "node-pc1",
+    }));
+
+    const res = await REQUEST(
+      app,
+      "POST",
+      "/api/tasks/FN-REMOTE/promote",
+      JSON.stringify({}),
+      { "content-type": "application/json" },
+    );
+
+    expect(res.status).toBe(200);
+    expect(getPrepared()?.dispatchRoute?.effectiveNodeId).toBe("node-pc2");
+    expect(getPrepared()?.allocateWorktree).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    fetchMock.mockRestore();
   });
 });
 

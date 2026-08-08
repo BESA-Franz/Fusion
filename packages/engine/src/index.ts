@@ -1072,6 +1072,13 @@ export {
   type RuntimeStatus,
   type RuntimeMetrics,
 } from "./project/project-runtime.js";
+export {
+  canExecuteTaskOnNode,
+  resolveAssignedNodeId,
+  resolveEffectiveNode,
+  type EffectiveNode,
+  type EffectiveNodeSource,
+} from "./project/effective-node.js";
 // Shared node-pty native-asset loader
 export {
   loadPtyModule,

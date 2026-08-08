@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { Task, CentralCore } from "@fusion/core";
+import type { Task, TaskMoveLanes, CentralCore } from "@fusion/core";
 import { InProcessRuntime } from "../runtimes/in-process-runtime.js";
 import { ChildProcessRuntime } from "../runtimes/child-process-runtime.js";
 import { RemoteNodeRuntime } from "../runtimes/remote-node-runtime.js";
@@ -27,6 +27,7 @@ export interface ProjectManagerEvents {
       task: Task;
       from: string;
       to: string;
+      lanes?: TaskMoveLanes;
     }
   ];
   /** Emitted when a task is updated in any project */
@@ -123,7 +124,10 @@ export class ProjectManager extends EventEmitter<ProjectManagerEvents> {
   /**
    * @param centralCore - CentralCore reference for global coordination
    */
-  constructor(private centralCore: CentralCore) {
+  constructor(
+    private centralCore: CentralCore,
+    private processNodeId?: string,
+  ) {
     super();
     this.setMaxListeners(100);
 
@@ -360,8 +364,15 @@ export class ProjectManager extends EventEmitter<ProjectManagerEvents> {
     });
 
     // Forward task:moved
-    runtime.on("task:moved", (data: { task: Task; from: string; to: string }) => {
-      this.emit("task:moved", { projectId, projectName, task: data.task, from: data.from, to: data.to });
+    runtime.on("task:moved", (data: { task: Task; from: string; to: string; lanes?: TaskMoveLanes }) => {
+      this.emit("task:moved", {
+        projectId,
+        projectName,
+        task: data.task,
+        from: data.from,
+        to: data.to,
+        ...(data.lanes ? { lanes: data.lanes } : {}),
+      });
       this.logActivity(
         "task:moved",
         projectId,
@@ -467,11 +478,14 @@ export class ProjectManager extends EventEmitter<ProjectManagerEvents> {
       throw new Error(`Project not found: ${projectId}`);
     }
 
-    const workingDirectory = await this.centralCore.resolveLocalProjectWorkingDirectory(projectId);
+    const workingDirectory = this.processNodeId
+      ? await this.centralCore.resolveProjectWorkingDirectory(projectId, this.processNodeId)
+      : await this.centralCore.resolveLocalProjectWorkingDirectory(projectId);
     await this.removeProject(projectId);
 
     await this.addProject({
       projectId,
+      processNodeId: this.processNodeId,
       workingDirectory,
       isolationMode: project.isolationMode,
       maxConcurrent: project.settings?.maxConcurrent ?? 2,

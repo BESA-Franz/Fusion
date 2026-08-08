@@ -167,6 +167,33 @@ function asLocalProjectContext(store: TaskStore): ProjectContext {
   };
 }
 
+type ArchiveLocalRuntime = {nodeId?: string; projectPath?: string};
+
+function createArchiveLocalRuntimeResolver(projectId: string): () => Promise<ArchiveLocalRuntime> {
+  let pending: Promise<ArchiveLocalRuntime> | undefined;
+  return () => pending ??= (async () => {
+    const central = new CentralCore();
+    await central.init();
+    try {
+      const nodeId = (await central.listNodes()).find((node) => node.type === "local")?.id;
+      const projectPath = nodeId ? await central.getProjectNodePath(projectId, nodeId) : undefined;
+      return {nodeId, projectPath};
+    } finally {
+      await central.close();
+    }
+  })();
+}
+
+function installArchiveDisposer(context: ProjectContext): void {
+  const getLocalRuntime = createArchiveLocalRuntimeResolver(context.projectId);
+  installBaselineArchiveWorktreeDisposer(context.store, {
+    rootDir: context.projectPath,
+    getSettings: () => context.store.getSettings(),
+    getLocalNodeId: async () => (await getLocalRuntime()).nodeId,
+    getLocalProjectPath: async () => (await getLocalRuntime()).projectPath,
+  });
+}
+
 /**
  * FNXC:CliBoardMutation 2026-07-09-00:00:
  * Resolve the FULL `ProjectContext` (not just a bare `TaskStore`, unlike
@@ -180,12 +207,16 @@ function asLocalProjectContext(store: TaskStore): ProjectContext {
  * fallback so `closeProjectStore` always receives a well-formed context.
  */
 async function getBoardCommandContext(projectName?: string): Promise<ProjectContext> {
+  /*
+  FNXC:MultiNodeArchiveWorktreeCleanup 2026-08-01-15:00:
+  Resolve the CLI process node lazily through CentralCore's canonical runtime-node lookup. Ordinary board commands pay no extra lookup cost, while archive cleanup receives an explicit ownership identity instead of inferring ownership from a shared task ID or a foreign absolute path.
+  */
   if (projectName) {
     const context = await resolveProject(projectName);
     if (!context) {
       throw new Error(`Project ${projectName} not found`);
     }
-    installBaselineArchiveWorktreeDisposer(context.store, {rootDir: context.projectPath, getSettings: () => context.store.getSettings()});
+    installArchiveDisposer(context);
     return context;
   }
 
@@ -194,7 +225,7 @@ async function getBoardCommandContext(projectName?: string): Promise<ProjectCont
     if (!context) {
       throw new Error("No project context");
     }
-    installBaselineArchiveWorktreeDisposer(context.store, {rootDir: context.projectPath, getSettings: () => context.store.getSettings()});
+    installArchiveDisposer(context);
     return context;
   } catch {
     // FNXC:PostgresCutover 2026-07-05-12:00: the cwd fallback must boot through
@@ -202,7 +233,7 @@ async function getBoardCommandContext(projectName?: string): Promise<ProjectCont
     // resolves to the removed SQLite runtime, which throws on first DB access.
     const store = await createLocalStore(process.cwd());
     const context = asLocalProjectContext(store);
-    installBaselineArchiveWorktreeDisposer(store, {rootDir: context.projectPath, getSettings: () => store.getSettings()});
+    installArchiveDisposer(context);
     return context;
   }
 }

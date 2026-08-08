@@ -424,7 +424,6 @@ export function buildExecutionMemoryInstructions(
   rootDir: string,
   settings?: MemorySettings,
 ): string {
-  void rootDir; // Parameter kept for future use (e.g., checking file existence)
   const ctx = resolveMemoryInstructionContext(settings);
 
   // Read-only backend: provide read guidance without file path reference
@@ -447,6 +446,11 @@ This project has a memory system that stores durable project learnings.
 
   // Writable backend (file or qmd)
   if (ctx.instructionPathHint) {
+    /*
+    FNXC:ProjectMemoryWorktrees 2026-08-06-20:59:
+    Executor sessions run inside disposable task worktrees while project memory is owned by the shared project root. A relative `.fusion/memory/MEMORY.md` read therefore fails in fresh worktrees; direct reads must use the absolute root path and normal access must use the memory tools.
+    */
+    const projectMemoryPath = memoryLongTermPath(rootDir);
     // File backend: mention the explicit path with full read/write instructions
     return `
 ## Project Memory
@@ -460,6 +464,7 @@ This project has OpenClaw-style memory files:
 2. Use \`fn_memory_get\` only for specific memory files/line ranges returned by search
 3. Apply relevant learnings to your implementation — follow documented patterns and avoid known pitfalls
 4. Do not load all memory directly by default. Skip memory reads when memory is irrelevant or context is tight.
+5. Project memory belongs to the shared project root, not the disposable task worktree. Never resolve the relative path above against the task worktree. If a direct file read is unavoidable, use the absolute project-root path \`${projectMemoryPath}\`; prefer \`fn_memory_search\`/\`fn_memory_get\`.
 
 **At the end of execution (before calling \`fn_task_done()\`):**
 1. Review what you learned during this task that would genuinely benefit future runs
@@ -469,7 +474,7 @@ This project has OpenClaw-style memory files:
 3. Choose layer intentionally:
    - \`layer="long-term"\` for durable conventions/decisions/pitfalls
    - \`layer="daily"\` for running observations, unresolved context, and open loops
-4. If using project scope with file backend, write long-term memory to \`.fusion/memory/MEMORY.md\` and daily notes to today's \`.fusion/memory/YYYY-MM-DD.md\`
+4. If using project scope with file backend, use \`fn_memory_append\` (or the absolute project-root path \`${projectMemoryPath}\` when a tool explicitly requires a file) for long-term and daily memory; never create project-memory files inside the task worktree.
 5. **If nothing durable was learned, skip the memory update entirely** — do not append trivial or task-specific notes
 6. Only write to **project** memory when the insight is genuinely reusable across the workspace (architecture patterns, shared conventions, durable pitfalls, cross-task constraints)
 7. **Do not** write private/ephemeral items to project memory, such as personal TODOs, one-off scratch notes, or preferences that only help you as an individual agent

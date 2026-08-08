@@ -59,9 +59,9 @@ function createMockCentralCore(projects: RegisteredProject[]): CentralCore {
     ),
     updateProject: vi.fn().mockResolvedValue(undefined),
     updateProjectHealth: vi.fn().mockResolvedValue(undefined),
+    updateNode: vi.fn().mockResolvedValue(undefined),
     stopDiscovery: vi.fn(),
-    markLocalNodeOffline: vi.fn().mockResolvedValue(undefined),
-    resolveLocalProjectWorkingDirectory: vi
+    resolveProjectWorkingDirectory: vi
       .fn()
       .mockImplementation((projectId: string) => Promise.resolve(`/mapped/${projectId}`)),
   } as unknown as CentralCore;
@@ -87,6 +87,7 @@ describe("ProjectEngineManager", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.FUSION_NODE_ID = "node_pc2";
     centralCore = createMockCentralCore([projectA, projectB, projectC]);
   });
 
@@ -98,12 +99,13 @@ describe("ProjectEngineManager", () => {
       expect(engine).toBeDefined();
       expect(engine.start).toHaveBeenCalledOnce();
       expect(
-        (centralCore.resolveLocalProjectWorkingDirectory as unknown as ReturnType<typeof vi.fn>),
-      ).toHaveBeenCalledWith("proj_aaa");
+        (centralCore.resolveProjectWorkingDirectory as unknown as ReturnType<typeof vi.fn>),
+      ).toHaveBeenCalledWith("proj_aaa", "node_pc2");
       expect(ProjectEngine).toHaveBeenCalledWith(
         expect.objectContaining({
           projectId: "proj_aaa",
           workingDirectory: "/mapped/proj_aaa",
+          processNodeId: "node_pc2",
           isolationMode: "in-process",
         }),
         centralCore,
@@ -308,7 +310,7 @@ describe("ProjectEngineManager", () => {
       await expect(manager.ensureEngine("proj_aaa")).rejects.toThrow(
         "ProjectEngineManager is stopped",
       );
-      expect(centralCore.markLocalNodeOffline).not.toHaveBeenCalled();
+      expect(centralCore.updateNode).not.toHaveBeenCalled();
     });
 
     it("continues draining other engines when one engine throws", async () => {
@@ -341,17 +343,49 @@ describe("ProjectEngineManager", () => {
       expect(manager.getAllEngines().size).toBe(0);
     });
 
-    it("persists the local node offline before engine backends stop", async () => {
+    it("leaves node status to the fenced lifecycle owner during a rolling restart", async () => {
       const manager = new ProjectEngineManager(centralCore);
       await manager.startAll();
       const engineA = manager.getEngine("proj_aaa")!;
 
       await manager.stopAll();
 
-      expect(centralCore.markLocalNodeOffline).toHaveBeenCalledTimes(1);
-      const offlineOrder = (centralCore.markLocalNodeOffline as unknown as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
-      const engineStopOrder = (engineA.stop as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
-      expect(offlineOrder).toBeLessThan(engineStopOrder);
+      expect(centralCore.stopDiscovery).toHaveBeenCalledOnce();
+      expect(centralCore.updateNode).not.toHaveBeenCalled();
+      expect(engineA.stop).toHaveBeenCalledOnce();
+    });
+
+    it("cannot make a newer manager lifecycle offline during a rolling restart", async () => {
+      let generation = 0;
+      let status: "online" | "offline" = "offline";
+      const acquireNodeRuntimeLease = vi.fn(async (nodeId: string) => {
+        status = "online";
+        generation += 1;
+        return { nodeId, generation };
+      });
+      const releaseNodeRuntimeLease = vi.fn(async (lease: { nodeId: string; generation: number }) => {
+        if (lease.generation !== generation) return false;
+        status = "offline";
+        return true;
+      });
+      Object.assign(centralCore, { acquireNodeRuntimeLease, releaseNodeRuntimeLease });
+
+      const oldLease = await acquireNodeRuntimeLease("node_pc2");
+      const oldManager = new ProjectEngineManager(centralCore, { processNodeId: "node_pc2" });
+      await oldManager.startAll();
+      const newLease = await acquireNodeRuntimeLease("node_pc2");
+      const newManager = new ProjectEngineManager(centralCore, { processNodeId: "node_pc2" });
+      await newManager.startAll();
+
+      await oldManager.stopAll();
+      expect(status).toBe("online");
+      await expect(releaseNodeRuntimeLease(oldLease)).resolves.toBe(false);
+      expect(status).toBe("online");
+
+      await newManager.stopAll();
+      await expect(releaseNodeRuntimeLease(newLease)).resolves.toBe(true);
+      expect(status).toBe("offline");
+      expect(centralCore.updateNode).not.toHaveBeenCalled();
     });
 
 
@@ -583,7 +617,7 @@ describe("ProjectEngineManager", () => {
           Promise.resolve(projectMap.get(id) ?? null),
         ),
         getProjectByPath: vi.fn().mockResolvedValue(null),
-        resolveLocalProjectWorkingDirectory: vi
+        resolveProjectWorkingDirectory: vi
           .fn()
           .mockImplementation((projectId: string) => Promise.resolve(`/mapped/${projectId}`)),
       } as unknown as CentralCore;

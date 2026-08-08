@@ -941,6 +941,7 @@ export {
   createDistributedTaskIdAllocator,
   formatDistributedTaskId,
   resolveLocalNodeId,
+  resolveProcessNodeId,
   DistributedTaskIdError,
 } from "./tasks/distributed-task-id.js";
 export type { DistributedTaskIdAllocator } from "./tasks/distributed-task-id.js";
@@ -1659,7 +1660,7 @@ export {
 // ── Central Infrastructure (Multi-Project Support) ───────────────────────────
 
 export { CentralCore } from "./central/central-core.js";
-export type { CentralCoreEvents } from "./central/central-core.js";
+export type { CentralCoreEvents, NodeRuntimeLease } from "./central/central-core.js";
 export { CentralDatabase, createCentralDatabase, getDefaultCentralDbPath } from "./central/central-db.js";
 export { NodeConnection } from "./mesh/node-connection.js";
 export { NodeDiscovery } from "./mesh/node-discovery.js";

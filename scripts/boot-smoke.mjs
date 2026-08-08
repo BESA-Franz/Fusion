@@ -110,6 +110,53 @@ async function getEphemeralPort() {
   throw new Error("could not obtain a non-reserved ephemeral port");
 }
 
+/**
+ * Bootstrap the isolated registry once, then return the node identity that the
+ * real serve process must use. Shared-database startup deliberately rejects an
+ * unregistered or guessed FUSION_NODE_ID; the registry creates the local node
+ * on first access, so the smoke must read that authoritative value instead of
+ * inventing one.
+ */
+function discoverIsolatedLocalNodeId(isolatedHome, isolatedProject) {
+  const result = spawnSync(process.execPath, [cliBin, "node", "list", "--json"], {
+    cwd: isolatedProject,
+    encoding: "utf8",
+    timeout: 60_000,
+    env: {
+      ...process.env,
+      HOME: isolatedHome,
+      FUSION_SKIP_ONBOARDING: "1",
+      DATABASE_URL: undefined,
+      FUSION_NO_EMBEDDED_PG: undefined,
+      FUSION_NODE_ID: undefined,
+      PORT: undefined,
+    },
+  });
+  if (result.status !== 0) {
+    fail(
+      "isolated node registry bootstrap failed",
+      `${result.stderr ?? ""}\n${result.stdout ?? ""}`,
+    );
+  }
+
+  let nodes;
+  try {
+    nodes = JSON.parse(result.stdout ?? "");
+  } catch (error) {
+    fail(
+      `isolated node registry returned invalid JSON: ${error?.message ?? String(error)}`,
+      `${result.stderr ?? ""}\n${result.stdout ?? ""}`,
+    );
+  }
+  const localNode = Array.isArray(nodes)
+    ? nodes.find((node) => node && node.type === "local" && typeof node.id === "string")
+    : undefined;
+  if (!localNode) {
+    fail("isolated node registry did not contain a local node", result.stdout ?? "");
+  }
+  return localNode.id;
+}
+
 function fail(message, stderr = "") {
   console.error(`boot-smoke: FAIL — ${message}`);
   if (stderr.trim()) {
@@ -188,6 +235,7 @@ async function bootAndVerify(attempt, registerCleanup) {
   const isolatedHome = mkdtempSync(path.join(tmpdir(), "fusion-boot-smoke-home-"));
   const isolatedProject = mkdtempSync(path.join(tmpdir(), "fusion-boot-smoke-project-"));
   let stderrBuf = "";
+  const isolatedNodeId = discoverIsolatedLocalNodeId(isolatedHome, isolatedProject);
 
   const child = spawn(
     process.execPath,
@@ -207,6 +255,7 @@ async function bootAndVerify(attempt, registerCleanup) {
         ...process.env,
         HOME: isolatedHome,
         FUSION_SKIP_ONBOARDING: "1",
+        FUSION_NODE_ID: isolatedNodeId,
         // FNXC:BackendFlip 2026-06-26-14:55:
         // Force the smoke to exercise the embedded PostgreSQL backend. Unset
         // DATABASE_URL so a developer's external DB connection never leaks in

@@ -3,7 +3,7 @@ import { once } from "node:events";
 import type { Server } from "node:http";
 import type { AsyncDataLayer, LoadedPluginSchemaContract } from "@fusion/core";
 
-import { resolveDesktopRuntimePrimaryProject } from "./engine-runtime.js";
+import { resolveDesktopNodeIdentity, resolveDesktopRuntimePrimaryProject } from "./engine-runtime.js";
 import { resolveDesktopBundlePluginDirs } from "./bundled-plugin-dirs.js";
 import { resolveDesktopSystemControl } from "./local-runtime.js";
 
@@ -102,14 +102,27 @@ export class DesktopLocalServerManager {
        */
       /* FNXC:PostgresDesktopLifecycle 2026-07-14-19:10: The legacy desktop entrypoint must reuse TaskStore's PostgreSQL layer so CentralCore does not allocate a duplicate pool or rerun schema bootstrap. */
       const centralCore = new CentralCore(undefined, { asyncLayer: store.getAsyncLayer() });
-      const engineManager = new ProjectEngineManager(centralCore);
+      let nodeRuntimeLease: Awaited<ReturnType<InstanceType<typeof CentralCore>["acquireNodeRuntimeLease"]>> | undefined;
       const providerSeeding: { dispose?: () => void } = {};
       cleanup = async () => {
-        providerSeeding.dispose?.();
-        await engineManager.stopAll();
-        await centralCore.close?.();
+        try {
+          providerSeeding.dispose?.();
+          await engineManager?.stopAll();
+        } finally {
+          const ownedLease = nodeRuntimeLease;
+          nodeRuntimeLease = undefined;
+          try {
+            if (ownedLease) await centralCore.releaseNodeRuntimeLease(ownedLease);
+          } finally {
+            await centralCore.close?.();
+          }
+        }
       };
       await centralCore.init();
+      // FNXC:DesktopNodeIdentity 2026-08-05-02:53: Engine ownership and task-workflow routing must receive one resolution result, including the registry-local identity.
+      const { processNodeId, registryLocalNodeId } = await resolveDesktopNodeIdentity(centralCore);
+      nodeRuntimeLease = await centralCore.acquireNodeRuntimeLease(processNodeId);
+      const engineManager = new ProjectEngineManager(centralCore, { processNodeId });
       // FNXC:DesktopRuntime 2026-07-03-03:30: never auto-register the runtime root as a project (see engine-runtime.ts).
       await engineManager.startAll();
       engineManager.startReconciliation();
@@ -191,6 +204,8 @@ export class DesktopLocalServerManager {
         ...(primaryEngine ? { engine: primaryEngine } : {}),
         engineManager,
         centralCore,
+        processNodeId,
+        registryLocalNodeId,
         authStorage: wrappedAuthStorage,
         modelRegistry,
         ...(pluginStore && pluginLoader ? { pluginStore: pluginStore as never, pluginLoader, pluginRunner: pluginLoader } : {}),

@@ -1,8 +1,19 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+
+const originalProcessNodeId = process.env.FUSION_NODE_ID;
+
+beforeAll(() => {
+  process.env.FUSION_NODE_ID = "node-local";
+});
+
+afterAll(() => {
+  if (originalProcessNodeId === undefined) delete process.env.FUSION_NODE_ID;
+  else process.env.FUSION_NODE_ID = originalProcessNodeId;
+});
 
 function makeConstructibleMock<T extends (...args: any[]) => unknown>(impl?: T) {
   const mock = vi.fn(function () {});
@@ -241,6 +252,8 @@ const mocks = vi.hoisted(() => {
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
       updateNode: vi.fn().mockResolvedValue(undefined),
+      acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+      releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
       startDiscovery: vi.fn().mockResolvedValue({}),
       stopDiscovery: vi.fn(),
     };
@@ -1013,6 +1026,37 @@ describe("runServe", () => {
     await triggerSignal("SIGINT");
   });
 
+  it("fails closed before engine or HTTP startup when process node identity is unknown", async () => {
+    const previousNodeId = process.env.FUSION_NODE_ID;
+    process.env.FUSION_NODE_ID = "missing-node";
+    try {
+      await expect(runServe(0, {})).rejects.toThrow("Configured Fusion node not found: missing-node");
+
+      expect(mocks.projectEngineCtor).not.toHaveBeenCalled();
+      expect(mocks.createServerMock).not.toHaveBeenCalled();
+      expect(mocks.backendShutdowns[0]).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousNodeId === undefined) delete process.env.FUSION_NODE_ID;
+      else process.env.FUSION_NODE_ID = previousNodeId;
+    }
+  });
+
+  it("fails closed before engine or HTTP startup when process node identity is missing", async () => {
+    const previousNodeId = process.env.FUSION_NODE_ID;
+    delete process.env.FUSION_NODE_ID;
+    try {
+      await expect(runServe(0, {})).rejects.toThrow(
+        "FUSION_NODE_ID is required for shared-database runtime startup",
+      );
+      expect(mocks.projectEngineCtor).not.toHaveBeenCalled();
+      expect(mocks.createServerMock).not.toHaveBeenCalled();
+      expect(mocks.backendShutdowns[0]).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousNodeId === undefined) delete process.env.FUSION_NODE_ID;
+      else process.env.FUSION_NODE_ID = previousNodeId;
+    }
+  });
+
   /*
    * FNXC:PluginSkillsPostgres 2026-07-14-17:47:
    * `fn serve` skill discovery is metadata-only. Its request-scoped loader must not persist synthetic plugin starts, stops, or errors.
@@ -1084,11 +1128,11 @@ describe("runServe", () => {
 
     const nodeCentral = mocks.centralInstances.find((instance) => instance.listNodes.mock.calls.length > 0);
     expect(nodeCentral).toBeDefined();
-    expect(nodeCentral.updateNode).toHaveBeenCalledWith("node-local", { status: "online" });
+    expect(nodeCentral.acquireNodeRuntimeLease).toHaveBeenCalledWith("node-local");
 
     await triggerSignal("SIGINT");
 
-    expect(nodeCentral.updateNode).toHaveBeenCalledWith("node-local", { status: "offline" });
+    expect(nodeCentral.releaseNodeRuntimeLease).toHaveBeenCalledWith({ nodeId: "node-local", token: "lease-1" });
   });
 
   it("stops engine services during shutdown", async () => {
@@ -1401,6 +1445,8 @@ describe("runServe — Memory Insight Automation wiring", () => {
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
       updateNode: vi.fn().mockResolvedValue(undefined),
+      acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+      releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
       startDiscovery: vi.fn().mockResolvedValue({}),
       stopDiscovery: vi.fn(),
     };
@@ -1564,6 +1610,8 @@ describe("runServe — Semaphore boundary (task lanes only)", () => {
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
       updateNode: vi.fn().mockResolvedValue(undefined),
+      acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+      releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
       startDiscovery: vi.fn().mockResolvedValue({}),
       stopDiscovery: vi.fn(),
     };
@@ -1755,6 +1803,8 @@ describe("runServe — Peer exchange and discovery", () => {
           { id: "node-local", name: "local", type: "local", status: "offline" },
         ]),
         updateNode: vi.fn().mockResolvedValue(undefined),
+        acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+        releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
         startDiscovery: vi.fn().mockResolvedValue({}),
         stopDiscovery: vi.fn(),
       };
@@ -1800,6 +1850,7 @@ describe("runServe — Peer exchange and discovery", () => {
         port: 4040,
         staleTimeoutMs: 300_000,
       }),
+      "node-local",
     );
 
     await triggerSignal("SIGINT");
@@ -1828,6 +1879,7 @@ describe("runServe — Peer exchange and discovery", () => {
       expect.objectContaining({
         port: 5050,
       }),
+      "node-local",
     );
 
     await triggerSignal("SIGINT");
@@ -1873,12 +1925,12 @@ describe("runServe — Peer exchange and discovery", () => {
     expect(nodeCentral).toBeDefined();
 
     // Reset to isolate shutdown behavior
-    nodeCentral.updateNode.mockClear();
+    nodeCentral.releaseNodeRuntimeLease.mockClear();
 
     await triggerSignal("SIGTERM");
 
     // Should have been called twice: once to set online, once to set offline
-    expect(nodeCentral.updateNode).toHaveBeenCalledWith("node-local", { status: "offline" });
+    expect(nodeCentral.releaseNodeRuntimeLease).toHaveBeenCalledWith({ nodeId: "node-local", token: "lease-1" });
   });
 });
 
@@ -1939,6 +1991,8 @@ describe("runServe --daemon flag", () => {
           { id: "node-local", name: "local", type: "local", status: "offline" },
         ]),
         updateNode: vi.fn().mockResolvedValue(undefined),
+        acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+        releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
         startDiscovery: vi.fn().mockResolvedValue({}),
         stopDiscovery: vi.fn(),
       };
@@ -2141,6 +2195,8 @@ describe("runServe — multi-project cwd/default engine resolution", () => {
           { id: "node-local", name: "local", type: "local", status: "offline" },
         ]),
         updateNode: vi.fn().mockResolvedValue(undefined),
+        acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+        releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
         startDiscovery: vi.fn().mockResolvedValue({}),
         stopDiscovery: vi.fn(),
       };

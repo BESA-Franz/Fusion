@@ -37,6 +37,8 @@ import {
   isPostgresUniqueError,
   ProjectPartitionRekeyError,
   resolveTaskLifecycleColumns,
+  resolveLocalNodeId,
+  resolveProcessNodeId,
   type WorkflowIr,
 } from "@fusion/core";
 
@@ -1023,13 +1025,26 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   // constructor. Without this, the dashboard boots but project registration
   // is completely broken (POST /api/projects returns 500), blocking the
   // kanban board and all dashboard UI flows.
-  const centralCoreInitPromise = !noEngine
-    ? (async () => {
-        const core = new CentralCore(undefined, { asyncLayer: dashboardLayer });
-        try { await core.init(); } catch { /* non-fatal — fallback defaults */ }
-        return core;
-      })()
-    : undefined;
+  const configuredProcessNodeId = process.env.FUSION_NODE_ID?.trim();
+  let processNodeId!: string;
+  let registryLocalNodeId!: string;
+  const centralCoreInitPromise = (async () => {
+    const core = new CentralCore(undefined, { asyncLayer: dashboardLayer });
+    await core.init();
+    const nodes = await core.listNodes();
+    processNodeId = resolveProcessNodeId(nodes, configuredProcessNodeId);
+    registryLocalNodeId = resolveLocalNodeId(nodes.map((node) => ({ id: node.id, type: node.type })));
+    return core;
+  })();
+  try {
+    await centralCoreInitPromise;
+  } catch (error) {
+    await migrationHoldingServer?.close().catch(() => undefined);
+    clearHostTaskStores();
+    await store.close().catch(() => undefined);
+    await dashboardBackendShutdown().catch(() => undefined);
+    throw error;
+  }
 
   // FNXC:PostgresFinalCutover 2026-07-14-17:20: Initialize the PostgreSQL-backed
   // store and satellite adapters so each receives the live AsyncDataLayer before
@@ -2102,6 +2117,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   let peerExchangeService: PeerExchangeService | null = null;
   let centralCoreForMesh: CentralCore | null = null;
   let localNodeIdForMesh: string | undefined;
+  let nodeRuntimeLease: Awaited<ReturnType<CentralCore["acquireNodeRuntimeLease"]>> | null = null;
 
   // Start the AI engine unless the caller explicitly requested a UI-only process.
   if (tui) tui.setLoadingStatus(DASHBOARD_STARTUP_STATUS.startingEngine);
@@ -2114,7 +2130,8 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     //
     const githubClient = new GitHubClient();
 
-    const centralCoreForEngine = await phaseTime("centralCore.init (await)", () => centralCoreInitPromise!, logPhase);
+    const centralCoreForEngine = await phaseTime("centralCore.init (await)", () => centralCoreInitPromise, logPhase);
+    localNodeIdForMesh = processNodeId;
 
     try {
       registerGithubTrackingHook?.();
@@ -2133,6 +2150,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     directory matches the store root (multi-project safety).
     */
     const engineManager = new ProjectEngineManager(centralCoreForEngine, {
+      processNodeId,
       cliPackageVersion,
       getMergeStrategy,
       processPullRequestMerge: (s, wd, taskId, pool) =>
@@ -2175,7 +2193,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       }
     })();
 
-    peerExchangeService = new PeerExchangeService(centralCoreForEngine);
+    peerExchangeService = new PeerExchangeService(centralCoreForEngine, { processNodeId });
     centralCoreForMesh = centralCoreForEngine;
 
     // Hybrid gate, cwd project registration, and peer exchange settings are
@@ -2219,7 +2237,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     if (hybridGate.enabled) {
       try {
         const he = await phaseTime("engine: HybridExecutor.initialize", async () => {
-          const x = new HybridExecutor(centralCoreForEngine);
+          const x = new HybridExecutor(centralCoreForEngine, { processNodeId });
           await x.initialize();
           return x;
         }, logPhase);
@@ -2348,6 +2366,9 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
       cliSessionTransport,
       hybridExecutor,
       centralCore: centralCoreForEngine,
+      processNodeId,
+      getNodeRuntimeLease: () => nodeRuntimeLease ?? undefined,
+      registryLocalNodeId,
       authStorage: dashboardAuthStorage,
       modelRegistry,
       automationStore,
@@ -2485,9 +2506,11 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
         await timeShutdownStep("mesh.stopDiscovery", () => {
           centralCoreForMesh!.stopDiscovery();
         });
-        await timeShutdownStep("mesh.setNodeOffline", async () => {
-          await centralCoreForMesh!.updateNode(localNodeIdForMesh!, { status: "offline" });
-        });
+        if (nodeRuntimeLease) {
+          await timeShutdownStep("mesh.setNodeOffline", async () => {
+            await centralCoreForMesh!.releaseNodeRuntimeLease(nodeRuntimeLease!);
+          });
+        }
       }
 
       await timeShutdownStep("closeCentralCore", () =>
@@ -2532,10 +2555,10 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     // instance for peer exchange and mDNS discovery.
     //
     try {
-      centralCoreForMesh = new CentralCore(undefined, { asyncLayer: dashboardLayer });
-      await centralCoreForMesh.init();
+      centralCoreForMesh = await centralCoreInitPromise;
+      localNodeIdForMesh = processNodeId;
 
-      peerExchangeService = new PeerExchangeService(centralCoreForMesh);
+      peerExchangeService = new PeerExchangeService(centralCoreForMesh, { processNodeId });
       peerExchangeService.start();
       const globalSettings = await store.getGlobalSettingsStore().getSettings();
       peerExchangeService.updateGlobalSettings(globalSettings);
@@ -2679,6 +2702,9 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     app = createServer(store, {
       onMerge: uiOnlyOnMerge,
       centralCore: centralCoreForMesh ?? undefined,
+      processNodeId,
+      getNodeRuntimeLease: () => nodeRuntimeLease ?? undefined,
+      registryLocalNodeId,
       authStorage: dashboardAuthStorage,
       modelRegistry,
       automationStore,
@@ -2832,9 +2858,11 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
         await timeShutdownStep("mesh.stopDiscovery", () => {
           centralCoreForMesh!.stopDiscovery();
         });
-        await timeShutdownStep("mesh.setNodeOffline", async () => {
-          await centralCoreForMesh!.updateNode(localNodeIdForMesh!, { status: "offline" });
-        });
+        if (nodeRuntimeLease) {
+          await timeShutdownStep("mesh.setNodeOffline", async () => {
+            await centralCoreForMesh!.releaseNodeRuntimeLease(nodeRuntimeLease!);
+          });
+        }
       }
 
       if (centralCoreForMesh) {
@@ -2955,7 +2983,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
             serviceType: "_fusion._tcp",
             port: actualPort,
             staleTimeoutMs: 300_000,
-          });
+          }, processNodeId);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -2969,12 +2997,8 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     //
     if (centralCoreForMesh) {
       try {
-        const nodes = await centralCoreForMesh.listNodes();
-        const localNode = nodes.find((node) => node.type === "local");
-        if (localNode) {
-          localNodeIdForMesh = localNode.id;
-          await centralCoreForMesh.updateNode(localNode.id, { status: "online" });
-        }
+        localNodeIdForMesh ??= processNodeId;
+        nodeRuntimeLease = await centralCoreForMesh.acquireNodeRuntimeLease(localNodeIdForMesh);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         logSink.warn(`Failed to set local node online: ${message}`, "dashboard");

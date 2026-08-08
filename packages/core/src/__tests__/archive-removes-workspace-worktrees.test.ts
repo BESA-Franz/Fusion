@@ -1,4 +1,4 @@
-import {describe, expect, it} from "vitest";
+import {describe, expect, it, vi} from "vitest";
 import {join} from "node:path";
 import {
   ArchiveWorkspaceDisposalError,
@@ -8,7 +8,7 @@ import {
   registerArchiveWorkspaceWorktreeDisposer,
   type TaskStore,
 } from "../index.js";
-import {buildWorkspaceDisposalPlan} from "../task-store/archive-lifecycle.js";
+import {buildWorkspaceDisposalPlan, disposeArchivedWorkspaceWorktrees} from "../task-store/archive-lifecycle.js";
 
 describe("workspace archive worktree disposer seam", () => {
   it("is store scoped and identity-guarded during executor replacement", async () => {
@@ -32,6 +32,45 @@ describe("workspace archive worktree disposer seam", () => {
     expect(new ArchiveWorkspaceDisposalError("partial", ["repo-a"], [{repoRel: "repo-b", error: new Error("failed")}]).removed).toEqual(["repo-a"]);
     expect(new ArchiveWorkspaceDisposalIncompleteError("repo-c").message).toContain("repo-c");
     expect(new ArchiveWorkspaceWorktreeDisposerMissingError("repo-d").message).toContain("repo-d");
+  });
+
+  it("releases rather than quarantines an explicitly skipped remote-node path", async () => {
+    const store = {} as TaskStore;
+    const quarantine = vi.fn(async () => {});
+    const release = vi.fn(async () => {});
+    const unregister = registerArchiveWorkspaceWorktreeDisposer(store, async () => ({
+      removed: [],
+      skipped: ["repo-a"],
+      failed: [],
+    }));
+
+    try {
+      await disposeArchivedWorkspaceWorktrees(store, {} as never, {
+        plan: [{
+          repoRel: "repo-a",
+          worktreePath: "/remote/repo-a-worktree",
+          branch: "fusion/remote",
+          repoRootDir: "/local/repo-a",
+          aliasRepoRels: [],
+        }],
+        reservations: {
+          "repo-a": {
+            canonicalPath: "/remote/repo-a-worktree",
+            token: "reservation-token",
+            previousState: "free",
+            state: "held",
+            release,
+            quarantine,
+          },
+        },
+        singularDeduplicated: false,
+      });
+    } finally {
+      unregister();
+    }
+
+    expect(quarantine).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("builds one deterministic plan entry for aliases and a colliding singular path", async () => {

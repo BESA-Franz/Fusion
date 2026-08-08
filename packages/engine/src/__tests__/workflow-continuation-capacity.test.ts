@@ -30,7 +30,7 @@ function task(id: string, patch: Partial<Task> = {}): Task {
 
 function store(
   tasks: Task[],
-  settings: { maxConcurrent: number; maxWorktrees: number; worktreeLimitEnabled: boolean } = {
+  settings: { maxConcurrent: number; maxWorktrees: number; worktreeLimitEnabled: boolean; defaultNodeId?: string } = {
     maxConcurrent: 12,
     maxWorktrees: 9,
     worktreeLimitEnabled: true,
@@ -38,6 +38,7 @@ function store(
 ): TaskStore {
   return {
     getSettings: vi.fn(async () => settings),
+    getTask: vi.fn(async (taskId: string) => tasks.find((candidate) => candidate.id === taskId)),
     listTasks: vi.fn(async () => tasks),
     getTaskWorkflowSelection: vi.fn(() => undefined),
     getTaskWorkflowSelectionAsync: vi.fn(async () => undefined),
@@ -271,5 +272,54 @@ describe("workflow continuation active-slot admission", () => {
 
     settles.forEach((settle) => settle());
     await Promise.resolve();
+  });
+
+  it("rechecks node ownership after waiting for coordinator admission", async () => {
+    const continuation = task(CONTINUATION_ID);
+    let liveTask = continuation;
+    const taskStore = store([continuation], {
+      maxConcurrent: 1,
+      maxWorktrees: 1,
+      worktreeLimitEnabled: true,
+    });
+    vi.mocked(taskStore.getTask).mockImplementation(async () => liveTask);
+    const dispatch = vi.fn(async () => {});
+    let releaseBlocker!: () => void;
+    const blockerStarted = new Promise<void>((resolveStarted) => {
+      void projectAdmissionCoordinator.admitNext({
+        projectId: PROJECT_ID,
+        maxConcurrent: 1,
+        claimed: () => 0,
+        claimedTaskIds: () => [],
+        refresh: async () => [{
+          taskId: "FN-BLOCKER",
+          projectId: PROJECT_ID,
+          lane: "execute",
+          createdAt: "2026-07-31T23:59:59.000Z",
+          start: async () => {
+            resolveStarted();
+            await new Promise<void>((resolve) => { releaseBlocker = resolve; });
+            projectAdmissionCoordinator.releaseReservation("FN-BLOCKER");
+          },
+        }],
+      });
+    });
+    await blockerStarted;
+
+    const admission = admitPlanningContinuation({
+      store: taskStore,
+      projectId: PROJECT_ID,
+      task: continuation,
+      item,
+      processNodeId: "node_vps",
+      registryLocalNodeId: "node_vps",
+      dispatch,
+    });
+    await Promise.resolve();
+    liveTask = { ...continuation, nodeId: "node_pc2", updatedAt: "2026-08-01T00:00:01.000Z" };
+    releaseBlocker();
+
+    await expect(admission).resolves.toBe(true);
+    expect(dispatch).not.toHaveBeenCalled();
   });
 });

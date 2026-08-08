@@ -44,7 +44,11 @@ afterAll(() => {
 });
 
 function git(cwd: string, args: string): string {
-  return execSync(`git ${args}`, { cwd, encoding: "utf-8" }).trim();
+  // The fixtures intentionally use single quotes in a few commit messages. `cmd.exe` treats
+  // those as literal characters, so normalize them only for the Windows shell while keeping
+  // the Unix command form unchanged.
+  const commandArgs = process.platform === "win32" ? args.replace(/'([^']*)'/g, '"$1"') : args;
+  return execSync(`git ${commandArgs}`, { cwd, encoding: "utf-8" }).trim();
 }
 
 /** A repo on `main` with one base commit + a task branch carrying one change. */

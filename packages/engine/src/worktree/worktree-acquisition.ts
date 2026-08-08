@@ -40,6 +40,7 @@ import { reconcileSecretsEnvFingerprint, writeSecretsEnvFile } from "./secrets-e
 import { removeDesktopBuildArtifacts } from "./worktree-desktop-artifacts.js";
 import { installTaskWorktreeIdentityGuard } from "./worktree-hooks.js";
 import { copyConfiguredWorktreeFiles, type WorktreeCopyFileResult } from "./worktree-copy-files.js";
+import { ensureWorktreeProjectStateLinks } from "./worktree-project-state-links.js";
 import { resolveCapturedBaseCommitSha } from "../execution/base-commit-capture.js";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
 import { activeSessionRegistry, type ActiveSessionRegistry } from "../agents/active-session-registry.js";
@@ -509,6 +510,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     }
 
     await copyConfiguredFilesForPreparedWorktree(source);
+    await ensureWorktreeProjectStateLinks({ rootDir, worktreePath, taskId: task.id, logger });
 
     if (runInitCommand && settings.worktreeInitCommand && runConfiguredCommand) {
       const initStartedAt = Date.now();
@@ -593,6 +595,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
       logger,
       runContext,
     });
+    await ensureWorktreeProjectStateLinks({ rootDir, worktreePath: path, taskId: task.id, logger });
     const baseRefresh = await refreshExistingWorktree(path);
     return guardAcquisitionReturn({ worktreePath: path, branch: resumedBranch, source, hydrated, isResume: true, baseRefresh });
   };
@@ -719,6 +722,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
       runContext,
     });
     // FN-4912: resume path reuses the prior on-disk .env (and its fingerprint sidecar). Rewrite is owned by the next fresh acquisition.
+    await ensureWorktreeProjectStateLinks({ rootDir, worktreePath, taskId: task.id, logger });
     const baseRefresh = await refreshExistingWorktree(worktreePath);
     return guardAcquisitionReturn({ worktreePath, branch: resumedBranch, source: "existing", hydrated, isResume: true, baseRefresh });
   }
@@ -815,6 +819,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
             await store.logEntry(task.id, `Removed desktop build artifacts from worktree: ${cleanup.removed.join(", ")}`, undefined, runContext);
           }
           await copyConfiguredFilesForPreparedWorktree("pool");
+          await ensureWorktreeProjectStateLinks({ rootDir, worktreePath, taskId: task.id, logger });
           await maybeWarnForeignTaskStartPoint({
             baseBranch,
             rootDir,

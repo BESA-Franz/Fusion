@@ -66,6 +66,15 @@ function createStore(task: Task) {
     updateSettings: vi.fn().mockResolvedValue(undefined),
     updateTask: vi.fn().mockResolvedValue(undefined),
     moveTask: vi.fn().mockResolvedValue(undefined),
+    moveTaskIf: vi.fn(async (
+      _id: string,
+      column: Task["column"],
+      predicate: (live: Task) => boolean | Promise<boolean>,
+    ) => {
+      if (!await predicate(task) || task.column === column) return { task, moved: false };
+      task.column = column;
+      return { task, moved: true };
+    }),
     parseFileScopeFromPrompt: vi.fn().mockResolvedValue([]),
     logEntry: vi.fn().mockResolvedValue(undefined),
     getRootDir: vi.fn().mockReturnValue("/tmp/test"),
@@ -149,5 +158,76 @@ describe("Scheduler node-unreachable audit", () => {
       ownerNodeHealth: "online",
       handoffReason: "owner_recovered",
     });
+  });
+
+  it("does not dispatch a task routed to another shared-database process", async () => {
+    const task = createTask({
+      id: "FN-4",
+      checkedOutBy: undefined,
+      checkoutNodeId: undefined,
+      nodeId: "node-pc2",
+    });
+    const { store } = createStore(task);
+    const scheduler = new Scheduler(store, {
+      localNodeId: "node-pc3",
+      registryLocalNodeId: "node-vps",
+      validateNodeDispatch: vi.fn().mockResolvedValue({ allowed: true }),
+      nodeHealthMonitor: { getNodeHealth: vi.fn(() => "online") } as any,
+    });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.getTask).toHaveBeenCalledWith(task.id);
+    expect(store.moveTaskIf).not.toHaveBeenCalled();
+  });
+
+  it("keeps unpinned shared-database work on the registry-local process", async () => {
+    const task = createTask({
+      id: "FN-5",
+      checkedOutBy: undefined,
+      checkoutNodeId: undefined,
+      nodeId: undefined,
+    });
+    const { store } = createStore(task);
+    const scheduler = new Scheduler(store, {
+      localNodeId: "node-pc2",
+      registryLocalNodeId: "node-vps",
+    });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.getTask).toHaveBeenCalledWith(task.id);
+    expect(store.moveTaskIf).not.toHaveBeenCalled();
+  });
+
+  it("uses the authoritative route before local preflight and fails closed on refresh errors", async () => {
+    const sweepTask = createTask({
+      id: "FN-5B",
+      checkedOutBy: undefined,
+      checkoutNodeId: undefined,
+      nodeId: "node-pc2",
+    });
+    const { store } = createStore(sweepTask);
+    vi.mocked(store.getTask).mockResolvedValueOnce({ ...sweepTask, nodeId: "node-pc3" });
+    const scheduler = new Scheduler(store, {
+      localNodeId: "node-pc2",
+      registryLocalNodeId: "node-vps",
+      nodeHealthMonitor: { getNodeHealth: vi.fn(() => "online") } as any,
+    });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.getTask).toHaveBeenCalledWith(sweepTask.id);
+    expect(store.moveTaskIf).not.toHaveBeenCalled();
+    expect(store.updateTask).not.toHaveBeenCalled();
+
+    vi.mocked(store.getTask).mockRejectedValueOnce(new Error("shared database unavailable"));
+    await scheduler.schedule();
+
+    expect(store.moveTaskIf).not.toHaveBeenCalled();
+    expect(store.updateTask).not.toHaveBeenCalled();
   });
 });

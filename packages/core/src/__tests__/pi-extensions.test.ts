@@ -29,13 +29,13 @@ describe("getProjectRootFromWorktree", () => {
       getProjectRootFromWorktree("/tmp/.fn-worktrees/repo/fn-001/src", {
         worktreesDirCandidates: ["/tmp/.fn-worktrees/repo"],
       }),
-    ).toBe("/tmp/.fn-worktrees");
+    ).toBe(resolve("/tmp/.fn-worktrees").replaceAll("\\", "/"));
 
     expect(
       getProjectRootFromWorktree("/tmp/repo.worktrees/fn-001", {
         worktreesDirCandidates: ["/tmp/repo.worktrees"],
       }),
-    ).toBe("/tmp");
+    ).toBe(resolve("/tmp").replaceAll("\\", "/"));
   });
 
   it("returns null without throwing when child_process partial mocks omit spawnSync", async () => {

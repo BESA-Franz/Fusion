@@ -656,7 +656,8 @@ export class BackwardCompat {
    */
   async resolveProjectContext(
     _cwd: string,
-    projectId?: string
+    projectId?: string,
+    processNodeId?: string,
   ): Promise<ResolvedContext> {
     /*
      * FNXC:PostgresProjectDiscovery 2026-07-14-17:30:
@@ -674,9 +675,22 @@ export class BackwardCompat {
           await this.getAvailableProjects()
         );
       }
+      /*
+      FNXC:RemoteProjectPaths 2026-08-06-19:11:
+      Shared-database Fusion nodes keep one central project id but each machine
+      has its own checkout. Resolve the working directory through the durable
+      project/node mapping whenever this process identifies itself as a node;
+      otherwise a remote dispatch would open the VPS path (for example
+      `/workspace`) and either mutate the wrong checkout or fail before the
+      executor can start. Missing mappings stay fail-closed in the resolver.
+      */
+      const normalizedProcessNodeId = processNodeId?.trim();
+      const workingDirectory = normalizedProcessNodeId
+        ? await this.central.resolveProjectWorkingDirectory(project.id, normalizedProcessNodeId)
+        : project.path;
       return {
         projectId: project.id,
-        workingDirectory: project.path,
+        workingDirectory,
         isLegacy: false,
       };
     }

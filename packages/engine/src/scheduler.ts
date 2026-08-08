@@ -32,7 +32,7 @@ import { type PrMonitor, type PrComment } from "./merge/pr-monitor.js";
 import { reconcileMissionFeatureState } from "./missions/mission-feature-sync.js";
 import { resolveDedicatedPlannerColumnsForTask, resolvePlannerLanesForTask } from "./planner-lane-resolution.js";
 import { evaluateSpecStaleness, getPromptPath } from "./execution/spec-staleness.js";
-import { resolveEffectiveNode, type EffectiveNode } from "./project/effective-node.js";
+import { canExecuteTaskOnNode, resolveEffectiveNode, type EffectiveNode } from "./project/effective-node.js";
 import { applyUnavailableNodePolicy, decideOwningNodeHandoff } from "./project/node-routing-policy.js";
 import type { NodeDispatchValidationResult } from "./project/node-dispatch-validation.js";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
@@ -65,6 +65,14 @@ function logTaskRouting(taskId: string, node: EffectiveNode): void {
     return;
   }
   schedulerLog.log(message);
+}
+
+function isProcessEligibleForEffectiveNode(
+  effectiveNode: EffectiveNode,
+  processNodeId: string,
+  registryLocalNodeId: string,
+): boolean {
+  return (effectiveNode.nodeId ?? registryLocalNodeId).trim() === processNodeId.trim();
 }
 
 function shouldRunWorkflowColumnScheduler(_settings: Settings): boolean {
@@ -862,6 +870,8 @@ export interface SchedulerOptions {
   validateNodeDispatch?: (nodeId: string) => Promise<NodeDispatchValidationResult>;
   /** Local node identifier used to distinguish self-owned leases from foreign-owned leases. Default: "local". */
   localNodeId?: string;
+  /** Registry-local control-plane node that owns tasks without an explicit node route. */
+  registryLocalNodeId?: string;
   /** Optional shared auto-claim snapshot manager for invalidation on task mutations. */
   snapshotManager?: AutoClaimSnapshotManager;
   /**
@@ -930,6 +940,8 @@ export class Scheduler {
   private wasNodeBlocked = new Set<string>();
   /** Tracks tasks blocked by missing project-node mapping to deduplicate block log entries. */
   private wasNodeDispatchValidationBlocked = new Set<string>();
+  /** Tracks tasks routed to another process to avoid repeating diagnostics every tick. */
+  private wasNodeRouteDeferred = new Set<string>();
   /** Tracks tasks queued due to missing permanent executors when ephemeral workers are disabled. */
   private wasPermanentAgentUnavailable = new Set<string>();
   /** Tracks dispatch-queued reason signatures to avoid per-tick log spam. */
@@ -1408,6 +1420,7 @@ export class Scheduler {
       this.recentEngineTodoRequeues.delete(task.id);
       this.wasNodeDispatchValidationBlocked.delete(task.id);
       this.wasNodeBlocked.delete(task.id);
+      this.wasNodeRouteDeferred.delete(task.id);
       this.wasPermanentAgentUnavailable.delete(task.id);
       this.clearDispatchQueuedReasonMemo(task.id);
 
@@ -1603,6 +1616,7 @@ export class Scheduler {
     this.failedTaskIds.clear();
     this.wasNodeBlocked.clear();
     this.wasNodeDispatchValidationBlocked.clear();
+    this.wasNodeRouteDeferred.clear();
     this.wasPermanentAgentUnavailable.clear();
     this.wasDispatchQueuedReasonLogged.clear();
     schedulerLog.log("Stopped");
@@ -2171,6 +2185,69 @@ export class Scheduler {
     }
   }
 
+  private async persistReleasedDispatchIfStillOwned(
+    taskId: string,
+    dispatchUpdate: Parameters<TaskStore["updateTask"]>[1],
+  ): Promise<Task | null> {
+    const commit = async (): Promise<Task | null> => {
+      const currentSettings = await this.store.getSettings();
+      const remainsDispatchable = async (live: Task): Promise<boolean> => {
+        const ir = await resolveWorkflowIrForTask(this.store, live.id).catch(() => null);
+        const column = (ir as WorkflowIrV2 | null)?.columns?.find((candidate) => candidate.id === live.column);
+        if (!isWipColumnRole(column ? resolveColumnFlags(column) : undefined, live.column)) return false;
+        if (!this.options.localNodeId) return true;
+        // FNXC:SharedDatabaseNodeOwnership 2026-08-05-02:53: The locked move already persisted its routing decision; a later settings change must not replace effectiveNodeId during handoff validation.
+        return canExecuteTaskOnNode(
+          live,
+          this.options.localNodeId,
+          currentSettings,
+          this.options.registryLocalNodeId ?? this.options.localNodeId,
+        );
+      };
+
+      if (typeof this.store.updateTaskAtomic === "function") {
+        let applied = false;
+        try {
+          const updated = await this.store.updateTaskAtomic(taskId, async (live) => {
+            if (!await remainsDispatchable(live)) return null;
+            applied = true;
+            return dispatchUpdate;
+          });
+          return applied ? updated : null;
+        } catch (error) {
+          schedulerLog.error(`Post-release dispatch metadata update failed for ${taskId}:`, error);
+          const live = await this.store.getTask(taskId).catch(() => null);
+          return live && await remainsDispatchable(live) ? live : null;
+        }
+      }
+      const live = await this.store.getTask(taskId).catch(() => null);
+      if (!live || !await remainsDispatchable(live)) return null;
+      try {
+        return await this.store.updateTask(taskId, dispatchUpdate);
+      } catch (error) {
+        schedulerLog.error(`Post-release dispatch metadata update failed for ${taskId}:`, error);
+        const reRead = await this.store.getTask(taskId).catch(() => null);
+        return reRead && await remainsDispatchable(reRead) ? reRead : null;
+      }
+    };
+
+    /*
+    FNXC:SharedDatabaseNodeOwnership 2026-08-05-01:57:
+    The release lock used to end before getTask/updateTask/onSchedule. Re-enter
+    the lifecycle lock to exclude node reroutes, then the task-mutation lock to
+    exclude moveTask, and re-check WIP plus ownership before the handoff write.
+    This callback never moves the task, so the shared move key cannot self-deadlock.
+    */
+    const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
+    const taskMutationLock = (this.store as Partial<TaskStore>).withTaskMutationLock;
+    const commitAgainstMoves = taskMutationLock
+      ? () => this.store.withTaskMutationLock(taskId, commit)
+      : commit;
+    return lifecycleLock
+      ? await this.store.withPlanningLifecycleLock(taskId, commitAgainstMoves)
+      : await commitAgainstMoves();
+  }
+
   private async runHoldReleaseSweepPass(tasks: Task[], settings: Settings): Promise<void> {
     try {
       // FNXC:CapacityModel 2026-07-28-11:35: null = worktrees are not a capacity
@@ -2382,8 +2459,111 @@ export class Scheduler {
 
       const result = await runHoldReleaseSweep(this.store, {
         now: () => Date.now(),
-        reserveSlot: async (task): Promise<SlotReservation | null> => {
+        reserveSlot: async (sweepTask): Promise<SlotReservation | null> => {
           let reservedScope = false;
+
+          /*
+          FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
+          A sweep row is only a candidate snapshot. Refresh ownership before any
+          local filesystem read or mutation; shared-database read failures defer
+          dispatch instead of falling back to this process.
+          */
+          let task: typeof sweepTask;
+          try {
+            const authoritativeTask = await this.store.getTask(sweepTask.id);
+            if (!authoritativeTask || authoritativeTask.column !== sweepTask.column || authoritativeTask.paused) {
+              return null;
+            }
+            task = authoritativeTask;
+          } catch (error) {
+            schedulerLog.warn(
+              `Task ${sweepTask.id} authoritative preflight refresh failed — dispatch deferred: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            return null;
+          }
+
+          let preflightEffectiveNode = resolveEffectiveNode(task, settings);
+          if (this.options.localNodeId && this.options.nodeHealthMonitor) {
+            const localNodeId = this.options.localNodeId;
+            const registryLocalNodeId = this.options.registryLocalNodeId ?? localNodeId;
+            if (task.checkoutNodeId && task.checkedOutBy && task.checkoutNodeId !== localNodeId) {
+              const ownerNodeHealth = this.options.nodeHealthMonitor.getNodeHealth(task.checkoutNodeId);
+              const handoffDecision = decideOwningNodeHandoff({
+                task,
+                ownerNodeId: task.checkoutNodeId,
+                ownerNodeHealth,
+                localNodeId,
+                handoffPolicy: settings.owningNodeHandoffPolicy,
+              });
+              if (handoffDecision.action === "park") {
+                if (localNodeId === registryLocalNodeId && !this.wasNodeBlocked.has(task.id)) {
+                  this.wasNodeBlocked.add(task.id);
+                  if (ownerNodeHealth === "offline" || ownerNodeHealth === "error" || ownerNodeHealth === "online") {
+                    await this.emitNodeUnreachableRecoveryAudit(task, {
+                      ownerNodeId: task.checkoutNodeId,
+                      ownerNodeHealth,
+                      handoffAction: "park",
+                      handoffReason: handoffDecision.reason,
+                      decisionPath: "scheduler-handoff-park",
+                      newColumn: task.column,
+                      dispatchNodeBefore: preflightEffectiveNode.nodeId,
+                      dispatchNodeAfter: preflightEffectiveNode.nodeId,
+                    });
+                  }
+                  const reason = `Owning-node handoff parked dispatch: ${handoffDecision.reason}`;
+                  await this.store.logEntry(task.id, reason);
+                }
+                return null;
+              }
+              if (handoffDecision.action === "reassign-local") {
+                preflightEffectiveNode = { nodeId: undefined, source: "local" };
+              }
+            }
+
+            if (preflightEffectiveNode.nodeId !== undefined) {
+              const decision = applyUnavailableNodePolicy({
+                effectiveNode: preflightEffectiveNode,
+                nodeHealth: this.options.nodeHealthMonitor.getNodeHealth(preflightEffectiveNode.nodeId),
+                policy: settings.unavailableNodePolicy,
+              });
+              if (!decision.allowed) {
+                if (localNodeId === registryLocalNodeId && !this.wasNodeBlocked.has(task.id)) {
+                  this.wasNodeBlocked.add(task.id);
+                  schedulerLog.log(`Task ${task.id} dispatch blocked — ${decision.reason}`);
+                  await this.store.logEntry(task.id, decision.reason);
+                }
+                return null;
+              }
+              if (decision.fallbackToLocal) {
+                preflightEffectiveNode = { nodeId: undefined, source: "local" };
+              }
+            }
+          }
+
+          if (
+            this.options.localNodeId
+            && !isProcessEligibleForEffectiveNode(
+              preflightEffectiveNode,
+              this.options.localNodeId,
+              this.options.registryLocalNodeId ?? this.options.localNodeId,
+            )
+          ) {
+            if (!this.wasNodeRouteDeferred.has(task.id)) {
+              this.wasNodeRouteDeferred.add(task.id);
+              schedulerLog.log(
+                `Task ${task.id} preflight deferred before local filesystem checks — routed to ${preflightEffectiveNode.nodeId ?? this.options.registryLocalNodeId ?? this.options.localNodeId}; current process is ${this.options.localNodeId}`,
+              );
+            }
+            return null;
+          }
+
+          if (task.userPaused) {
+            if (task.status !== "queued") {
+              await this.store.updateTask(task.id, { status: "queued" });
+              await this.logDispatchQueuedReason(task.id, "queued — user paused (manual move to todo)");
+            }
+            return null;
+          }
 
           /*
           FNXC:WorkflowScheduling 2026-07-07-00:00:
@@ -2926,6 +3106,8 @@ export class Scheduler {
               await this.store.logEntry(task.id, `symbol-lock admission acquired: ${missionAdmission.symbols.join(", ")}`);
             }
 
+            reservedWorktreeSlots += 1;
+            reservedConcurrentSlots += 1;
             dispatchPrepByTaskId.set(task.id, {
               baseBranch: this.resolveBaseBranch(freshTask, tasks, isReviewColumnTask),
               dispatchStormCount: nextDispatchStormCount,
@@ -2934,11 +3116,67 @@ export class Scheduler {
               effectiveNodeSource: effectiveNode.source,
               task: freshTask,
             });
-
-            reservedWorktreeSlots += 1;
-            reservedConcurrentSlots += 1;
             let released = false;
             return {
+              // Compatibility fallback for stores without the locked-preparation
+              // extension; the authoritative PostgreSQL path always invokes the
+              // preparation below and overrides this snapshot.
+              dispatchRoute: {
+                effectiveNodeId: effectiveNode.nodeId ?? null,
+                effectiveNodeSource: effectiveNode.source,
+              },
+              prepareLockedMove: async (lockedTask) => {
+                const lockedSettings = await this.store.getSettings();
+                if (lockedSettings.globalPause || lockedSettings.enginePaused || lockedTask.paused || lockedTask.userPaused) {
+                  return null;
+                }
+
+                let lockedEffectiveNode = resolveEffectiveNode(lockedTask, lockedSettings);
+                if (lockedEffectiveNode.nodeId !== undefined && this.options.validateNodeDispatch) {
+                  const validation = await this.options.validateNodeDispatch(lockedEffectiveNode.nodeId);
+                  if (!validation.allowed) return null;
+                }
+                if (lockedEffectiveNode.nodeId !== undefined && this.options.nodeHealthMonitor) {
+                  const decision = applyUnavailableNodePolicy({
+                    effectiveNode: lockedEffectiveNode,
+                    nodeHealth: this.options.nodeHealthMonitor.getNodeHealth(lockedEffectiveNode.nodeId),
+                    policy: lockedSettings.unavailableNodePolicy,
+                  });
+                  if (!decision.allowed) return null;
+                  if (decision.fallbackToLocal) lockedEffectiveNode = { nodeId: undefined, source: "local" };
+                }
+                if (
+                  this.options.localNodeId
+                  && !isProcessEligibleForEffectiveNode(
+                    lockedEffectiveNode,
+                    this.options.localNodeId,
+                    this.options.registryLocalNodeId ?? this.options.localNodeId,
+                  )
+                ) {
+                  return null;
+                }
+
+                dispatchPrepByTaskId.set(task.id, {
+                  baseBranch: this.resolveBaseBranch(lockedTask, tasks, isReviewColumnTask),
+                  dispatchStormCount: nextDispatchStormCount,
+                  dispatchTimestamp,
+                  effectiveNodeId: lockedEffectiveNode.nodeId ?? null,
+                  effectiveNodeSource: lockedEffectiveNode.source,
+                  task: lockedTask,
+                });
+                return {
+                  dispatchRoute: {
+                    effectiveNodeId: lockedEffectiveNode.nodeId ?? null,
+                    effectiveNodeSource: lockedEffectiveNode.source,
+                  },
+                  allocateWorktree: (reservedNames) => this.planWorktreePath(
+                    lockedTask,
+                    lockedSettings.worktreeNaming,
+                    reservedNames,
+                    lockedSettings,
+                  ),
+                };
+              },
               release: () => {
                 if (released) return;
                 released = true;
@@ -2983,32 +3221,25 @@ export class Scheduler {
         FNXC:WorkflowScheduling 2026-06-23-22:36:
         Persist dispatch metadata before executor handoff when possible, but isolate update/log failures per task. A metadata failure must not block later released tasks or strand an already released task without onSchedule handoff.
         */
-        schedulerLog.log(`Starting ${taskId}: ${prep.task.title || taskId} (deps satisfied)`);
-        const latest = await this.store.getTask(taskId).catch(() => null);
         const dispatchUpdate = {
           status: null,
           blockedBy: null,
           executionStartBranch: prep.baseBranch ?? undefined,
-          effectiveNodeId: prep.effectiveNodeId,
-          effectiveNodeSource: prep.effectiveNodeSource,
           mergeRetries: 0,
           dispatchStormCount: prep.dispatchStormCount,
           lastDispatchAt: prep.dispatchTimestamp,
         };
-        const scheduledTask = {
-          ...(latest?.id === taskId ? latest : prep.task),
-          ...dispatchUpdate,
-          status: undefined,
-          blockedBy: undefined,
-          effectiveNodeId: prep.effectiveNodeId ?? undefined,
-          effectiveNodeSource: prep.effectiveNodeSource as Task["effectiveNodeSource"],
-          column: "in-progress" as const,
-        };
+        let scheduledTask: Task | null = null;
         try {
-          await this.store.updateTask(taskId, dispatchUpdate);
+          scheduledTask = await this.persistReleasedDispatchIfStillOwned(taskId, dispatchUpdate);
         } catch (error) {
-          schedulerLog.error(`Post-release dispatch metadata update failed for ${taskId}:`, error);
+          schedulerLog.error(`Post-release dispatch ownership check failed for ${taskId}:`, error);
         }
+        if (!scheduledTask) {
+          schedulerLog.warn(`Released task ${taskId} changed WIP lane or node ownership; executor handoff skipped`);
+          continue;
+        }
+        schedulerLog.log(`Starting ${taskId}: ${scheduledTask.title || taskId} (deps satisfied)`);
         try {
           this.options.onSchedule?.(scheduledTask);
         } catch (error) {
@@ -3017,10 +3248,11 @@ export class Scheduler {
         this.recentEngineTodoRequeues.delete(taskId);
         this.wasNodeBlocked.delete(taskId);
         this.wasNodeDispatchValidationBlocked.delete(taskId);
+        this.wasNodeRouteDeferred.delete(taskId);
         this.wasPermanentAgentUnavailable.delete(taskId);
         this.clearDispatchQueuedReasonMemo(taskId);
         try {
-          await this.store.logEntry(taskId, `Node routing resolved: ${prep.effectiveNodeId ?? "local"} (source: ${prep.effectiveNodeSource})`);
+          await this.store.logEntry(taskId, `Node routing resolved: ${scheduledTask.effectiveNodeId ?? "local"} (source: ${scheduledTask.effectiveNodeSource})`);
         } catch (error) {
           schedulerLog.error(`Post-release dispatch log failed for ${taskId}:`, error);
         }

@@ -267,6 +267,78 @@ describe("SelfHealingManager", () => {
     vi.useRealTimers();
   });
 
+  it("does not recover an in-progress limbo task owned by another node", async () => {
+    const foreign = {
+      id: "FN-FOREIGN-LIMBO",
+      lineageId: "lineage-foreign-limbo",
+      title: "Foreign limbo",
+      column: "in-progress",
+      nodeId: "node-pc2",
+      status: null,
+      paused: false,
+      dependencies: [],
+      steps: [{ id: "step-1", title: "Pending", status: "pending" }],
+      currentStep: 0,
+      log: [],
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    } as unknown as Task;
+    (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({ globalPause: false, enginePaused: false } as Settings);
+    (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([foreign]);
+    const nodeScoped = new SelfHealingManager(store, {
+      rootDir: "/tmp/test-project",
+      localNodeId: "node-vps",
+      registryLocalNodeId: "node-vps",
+    });
+
+    await expect(nodeScoped.recoverInProgressLimbo()).resolves.toBe(0);
+    expect(store.moveTask).not.toHaveBeenCalledWith(foreign.id, expect.anything(), expect.anything());
+    nodeScoped.stop();
+  });
+
+  it("does not mutate a limbo snapshot after another node wins the live row", async () => {
+    const snapshot = {
+      id: "FN-LIMBO-RACE",
+      lineageId: "lineage-limbo-race",
+      title: "Limbo race",
+      column: "in-progress",
+      nodeId: "node-vps",
+      status: null,
+      paused: false,
+      dependencies: [],
+      steps: [{ id: "step-1", title: "Pending", status: "pending" }],
+      currentStep: 0,
+      log: [],
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    } as unknown as Task;
+    const foreignLive = { ...snapshot, nodeId: "node-pc2" };
+    const updateTaskAtomic = vi.fn(async (_id: string, updater: (live: Task) => Promise<unknown>) => {
+      await updater(foreignLive);
+      return foreignLive;
+    });
+    const moveTaskIf = vi.fn();
+    store = createMockStore({
+      getSettings: vi.fn().mockResolvedValue({ globalPause: false, enginePaused: false } as Settings),
+      listTasks: vi.fn().mockResolvedValue([snapshot]),
+      updateTaskAtomic,
+      moveTaskIf,
+      withPlanningLifecycleLock: vi.fn(async (_id: string, callback: () => Promise<unknown>) => callback()),
+      withTaskMutationLock: vi.fn(async (_id: string, callback: () => Promise<unknown>) => callback()),
+    });
+    const nodeScoped = new SelfHealingManager(store, {
+      rootDir: "/tmp/test-project",
+      localNodeId: "node-vps",
+      registryLocalNodeId: "node-vps",
+    });
+
+    await expect(nodeScoped.recoverInProgressLimbo()).resolves.toBe(0);
+    expect(updateTaskAtomic).toHaveBeenCalledOnce();
+    expect(moveTaskIf).not.toHaveBeenCalled();
+    expect(store.updateTask).not.toHaveBeenCalledWith(snapshot.id, expect.objectContaining({ worktree: null }));
+    nodeScoped.stop();
+  });
+
   // ── Auto-unpause ─────────────────────────────────────────────────
 
   describe("auto-unpause", () => {
@@ -4110,6 +4182,37 @@ describe("SelfHealingManager", () => {
       expect(result).toBe(1);
       expect(store.updateTask).toHaveBeenCalledWith("FN-7802-SCOPE", { worktree: null, branch: null, sessionFile: null });
       expect(store.recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({ mutationType: "task:auto-recover-worktree-metadata-cleared" }));
+      managerWithRecovery.stop();
+    });
+
+    it("does not clear or rebind worktree metadata owned by another node", async () => {
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        localNodeId: "node-pc2",
+        registryLocalNodeId: "node-vps",
+      });
+      mockedExistsSync.mockReturnValue(false);
+      mockedGetRegisteredWorktreeBranchMap.mockResolvedValue(new Map<string, string>());
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([{
+        id: "FN-FOREIGN-WORKTREE",
+        column: "in-review",
+        paused: false,
+        status: "merging-fix",
+        scopeOverride: true,
+        worktree: "/tmp/project/.worktrees/foreign",
+        branch: "fusion/FN-FOREIGN-WORKTREE",
+        sessionFile: "/tmp/project/.fusion/sessions/foreign.json",
+        dependencies: [],
+        steps: [{ status: "done" }],
+        log: [],
+      }]);
+
+      await expect(managerWithRecovery.reconcileTaskWorktreeMetadata()).resolves.toBe(0);
+      await expect(managerWithRecovery.reconcileInReviewBranchRebind()).resolves.toEqual({
+        repaired: 0,
+        outcomes: [{ taskId: "FN-FOREIGN-WORKTREE", result: "skipped", reason: "foreign-node-route" }],
+      });
+      expect(store.updateTask).not.toHaveBeenCalled();
       managerWithRecovery.stop();
     });
 

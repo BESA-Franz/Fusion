@@ -11,6 +11,7 @@ export const READONLY_ALLOWLIST = [
   "fn_web_fetch",
   "fn_task_show",
   "fn_task_list",
+  "fn_task_search",
   "fn_insight_list",
   "fn_insight_show",
   "fn_list_agents",

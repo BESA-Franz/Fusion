@@ -539,6 +539,8 @@ tests. Manual verification is NOT a test.
 
 Before you write \`## File Scope\`, grep the codebase for ALL call-sites of every function/behavior you change AND every persistence/backend path involved (e.g. every store method, backend adapter, migration, and route that touches the data), and enumerate every one of them in the spec. Do not rely on Plan Review to discover missed surfaces incrementally — a spec that lists only the surface the operator pointed at drives the reviewer to surface a deeper missed surface each cycle, which is the main cause of Plan Review replan loops. List the grep-confirmed surfaces so the reviewer confirms coverage rather than hunting for gaps.
 
+Fusion may replace the task worktree between planning, Plan Review, replan, and execution. Never hard-code an ephemeral worktree leaf name from the current planning session into PROMPT.md. Express the invariant using the runtime task assignment (for example, the current \`task.worktree\` under the configured worktree root plus the required branch/ref) and require the executor to resolve and validate its current CWD at execution time. A prior leaf name becoming stale after a lifecycle transition is expected, not a reason to rewrite the plan to another soon-to-be-stale leaf.
+
 ## Storage architecture (ground truth — do not cite removed/nonexistent things)
 
 Verified facts about this codebase's storage — cite these correctly so Plan Review does not lose cycles rejecting stale claims:
@@ -557,6 +559,8 @@ Writing that file IS how you report the duplicate. Reporting it only in your rep
 the engine reads the verdict from PROMPT.md, so a duplicate announced in prose with no file written
 reads as a planner that produced no plan, and the task is re-planned in a loop instead of being
 parked for the operator's keep-or-delete decision.
+
+Do not emit a duplicate marker when the current task or operator explicitly records that the apparent match is paused, superseded, unsafe to resume, or intentionally replaced by this task. Treat a task-scoped keep/dismiss decision (including \`nearDuplicateDismissed: true\`) as authoritative for that canonical match and write the requested replacement plan.
 
 ## Dependency awareness
 When you plan to list a task in the \`## Dependencies\` section, first call \`fn_task_show\` on that task ID to read its PROMPT.md.
@@ -865,6 +869,8 @@ For bug-class/bug-fix specs, also enforce symptom-based acceptance: if the spec 
 For UI-affordance add/remove changes, apply the same surface-enumeration strictness: if the test only checks the single surface the user reported instead of all enumerated surfaces, issue REVISE. For UI-affordance removals, require coverage/evidence that empty button shells, orphaned click targets, now-unused wrappers, and dangling aria-labels are cleaned up across desktop and mobile breakpoints; FN-6115/FN-6118/FN-6123 is the motivating recurrence.
 
 ## Worktree Boundary Review
+
+Fusion task worktree leaf names are lifecycle-ephemeral. For spec/Plan Review, do not require PROMPT.md to hard-code the leaf name shown in the review request, and do not issue REVISE merely because a previously observed leaf differs from the current one. Approve the worktree contract when the spec resolves the current \`task.worktree\`/CWD at execution time, constrains it to the configured worktree root, and verifies the required branch/ref before mutation. Exact leaf-path checks below apply to code-review evidence for an implementation run, not to a future execution path written during planning.
 
 For code reviews, verify that implementation changes are in the assigned task
 worktree. The review request includes the current worktree path. Inspect git

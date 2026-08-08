@@ -27,8 +27,10 @@ import {
 } from "./execution-block-classifier.js";
 import { finalizeProvenAutoMergeTask } from "./merge/auto-merge-finalization.js";
 import { mergeEffectiveSettings } from "./project/effective-settings.js";
+import { canExecuteTaskOnNode } from "./project/effective-node.js";
 import { generateFeatureVideo, type GenerateFeatureVideoOptions } from "./review-artifacts/feature-video.js";
-import { moveTaskToReplanColumn, resolvePlannerLanes, resolvePlannerLanesForTaskAsync, resolveReplanTargetColumn } from "./execution/replan-target.js";
+import { moveTaskToReplanColumn, resolvePlannerLanesForTaskAsync, resolveReplanTargetColumn } from "./execution/replan-target.js";
+import { latestPlanReviewTerminalAfterReset } from "./plan-review-log-recovery.js";
 import type { TaskStep, WorkflowIr, WorkflowFieldDefinition, WorkflowColumnAgent, EffectiveAgentInput, WorkflowWorkEngineDispatchResult, WorkflowWorkItem, TaskMoveLanes } from "@fusion/core";
 import { WorkflowGraphTaskRunner, type WorkflowGraphTaskRunResult, type WorkflowColumnBoundaryHooks } from "./workflows/workflow-graph-task-runner.js";
 import { isCurrentReviewerNodeOverride, routeWorkflowPrincipal, validateFencedWorkflowPrincipal } from "./agents/workflow-agent-router.js";
@@ -286,6 +288,7 @@ import {
   createTaskDocumentWriteTool as sharedCreateTaskDocumentWriteTool,
   createTaskPromptWriteTool as sharedCreateTaskPromptWriteTool,
   createTaskFileScopeAddTool as sharedCreateTaskFileScopeAddTool,
+  createTaskReadTools,
   createTaskLogTool as sharedCreateTaskLogTool,
   createTaskLogsReadTool as sharedCreateTaskLogsReadTool,
   createWorkflowListTool as sharedCreateWorkflowListTool,
@@ -1753,6 +1756,8 @@ export function getExecutorSystemPrompt(
 }
 
 export interface TaskExecutorOptions {
+  /** Stable central project identity exposed to the task session without mutating the task row. */
+  projectId?: string;
   /*
    * FNXC:PlanReviewLease 2026-07-26-21:07:
    * Resolves this engine's cluster node id for review-gate lease attribution. A GETTER, not a
@@ -1761,6 +1766,8 @@ export interface TaskExecutorOptions {
    * undefined. Read at runner-construction time instead.
    */
   getLocalNodeId?: () => string | undefined;
+  /** Registry-local owner used only for tasks with no explicit/default route. */
+  getRegistryLocalNodeId?: () => string | undefined;
   semaphore?: AgentSemaphore;
   /** Worktree pool for recycling idle worktrees across tasks. */
   pool?: WorktreePool;
@@ -1958,6 +1965,15 @@ async function resolveReboundColumnFor(store: TaskStore, taskId: string): Promis
   } catch {
     return "todo";
   }
+}
+
+function canDisposeArchivedTaskOnNode(
+  task: Pick<Task, "effectiveNodeId" | "nodeId">,
+  localNodeId: string | undefined,
+): boolean {
+  const assignedNodeId = task.effectiveNodeId?.trim() || task.nodeId?.trim();
+  if (!assignedNodeId) return true;
+  return !!localNodeId && canExecuteTaskOnNode(task, localNodeId);
 }
 
 /*
@@ -2517,7 +2533,16 @@ export class TaskExecutor {
       );
       return;
     }
+    /*
+    FNXC:SharedDatabaseNodeOwnership 2026-08-05-03:55:
+    The TaskStore fallback renews only the exact executor claim. Passing the
+    captured owner, node, and epoch prevents a superseded timer from extending
+    a replacement or recovery-cleared lease.
+    */
     await this.store.renewCheckoutLease(taskId, {
+      agentId,
+      nodeId,
+      leaseEpoch,
       checkoutRunId: runId ?? null,
       checkoutLeaseRenewedAt: renewedAt,
     });
@@ -3264,41 +3289,25 @@ export class TaskExecutor {
    * default board. When the emitter itself could not resolve (`lanes` undefined on the payload), the
    * legacy ids answer, which is exactly what `resolvePlannerLanes` degraded to anyway.
    */
-  private isBackwardMoveOutOfPlanning(taskId: string, from: string, to: string, moveLanes: TaskMoveLanes | undefined): boolean {
+  private isBackwardMoveOutOfPlanning(from: string, to: string, moveLanes: TaskMoveLanes | undefined): boolean {
     /*
-    FNXC:WorkflowResolvedColumns 2026-07-31-23:59 (fallback CHANGED — adopting the better argument
-    from the duplicate PR #3140):
-    The payload is the real path and is preferred. The FALLBACK, for the case where the emitter could
-    not resolve, is the SYNC resolver rather than the legacy literals.
+    FNXC:WorkflowResolvedColumns 2026-08-08 — NO SYNC FALLBACK:
+    The event payload is the only authoritative source available in this synchronous listener. The
+    PostgreSQL sync resolver returns the DEFAULT workflow for custom tasks, so consulting it here
+    silently applies the wrong board and can abort live work after a backward move. If an older event
+    boundary drops the payload, keep the legacy ids as a fail-soft compatibility path rather than
+    pretending that a synchronous resolver can recover the task's workflow.
 
-    I had it the other way round. Falling back to literals reads cleaner and drops these guards off
-    `check-inert-sync-lanes` — but it makes the NO-PAYLOAD path strictly WORSE, because
-    `resolvePlannerLanes` is best-effort (it answers correctly under legacy SQLite, and only degrades
-    to the default board under PostgreSQL) whereas a literal can never be right on a renamed board.
-    Optimising the guard off a ratchet at the cost of the degraded path is scoring the number.
-
-    THESE TWO GUARDS STAY COUNTED by `check-inert-sync-lanes`, which is the honest state: the sync
-    call is still here, so the ratchet should still point at it. `executor.ts` goes 4 -> 2, from the
-    `isPlannerColumnFor` deletion below, not from these.
-
-    That took two corrections to get right, recorded because the intermediate state was wrong in a way
-    that looked authoritative. I predicted "stays counted", the gate reported ZERO, and I wrote the
-    under-reporting down as fact. It was a gate defect, not a property of this code: the scan
-    registered a sync local only from a direct call initializer and did not follow one through a
-    conditional (#3169) or through the object literal these lanes are rebuilt into (#3170). With both
-    hops followed the gate reports 2 here — the original prediction.
-
-    The shape was deliberately NOT rewritten to whatever form the scanner recognised. Payload-first
-    with a sync fallback is correct on the merits, and a guard that pushes authors toward a worse
-    degraded path to keep its own count tidy is a guard doing harm — so the scanner was fixed instead.
+    The emitter already resolves lanes asynchronously before emitting `task:moved`; the remaining
+    fallback is intentionally visible as a literal and therefore remains covered by the lifecycle
+    audits until every event boundary preserves `lanes`.
     */
-    const sync = moveLanes ? undefined : resolvePlannerLanes(this.store, taskId);
     const lanes = {
-      hold: moveLanes?.hold ?? sync?.hold ?? "todo",
-      intake: moveLanes?.intake ?? sync?.intake ?? "triage",
-      wip: moveLanes?.wip ?? sync?.wip ?? "in-progress",
-      review: moveLanes?.review ?? sync?.review ?? "in-review",
-      complete: moveLanes?.complete ?? sync?.complete ?? "done",
+      hold: moveLanes?.hold ?? "todo",
+      intake: moveLanes?.intake ?? "triage",
+      wip: moveLanes?.wip ?? "in-progress",
+      review: moveLanes?.review ?? "in-review",
+      complete: moveLanes?.complete ?? "done",
     };
     if (from !== lanes.hold && from !== lanes.intake) return false;
     const forwardTargets = [lanes.wip, lanes.review, lanes.complete].filter(
@@ -3769,12 +3778,22 @@ export class TaskExecutor {
     /* FNXC:WorkflowLifecycle 2026-07-16-10:00: Executor replaces the baseline only for its own TaskStore, so archive awaits abort/sweep/removal before branch deletion without cross-store coupling. */
     this.unregisterArchiveWorktreeDisposer = registerArchiveWorktreeDisposer(store, async (task) => {
       if (!task.worktree || await canonicalizeWorktreePath(task.worktree) === await canonicalizeWorktreePath(this.rootDir)) return;
+      /*
+      FNXC:MultiNodeArchiveWorktreeCleanup 2026-08-01-15:42:
+      The store is shared, but persisted worktree paths are node-local. A remote
+      archive must never abort sessions or remove files on this executor. An
+      explicit owner with a missing local identity also fails closed.
+      */
+      if (!canDisposeArchivedTaskOnNode(task, this.options.getLocalNodeId?.())) return;
       await this.awaitAbortInFlightTaskWork(task.id, "task archived");
       for (const path of activeSessionRegistry.pathsForTask(task.id)) activeSessionRegistry.unregisterPath(path);
       await this.removeOwnWorktreeWithReconcile({worktreePath: task.worktree, settings: await store.getSettings(), taskId: task.id, reason: RemovalReason.ExecutorDispose});
       task.worktree = undefined;
     });
     this.unregisterArchiveWorkspaceWorktreeDisposer = registerArchiveWorkspaceWorktreeDisposer(store, async (task, plan) => {
+      if (!canDisposeArchivedTaskOnNode(task, this.options.getLocalNodeId?.())) {
+        return {removed: [], skipped: plan.map((entry) => entry.repoRel), failed: []};
+      }
       const removed: string[] = [];
       const failed: {repoRel: string; error: unknown}[] = [];
       await this.awaitAbortInFlightTaskWork(task.id, "workspace task archived");
@@ -3947,7 +3966,7 @@ export class TaskExecutor {
             }
           }),
         );
-      } else if (this.isBackwardMoveOutOfPlanning(task.id, from, to, lanes)) {
+      } else if (this.isBackwardMoveOutOfPlanning(from, to, lanes)) {
         /*
         FNXC:PlanningEvacuation 2026-07-25-23:00:
         A card pulled BACKWARD out of a planner lane (the reported case: todo → Ideas) must stop all
@@ -4703,7 +4722,7 @@ export class TaskExecutor {
 
         let currentTask: Task | null = null;
         try {
-          currentTask = await this.store.getTask(taskId);
+          currentTask = await this.loadAuthoritativeTaskIfOwned(taskId);
         } catch (err: unknown) {
           const errorMessage = err instanceof Error ? err.message : String(err);
           executorLog.warn(`${taskId}: completed-task watchdog could not read latest task state: ${errorMessage}`);
@@ -5094,7 +5113,7 @@ export class TaskExecutor {
       return false;
     }
 
-    const liveTask = await this.store.getTask(task.id);
+    const liveTask = await this.loadAuthoritativeTaskIfOwned(task.id);
     const nonContinuableLanes = await this.resolveResumeLanes(task.id);
     if (!liveTask || !this.isTaskAlreadyCompleteForNonContinuableSession(liveTask, taskDone, nonContinuableLanes.review)) {
       return false;
@@ -5413,6 +5432,9 @@ export class TaskExecutor {
    */
   async recoverCompletedTask(task: Task): Promise<boolean> {
     try {
+      const ownedTask = await this.loadAuthoritativeTaskIfOwned(task.id);
+      if (!ownedTask) return false;
+      task = ownedTask;
       if (
         this.executing.has(task.id)
         || this.activeSessions.has(task.id)
@@ -5444,7 +5466,8 @@ export class TaskExecutor {
         executorLog.debug(`${task.id}: skipping recoverCompletedTask — workflow remediation bounce already scheduled`);
         return false;
       }
-      const liveForCompletenessCheck = await this.store.getTask(task.id).catch(() => task);
+      const liveForCompletenessCheck = await this.loadAuthoritativeTaskIfOwned(task.id);
+      if (!liveForCompletenessCheck) return false;
       if (
         liveForCompletenessCheck
         && (liveForCompletenessCheck.steps?.length ?? 0) > 0
@@ -6251,6 +6274,12 @@ export class TaskExecutor {
     const isDispatchable = (task: Task): boolean =>
       !task.deletedAt
       && !task.paused
+      && canExecuteTaskOnNode(
+        task,
+        this.options.getLocalNodeId?.(),
+        settings,
+        this.options.getRegistryLocalNodeId?.(),
+      )
       && !this.executing.has(task.id)
       && !this.activeSessions.has(task.id)
       && !this.activeStepExecutors.has(task.id)
@@ -6387,9 +6416,11 @@ export class TaskExecutor {
       ? (fn: () => void) => { setTimeout(fn, resumeDelayMs); }
       : (fn: () => void) => { fn(); };
     let yieldNext = false;
-    for (const task of inProgress) {
+    for (const candidate of inProgress) {
       if (yieldNext) await yieldEventLoop();
       yieldNext = true;
+      const task = await this.loadAuthoritativeTaskIfOwned(candidate.id);
+      if (!task) continue;
       // Fast-path: if the task already completed its work (all steps done),
       // move it directly to in-review instead of re-executing from scratch.
       if (this.isTaskWorkComplete(task) && !task.mergeDetails) {
@@ -9067,7 +9098,16 @@ export class TaskExecutor {
     Compound Engineering and similar graph-native workflows execute skill nodes instead of legacy parsed task steps. The graph records those nodes as `workflowStepResults.source = "node"`; at the merge boundary, project a successful graph-native run onto the legacy checklist so `task has incomplete steps` cannot block a workflow that already completed its authoritative nodes.
     */
     const mergeProof = await this.evaluateWorkflowMergeBoundary(live, metadata.runId);
-    if (mergeProof.hasForeachStepExecute && !mergeProof.complete) {
+    /*
+    FNXC:BesaNoCommitMergeBoundary 2026-08-04-23:48:
+    An explicit noCommitsExpected task can legitimately finish the builtin foreach with no optional node results. Accept the existing checklist as the missing proof only when every item is terminal, foreach coverage is complete, all recorded results are terminal, and no skip-bypass taint exists. Every incomplete or unsafe state remains fail-closed.
+    */
+    const noCommitChecklistProof = live.noCommitsExpected === true
+      && mergeProof.allResultsTerminal
+      && mergeProof.coverageComplete
+      && (live.steps ?? []).every((step) => step.status === "done" || step.status === "skipped")
+      && !evaluateSkipBypassTaint(live).blocked;
+    if (mergeProof.hasForeachStepExecute && !mergeProof.complete && !noCommitChecklistProof) {
       const reason = !mergeProof.hasRelevantNodeResult
         ? "no pre-merge node result recorded"
         : !mergeProof.allResultsTerminal
@@ -9075,6 +9115,14 @@ export class TaskExecutor {
           : `foreach step instances incomplete at merge boundary: missing ${mergeProof.missingInstanceIds.join(", ")}`;
       await this.store.logEntry(live.id, `Workflow merge boundary blocked: ${reason}`, undefined, this.getRunContextFor(live.id));
       return live;
+    }
+    if (mergeProof.hasForeachStepExecute && !mergeProof.complete && noCommitChecklistProof) {
+      await this.store.logEntry(
+        live.id,
+        "Workflow merge boundary accepted explicit no-commit completion with terminal foreach coverage",
+        undefined,
+        this.getRunContextFor(live.id),
+      );
     }
 
     if (this.shouldCompleteChecklistAtWorkflowMerge(live, mergeProof)) {
@@ -13483,9 +13531,49 @@ export class TaskExecutor {
   */
   async execute(task: Task): Promise<void> {
     try {
-      await this.executeCore(task);
+      const ownedTask = await this.loadAuthoritativeTaskIfOwned(task.id);
+      if (!ownedTask) return;
+      const executionLanes = await this.resolveResumeLanes(task.id);
+      if (ownedTask.column !== executionLanes.wip) {
+        executorLog.log(`${task.id}: refusing execute — task is no longer in the WIP lane`);
+        return;
+      }
+      await this.executeCore(ownedTask);
     } finally {
       if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
+    }
+  }
+
+  private async loadAuthoritativeTaskIfOwned(taskId: string): Promise<Task | null> {
+    // Legacy/local-only callers that do not configure cluster identity keep
+    // their existing behavior; every shared runtime wires both getters.
+    if (!this.options.getLocalNodeId) {
+      return await this.store.getTask(taskId);
+    }
+    const processNodeId = this.options.getLocalNodeId()?.trim();
+    if (!processNodeId) {
+      executorLog.warn(`${taskId}: refusing execute — process node identity is unavailable`);
+      return null;
+    }
+    try {
+      const [liveTask, settings] = await Promise.all([
+        this.store.getTask(taskId),
+        this.store.getSettings(),
+      ]);
+      if (!liveTask) return null;
+      if (!canExecuteTaskOnNode(
+        liveTask,
+        processNodeId,
+        settings,
+        this.options.getRegistryLocalNodeId?.(),
+      )) {
+        executorLog.log(`${taskId}: refusing execute — task is routed to another node`);
+        return null;
+      }
+      return liveTask;
+    } catch (error) {
+      executorLog.warn(`${taskId}: refusing execute — authoritative routing read failed: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
     }
   }
 
@@ -15057,6 +15145,10 @@ export class TaskExecutor {
         ...(provisioningApprovalLayer ? { approvalRequestStore: this.approvalRequestStore } : {}),
       };
       const customTools = [
+        // Executor sessions intentionally skip path-resolved host extensions. Bind task reads
+        // to this executor's already project-scoped store so fn_task_show cannot drift into a
+        // duplicate local project partition on remote nodes.
+        ...createTaskReadTools(this.store),
         this.createTaskUpdateTool(task.id, codeReviewVerdicts, sessionRef, stuckDetector),
         this.createTaskLogTool(task.id),
         this.createTaskLogsReadTool(task.id),
@@ -15500,9 +15592,7 @@ export class TaskExecutor {
               this.options.pluginRunner,
               customFieldDefs,
               this.workspaceConfig,
-              {
-                pluginTaskContributions,
-              },
+              { pluginTaskContributions, projectId: this.options.projectId },
             );
             await promptWithFallback(session, agentPrompt);
           }
@@ -15888,9 +15978,7 @@ export class TaskExecutor {
                       this.options.pluginRunner,
                       retryCustomFieldDefs,
                       this.workspaceConfig,
-                      {
-                        pluginTaskContributions: retryPluginTaskContributions,
-                      },
+                      { pluginTaskContributions: retryPluginTaskContributions, projectId: this.options.projectId },
                     ),
                   ].join("\n");
                 } else {
@@ -15909,9 +15997,7 @@ export class TaskExecutor {
                       this.options.pluginRunner,
                       retryCustomFieldDefs,
                       this.workspaceConfig,
-                      {
-                        pluginTaskContributions: retryPluginTaskContributions,
-                      },
+                      { pluginTaskContributions: retryPluginTaskContributions, projectId: this.options.projectId },
                     ),
                   ].join("\n");
                 }
@@ -16153,7 +16239,11 @@ export class TaskExecutor {
         FNXC:ExecutorSessionRecovery 2026-07-14-06:19:
         Deferred self-requeues must mark the workflow graph recovery and release the active worktree slot after the executor lock drops; otherwise graph failure cleanup can overwrite the recovery and the parked task can keep consuming maxWorktrees capacity.
         */
-        const liveTask = await this.store.getTask(task.id);
+        const liveTask = await this.loadAuthoritativeTaskIfOwned(task.id);
+        if (!liveTask) {
+          executorLog.log(`${task.id}: stale assistant-continuation recovery skipped — task ownership moved to another node`);
+          return;
+        }
         const decision = computeRecoveryDecision({
           recoveryRetryCount: liveTask.recoveryRetryCount,
           nextRecoveryAt: liveTask.nextRecoveryAt,
@@ -16925,27 +17015,31 @@ export class TaskExecutor {
         } else {
           let cleanupLockHeld = true;
           try {
-            const latestTask = await this.store.getTask(task.id);
-            const continuationLanes = await this.resolveResumeLanes(task.id);
-            if (latestTask.column === continuationLanes.wip || latestTask.column === continuationLanes.hold) {
-              await this.store.updateTask(task.id, {
-                sessionFile: null,
-                status: null,
-                error: null,
-              });
-              const continuationReboundColumn = await resolveReboundColumnFor(this.store, task.id);
-              if (latestTask.column !== continuationReboundColumn) {
-                this.markGraphExecuteSelfRequeued(task.id);
-                this.activeWorktrees.delete(task.id);
-                executingTaskLock.release(task.id);
-                cleanupLockHeld = false;
-                await this.store.moveTask(task.id, continuationReboundColumn, { preserveResumeState: true });
-              } else {
-                this.activeWorktrees.delete(task.id);
-              }
-              executorLog.log(`${task.id} stale assistant-continuation session cleared — requeued to ${continuationReboundColumn} with progress preserved`);
+            const latestTask = await this.loadAuthoritativeTaskIfOwned(task.id);
+            if (!latestTask) {
+              executorLog.log(`${task.id}: stale assistant-continuation requeue skipped — task ownership moved to another node`);
             } else {
-              executorLog.debug(`${task.id} stale assistant-continuation requeue skipped — task is now in '${latestTask.column}'`);
+              const continuationLanes = await this.resolveResumeLanes(task.id);
+              if (latestTask.column === continuationLanes.wip || latestTask.column === continuationLanes.hold) {
+                await this.store.updateTask(task.id, {
+                  sessionFile: null,
+                  status: null,
+                  error: null,
+                });
+                const continuationReboundColumn = await resolveReboundColumnFor(this.store, task.id);
+                if (latestTask.column !== continuationReboundColumn) {
+                  this.markGraphExecuteSelfRequeued(task.id);
+                  this.activeWorktrees.delete(task.id);
+                  executingTaskLock.release(task.id);
+                  cleanupLockHeld = false;
+                  await this.store.moveTask(task.id, continuationReboundColumn, { preserveResumeState: true });
+                } else {
+                  this.activeWorktrees.delete(task.id);
+                }
+                executorLog.log(`${task.id} stale assistant-continuation session cleared — requeued to ${continuationReboundColumn} with progress preserved`);
+              } else {
+                executorLog.debug(`${task.id} stale assistant-continuation requeue skipped — task is now in '${latestTask.column}'`);
+              }
             }
           } catch (err: unknown) {
             const errorMessage = err instanceof Error ? err.message : String(err);
@@ -20097,7 +20191,13 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
       const codingCustomTools: ToolDefinition[] = toolMode === "coding"
         ? [this.createSpawnAgentTool(task.id, worktreePath, settings, stepEnv)]
         : [];
-      const workflowCustomTools = [...planReviewPromptTools, ...codingCustomTools];
+      // Workflow executor sessions use the same project-scoped store as the owning executor.
+      // Do not reload task reads through the cwd-resolved host extension.
+      const workflowCustomTools = [
+        ...createTaskReadTools(this.store),
+        ...planReviewPromptTools,
+        ...codingCustomTools,
+      ];
       const readonlyCustomTools = toolMode === "readonly"
         ? filterCustomToolsForReadonly(workflowCustomTools, {
             allowTool: (tool) => allowPlanReviewPromptWrite && tool.name === "fn_task_prompt_write",
@@ -20543,6 +20643,74 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
     await this.store.appendAgentLog(task.id, "Branch conflict auto-recovery", "status", message, "executor");
   }
 
+  /**
+   * Rebind a task whose canonical branch is protected because it contains
+   * foreign/unattributed history. The old branch and checkout are deliberately
+   * left untouched; the task receives a clean, uniquely named branch from the
+   * current integration ref instead. This keeps recovery autonomous without
+   * turning an unregistered branch with potentially valuable work into data
+   * loss.
+   */
+  private async rebindProtectedForeignBranch(
+    task: Task,
+    error: BranchConflictError,
+    settings: Partial<Settings>,
+  ): Promise<"retry" | null> {
+    const integrationRef = await resolveIntegrationBranch(this.rootDir, settings);
+    const branchStem = `${error.branchName}-recovery`;
+
+    for (let suffix = 2; suffix <= 6; suffix += 1) {
+      const candidateBranch = `${branchStem}-${suffix}`;
+      const worktreeName = `${generateWorktreeName(this.rootDir, settings)}-recovery-${suffix}`;
+      const candidatePath = resolveTaskWorktreePath(this.rootDir, settings, worktreeName);
+
+      try {
+        const created = await this.tryCreateWorktree(
+          candidateBranch,
+          candidatePath,
+          task.id,
+          integrationRef,
+          0,
+          0,
+          true,
+          settings,
+        );
+        await this.store.updateTask(task.id, {
+          worktree: created.path,
+          branch: created.branch,
+          baseCommitSha: null,
+          sessionFile: null,
+          paused: false,
+          pausedReason: null,
+        });
+        const message = `[recovery] preserved protected foreign branch ${error.branchName} at ${error.conflictingWorktreePath}; `
+          + `rebound ${task.id} to ${created.branch} at ${created.path} from ${integrationRef}`;
+        await this.store.logEntry(task.id, message, undefined, this.getRunContextFor(task.id));
+        await this.store.appendAgentLog(task.id, "Branch conflict auto-recovery", "status", message, "executor");
+        return "retry";
+      } catch (recoveryError) {
+        if (isBranchConflictError(recoveryError) || /already (?:used by worktree|checked out)|branch .* already exists/i.test(String(recoveryError))) {
+          continue;
+        }
+        await this.store.logEntry(
+          task.id,
+          `[recovery] protected foreign branch rebind failed for ${candidateBranch}`,
+          recoveryError instanceof Error ? recoveryError.message : String(recoveryError),
+          this.getRunContextFor(task.id),
+        );
+        return null;
+      }
+    }
+
+    await this.store.logEntry(
+      task.id,
+      `[recovery] protected foreign branch rebind exhausted for ${error.branchName}; old branch preserved`,
+      undefined,
+      this.getRunContextFor(task.id),
+    );
+    return null;
+  }
+
   private async handleBranchConflict(task: Task, error: BranchConflictError): Promise<"retry" | "reclaimed" | "sticky"> {
     // FN-4811: Before invoking inspection-based recovery (which may force-remove the
     // conflicting worktree), verify the conflict isn't currently bound to a live session.
@@ -20556,6 +20724,15 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
       return "sticky";
     }
     const settings = await mergeEffectiveSettings(this.store, task, await this.store.getSettings());
+
+    // The backend intentionally refuses to attach/delete an unregistered
+    // branch with foreign or unattributed commits. Rebind only that explicit
+    // protected-branch disposition; all other collision classes keep their
+    // existing liveness and reclaim rules below.
+    if (/Preserve this unregistered branch/i.test(error.recommendedAction)) {
+      const rebound = await this.rebindProtectedForeignBranch(task, error, settings);
+      if (rebound) return rebound;
+    }
 
     const integrationRef = task.mergeDetails?.mergeTargetBranch ?? task.baseBranch ?? task.executionStartBranch ?? await resolveIntegrationBranch(this.rootDir, undefined);
     const inspection = await inspectBranchConflict({
@@ -23398,7 +23575,7 @@ export function buildExecutionPrompt(
   pluginRunner?: PluginRunner,
   customFieldDefs?: WorkflowFieldDefinition[],
   workspaceConfig?: WorkspaceConfig | null,
-  options?: { pluginTaskContributions?: string },
+  options?: { pluginTaskContributions?: string; projectId?: string },
 ): string {
   const prompt = scopePromptToWorktree(task.prompt, rootDir, worktreePath, workspaceConfig);
   const reviewLevel = parseReviewLevelFromPrompt(prompt);
@@ -23416,6 +23593,34 @@ export function buildExecutionPrompt(
     : "";
 
   const sourceIssueRef = buildSourceIssueRef(task.sourceIssue);
+
+  /*
+   * FNXC:ExecutorRuntimeContext 2026-08-04-04:28:
+   * Plans may intentionally refer to the lifecycle-current `task.worktree`
+   * instead of hard-coding an ephemeral leaf. The executor previously knew the
+   * resolved worktree and routed node but exposed neither value to the coding
+   * agent, making a fail-closed plan impossible to execute. This section is
+   * assembled only after routing and worktree acquisition, so it is the
+   * authoritative, non-secret control-plane checkpoint for this session.
+   */
+  const effectiveNodeId = task.effectiveNodeId ?? task.nodeId ?? "local";
+  const projectId = options?.projectId?.trim();
+  const executionContextSection = worktreePath || projectId
+    ? [
+      "## Authoritative Execution Context",
+      "",
+      "Fusion resolved this checkpoint immediately before creating this execution session:",
+      ...(projectId ? [`- Project ID: \`${projectId}\``] : []),
+      ...(worktreePath ? [`- \`task.worktree\`: \`${worktreePath}\``] : []),
+      ...(worktreePath ? [`- \`effectiveNodeId\`: \`${effectiveNodeId}\``] : []),
+      ...(worktreePath && task.effectiveNodeSource ? [`- \`effectiveNodeSource\`: \`${task.effectiveNodeSource}\``] : []),
+      ...(worktreePath && task.branch ? [`- assigned branch: \`${task.branch}\``] : []),
+      ...(worktreePath ? ["- the session process CWD was initialized to the resolved `task.worktree` above"] : []),
+      "",
+      "Treat these values as the authoritative control-plane assignment for this session. Re-resolve and compare the actual CWD/branch before any mutation when the task contract requires it. Do not read `node.env`, process secrets, or another secret source to rediscover this context.",
+      "",
+    ].join("\n")
+    : "";
 
   // Build step progress for resume
   const hasProgress = task.steps.length > 0 && task.steps.some((s) => s.status !== "pending");
@@ -23541,6 +23746,8 @@ git log --oneline
 ## Task: ${task.id}
 ${task.title ? `**${task.title}**` : ""}
 ${task.dependencies.length > 0 ? `Dependencies: ${task.dependencies.join(", ")}` : ""}
+
+${executionContextSection}
 
 ## PROMPT.md
 
@@ -23677,14 +23884,7 @@ function preservePreExecutionWorkflowStepResults(task: Pick<Task, "workflowStepR
   const preserved = (task.workflowStepResults ?? []).filter((result) => result.workflowStepId === "plan-review");
   if (preserved.length > 0) return preserved;
 
-  let latest: { timestamp?: string; outcome?: string; status: "passed" | "failed" } | undefined;
-  for (const entry of task.log ?? []) {
-    if (entry.action === "[pre-merge] Workflow step completed: Plan Review") {
-      latest = { timestamp: entry.timestamp, outcome: entry.outcome, status: "passed" };
-    } else if (entry.action === "[pre-merge] Workflow step failed: Plan Review") {
-      latest = { timestamp: entry.timestamp, outcome: entry.outcome, status: "failed" };
-    }
-  }
+  const latest = latestPlanReviewTerminalAfterReset(task.log);
   if (latest?.status !== "passed") return [];
   return [
     {

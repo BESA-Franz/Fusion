@@ -1,8 +1,19 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+
+const originalProcessNodeId = process.env.FUSION_NODE_ID;
+
+beforeAll(() => {
+  process.env.FUSION_NODE_ID = "node-local";
+});
+
+afterAll(() => {
+  if (originalProcessNodeId === undefined) delete process.env.FUSION_NODE_ID;
+  else process.env.FUSION_NODE_ID = originalProcessNodeId;
+});
 
 const { mockSyncStartupModels, mockShouldUseHybridExecutor, mockHybridExecutorCtor, mockHybridExecutorInitialize, mockHybridExecutorShutdown } = vi.hoisted(() => ({
   mockSyncStartupModels: vi.fn().mockResolvedValue(undefined),
@@ -191,6 +202,8 @@ const mocks = vi.hoisted(() => {
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
       updateNode: vi.fn().mockResolvedValue(undefined),
+      acquireNodeRuntimeLease: vi.fn().mockResolvedValue({ nodeId: "node-local", token: "lease-1" }),
+      releaseNodeRuntimeLease: vi.fn().mockResolvedValue(true),
       startDiscovery: vi.fn().mockResolvedValue({}),
       stopDiscovery: vi.fn(),
     };
@@ -844,6 +857,57 @@ describe("runDaemon", () => {
     expect(mocks.schedulerInstances[0].start).toHaveBeenCalledTimes(1);
 
     await triggerSignal("SIGINT");
+  });
+
+  it("surfaces central backend initialization failures before project access or server startup", async () => {
+    const initError = new Error("database temporarily unavailable");
+    const getProjectByPath = vi.fn();
+    const defaultImplementation = mocks.centralCoreCtor.getMockImplementation();
+    mocks.centralCoreCtor.mockImplementation(function () {
+      return {
+        init: vi.fn().mockRejectedValue(initError),
+        getProjectByPath,
+      };
+    });
+
+    try {
+      await expect(runDaemon({ port: 0 })).rejects.toBe(initError);
+
+      expect(getProjectByPath).not.toHaveBeenCalled();
+      expect(mocks.projectEngineCtor).not.toHaveBeenCalled();
+      expect(mocks.createServerMock).not.toHaveBeenCalled();
+    } finally {
+      mocks.centralCoreCtor.mockImplementation(defaultImplementation!);
+    }
+  });
+
+  it("fails closed before engine or HTTP startup when process node identity is unknown", async () => {
+    const previousNodeId = process.env.FUSION_NODE_ID;
+    process.env.FUSION_NODE_ID = "missing-node";
+    try {
+      await expect(runDaemon({ port: 0 })).rejects.toThrow("Configured Fusion node not found: missing-node");
+
+      expect(mocks.projectEngineCtor).not.toHaveBeenCalled();
+      expect(mocks.createServerMock).not.toHaveBeenCalled();
+    } finally {
+      if (previousNodeId === undefined) delete process.env.FUSION_NODE_ID;
+      else process.env.FUSION_NODE_ID = previousNodeId;
+    }
+  });
+
+  it("fails closed before engine or HTTP startup when process node identity is missing", async () => {
+    const previousNodeId = process.env.FUSION_NODE_ID;
+    delete process.env.FUSION_NODE_ID;
+    try {
+      await expect(runDaemon({ port: 0 })).rejects.toThrow(
+        "FUSION_NODE_ID is required for shared-database runtime startup",
+      );
+      expect(mocks.projectEngineCtor).not.toHaveBeenCalled();
+      expect(mocks.createServerMock).not.toHaveBeenCalled();
+    } finally {
+      if (previousNodeId === undefined) delete process.env.FUSION_NODE_ID;
+      else process.env.FUSION_NODE_ID = previousNodeId;
+    }
   });
 
   /*

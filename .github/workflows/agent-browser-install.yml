@@ -27,7 +27,10 @@ jobs:
   pack-fixture:
     name: Pack agent-browser install fixture
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # The prepack guard now builds the complete CLI/plugin-SDK surface on a
+    # clean runner. Five minutes was enough for the old skip-install path but
+    # cancels the real package build before the fixture can be uploaded.
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -37,8 +40,13 @@ jobs:
 
       - name: Setup Node.js and pnpm
         uses: ./.github/actions/setup-node-pnpm
-        with:
-          skip-install: "true"
+
+      # `pnpm pack` runs the publish prepack guard, which intentionally refuses
+      # a clean checkout until the self-contained plugin-SDK declaration bundle
+      # has been built. The previous skip-install path never created that
+      # artifact, so this fixture failed before it could test agent-browser.
+      - name: Build full Fusion CLI package surface
+        run: pnpm --filter @runfusion/fusion build:package
 
       - name: Pack Fusion CLI and agent-browser
         shell: bash

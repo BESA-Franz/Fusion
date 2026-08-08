@@ -30,6 +30,20 @@ export function resolveLocalNodeId(
   return localNode?.id ?? fallback;
 }
 
+export function resolveProcessNodeId(
+  nodes: Array<{ id: string }> | undefined,
+  configuredNodeId?: string,
+): string {
+  const configured = configuredNodeId?.trim();
+  if (!configured) {
+    throw new Error("FUSION_NODE_ID is required for shared-database runtime startup");
+  }
+  if (!nodes?.some((node) => node.id === configured)) {
+    throw new Error(`Configured Fusion node not found: ${configured}`);
+  }
+  return configured;
+}
+
 export class DistributedTaskIdError extends Error {
   constructor(
     message: string,

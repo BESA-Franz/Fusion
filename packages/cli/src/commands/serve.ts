@@ -23,6 +23,8 @@ import {
   mergeBuiltInZaiProviderModels,
   registerBuiltInGrokProvider,
   registerBuiltInZaiProvider,
+  resolveLocalNodeId,
+  resolveProcessNodeId,
 } from "@fusion/core";
 import type { AutomationRunResult, ScheduledTask } from "@fusion/core";
 import { createServer, GitHubClient, createSkillsAdapter, getCliPackageVersion, getProjectSettingsPath, isUnresolvedCliPackageVersion, loadTlsCredentialsFromEnv, refreshAllCustomProviderModels, registerGithubTrackingHook } from "@fusion/dashboard";
@@ -350,6 +352,21 @@ export async function runServe(
   let startupEngineManager: ProjectEngineManager | undefined;
   try {
 
+  /*
+  FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
+  Validate before registration, engine construction, discovery, or listen so
+  an explicit unknown identity cannot create local side effects under the
+  registry-local node.
+  */
+  const registeredNodes = await sharedCentralCore.listNodes();
+  const processNodeId = resolveProcessNodeId(
+    registeredNodes,
+    process.env.FUSION_NODE_ID,
+  );
+  const registryLocalNodeId = resolveLocalNodeId(
+    registeredNodes.map((node) => ({ id: node.id, type: node.type })),
+  );
+
   // ── ProjectEngineManager: uniform engine lifecycle for all projects ──
   //
   // Every registered project gets an identical ProjectEngine with the
@@ -423,6 +440,7 @@ export async function runServe(
   const cliPackageVersion = isUnresolvedCliPackageVersion(resolvedCliPackageVersion) ? undefined : resolvedCliPackageVersion;
 
   const engineManager = startupEngineManager = new ProjectEngineManager(sharedCentralCore, {
+    processNodeId,
     cliPackageVersion,
     getMergeStrategy,
     processPullRequestMerge: (s, wd, taskId, pool) =>
@@ -470,7 +488,7 @@ export async function runServe(
   const hybridGate = await shouldUseHybridExecutor(sharedCentralCore);
   console.log(`[serve] hybrid executor gate: enabled=${hybridGate.enabled} reason=${hybridGate.reason}`);
   if (hybridGate.enabled) {
-    hybridExecutor = new HybridExecutor(sharedCentralCore);
+    hybridExecutor = new HybridExecutor(sharedCentralCore, { processNodeId });
     await hybridExecutor.initialize();
   }
 
@@ -501,7 +519,7 @@ export async function runServe(
   //
   let peerExchangeService: PeerExchangeService | null = null;
   if (sharedCentralCore) {
-    peerExchangeService = new PeerExchangeService(sharedCentralCore);
+    peerExchangeService = new PeerExchangeService(sharedCentralCore, { processNodeId });
     try {
       peerExchangeService.start();
     } catch (err) {
@@ -968,6 +986,8 @@ export async function runServe(
     engine: primaryEngine,
     engineManager,
     centralCore: sharedCentralCore ?? undefined,
+    processNodeId,
+    registryLocalNodeId,
     onMerge: (taskId) => primaryEngine.onMerge(taskId),
     authStorage: dashboardAuthStorage,
     modelRegistry,
@@ -1114,7 +1134,7 @@ export async function runServe(
           serviceType: "_fusion._tcp",
           port: actualPort,
           staleTimeoutMs: 300_000,
-        });
+        }, processNodeId);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1128,16 +1148,12 @@ export async function runServe(
   // If it wasn't initialized successfully, create a new one for node registration.
   //
   let centralCore: CentralCore | null = sharedCentralCore;
-  let localNodeId: string | undefined;
+  const localNodeId = processNodeId;
+  let nodeRuntimeLease: Awaited<ReturnType<CentralCore["acquireNodeRuntimeLease"]>> | null = null;
 
   try {
     if (centralCore) {
-      const nodes = await centralCore.listNodes();
-      const localNode = nodes.find((node) => node.type === "local");
-      if (localNode) {
-        localNodeId = localNode.id;
-        await centralCore.updateNode(localNode.id, { status: "online" });
-      }
+      nodeRuntimeLease = await centralCore.acquireNodeRuntimeLease(localNodeId);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1232,9 +1248,9 @@ export async function runServe(
       }
     }
 
-    if (centralCore && localNodeId) {
+    if (centralCore && nodeRuntimeLease) {
       try {
-        await centralCore.updateNode(localNodeId, { status: "offline" });
+        await centralCore.releaseNodeRuntimeLease(nodeRuntimeLease);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn(`[serve] Failed to set local node offline: ${message}`);

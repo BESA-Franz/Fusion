@@ -534,7 +534,7 @@ describe("ChildProcessRuntime", () => {
       expect(createdSpy).toHaveBeenCalledWith(task);
     });
 
-    it("forwards TASK_MOVED as task:moved with { task, from, to } shape", async () => {
+    it("forwards TASK_MOVED with resolved workflow lanes", async () => {
       queueChild();
       await runtime.start();
       const child = getLatestChild();
@@ -546,10 +546,20 @@ describe("ChildProcessRuntime", () => {
       child.emit("message", {
         type: TASK_MOVED,
         id: "evt-moved",
-        payload: { task, from: "todo", to: "in-progress" },
+        payload: {
+          task,
+          from: "todo",
+          to: "in-progress",
+          lanes: { hold: "backlog", intake: "todo", wip: "in-progress", review: "review", terminal: ["done"] },
+        },
       });
 
-      expect(movedSpy).toHaveBeenCalledWith({ task, from: "todo", to: "in-progress" });
+      expect(movedSpy).toHaveBeenCalledWith({
+        task,
+        from: "todo",
+        to: "in-progress",
+        lanes: { hold: "backlog", intake: "todo", wip: "in-progress", review: "review", terminal: ["done"] },
+      });
     });
 
     it("forwards TASK_UPDATED as task:updated", async () => {

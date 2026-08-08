@@ -92,6 +92,7 @@ import {
 
 
   planTaskWorktreePath,
+  resolveEffectiveNode,
   promoteHeldTask,
   performTaskRevert,
   revertWorkspaceTask,
@@ -133,6 +134,7 @@ permanently and the number stops distinguishing real debt from documented degrad
 */
 const LEGACY_WIP_LANES: ReadonlySet<string> = new Set(["in-progress"]);
 const LEGACY_ARCHIVE_LANES: ReadonlySet<string> = new Set(["archived"]);
+const LEGACY_PRE_WIP_LANES: ReadonlySet<string> = new Set(["triage", "todo"]);
 
 
 const REVIEW_BLOCK_RE = /##\s+(Code|Plan)\s+Review:[\s\S]*?(?=\n##\s+(?:Code|Plan)\s+Review:|$)/gi;
@@ -1075,6 +1077,96 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
     resolveSelfHealingManager: _resolveSelfHealingManager,
   } = deps;
   const TASK_DETAIL_ACTIVITY_LOG_LIMIT = taskDetailActivityLogLimit;
+
+  const requireNodeOwnership = () => {
+    const processNodeId = options?.processNodeId?.trim();
+    const registryLocalNodeId = options?.registryLocalNodeId?.trim();
+    if (!processNodeId || !registryLocalNodeId) {
+      throw new Error("Dashboard node ownership is not configured");
+    }
+    return { processNodeId, registryLocalNodeId };
+  };
+
+  const prepareOwnedWipMove = (scopedStore: TaskStore) => async (live: Task) => {
+    const { processNodeId, registryLocalNodeId } = requireNodeOwnership();
+    const settings = await scopedStore.getSettings();
+    const effectiveNode = resolveEffectiveNode(live, settings);
+    const targetNodeId = effectiveNode.nodeId ?? registryLocalNodeId;
+    return {
+      dispatchRoute: {
+        effectiveNodeId: targetNodeId,
+        effectiveNodeSource: effectiveNode.source,
+      },
+      allocateWorktree: targetNodeId === processNodeId
+        ? (reservedNames: Set<string>) => planTaskWorktreePath(
+            live,
+            scopedStore.getRootDir(),
+            settings.worktreeNaming,
+            reservedNames,
+            settings,
+          )
+        : undefined,
+    };
+  };
+
+  const dispatchMovedTask = async (
+    context: Awaited<ReturnType<typeof getProjectContext>>,
+    task: Task,
+  ): Promise<void> => {
+    const { processNodeId, registryLocalNodeId } = requireNodeOwnership();
+    const targetNodeId = task.effectiveNodeId?.trim() || registryLocalNodeId;
+    if (targetNodeId === processNodeId) {
+      let engine = context.engine;
+      if (!engine && context.projectId && options?.engineManager) {
+        engine = await options.engineManager.ensureEngine(context.projectId);
+      }
+      const executor = engine?.getRuntime().getExecutor();
+      if (!executor) throw new Error(`No local executor available for ${task.id}`);
+      await executor.execute(task);
+      return;
+    }
+
+    const node = await options?.centralCore?.getNode(targetNodeId);
+    if (!node?.url) throw new Error(`Target node ${targetNodeId} has no dispatch URL`);
+    const url = new URL(`/api/tasks/${encodeURIComponent(task.id)}/dispatch`, node.url);
+    if (context.projectId) url.searchParams.set("projectId", context.projectId);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(node.apiKey ? { authorization: `Bearer ${node.apiKey}` } : {}),
+      },
+      body: JSON.stringify({ expectedNodeId: targetNodeId }),
+    });
+    if (!response.ok) {
+      throw new Error(`Target node ${targetNodeId} rejected dispatch (${response.status})`);
+    }
+  };
+
+  router.post("/tasks/:id/dispatch", async (req, res) => {
+    const context = await getProjectContext(req);
+    const { processNodeId, registryLocalNodeId } = requireNodeOwnership();
+    const expectedNodeId = (req.body as { expectedNodeId?: unknown } | undefined)?.expectedNodeId;
+    if (expectedNodeId !== processNodeId) throw conflict("Dispatch target does not match this process node");
+    const task = await context.store.getTask(req.params.id);
+    if (!task) throw notFound(`Task ${req.params.id} not found`);
+    if ((task.effectiveNodeId?.trim() || registryLocalNodeId) !== processNodeId) {
+      throw conflict("Task route changed before dispatch");
+    }
+    const workflowIr = await resolveWorkflowIrForTask(context.store, task.id);
+    const taskIsWip = workflowIr && workflowDeclaresColumnModel(workflowIr)
+      ? columnHasFlag(workflowIr, task.column, "countsTowardWip")
+      : LEGACY_WIP_LANES.has(task.column);
+    if (!taskIsWip) throw conflict("Task is no longer in a dispatchable workflow column");
+    let engine = context.engine;
+    if (!engine && context.projectId && options?.engineManager) {
+      engine = await options.engineManager.ensureEngine(context.projectId);
+    }
+    const executor = engine?.getRuntime().getExecutor();
+    if (!executor) throw new Error(`No local executor available for ${task.id}`);
+    await executor.execute(task);
+    res.json({ dispatched: true, taskId: task.id, nodeId: processNodeId });
+  });
 
   type InReviewUserCommentReengagementInput = {
     triggeringCommentType: "steering" | "task";
@@ -2295,6 +2387,15 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       // Re-read only after acquiring the recommendation identity lock; this is the queue winner's authority.
       const parent = await scopedStore.getTask(req.params.id).catch(() => null);
       if (!parent || parent.deletedAt) throw notFound("Task not found");
+      const resolveArchiveColumnsForTask = async (taskId: string): Promise<Set<string>> => {
+        try {
+          const ir = await resolveWorkflowIrForTask(scopedStore, taskId);
+          const columns = columnsWithFlag(ir, "archived");
+          return new Set(columns.length > 0 ? columns : ["archived"]);
+        } catch {
+          return new Set(["archived"]);
+        }
+      };
       const completeColumns = await (async () => {
         try {
           const ir = await resolveWorkflowIrForTask(scopedStore, parent.id);
@@ -2344,7 +2445,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         soft-deleted children are historical records, not an actionable Created result; conflict
         rather than silently resurrecting or linking a second child.
         */
-        if (!linked || linked.deletedAt || linked.column === "archived") {
+        const linkedArchiveColumns = linked
+          ? await resolveArchiveColumnsForTask(linked.id)
+          : new Set<string>();
+        if (!linked || linked.deletedAt || linkedArchiveColumns.has(linked.column)) {
           throw conflict("Recommendation link points to an unavailable task");
         }
         return res.status(200).json({ task: linked, parent });
@@ -2359,16 +2463,9 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       */
       const existing = (await scopedStore.listTasks({ slim: false, includeArchived: true, includeDeleted: true }))
         .find((task) => task.proposalClaimId === proposalClaimId);
-      const existingArchiveColumns = await (async () => {
-        if (!existing) return new Set<string>();
-        try {
-          const ir = await resolveWorkflowIrForTask(scopedStore, existing.id);
-          const columns = columnsWithFlag(ir, "archived");
-          return new Set(columns.length > 0 ? columns : ["archived"]);
-        } catch {
-          return new Set(["archived"]);
-        }
-      })();
+      const existingArchiveColumns = existing
+        ? await resolveArchiveColumnsForTask(existing.id)
+        : new Set<string>();
       /*
       FNXC:TaskRecommendations 2026-08-08-08:44:
       Deterministic reconciliation moves a child to its workflow's archived trait, which may be
@@ -2419,7 +2516,8 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   // Move task to column
   router.post("/tasks/:id/move", async (req, res) => {
     try {
-      const { store: scopedStore } = await getProjectContext(req);
+      const projectContext = await getProjectContext(req);
+      const { store: scopedStore } = projectContext;
       const { column, preserveProgress } = req.body;
       /*
       FNXC:WorkflowColumns 2026-07-19-2b:15 (U12 / R2 / R11):
@@ -2475,15 +2573,6 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         }
       }
 
-      // When manually promoting to in-progress, supply an allocator so
-      // moveTask assigns a worktree path under its cross-task allocation
-      // lock. This mirrors scheduler dispatch semantics — without it, a
-      // user-initiated move would land the task in-progress with a stale
-      // (or null) worktree and could collide with another active task.
-      // The executor's createWorktree path will reuse `task.branch` if it
-      // already exists, so any prior committed progress survives even
-      // though the on-disk worktree directory is freshly allocated.
-      let allocateWorktree: ((reservedNames: Set<string>) => string | null) | undefined;
       /*
       FNXC:WorkflowColumns 2026-07-19-2b:20 (U12 / R2):
       Allocate a worktree when promoting into a WIP column, keyed on the trait rather than the
@@ -2493,21 +2582,26 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       const targetIsWip = moveTargetIr && declaresColumns
         ? columnHasFlag(moveTargetIr, column, "countsTowardWip")
         : LEGACY_WIP_LANES.has(column);
-      if (targetIsWip) {
-        const existing = await scopedStore.getTask(req.params.id);
-        if (existing) {
-          const settings = await scopedStore.getSettings();
-          const rootDir = scopedStore.getRootDir();
-          allocateWorktree = (reservedNames) =>
-            planTaskWorktreePath(existing, rootDir, settings.worktreeNaming, reservedNames, settings);
-        }
+      const moveResult = targetIsWip
+        ? await scopedStore.moveTaskIf(
+            req.params.id,
+            column as Column,
+            () => true,
+            {
+              preserveProgress,
+              moveSource: "user",
+              prepareLockedMove: prepareOwnedWipMove(scopedStore),
+            },
+          )
+        : undefined;
+      if (moveResult && !moveResult.moved && moveResult.task.column !== column) {
+        throw conflict("Task changed before the move could be committed");
       }
-
-      const task = await scopedStore.moveTask(req.params.id, column as Column, {
-        preserveProgress,
-        allocateWorktree,
-        moveSource: "user",
-      });
+      const task = moveResult?.task ?? await scopedStore.moveTask(req.params.id, column as Column, {
+            preserveProgress,
+            moveSource: "user",
+          });
+      if (targetIsWip) await dispatchMovedTask(projectContext, task);
       res.json(task);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -2538,18 +2632,11 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
   // arbitrates, so a promote into a full column rejects with capacity-exhausted.
   router.post("/tasks/:id/promote", async (req, res) => {
     try {
-      const { store: scopedStore } = await getProjectContext(req);
+      const projectContext = await getProjectContext(req);
+      const { store: scopedStore } = projectContext;
       // FNXC:WorkflowColumns 2026-07-27-09:54 (U2 / R9): the
       // "Workflow columns are not enabled" rejection is deleted — its gate was a
       // literal `true`, so promote never took it.
-      const settings = await scopedStore.getSettingsFast();
-      const existing = await scopedStore.getTask(req.params.id);
-      const rootDir = scopedStore.getRootDir();
-      const allocateWorktree = existing
-        ? (task: Task, reservedNames: Set<string>) =>
-            planTaskWorktreePath(task, rootDir, settings.worktreeNaming, reservedNames, settings)
-        : undefined;
-
       /*
       FNXC:WorkflowScheduling 2026-07-25-04:55:
       `{ force: true }` is the operator's explicit "start it anyway" override for
@@ -2559,7 +2646,12 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       */
       const force = (req.body as { force?: unknown } | undefined)?.force === true;
 
-      const result = await promoteHeldTask(scopedStore, req.params.id, { allocateWorktree }, { force });
+      const result = await promoteHeldTask(scopedStore, req.params.id, {
+        reserveSlot: async () => ({
+          release: () => undefined,
+          prepareLockedMove: prepareOwnedWipMove(scopedStore),
+        }),
+      }, { force });
       if (!result.released) {
         /*
         FNXC:WorkflowScheduling 2026-07-21-22:31:
@@ -2590,6 +2682,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         });
       }
       const task = await scopedStore.getTask(req.params.id);
+      if (task) await dispatchMovedTask(projectContext, task);
       res.json(task);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -3324,7 +3417,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           guard, it is the answer for IRs that cannot express the question. The v2 branch below
           resolves it properly. Retires when v1 IRs do.
           */
-          strandedSpecificationRetry = task.column === "triage" || task.column === "todo";
+          strandedSpecificationRetry = LEGACY_PRE_WIP_LANES.has(task.column);
         } else {
           const lifecycle = resolveLifecycleColumns(workflowIr);
           strandedSpecificationRetry = lifecycle !== undefined

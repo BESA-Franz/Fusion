@@ -11,7 +11,7 @@
  */
 
 import type { RuntimeStatus, ProjectRuntimeConfig } from "../project/project-runtime.js";
-import type { GithubIssueAction, Task } from "@fusion/core";
+import type { GithubIssueAction, Task, TaskMoveLanes } from "@fusion/core";
 
 // ── Base Message Types ────────────────────────────────────────────────────
 
@@ -153,6 +153,8 @@ export interface TaskMovedPayload {
   task: Task;
   from: string;
   to: string;
+  /** Resolved workflow lanes carried across the process boundary when available. */
+  lanes?: TaskMoveLanes;
 }
 
 /**

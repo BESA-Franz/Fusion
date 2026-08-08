@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { join } from "node:path";
 
 /*
 FNXC:CliQuietMode 2026-07-25-09:05:
@@ -238,7 +239,7 @@ import {
 import { GitHubClient, generatePrMetadata, isGitHubIssueAlreadyImported } from "@fusion/dashboard";
 import { createSession, submitResponse } from "@fusion/dashboard/planning";
 import { resolveProject, createLocalStore } from "../../project-context.js";
-import { aiMergeTask, runAiMerge, landWorkspaceTask } from "@fusion/engine";
+import { aiMergeTask, runAiMerge, landWorkspaceTask, installBaselineArchiveWorktreeDisposer } from "@fusion/engine";
 
 const mockedExec = vi.mocked(exec);
 
@@ -1047,7 +1048,7 @@ describe("project-aware task command behavior", () => {
     const promise = runTaskLogs("FN-001", { follow: true }, "demo-project");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(vi.mocked(watchFile)).toHaveBeenCalledWith(
-      expect.stringContaining("/resolved/project/.fusion/tasks/FN-001/agent.log"),
+      expect.stringContaining(join("/resolved/project", ".fusion", "tasks", "FN-001", "agent.log")),
       expect.objectContaining({ interval: 1000 }),
       expect.any(Function),
     );
@@ -1270,6 +1271,16 @@ describe("project-aware task command behavior", () => {
   it("runTaskArchive and runTaskUnarchive use resolved project store", async () => {
     const archiveTask = vi.fn().mockResolvedValue(makeTask({ id: "FN-123", column: "archived" }));
     const unarchiveTask = vi.fn().mockResolvedValue(makeTask({ id: "FN-123", column: "done" }));
+    const init = vi.fn().mockResolvedValue(undefined);
+    const close = vi.fn().mockResolvedValue(undefined);
+    const listNodes = vi.fn().mockResolvedValue([{ id: "node-local", type: "local" }]);
+    const getProjectNodePath = vi.fn().mockResolvedValue("C:\\projects\\local-demo");
+    (CentralCore as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => ({
+      init,
+      close,
+      listNodes,
+      getProjectNodePath,
+    }));
 
     vi.mocked(resolveProject).mockResolvedValue({
       projectId: "proj_test",
@@ -1284,6 +1295,17 @@ describe("project-aware task command behavior", () => {
 
     expect(archiveTask).toHaveBeenCalledWith("FN-123");
     expect(unarchiveTask).toHaveBeenCalledWith("FN-123");
+
+    const archiveInstall = vi.mocked(installBaselineArchiveWorktreeDisposer).mock.calls[0];
+    await expect(archiveInstall[1].getLocalNodeId?.()).resolves.toBe("node-local");
+    await expect(archiveInstall[1].getLocalNodeId?.()).resolves.toBe("node-local");
+    expect(typeof archiveInstall[1].getLocalProjectPath).toBe("function");
+    await expect(archiveInstall[1].getLocalProjectPath()).resolves.toBe("C:\\projects\\local-demo");
+    expect(CentralCore).toHaveBeenCalledOnce();
+    expect(init).toHaveBeenCalledOnce();
+    expect(listNodes).toHaveBeenCalledOnce();
+    expect(getProjectNodePath).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("runTaskRetry uses resolved project store", async () => {

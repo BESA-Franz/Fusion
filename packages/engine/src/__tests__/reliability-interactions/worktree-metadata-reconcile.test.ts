@@ -22,10 +22,13 @@ function task(id: string, overrides: Partial<Task> = {}): Task {
   } as Task;
 }
 
-function makeStore(tasks: Task[]): TaskStore & EventEmitter {
+function makeStore(
+  tasks: Task[],
+  settings: Record<string, unknown> = {},
+): TaskStore & EventEmitter {
   const map = new Map(tasks.map((t) => [t.id, t]));
   return Object.assign(new EventEmitter(), {
-    getSettings: vi.fn(async () => ({ globalPause: false, enginePaused: false })),
+    getSettings: vi.fn(async () => ({ globalPause: false, enginePaused: false, ...settings })),
     listTasks: vi.fn(async () => [...map.values()]),
     updateTask: vi.fn(async (id: string, patch: Partial<Task>) => {
       map.set(id, { ...(map.get(id) as Task), ...patch });
@@ -71,6 +74,60 @@ describe("reliability interactions: worktree metadata reconcile", () => {
     executing = false;
     expect(await manager.reconcileTaskWorktreeMetadata()).toBe(1);
     expect((store as any).updateTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reconcile worktree metadata owned by a foreign node", async () => {
+    const store = makeStore([
+      task("FN-FOREIGN-OVERRIDE", {
+        column: "triage",
+        status: "planning",
+        nodeId: "pc3",
+        worktree: "C:\\remote\\pc3-override",
+        branch: "fusion/fn-foreign-override",
+      }),
+      task("FN-FOREIGN-EFFECTIVE", {
+        column: "triage",
+        status: "planning",
+        nodeId: "pc1",
+        effectiveNodeId: "pc3",
+        worktree: "C:\\remote\\pc3-effective",
+        branch: "fusion/fn-foreign-effective",
+      }),
+      task("FN-FOREIGN-DEFAULT", {
+        column: "triage",
+        status: "planning",
+        worktree: "C:\\remote\\pc3-default",
+        branch: "fusion/fn-foreign-default",
+      }),
+    ], { defaultNodeId: "pc3" });
+    vi.spyOn(worktreePoolModule, "getRegisteredWorktreeBranchMap").mockResolvedValue(new Map());
+
+    const manager = new SelfHealingManager(store, { rootDir: "/repo", localNodeId: "pc1" });
+    const repaired = await manager.reconcileTaskWorktreeMetadata();
+
+    expect(repaired).toBe(0);
+    expect((store as any).updateTask).not.toHaveBeenCalled();
+  });
+
+  it("continues to reconcile stale worktree metadata owned by the local node", async () => {
+    const store = makeStore([
+      task("FN-LOCAL", {
+        column: "todo",
+        nodeId: "pc1",
+        worktree: "/missing/local",
+        branch: "fusion/fn-local",
+      }),
+    ], { defaultNodeId: "pc3" });
+    vi.spyOn(worktreePoolModule, "getRegisteredWorktreeBranchMap").mockResolvedValue(new Map());
+
+    const manager = new SelfHealingManager(store, { rootDir: "/repo", localNodeId: "pc1" });
+    const repaired = await manager.reconcileTaskWorktreeMetadata();
+
+    expect(repaired).toBe(1);
+    expect((store as any).updateTask).toHaveBeenCalledWith("FN-LOCAL", {
+      worktree: null,
+      branch: null,
+    });
   });
 
   it("runs reconcile before reclaim-stale-active-branches in maintenance ordering", () => {

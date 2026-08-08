@@ -284,12 +284,24 @@ export class WorkflowTaskRuntime {
         : disposition === "manual-required"
           ? "manual-required"
           : "failed";
-    await this.deps.store.transitionWorkflowWorkItem(fencedWorkItem.id, terminalState, {
-      leaseOwner: null,
-      leaseExpiresAt: null,
-      lastError: reason ?? null,
-      ...(principalHold ? { blockedReason: reason } : {}),
-    });
+    /*
+     * Terminal bookkeeping races are expected when a scheduler or recovery
+     * worker already closed the same fence. Never turn that race into an
+     * unhandled rejection or hide the actual node outcome.
+     */
+    try {
+      await this.deps.store.transitionWorkflowWorkItem(fencedWorkItem.id, terminalState, {
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        lastError: reason ?? null,
+        ...(principalHold ? { blockedReason: reason } : {}),
+      });
+    } catch (err) {
+      schedulerLog.warn(
+        `[workflow-task-runtime] could not close work item ${fencedWorkItem.id} (${terminalState}): `
+        + `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     this.emit("terminal", workItem.taskId, `work-item:${principalHold ? "held" : disposition}`);
     return {
       disposition,

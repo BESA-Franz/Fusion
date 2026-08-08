@@ -17,6 +17,7 @@ import {
   pgSchema,
   text,
   integer,
+  bigint,
   jsonb,
   primaryKey,
   foreignKey,
@@ -66,6 +67,8 @@ export const nodes = centralSchema.table("nodes", {
   pluginVersions: jsonb("plugin_versions"),
   dockerConfig: jsonb("docker_config"),
   maxConcurrent: integer("max_concurrent").notNull().default(2),
+  // FNXC:NodeRuntimeLease 2026-08-05-02:53: Runtime fencing must survive normal node metadata writes; updated_at is observability metadata, not an ownership token.
+  runtimeLeaseGeneration: bigint("runtime_lease_generation", { mode: "number" }).notNull().default(sql`0`),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (t) => [

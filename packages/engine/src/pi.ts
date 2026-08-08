@@ -2522,8 +2522,16 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
   /*
   FNXC:MergeQueue 2026-07-15-11:08:
   Also skip host extensions for sessionPurpose "merger". Merge agents only need coding builtins (git/bash); host fn_* tools open a second store and can wedge the merge on hung fn_task_show. Engine-owned customTools (if ever supplied) still pass through.
+
+  FNXC:ExecutorProjectScope 2026-08-01-15:06:
+  Task-bound executor sessions receive engine-owned tools backed by the exact
+  project TaskStore. Loading the CLI host extension as well can cold-boot a
+  second store from the node-local worktree path; centrally mapped projects use
+  a different path per node, so that store can bind the wrong RLS partition and
+  report the executing task as missing. Keep executor sessions on their owning
+  engine tools just like merger sessions.
   */
-  const skipHostExtensions = isReadonly || options.sessionPurpose === "merger";
+  const skipHostExtensions = isReadonly || options.sessionPurpose === "merger" || options.sessionPurpose === "executor";
   const effectiveExtensionPaths = skipHostExtensions ? [] : hostExtensionPaths;
   if (skipHostExtensions && hostExtensionPaths.length > 0) {
     /*

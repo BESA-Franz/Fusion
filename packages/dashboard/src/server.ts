@@ -224,6 +224,14 @@ export async function resolveScopedStore(
 }
 
 export interface ServerOptions {
+  /** Exact registry identity of this shared-database server process. */
+  processNodeId?: string;
+  /** Fences shutdown so an older rolling-restart process cannot mark a newer process offline. */
+  nodeRuntimeLease?: import("@fusion/core").NodeRuntimeLease;
+  /** Late-bound lease for servers that only know they are online after listen succeeds. */
+  getNodeRuntimeLease?: () => import("@fusion/core").NodeRuntimeLease | undefined;
+  /** Registry-local node that owns tasks without an explicit/default route. */
+  registryLocalNodeId?: string;
   /** Optional ProjectEngine — when provided, subsystems (onMerge, automationStore,
    *  missionAutopilot, missionExecutionLoop, heartbeatMonitor) are derived from it.
    *  Explicit options still override engine-derived values.
@@ -2908,7 +2916,10 @@ export function setupBadgeWebSocket(
     */
     try {
       options?.centralCore?.stopDiscovery();
-      await options?.centralCore?.markLocalNodeOffline();
+      const nodeRuntimeLease = options?.nodeRuntimeLease ?? options?.getNodeRuntimeLease?.();
+      if (options?.centralCore && nodeRuntimeLease) {
+        await options.centralCore.releaseNodeRuntimeLease(nodeRuntimeLease);
+      }
     } catch (error) {
       options?.runtimeLogger?.warn("Failed to mark the dashboard node offline during shutdown", {
         ...normalizeErrorForLog(error),

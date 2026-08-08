@@ -1,5 +1,5 @@
 import type { EventEmitter } from "node:events";
-import type { TaskStore, Task, IsolationMode, ProjectSettings, GithubIssueAction, MigrationProgressEvent } from "@fusion/core";
+import type { TaskStore, Task, TaskMoveLanes, IsolationMode, ProjectSettings, GithubIssueAction, MigrationProgressEvent } from "@fusion/core";
 import type { Scheduler } from "../scheduler.js";
 
 /**
@@ -35,6 +35,8 @@ export interface RuntimeMetrics {
 export interface ProjectRuntimeConfig {
   /** Unique project ID (e.g., "proj_abc123") */
   projectId: string;
+  /** Exact registry identity of the process that owns this runtime. */
+  processNodeId?: string;
   /** Absolute path to the project working directory */
   workingDirectory: string;
   /** Execution isolation mode */
@@ -87,7 +89,7 @@ export interface ProjectRuntimeEvents {
   /** Emitted when a task is created in the project */
   "task:created": [task: Task];
   /** Emitted when a task is moved between columns */
-  "task:moved": [data: { task: Task; from: string; to: string }];
+  "task:moved": [data: { task: Task; from: string; to: string; lanes?: TaskMoveLanes }];
   /** Emitted when a task is updated */
   "task:updated": [task: Task];
   /** Emitted when a task is deleted */

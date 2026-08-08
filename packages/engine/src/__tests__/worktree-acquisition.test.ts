@@ -368,7 +368,7 @@ describe("acquireTaskWorktree", () => {
       isResume: false,
     });
     expect(result.worktreePath).not.toBe(rootDir);
-    expect(result.worktreePath).toContain(`${join(rootDir, ".worktrees")}/`);
+    expect(result.worktreePath).toContain(join(rootDir, ".worktrees"));
     expect(auditGit).toHaveBeenCalledWith(expect.objectContaining({
       type: "worktree:incomplete-detected",
       target: rootDir,
@@ -417,7 +417,7 @@ describe("acquireTaskWorktree", () => {
     });
 
     expect(result).toMatchObject({ worktreePath: freshPath, source: "fresh", isResume: false });
-    expect(createWorktree).toHaveBeenCalledWith("fusion/fn-1", expect.stringContaining(`${join(rootDir, ".worktrees")}/`), "FN-1", "main", false);
+    expect(createWorktree).toHaveBeenCalledWith("fusion/fn-1", expect.stringContaining(join(rootDir, ".worktrees")), "FN-1", "main", false);
     expect(auditGit).toHaveBeenCalledWith(expect.objectContaining({
       type: "worktree:incomplete-detected",
       target: rootDir,

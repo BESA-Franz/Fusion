@@ -52,6 +52,33 @@ function executeIr(): WorkflowIr {
   } as WorkflowIr;
 }
 
+function foreachIr(): WorkflowIr {
+  return {
+    version: "v2",
+    name: "foreach then merge",
+    columns: [
+      { id: "in-progress", name: "In progress", traits: [] },
+      { id: "in-review", name: "In review", traits: [{ trait: "merge" }, { trait: "merge-blocker" }] },
+    ],
+    nodes: [
+      {
+        id: "steps",
+        kind: "foreach",
+        column: "in-progress",
+        config: {
+          source: "task-steps",
+          template: {
+            nodes: [{ id: "step-execute", kind: "prompt", config: { seam: "step-execute" } }],
+            edges: [],
+          },
+        },
+      },
+      { id: "merge", kind: "merge-gate", column: "in-review" },
+    ],
+    edges: [{ from: "steps", to: "merge", condition: "success" }],
+  } as WorkflowIr;
+}
+
 function makeExecutor(opts: {
   selection?: { workflowId: string; stepIds: string[] };
   ir?: WorkflowIr;
@@ -65,6 +92,7 @@ function makeExecutor(opts: {
     status: "passed";
     completedAt: string;
   }>;
+  noCommitsExpected?: boolean;
 }) {
   const store = createMockStore() as unknown as Record<string, unknown>;
   const liveTask = {
@@ -76,6 +104,7 @@ function makeExecutor(opts: {
     steps: opts.steps ?? [],
     workflowStepResults: opts.workflowStepResults ?? [],
     currentStep: 0,
+    noCommitsExpected: opts.noCommitsExpected,
     log: [],
     prompt: "# t",
     createdAt: new Date().toISOString(),
@@ -178,5 +207,65 @@ describe("U5a — IR-driven merge boundary (scenario 1)", () => {
       undefined,
     );
     expect(store.moveTask).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:BesaNoCommitMergeBoundary 2026-08-04-23:48:
+  Explicit no-commit tasks may cross a foreach merge boundary without optional node results only when the existing checklist is fully terminal and foreach coverage is complete. Incomplete checklist evidence remains fail-closed.
+  */
+  it("allows an explicit no-commit task with terminal foreach coverage and no optional node results to reach merge", async () => {
+    const terminalSteps = [
+      { id: "0", title: "Inspect", status: "done" as const },
+      { id: "1", title: "Report", status: "done" as const },
+    ];
+    const { executor, store, liveTask } = makeExecutor({
+      selection: { workflowId: "custom:foreach", stepIds: [] },
+      ir: foreachIr(),
+      taskColumn: "in-progress",
+      steps: terminalSteps,
+      workflowStepResults: [],
+      noCommitsExpected: true,
+    });
+
+    await executor.ensureWorkflowMergeBoundaryTask(
+      liveTask,
+      { reason: "workflow-merge-boundary", nodeId: "merge", workflowId: "custom:foreach", runId: "r-no-commit" },
+    );
+
+    expect(store.moveTask).toHaveBeenCalledWith("FN-B1", "in-review", expect.anything());
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-B1",
+      "Workflow merge boundary accepted explicit no-commit completion with terminal foreach coverage",
+      undefined,
+      undefined,
+    );
+  });
+
+  it("does not let the no-commit exemption bypass incomplete foreach work", async () => {
+    const incompleteSteps = [
+      { id: "0", title: "Inspect", status: "done" as const },
+      { id: "1", title: "Report", status: "pending" as const },
+    ];
+    const { executor, store, liveTask } = makeExecutor({
+      selection: { workflowId: "custom:foreach", stepIds: [] },
+      ir: foreachIr(),
+      taskColumn: "in-progress",
+      steps: incompleteSteps,
+      workflowStepResults: [],
+      noCommitsExpected: true,
+    });
+
+    await executor.ensureWorkflowMergeBoundaryTask(
+      liveTask,
+      { reason: "workflow-merge-boundary", nodeId: "merge", workflowId: "custom:foreach", runId: "r-incomplete" },
+    );
+
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-B1",
+      expect.stringContaining("Workflow merge boundary blocked:"),
+      undefined,
+      undefined,
+    );
   });
 });

@@ -52,7 +52,7 @@ describe("refreshReusedWorktreeBase", () => {
     const c2 = git(worktree, "rev-parse HEAD");
     expect(result).toMatchObject({ kind: "rebased", executionSafe: true, baseSha: c1, observedHead: c2 });
     expect(c2).not.toBe(c1);
-    expect(git(worktree, `merge-base --is-ancestor ${c1} ${c2}; echo $?`)).toBe("0");
+    expect(() => git(worktree, `merge-base --is-ancestor ${JSON.stringify(c1)} ${JSON.stringify(c2)}`)).not.toThrow();
     expect(store.updateTask).toHaveBeenCalledWith("FN-1", { baseCommitSha: c1 });
   });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveEffectiveNode } from "../project/effective-node.js";
+import { canExecuteTaskOnNode, resolveAssignedNodeId, resolveEffectiveNode } from "../project/effective-node.js";
 
 describe("resolveEffectiveNode", () => {
   it.each([
@@ -62,5 +62,63 @@ describe("resolveEffectiveNode", () => {
       nodeId: "node-task",
       source: "task-override",
     });
+  });
+});
+
+describe("node-local task ownership", () => {
+  it("prefers the stamped effective node over task and project routing", () => {
+    const task = { effectiveNodeId: "node-effective", nodeId: "node-task" };
+    const settings = { defaultNodeId: "node-default" };
+
+    expect(resolveAssignedNodeId(task, settings)).toBe("node-effective");
+    expect(canExecuteTaskOnNode(task, "node-effective", settings)).toBe(true);
+    expect(canExecuteTaskOnNode(task, "node-task", settings)).toBe(false);
+  });
+
+  it("uses the project default and fails closed without a matching local identity", () => {
+    const task = { effectiveNodeId: undefined, nodeId: undefined };
+    const settings = { defaultNodeId: "node-default" };
+
+    expect(canExecuteTaskOnNode(task, undefined, settings)).toBe(false);
+    expect(canExecuteTaskOnNode(task, "node-other", settings)).toBe(false);
+    expect(canExecuteTaskOnNode(task, "node-default", settings)).toBe(true);
+  });
+
+  it("treats a persisted local route as registry-local without legacy fallback", () => {
+    const task = {
+      effectiveNodeId: null as unknown as string,
+      effectiveNodeSource: "local" as const,
+      nodeId: "node-stale-override",
+    };
+    const changedSettings = { defaultNodeId: "node-new-default" };
+
+    expect(canExecuteTaskOnNode(task, "node-registry-local", changedSettings, "node-registry-local")).toBe(true);
+    expect(canExecuteTaskOnNode(task, "node-stale-override", changedSettings, "node-registry-local")).toBe(false);
+    expect(canExecuteTaskOnNode(task, "node-new-default", changedSettings, "node-registry-local")).toBe(false);
+  });
+
+  it.each([
+    ["triage", ["node-process", { defaultNodeId: "node-changed-default" }]],
+    ["archive disposer", ["node-process"]],
+  ] as const)("treats a persisted local route as executable in the %s caller shape", (_shape, args) => {
+    const task = {
+      effectiveNodeId: undefined,
+      effectiveNodeSource: "local" as const,
+      nodeId: "node-stale-override",
+    };
+
+    expect(canExecuteTaskOnNode(task, ...args)).toBe(true);
+  });
+
+  it("fails closed when a persisted route cannot be resolved", () => {
+    expect(canExecuteTaskOnNode({
+      effectiveNodeId: undefined,
+      effectiveNodeSource: "project-default",
+      nodeId: "node-stale-override",
+    }, "node-stale-override", { defaultNodeId: "node-new-default" })).toBe(false);
+  });
+
+  it("keeps an unassigned task executable for the local single-node runtime", () => {
+    expect(canExecuteTaskOnNode({ effectiveNodeId: undefined, effectiveNodeSource: undefined, nodeId: undefined }, undefined)).toBe(true);
   });
 });

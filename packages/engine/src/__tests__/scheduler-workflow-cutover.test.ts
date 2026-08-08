@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeTransitionRejection, TransitionRejectionError, buildBootstrapPrompt, type Task, type TaskStore, type WorkflowIr } from "@fusion/core";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { Scheduler } from "../scheduler.js";
 import { AgentSemaphore } from "../concurrency/concurrency.js";
 
@@ -75,9 +76,32 @@ function storeWith(
       if (current) current.column = column;
       return current as Task;
     }),
-    moveTaskIf: vi.fn(async (id: string, column: Task["column"], predicate: (live: Task) => boolean | Promise<boolean>) => {
+    moveTaskIf: vi.fn(async (
+      id: string,
+      column: Task["column"],
+      predicate: (live: Task) => boolean | Promise<boolean>,
+      options?: {
+        dispatchRoute?: {
+          effectiveNodeId: string | null;
+          effectiveNodeSource: NonNullable<Task["effectiveNodeSource"]>;
+        };
+        prepareLockedMove?: (live: Task) => Promise<{
+          dispatchRoute?: {
+            effectiveNodeId: string | null;
+            effectiveNodeSource: NonNullable<Task["effectiveNodeSource"]>;
+          };
+        } | null>;
+      },
+    ) => {
       const current = byId.get(id)!;
       if (!await predicate(current) || current.column === column) return { task: current, moved: false };
+      const prepared = options?.prepareLockedMove ? await options.prepareLockedMove(current) : undefined;
+      if (options?.prepareLockedMove && prepared === null) return { task: current, moved: false };
+      const route = prepared?.dispatchRoute ?? options?.dispatchRoute;
+      if (route) {
+        current.effectiveNodeId = route.effectiveNodeId ?? undefined;
+        current.effectiveNodeSource = route.effectiveNodeSource;
+      }
       current.column = column;
       return { task: current, moved: true };
     }),
@@ -212,14 +236,22 @@ describe("Scheduler workflow cutover", () => {
     expect(store.moveTaskIf).toHaveBeenCalledWith("FN-100", "in-progress", expect.any(Function), expect.objectContaining({
       moveSource: "scheduler",
       allocateWorktree: expect.any(Function),
+      dispatchRoute: {
+        effectiveNodeId: null,
+        effectiveNodeSource: "local",
+      },
     }));
-    expect(store.updateTask).toHaveBeenCalledWith("FN-100", expect.objectContaining({
+    const dispatchPatch = vi.mocked(store.updateTask).mock.calls
+      .filter(([id]) => id === "FN-100")
+      .map(([, patch]) => patch)
+      .find((patch) => patch.mergeRetries === 0);
+    expect(dispatchPatch).toEqual(expect.objectContaining({
       status: null,
       blockedBy: null,
       mergeRetries: 0,
-      effectiveNodeId: null,
-      effectiveNodeSource: "local",
     }));
+    expect(dispatchPatch).not.toHaveProperty("effectiveNodeId");
+    expect(dispatchPatch).not.toHaveProperty("effectiveNodeSource");
     expect(onSchedule).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-100", column: "in-progress" }));
   });
 
@@ -267,6 +299,52 @@ describe("Scheduler workflow cutover", () => {
     await scheduler.schedule();
 
     expect(store.moveTaskIf).toHaveBeenCalled();
+    expect(ready.column).toBe("todo");
+    expect(onSchedule).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch when task node ownership changes at the locked move boundary", async () => {
+    const ready = task({ id: "FN-NODE-RACE" });
+    const store = storeWith([ready]);
+    const originalMove = vi.mocked(store.moveTaskIf).getMockImplementation()!;
+    vi.mocked(store.moveTaskIf).mockImplementation(async (...args) => {
+      ready.nodeId = "node-pc2";
+      ready.updatedAt = "2026-06-23T00:00:01.000Z";
+      return originalMove(...args);
+    });
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, {
+      localNodeId: "node-vps",
+      registryLocalNodeId: "node-vps",
+      onSchedule,
+    });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(ready.column).toBe("todo");
+    expect(onSchedule).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch when the project default route changes at the locked move boundary", async () => {
+    const ready = task({ id: "FN-DEFAULT-NODE-RACE" });
+    const mutableSettings: Record<string, unknown> = {};
+    const store = storeWith([ready], mutableSettings);
+    const originalMove = vi.mocked(store.moveTaskIf).getMockImplementation()!;
+    vi.mocked(store.moveTaskIf).mockImplementation(async (...args) => {
+      mutableSettings.defaultNodeId = "node-pc2";
+      return originalMove(...args);
+    });
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, {
+      localNodeId: "node-vps",
+      registryLocalNodeId: "node-vps",
+      onSchedule,
+    });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
     expect(ready.column).toBe("todo");
     expect(onSchedule).not.toHaveBeenCalled();
   });
@@ -329,7 +407,7 @@ describe("Scheduler workflow cutover", () => {
     const moveOptions = vi.mocked(store.moveTaskIf).mock.calls[0]?.[3] as {
       allocateWorktree?: (reservedNames: Set<string>) => string | null;
     };
-    expect(moveOptions.allocateWorktree?.(new Set())).toBe("/tmp/project/custom-worktrees/fn-102");
+    expect(moveOptions.allocateWorktree?.(new Set())).toBe(resolve("/tmp/project", "custom-worktrees", "fn-102"));
   });
 
   it("continues executor handoff for all released tasks when post-release metadata or logs fail", async () => {
@@ -357,23 +435,56 @@ describe("Scheduler workflow cutover", () => {
     expect(onSchedule).toHaveBeenCalledWith(expect.objectContaining({
       id: "FN-201",
       column: "in-progress",
-      status: undefined,
+      // The metadata write failed, so handoff receives the authoritative moved
+      // row rather than a synthetic task that pretends the queued flag cleared.
+      status: "queued",
       effectiveNodeSource: "local",
     }));
     expect(onSchedule).toHaveBeenCalledWith(expect.objectContaining({
       id: "FN-202",
       column: "in-progress",
-      status: undefined,
-      effectiveNodeSource: "local",
-    }));
-    expect(store.updateTask).toHaveBeenCalledWith("FN-202", expect.objectContaining({
       status: null,
       effectiveNodeSource: "local",
     }));
+    const secondDispatchPatch = vi.mocked(store.updateTask).mock.calls
+      .filter(([id]) => id === "FN-202")
+      .map(([, patch]) => patch)
+      .find((patch) => patch.status === null);
+    expect(secondDispatchPatch).toEqual(expect.objectContaining({ status: null }));
+    expect(secondDispatchPatch).not.toHaveProperty("effectiveNodeId");
+    expect(secondDispatchPatch).not.toHaveProperty("effectiveNodeSource");
     expect(store.logEntry).toHaveBeenCalledWith(
       "FN-202",
       "Node routing resolved: local (source: local)",
     );
+  });
+
+  it("skips post-release handoff when the task is rerouted before metadata commit", async () => {
+    const ready = task({ id: "FN-NODE-SWITCH", nodeId: "node-vps" });
+    const store = storeWith([ready], { maxConcurrent: 4, maxWorktrees: 4 });
+    const moveImpl = vi.mocked(store.moveTaskIf).getMockImplementation()!;
+    vi.mocked(store.moveTaskIf).mockImplementation(async (...args) => {
+      const result = await moveImpl(...args);
+      if (result.moved) {
+        // The durable route written by moveTaskIf is authoritative once the
+        // task leaves the queue; emulate a concurrent reroute by changing that
+        // field, not only the legacy nodeId fallback.
+        ready.effectiveNodeId = "node-pc2";
+        ready.effectiveNodeSource = "task-override";
+      }
+      return result;
+    });
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, {
+      onSchedule,
+      localNodeId: "node-vps",
+      registryLocalNodeId: "node-vps",
+    });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(onSchedule).not.toHaveBeenCalled();
   });
 
   it("keeps dependency-blocked todo tasks queued on the workflow sweep path", async () => {

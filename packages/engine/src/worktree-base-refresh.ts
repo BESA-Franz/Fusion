@@ -42,7 +42,12 @@ export interface RefreshReusedWorktreeBaseInput {
 }
 
 function quote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  // `exec` uses the platform shell. POSIX single-quoted arguments are
+  // treated as literal characters by Windows `cmd.exe`, which made refs
+  // such as `'main^{commit}'` unresolvable on Windows workers. JSON string
+  // quoting produces double-quoted arguments accepted by both shells and
+  // escapes embedded quotes/backslashes for the shell invocation.
+  return JSON.stringify(value);
 }
 
 async function git(cwd: string, command: string): Promise<string> {

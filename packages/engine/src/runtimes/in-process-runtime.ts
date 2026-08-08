@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import type {
   TaskStore,
   Task,
+  TaskMoveLanes,
   CentralCore,
   AgentStore,
   HeartbeatInvocationSource,
@@ -25,6 +26,8 @@ import {
   isEphemeralAgent,
   isPlanReviewSatisfied,
   isTaskBlockedOnApproval,
+  resolveLocalNodeId,
+  resolveProcessNodeId,
   resolveWorkflowIrForTask,
   resolveTaskLifecycleColumns,
 } from "@fusion/core";
@@ -58,6 +61,7 @@ import { createFusionAuthStorage } from "../auth/auth-storage.js";
 import { SelfHealingManager, VALIDATOR_RUN_STALE_MAX_AGE_MS } from "../self-healing.js";
 import { RestartRecoveryCoordinator } from "../healing/restart-recovery-coordinator.js";
 import { MeshLeaseManager } from "../project/mesh-lease-manager.js";
+import { canExecuteTaskOnNode } from "../project/effective-node.js";
 import { PluginRunner } from "../plugins/plugin-runner.js";
 import { MissionAutopilot } from "../missions/mission-autopilot.js";
 import { MissionExecutionLoop } from "../missions/mission-execution-loop.js";
@@ -478,7 +482,9 @@ export async function admitPlanningContinuation(input: {
   projectId: string;
   task: Task;
   item: WorkflowWorkItem;
-  dispatch: () => Promise<void>;
+  processNodeId?: string;
+  registryLocalNodeId?: string;
+  dispatch: (task: Task) => Promise<void>;
 }): Promise<boolean> {
   const runKey = `${input.projectId}:${input.task.id}`;
   // A task owns one top-level slot regardless of how many durable continuation
@@ -486,6 +492,21 @@ export async function admitPlanningContinuation(input: {
   // would attach two releasers to one task-keyed coordinator reservation.
   if (planningContinuationRuns.has(runKey)) return true;
   const settings = await input.store.getSettings();
+  const readOwnedTask = async (): Promise<Task | null> => {
+    if (!input.processNodeId) return input.task;
+    const liveTask = await input.store.getTask(input.task.id).catch(() => null);
+    if (!liveTask) return null;
+    const liveSettings = await input.store.getSettings().catch(() => null);
+    if (!liveSettings || !canExecuteTaskOnNode(
+      liveTask,
+      input.processNodeId,
+      liveSettings,
+      input.registryLocalNodeId,
+    )) return null;
+    return liveTask;
+  };
+  const initialOwnedTask = await readOwnedTask();
+  if (!initialOwnedTask) return true;
   let selected = false;
   let duplicateHandled = false;
   const loadClaimSnapshot = async (): Promise<{ count: number; ids: string[] }> => {
@@ -505,10 +526,10 @@ export async function admitPlanningContinuation(input: {
   // Resuming another node of an already-live task is a same-slot handoff, not a
   // new admission. Check only this fully hydrated task here; the project-wide
   // snapshot belongs inside the serialized coordinator drain below.
-  const taskAlreadyActive = (await persistedTopLevelAgentTaskIdsFromStore(input.store, [input.task]))
+  const taskAlreadyActive = (await persistedTopLevelAgentTaskIdsFromStore(input.store, [initialOwnedTask]))
     .includes(input.task.id);
   if (taskAlreadyActive) {
-    void input.dispatch().catch(() => {});
+    void input.dispatch(initialOwnedTask).catch(() => {});
     return true;
   }
   // This snapshot is intentionally created lazily inside the coordinator drain.
@@ -540,6 +561,11 @@ export async function admitPlanningContinuation(input: {
           // cannot release capacity owned by that still-running workflow.
           return true;
         }
+        const lockedOwnedTask = await readOwnedTask();
+        if (!lockedOwnedTask) {
+          duplicateHandled = true;
+          return true;
+        }
         selected = true;
         planningContinuationRuns.add(runKey);
         // Keep the coordinator reservation for the whole resumed run. The task
@@ -547,7 +573,7 @@ export async function admitPlanningContinuation(input: {
         // pending lease; releasing at executor entry recreates the over-cap gap.
         let run: Promise<void>;
         try {
-          run = input.dispatch();
+          run = input.dispatch(lockedOwnedTask);
         } catch (error) {
           planningContinuationRuns.delete(runKey);
           throw error;
@@ -597,6 +623,8 @@ export function createPlanningContinuationDispatcher(input: {
   store: TaskStore;
   projectId: string;
   execute: (task: Task) => Promise<void>;
+  processNodeId?: string;
+  registryLocalNodeId?: string;
   onError?: (task: Task, item: WorkflowWorkItem, error: unknown) => void;
 }): (task: Task, item: WorkflowWorkItem) => Promise<boolean> {
   return (task, item) => admitPlanningContinuation({
@@ -604,9 +632,11 @@ export function createPlanningContinuationDispatcher(input: {
     projectId: input.projectId,
     task,
     item,
-    dispatch: async () => {
-      await input.execute(task).catch((error) => {
-        input.onError?.(task, item, error);
+    processNodeId: input.processNodeId,
+    registryLocalNodeId: input.registryLocalNodeId,
+    dispatch: async (liveTask) => {
+      await input.execute(liveTask).catch((error) => {
+        input.onError?.(liveTask, item, error);
       });
     },
   });
@@ -784,8 +814,9 @@ export class InProcessRuntime
   private usageLimitPauser?: UsageLimitPauser;
   /** One runtime-owned cooldown map keeps executor and recovery paths coherent. */
   private credentialRotator?: CredentialInstanceRotator;
-  /** FNXC:PlanReviewLease 2026-07-26-20:42: cluster node id stamped onto review-gate leases; undefined until start() resolves it, or if resolution fails. */
+  /** FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09: process identity shared by dispatch, claims, leases, and recovery. */
   private localNodeId?: string;
+  private registryLocalNodeId?: string;
   private selfHealingManager?: SelfHealingManager;
   private leaseManager?: MeshLeaseManager;
   private leaseCentralClaimStore?: AsyncCentralClaimStore;
@@ -971,6 +1002,22 @@ export class InProcessRuntime
         }
       }
 
+      /*
+      FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
+      Resolve immediately after the shared backend is attached and before any
+      local store, plugin, or worktree side effect. A configured but unknown
+      process node is a fatal startup error.
+      */
+      const registeredNodes = await this.centralCore.listNodes();
+      const nodeInventory = registeredNodes.map((node) => ({ id: node.id, type: node.type }));
+      const registryLocalNodeId = resolveLocalNodeId(nodeInventory);
+      const localNodeId = resolveProcessNodeId(
+        nodeInventory,
+        this.config.processNodeId ?? process.env.FUSION_NODE_ID,
+      );
+      this.localNodeId = localNodeId;
+      this.registryLocalNodeId = registryLocalNodeId;
+
       this.messageStore = new MessageStoreClass(null, { asyncLayer: messageLayer });
 
       /*
@@ -1099,6 +1146,7 @@ export class InProcessRuntime
           taskStore: this.taskStore,
           claimStore: this.leaseCentralClaimStore,
           projectId: this.config.projectId,
+          nodeId: localNodeId,
           ...(agentLayer ? { asyncLayer: agentLayer } : {}),
         });
         await agentStoreForReflection.init();
@@ -1202,6 +1250,7 @@ export class InProcessRuntime
       this.leaseManager = new MeshLeaseManager({
         taskStore: this.taskStore,
         agentStore: this.agentStore,
+        localNodeId,
         getHandoffPolicy: () => this.taskStore.getSettings().then((settings) => settings.owningNodeHandoffPolicy),
         getExecutingTaskIds: () => this.executor?.getExecutingTaskIds() ?? new Set<string>(),
         centralClaimStore: this.leaseCentralClaimStore,
@@ -1226,6 +1275,8 @@ export class InProcessRuntime
         missionAutopilot,
         missionExecutionLoop,
         leaseManager: this.leaseManager,
+        localNodeId,
+        registryLocalNodeId,
         onTaskFailed: (taskId) => {
           if (missionAutopilot) {
             void missionAutopilot.handleTaskFailure(taskId);
@@ -1353,6 +1404,7 @@ export class InProcessRuntime
       */
       const secretsStore = await this.taskStore.getSecretsStore();
       const executorOptions: TaskExecutorOptions = {
+        projectId: this.config.projectId,
         /*
         FNXC:PlanReviewLease 2026-07-26-21:12:
         Getter, not a value: `this.localNodeId` is resolved later in start() (it needs an async
@@ -1510,6 +1562,8 @@ export class InProcessRuntime
           credentialRotator: this.credentialRotator,
           secretsStore,
           snapshotManager: autoClaimSnapshotManager,
+          processNodeId: this.localNodeId,
+          registryLocalNodeId: this.registryLocalNodeId,
           onMissed: (agentId, reason) => {
             runtimeLog.warn(`Agent ${agentId} missed heartbeat: ${reason}`);
           },
@@ -1573,6 +1627,7 @@ export class InProcessRuntime
             // — an override/defer column agent must not heartbeat concurrently with a
             // column-bound session it runs but is not assigned to.
             isAgentEffectivelyExecuting: (agentId) => this.executor.isAgentEffectivelyExecuting(agentId),
+            processNodeId: this.localNodeId,
           },
         );
         this.triggerScheduler.start();
@@ -1584,7 +1639,11 @@ export class InProcessRuntime
         const isTickableHeartbeatState = (state: import("@fusion/core").AgentState) =>
           state === "active" || state === "running" || state === "idle";
         const isTimerManagedAgent = (agent: import("@fusion/core").Agent) =>
-          isHeartbeatEnabledAgent(agent) && isTickableHeartbeatState(agent.state);
+          isHeartbeatEnabledAgent(agent)
+          && isTickableHeartbeatState(agent.state)
+          && (typeof agent.runtimeConfig?.nodeId !== "string"
+            || !this.localNodeId
+            || agent.runtimeConfig.nodeId.trim() === this.localNodeId.trim());
 
 
         // Register existing non-ephemeral, heartbeat-enabled agents in tickable states.
@@ -1628,6 +1687,8 @@ export class InProcessRuntime
           // FNXC:NodeWorktreeIsolation 2026-07-25-22:10: planning acquires (or reuses) the task's own
           // worktree through the executor's acquisition path, so no lane runs in the shared checkout.
           acquirePlanningWorktree: (taskId) => this.executor.ensureTaskWorktreeForPlanning(taskId),
+          getLocalNodeId: () => this.localNodeId,
+          getRegistryLocalNodeId: () => registryLocalNodeId,
           onSpecifyStart: (t) => {
             this.recordActivity();
             /*
@@ -1711,26 +1772,10 @@ export class InProcessRuntime
         if (!chatLayer2) throw new Error("Self-healing ChatStore requires the project PostgreSQL AsyncDataLayer");
         this.chatStore ??= new ChatStore(chatLayer2);
       }
-      /*
-      FNXC:PlanReviewLease 2026-07-26-20:40:
-      Resolve this engine's cluster node id once at start so review-gate leases can be attributed.
-      Attribution is what lets self-healing tell "a lease my own dead process left behind" from "a
-      peer node's lease that is genuinely running" — the former is reclaimed immediately, the latter
-      keeps the 15-minute staleness floor. Fail-soft: on any error the id stays undefined, leases are
-      written unattributed, and floor-only semantics (the pre-existing behavior) apply.
-      */
-      let localNodeId: string | undefined;
-      try {
-        const registeredNodes = await this.centralCore.listNodes();
-        localNodeId = registeredNodes.find((node) => node.type === "local")?.id;
-      } catch (error) {
-        runtimeLog.warn(`Could not resolve local node id for review-gate lease attribution: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      this.localNodeId = localNodeId;
-
       this.selfHealingManager = new SelfHealingManager(this.taskStore, {
         rootDir: this.config.workingDirectory,
         localNodeId,
+        registryLocalNodeId,
         agentStore: this.agentStore,
         isWorktreeResumeReserved: this.cliAgentRuntime?.isWorktreeResumeReserved,
         recoverCompletedTask: (task) => this.executor.recoverCompletedTask(task),
@@ -2621,6 +2666,8 @@ export class InProcessRuntime
         dispatch: createPlanningContinuationDispatcher({
           store: this.taskStore,
           projectId: this.taskStore.getRootDir(),
+          processNodeId: this.localNodeId,
+          registryLocalNodeId: this.registryLocalNodeId,
           execute: (task) => this.executor.execute(task),
           onError: (_task, item, error) => {
             runtimeLog.error(`Workflow continuation ${item.id} failed:`, error);
@@ -2754,7 +2801,7 @@ export class InProcessRuntime
     });
 
     // Forward task:moved events
-    this.taskStore.on("task:moved", (data: { task: Task; from: string; to: string }) => {
+    this.taskStore.on("task:moved", (data: { task: Task; from: string; to: string; lanes?: TaskMoveLanes }) => {
       this.recordActivity();
       /*
       FNXC:TaskDetailPlannerChatRetention 2026-06-30-18:45:

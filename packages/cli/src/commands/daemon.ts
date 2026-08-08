@@ -26,6 +26,8 @@ import {
   reconcileClaudeCliPaths,
   registerBuiltInGrokProvider,
   registerBuiltInZaiProvider,
+  resolveLocalNodeId,
+  resolveProcessNodeId,
 } from "@fusion/core";
 import type { AutomationRunResult, ScheduledTask } from "@fusion/core";
 import { createServer, GitHubClient, createSkillsAdapter, getCliPackageVersion, getProjectSettingsPath, isUnresolvedCliPackageVersion, loadTlsCredentialsFromEnv, refreshAllCustomProviderModels, registerGithubTrackingHook } from "@fusion/dashboard";
@@ -281,12 +283,32 @@ export async function runDaemon(opts: DaemonOptions = {}) {
 
   // ── CentralCore: global coordination + ntfy project ID lookup ─────────
   let ntfyProjectId: string | undefined;
-  let sharedCentralCore: CentralCore | null = null;
+  const sharedCentralCore = new CentralCore();
+  /*
+  FNXC:DaemonCentralReadiness 2026-08-01-13:44:
+  PostgreSQL is the daemon's authoritative project and node store after the
+  final cutover. Never continue with a CentralCore whose initialization failed:
+  ProjectEngineManager and cwd registration both require it, and swallowing the
+  original connection error only turns it into a misleading "init() first"
+  failure. Let the supervisor retry the real startup failure instead.
+  */
   try {
-    sharedCentralCore = new CentralCore();
     await sharedCentralCore.init();
-  } catch {
-    // Central DB unavailable or project not registered — backward compatible
+  } catch (error) {
+    await migrationHoldingServer?.close().catch(() => undefined);
+    throw error;
+  }
+
+  let processNodeId: string;
+  let registryLocalNodeId: string;
+  try {
+    const nodes = await sharedCentralCore.listNodes();
+    processNodeId = resolveProcessNodeId(nodes, process.env.FUSION_NODE_ID);
+    registryLocalNodeId = resolveLocalNodeId(nodes.map((node) => ({ id: node.id, type: node.type })));
+  } catch (error) {
+    await migrationHoldingServer?.close().catch(() => undefined);
+    await sharedCentralCore.close().catch(() => undefined);
+    throw error;
   }
 
   // ── ProjectEngineManager: uniform engine lifecycle for all projects ──
@@ -333,24 +355,13 @@ export async function runDaemon(opts: DaemonOptions = {}) {
     }
   };
 
-  if (!sharedCentralCore) {
-    sharedCentralCore = new CentralCore();
-    try {
-      await sharedCentralCore.init();
-    } catch {
-      // Non-fatal — engine uses fallback defaults
-    }
-  }
-
-  if (sharedCentralCore) {
-    const registered = await ensureCwdProjectRegistered({
-      cwd,
-      central: sharedCentralCore,
-      logPrefix: "daemon",
-      autoRegister: !opts.noAutoRegister,
-    });
-    ntfyProjectId = registered?.id;
-  }
+  const registered = await ensureCwdProjectRegistered({
+    cwd,
+    central: sharedCentralCore,
+    logPrefix: "daemon",
+    autoRegister: !opts.noAutoRegister,
+  });
+  ntfyProjectId = registered?.id;
 
   try {
     registerGithubTrackingHook?.();
@@ -362,6 +373,7 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   const cliPackageVersion = isUnresolvedCliPackageVersion(resolvedCliPackageVersion) ? undefined : resolvedCliPackageVersion;
 
   const engineManager = new ProjectEngineManager(sharedCentralCore, {
+    processNodeId,
     onMigrationProgress: (event) => migrationHoldingServer?.setMigrationProgress(event),
     cliPackageVersion,
     getMergeStrategy,
@@ -381,7 +393,7 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   const hybridGate = await shouldUseHybridExecutor(sharedCentralCore);
   console.log(`[daemon] hybrid executor gate: enabled=${hybridGate.enabled} reason=${hybridGate.reason}`);
   if (hybridGate.enabled) {
-    hybridExecutor = new HybridExecutor(sharedCentralCore);
+    hybridExecutor = new HybridExecutor(sharedCentralCore, { processNodeId });
     await hybridExecutor.initialize();
   }
 
@@ -406,7 +418,7 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   // ── PeerExchangeService: gossip protocol for mesh peer discovery ──────
   let peerExchangeService: PeerExchangeService | null = null;
   if (sharedCentralCore) {
-    peerExchangeService = new PeerExchangeService(sharedCentralCore);
+    peerExchangeService = new PeerExchangeService(sharedCentralCore, { processNodeId });
     try {
       peerExchangeService.start();
     } catch (err) {
@@ -840,6 +852,8 @@ export async function runDaemon(opts: DaemonOptions = {}) {
     engine: primaryEngine,
     engineManager,
     centralCore: sharedCentralCore ?? undefined,
+    processNodeId,
+    registryLocalNodeId,
     onMerge: (taskId) => primaryEngine.onMerge(taskId),
     authStorage: dashboardAuthStorage,
     modelRegistry,
@@ -966,13 +980,10 @@ export async function runDaemon(opts: DaemonOptions = {}) {
       centralCore = null;
     }
   }
+  let nodeRuntimeLease: Awaited<ReturnType<CentralCore["acquireNodeRuntimeLease"]>> | null = null;
   try {
     if (centralCore) {
-      const nodes = await centralCore.listNodes();
-      const localNode = nodes.find((node) => node.type === "local");
-      if (localNode) {
-        await centralCore.updateNode(localNode.id, { status: "online" });
-      }
+      nodeRuntimeLease = await centralCore.acquireNodeRuntimeLease(processNodeId);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1019,9 +1030,9 @@ export async function runDaemon(opts: DaemonOptions = {}) {
     FNXC:PostgresResourceLifecycle 2026-07-14-21:48:
     CentralCore adopts an engine TaskStore layer but retains ownership of its original embedded backend lifecycle. Persist the local-node offline state while the adopted pool is live, then stop engine-owned stores, and only then close CentralCore so its retained backend lifecycle cannot terminate PostgreSQL under a live engine.
     */
-    if (centralCore) {
+    if (centralCore && nodeRuntimeLease) {
       try {
-        await centralCore.markLocalNodeOffline();
+        await centralCore.releaseNodeRuntimeLease(nodeRuntimeLease);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn(`[daemon] Failed to set local node offline: ${message}`);

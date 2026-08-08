@@ -115,6 +115,23 @@ describe("resolveAgentPrompt", () => {
     expect(result).not.toContain("prior-review ledger as a decision primer");
   });
 
+  it("keeps lifecycle-ephemeral worktree leaf names out of plans and plan-review blockers", () => {
+    const triage = resolveAgentPrompt("triage");
+    const reviewer = resolveAgentPrompt("reviewer");
+
+    expect(triage).toContain("Never hard-code an ephemeral worktree leaf name");
+    expect(triage).toContain("current `task.worktree`");
+    expect(reviewer).toContain("worktree leaf names are lifecycle-ephemeral");
+    expect(reviewer).toContain("do not issue REVISE merely because a previously observed leaf differs");
+  });
+
+  it("honors an explicit operator keep decision during triage duplicate checks", () => {
+    const triage = resolveAgentPrompt("triage");
+
+    expect(triage).toContain("Do not emit a duplicate marker when the current task or operator explicitly records");
+    expect(triage).toContain("`nearDuplicateDismissed: true`");
+  });
+
   it("returns the correct built-in prompt for merger when no config provided", () => {
     const result = resolveAgentPrompt("merger");
     expect(result).toBeTruthy();

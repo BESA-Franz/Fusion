@@ -5,6 +5,15 @@ const APP_DIR = resolve(__dirname, "..");
 const COMPONENTS_DIR = join(APP_DIR, "components");
 
 /**
+ * Keep CSS string assertions independent of the checkout's platform line
+ * endings. Git converts text files to CRLF on the Windows development hosts,
+ * while the same fixtures are stored with LF and run on Linux in CI.
+ */
+function readCssFile(path: string): string {
+  return readFileSync(path, "utf-8").replace(/\r\n/g, "\n");
+}
+
+/**
  * FNXC:DashboardTests 2026-07-26-06:10:
  * Dashboard test source reads MUST resolve from this module-relative app directory. Cwd-relative reads hard-crash an entire Vitest suite at import time under root-anchored invocations with ENOENT for paths such as app/components/QuickEntryBox.css.
  */
@@ -23,13 +32,13 @@ let baseOnlyCached: string | null = null;
 
 export function loadStylesCss(): string {
   if (stylesCached !== null) return stylesCached;
-  stylesCached = readFileSync(join(APP_DIR, "styles.css"), "utf-8");
+  stylesCached = readCssFile(join(APP_DIR, "styles.css"));
   return stylesCached;
 }
 
 export function loadThemeDataCss(): string {
   if (themeDataCached !== null) return themeDataCached;
-  themeDataCached = readFileSync(join(APP_DIR, "public", "theme-data.css"), "utf-8");
+  themeDataCached = readCssFile(join(APP_DIR, "public", "theme-data.css"));
   return themeDataCached;
 }
 
@@ -47,7 +56,7 @@ export function loadAllAppCss(): string {
     .map((e) => e.name)
     .sort();
   for (const name of entries) {
-    parts.push(readFileSync(join(COMPONENTS_DIR, name), "utf-8"));
+    parts.push(readCssFile(join(COMPONENTS_DIR, name)));
   }
   cached = parts.join("\n");
   return cached;

@@ -90,7 +90,8 @@ const unwired = findUnwiredCallSites(files, accepting);
 
 const counts = {};
 for (const hit of unwired) {
-  const key = relative(ROOT, hit.file);
+  // Keep the versioned baseline portable when the gate is run on Windows.
+  const key = relative(ROOT, hit.file).replaceAll("\\", "/");
   counts[key] = (counts[key] ?? 0) + 1;
 }
 

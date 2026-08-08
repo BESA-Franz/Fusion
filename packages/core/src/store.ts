@@ -60,7 +60,10 @@ import { GlobalSettingsStore } from "./config/global-settings.js";
 import { Database } from "./db/db.js";
 import { ArchiveDatabase } from "./db/archive-db.js";
 import type { AsyncDataLayer, DbTransaction } from "./postgres/data-layer.js";
-import { withPlanningLifecycleAdvisoryLock } from "./postgres/advisory-locks.js";
+import {
+  withPlanningLifecycleAdvisoryLock,
+  withTaskMutationAdvisoryLock,
+} from "./postgres/advisory-locks.js";
 import { MissionStore } from "./missions/mission-store.js";
 import { AsyncMissionStore } from "./async-stores/async-mission-store.js";
 import { AsyncIdeationStore } from "./async-stores/async-ideation-store.js";
@@ -267,7 +270,25 @@ export interface MoveTaskOptions {
    * Never SETS a pause — only prevents the reopen block from clearing one.
    */
   preservePause?: boolean;
+  /**
+   * FNXC:SharedDatabaseNodeIdentity 2026-08-05-00:09:
+   * Scheduler ownership stamped under the same task lock and persistence
+   * transaction as the column move, before task:moved becomes observable.
+   */
+  dispatchRoute?: {
+    effectiveNodeId: string | null;
+    effectiveNodeSource: Task["effectiveNodeSource"];
+  };
   allocateWorktree?: (reservedNames: Set<string>) => string | null;
+  /**
+   * Recomputes route and allocator from the authoritative task row while the
+   * PostgreSQL advisory lock is held. Returning null aborts the conditional
+   * move without publishing a stale route.
+   */
+  prepareLockedMove?: (live: Task) => Promise<{
+    dispatchRoute?: MoveTaskOptions["dispatchRoute"];
+    allocateWorktree?: MoveTaskOptions["allocateWorktree"];
+  } | null>;
   moveSource?: "user" | "engine" | "scheduler";
   workflowMoveActor?: WorkflowMovePolicyInput["actor"];
   workflowMoveSource?: string;
@@ -292,6 +313,10 @@ export interface MoveTaskInternalOptions {
     toColumn: string;
     workflowSignature: string;
   };
+  expectedTaskVersion?: Pick<
+    Task,
+    "column" | "updatedAt" | "nodeId" | "checkedOutBy" | "checkoutNodeId" | "checkoutLeaseEpoch"
+  >;
 }
 
 export const WORKFLOW_MOVE_POLICY_TIMEOUT_MS = 5000;
@@ -851,6 +876,39 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       if (planningLifecycleLocks.get(key) === current) planningLifecycleLocks.delete(key);
     }
   }
+
+  /**
+   * FNXC:SharedDatabaseNodeOwnership 2026-08-05-01:57:
+   * A short ownership predicate/write must also exclude moveTask transactions.
+   * Keep this distinct from the lifecycle lock: finalization legitimately calls
+   * moveTask while holding the lifecycle lock and must never hold this lock then.
+   */
+  public async withTaskMutationLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const backend = this.asyncLayer?.backend;
+    if (this.asyncLayer && backend) {
+      return await withTaskMutationAdvisoryLock({
+        projectId: this.asyncLayer.projectId ?? this.rootDir,
+        taskId: id,
+        directSessionUrl: backend.directSessionUrl ?? null,
+        provenance: backend.directSessionProvenance ?? null,
+        runtimeUrl: backend.runtimeUrl,
+        migrationUrl: backend.migrationUrl,
+      }, fn);
+    }
+    const projectId = this.asyncLayer?.projectId ?? this.rootDir;
+    const key = `task-mutation:${projectId}:${id}`;
+    const prior = planningLifecycleLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    planningLifecycleLocks.set(key, current);
+    await prior;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (planningLifecycleLocks.get(key) === current) planningLifecycleLocks.delete(key);
+    }
+  }
   public getTaskIdFromDir(dir: string): string {
     return getTaskIdFromDirImpl(this, dir);
   }
@@ -1355,7 +1413,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async tryClaimCheckout( taskId: string, claim: { agentId: string; nodeId: string; runId: string | null; leaseEpoch: number; renewedAt: string; }, precondition: CheckoutClaimPrecondition, ): Promise<{ ok: true; task: Task } | { ok: false; reason: "row_not_found" | "precondition_failed"; current: Task | null }> {
     return tryClaimCheckoutImpl(this, taskId, claim, precondition);
   }
-  async renewCheckoutLease( taskId: string, update: { checkoutRunId: string | null; checkoutLeaseRenewedAt: string; }, ): Promise<Task> {
+  async renewCheckoutLease( taskId: string, update: { agentId: string; nodeId: string; leaseEpoch: number; checkoutRunId: string | null; checkoutLeaseRenewedAt: string; }, ): Promise<Task> {
     return renewCheckoutLeaseImpl(this, taskId, update);
   }
   async selectNextTaskForAgent( agentId: string, agent?: Pick<Agent, "id" | "role"> & Partial<Pick<Agent, "runtimeConfig">>, ): Promise<InboxTask | null> {

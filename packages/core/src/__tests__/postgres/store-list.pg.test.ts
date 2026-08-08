@@ -15,6 +15,7 @@ import {
   createSharedPgTaskStoreTestHarness,
   type SharedPgTaskStoreHarness,
 } from "../../__test-utils__/pg-test-harness.js";
+import { ACTIVE_WORKFLOW_WORK_ITEM_STATES } from "../../types.js";
 
 const pgTest = pgDescribe;
 
@@ -83,6 +84,38 @@ pgTest("TaskStore.listTasks facade (PostgreSQL)", () => {
       state: "runnable",
     })).rejects.toThrow();
   });
+
+  it.each(["succeeded", "failed", "cancelled"] as const)(
+    "re-attempts a node after its previous fence ended %s",
+    async (terminalState) => {
+      const store = h.store();
+      const task = await store.createTask({ description: "continuation retry", column: "todo" });
+      const runId = `${task.id}:workflow:steps#0:step-execute`;
+      const first = await store.upsertWorkflowWorkItem({
+        runId,
+        taskId: task.id,
+        nodeId: "step-execute",
+        nodeInstanceId: "steps#0:step-execute",
+        kind: "task",
+        state: "running",
+      });
+      await store.transitionWorkflowWorkItem(first.id, terminalState, { leaseOwner: null, leaseExpiresAt: null });
+
+      const retry = await store.replaceActiveTaskWorkflowContinuation({
+        runId,
+        taskId: task.id,
+        nodeId: "step-execute",
+        nodeInstanceId: "steps#0:step-execute",
+        kind: "task",
+        state: "running",
+      });
+
+      expect(retry.state).toBe("running");
+      const items = await store.listWorkflowWorkItemsForTask(task.id, { kinds: ["task"] });
+      expect(items.filter((item) => ACTIVE_WORKFLOW_WORK_ITEM_STATES.includes(item.state))).toHaveLength(1);
+      expect(items.find((item) => item.nodeInstanceId === "steps#0:step-execute")?.state).toBe("running");
+    },
+  );
 
   it("returns all live tasks sorted by createdAt then numeric id suffix", async () => {
     const store = h.store();

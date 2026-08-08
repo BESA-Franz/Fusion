@@ -258,6 +258,8 @@ export interface MoveTaskIfResult {
   moved: boolean;
 }
 
+class ConditionalMoveConflict extends Error {}
+
 /**
  * FNXC:RuntimeTaskOrchestrationAsync 2026-07-29-12:00:
  * FN-8361 recovery releases must read, predicate, and transition under one task
@@ -277,11 +279,24 @@ export async function moveTaskIfImpl(
     if (!await predicate(live) || live.column === toColumn) {
       return { task: live, moved: false };
     }
-    const task = await store.moveTaskInternal(id, toColumn, options, {
-      fromHandoff: false,
-      movePolicyPreflight,
-    }, live);
-    return { task, moved: true };
+    try {
+      const task = await store.moveTaskInternal(id, toColumn, options, {
+        fromHandoff: false,
+        movePolicyPreflight,
+        expectedTaskVersion: {
+          column: live.column,
+          updatedAt: live.updatedAt,
+          nodeId: live.nodeId,
+          checkedOutBy: live.checkedOutBy,
+          checkoutNodeId: live.checkoutNodeId,
+          checkoutLeaseEpoch: live.checkoutLeaseEpoch,
+        },
+      }, live);
+      return { task, moved: true };
+    } catch (error) {
+      if (!(error instanceof ConditionalMoveConflict)) throw error;
+      return { task: await store.readTaskForMove(id), moved: false };
+    }
   });
 }
 
@@ -1032,23 +1047,6 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
         await store.resetPromptCheckboxes(dir);
       }
 
-    if (toColumn === (moveLifecycle?.wip ?? "in-progress") && !task.worktree && options?.allocateWorktree) {
-      const allocator = options.allocateWorktree;
-      const allocated = await store.withWorktreeAllocationLock(async () => {
-        const others = await store.listTasks({ slim: true, includeArchived: false });
-        const reservedNames = new Set<string>();
-        for (const other of others) {
-          if (other.id === id || !other.worktree) continue;
-          const name = other.worktree.split("/").filter(Boolean).pop();
-          if (name) reservedNames.add(name);
-        }
-        return allocator(reservedNames);
-      });
-      if (allocated) {
-        task.worktree = allocated;
-      }
-    }
-
     let deletedAt: string | undefined;
     let alreadyEnqueued = false;
     // FNXC:RuntimeTaskOrchestrationAsync 2026-06-24-14:30:
@@ -1128,6 +1126,46 @@ export async function moveTaskInternalImpl(store: TaskStore, id: string, toColum
       (the failure mode that made the R1 sentinel unbindable).
       */
       await acquireTaskAdvisoryXactLock(tx, layer.projectId, id);
+      const lockedRow = await readTaskRowInTransaction(tx, id, { includeDeleted: true, forUpdate: true }, layer.projectId);
+      if (!lockedRow) throw new ConditionalMoveConflict();
+      const lockedTask = store.rowToTask(store.pgRowToTaskRow(lockedRow as Record<string, unknown>));
+      const expected = internal.expectedTaskVersion;
+      if (expected && (
+        lockedTask.column !== expected.column
+        || lockedTask.updatedAt !== expected.updatedAt
+        || lockedTask.nodeId !== expected.nodeId
+        || lockedTask.checkedOutBy !== expected.checkedOutBy
+        || lockedTask.checkoutNodeId !== expected.checkoutNodeId
+        || lockedTask.checkoutLeaseEpoch !== expected.checkoutLeaseEpoch
+      )) {
+        throw new ConditionalMoveConflict();
+      }
+
+      const prepared = options?.prepareLockedMove
+        ? await options.prepareLockedMove(lockedTask)
+        : undefined;
+      if (options?.prepareLockedMove && prepared === null) {
+        throw new ConditionalMoveConflict();
+      }
+      const dispatchRoute = prepared?.dispatchRoute ?? options?.dispatchRoute;
+      if (dispatchRoute) {
+        task.effectiveNodeId = dispatchRoute.effectiveNodeId ?? undefined;
+        task.effectiveNodeSource = dispatchRoute.effectiveNodeSource;
+      }
+      const allocator = prepared?.allocateWorktree ?? options?.allocateWorktree;
+      if (toColumn === (moveLifecycle?.wip ?? "in-progress") && !task.worktree && allocator) {
+        const allocated = await store.withWorktreeAllocationLock(async () => {
+          const others = await store.listTasks({ slim: true, includeArchived: false });
+          const reservedNames = new Set<string>();
+          for (const other of others) {
+            if (other.id === id || !other.worktree) continue;
+            const name = other.worktree.split("/").filter(Boolean).pop();
+            if (name) reservedNames.add(name);
+          }
+          return allocator(reservedNames);
+        });
+        if (allocated) task.worktree = allocated;
+      }
       const capacityWorkflowId = await readTaskWorkflowSelectionInTransaction(tx, layer.projectId, id);
       const capacityPoolId = resolveCapacityPoolId(capacityWorkflowId);
       const capacityIr = await resolveWorkflowIrForSelectedWorkflowId(store, capacityWorkflowId);

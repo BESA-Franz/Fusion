@@ -359,7 +359,7 @@ export async function readTaskRow(
 export async function readTaskRowInTransaction(
   tx: DbTransaction,
   id: string,
-  options?: { includeDeleted?: boolean },
+  options?: { includeDeleted?: boolean; forUpdate?: boolean },
   projectId?: string,
 ): Promise<Record<string, unknown> | undefined> {
   const conditions = [
@@ -369,10 +369,11 @@ export async function readTaskRowInTransaction(
   if (!options?.includeDeleted) {
     conditions.push(ACTIVE_TASK_FILTER);
   }
-  const rows = await tx
+  const query = tx
     .select()
     .from(schema.project.tasks)
     .where(and(...conditions));
+  const rows = options?.forUpdate ? await query.for("update") : await query;
   return rows[0];
 }
 
