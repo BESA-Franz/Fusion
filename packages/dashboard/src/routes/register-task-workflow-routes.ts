@@ -134,6 +134,7 @@ permanently and the number stops distinguishing real debt from documented degrad
 */
 const LEGACY_WIP_LANES: ReadonlySet<string> = new Set(["in-progress"]);
 const LEGACY_ARCHIVE_LANES: ReadonlySet<string> = new Set(["archived"]);
+const LEGACY_PRE_WIP_LANES: ReadonlySet<string> = new Set(["triage", "todo"]);
 
 
 const REVIEW_BLOCK_RE = /##\s+(Code|Plan)\s+Review:[\s\S]*?(?=\n##\s+(?:Code|Plan)\s+Review:|$)/gi;
@@ -3411,7 +3412,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           guard, it is the answer for IRs that cannot express the question. The v2 branch below
           resolves it properly. Retires when v1 IRs do.
           */
-          strandedSpecificationRetry = task.column === "triage" || task.column === "todo";
+          strandedSpecificationRetry = LEGACY_PRE_WIP_LANES.has(task.column);
         } else {
           const lifecycle = resolveLifecycleColumns(workflowIr);
           strandedSpecificationRetry = lifecycle !== undefined
