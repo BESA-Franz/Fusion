@@ -46,6 +46,7 @@ import {
   resolveCapacityPoolId,
   TransitionRejectionError,
   resolveWorkflowIrForTask,
+  resolveWorkflowIrById,
   isUnplannedSeedPrompt,
   isDuplicateRedirectOnlyPrompt,
   isWorkflowOptionalGroupEnabled,
@@ -124,13 +125,26 @@ export interface HoldReleaseResult {
 // resolveWorkflowIrForTask (GitHub #1402); the optional per-sweep irCache Map is
 // threaded straight through.
 
-async function effectiveWorkflowId(store: TaskStore, taskId: string): Promise<string> {
+interface WorkflowSelectionSnapshot {
+  workflowId?: string;
+  readFailed: boolean;
+  effectivePoolId: string;
+}
+
+async function readWorkflowSelectionSnapshot(store: TaskStore, taskId: string): Promise<WorkflowSelectionSnapshot> {
   try {
-    return resolveCapacityPoolId((await store.getTaskWorkflowSelectionAsync(taskId))?.workflowId);
+    const selection = store.getTaskWorkflowSelectionAsync
+      ? await store.getTaskWorkflowSelectionAsync(taskId)
+      : store.getTaskWorkflowSelection(taskId);
+    return {
+      workflowId: selection?.workflowId,
+      readFailed: false,
+      effectivePoolId: resolveCapacityPoolId(selection?.workflowId),
+    };
   } catch {
     /* An unreadable selection is indistinguishable from no selection for pooling
        purposes, so it takes the same bucket rather than a second convention. */
-    return resolveCapacityPoolId(undefined);
+    return { readFailed: true, effectivePoolId: resolveCapacityPoolId(undefined) };
   }
 }
 
@@ -580,6 +594,7 @@ export async function runHoldReleaseSweep(
   // check is unaffected — this only trims the sweep pre-check cost.
   const irCache = new Map<string, WorkflowIr>();
   const effectiveWorkflowIdByTask = new Map<string, string>();
+  const workflowSelectionByTask = new Map<string, WorkflowSelectionSnapshot>();
   /*
   FNXC:HoldReleaseInstrumentation 2026-07-25-14:35:
   This prefetch used to await one selection per task in series, so its cost scaled with total board
@@ -590,10 +605,11 @@ export async function runHoldReleaseSweep(
   for (let offset = 0; offset < allTasks.length; offset += PREFETCH_CONCURRENCY) {
     const batch = allTasks.slice(offset, offset + PREFETCH_CONCURRENCY);
     const selections = await Promise.all(
-      batch.map(async (t) => [t.id, await effectiveWorkflowId(store, t.id)] as const),
+      batch.map(async (t) => [t.id, await readWorkflowSelectionSnapshot(store, t.id)] as const),
     );
-    for (const [taskId, workflowId] of selections) {
-      effectiveWorkflowIdByTask.set(taskId, workflowId);
+    for (const [taskId, selection] of selections) {
+      workflowSelectionByTask.set(taskId, selection);
+      effectiveWorkflowIdByTask.set(taskId, selection.effectivePoolId);
     }
   }
   const prefetchMs = deps.now() - prefetchStartedMs;
@@ -607,7 +623,13 @@ export async function runHoldReleaseSweep(
       continue;
     }
 
-    const ir = await resolveWorkflowIrForTask(store, task.id, irCache);
+    const selection = workflowSelectionByTask.get(task.id);
+    // Keep the resolver's historical fail-soft behavior when the selection
+    // read itself failed; otherwise resolve directly from the prefetched id so
+    // the same task is not read twice in one sweep.
+    const ir = selection?.readFailed
+      ? await resolveWorkflowIrForTask(store, task.id, irCache)
+      : await resolveWorkflowIrById(store, selection?.workflowId ?? "builtin:coding", irCache);
     if (!isHeldTask(ir, task)) continue;
 
     const column = findColumn(ir, task.column);

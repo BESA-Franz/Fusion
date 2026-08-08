@@ -172,6 +172,7 @@ describe("hold/release sweep instrumentation", () => {
 
     expect(maxActive).toBeGreaterThan(1);
     expect(maxActive).toBeLessThanOrEqual(4);
+    expect(store.getTaskWorkflowSelectionAsync).toHaveBeenCalledTimes(tasks.length);
   });
 
   it("keeps a quiet sweep at debug so a full board does not bury real scheduler events", async () => {
