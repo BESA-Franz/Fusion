@@ -96,6 +96,7 @@ import { requireAsyncLayer } from "./require-async-layer.js";
 import {
   evaluateDashboardPostgresHealth,
   resolveDashboardPostgresLayer,
+  type DashboardPostgresHealthResult,
   type DashboardTaskIdIntegrityHealth,
 } from "./dashboard-postgres-health.js";
 import { ProviderHealthMonitor } from "./provider-health-monitor.js";
@@ -160,6 +161,33 @@ const MAX_AI_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_AI_SESSION_CLEANUP_INTERVAL_MS = SESSION_CLEANUP_INTERVAL_MS;
 const MIN_AI_SESSION_CLEANUP_INTERVAL_MS = 60 * 1000;
 const MAX_AI_SESSION_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/*
+ * FNXC:BoundedDashboardHealth 2026-08-08:
+ * PostgreSQL health probes share the runtime pool with scheduler work. A
+ * saturated pool must not make the liveness endpoint wait indefinitely or
+ * start another probe for every dashboard poll. Keep one probe in flight and
+ * fail closed after a bounded interval; the caller receives a degraded
+ * response and the outstanding probe is allowed to settle in the background.
+ */
+const DASHBOARD_HEALTH_PROBE_TIMEOUT_MS = 8_000;
+
+class DashboardHealthProbeTimeout extends Error {
+  constructor(timeoutMs: number) {
+    super(`PostgreSQL health probe exceeded ${timeoutMs}ms`);
+    this.name = "DashboardHealthProbeTimeout";
+  }
+}
+
+function withDashboardHealthTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new DashboardHealthProbeTimeout(timeoutMs)), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
+}
 
 let aiSessionCleanupIntervalHandle: ReturnType<typeof setInterval> | undefined;
 
@@ -1794,6 +1822,20 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     });
   }
 
+  let dashboardHealthProbe: Promise<DashboardPostgresHealthResult> | undefined;
+
+  const startDashboardHealthProbe = (): Promise<DashboardPostgresHealthResult> => {
+    if (dashboardHealthProbe) return dashboardHealthProbe;
+    const probe = evaluateDashboardPostgresHealth(store, options?.postgresHealthLayer, {
+      projectId: options?.engine?.getProjectId?.(),
+    });
+    dashboardHealthProbe = probe;
+    void probe.finally(() => {
+      if (dashboardHealthProbe === probe) dashboardHealthProbe = undefined;
+    }).catch(() => undefined);
+    return probe;
+  };
+
   /*
    * FNXC:PostgresHealth 2026-06-24-16:10:
    * The /api/health endpoint is async because PostgreSQL health checks
@@ -1811,16 +1853,51 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     no project-id accessor. Pass that typed server identity to health so durable
     migration markers use project:<projectId> instead of a root-path fallback.
     */
-    const health = await evaluateDashboardPostgresHealth(store, options?.postgresHealthLayer, {
-      projectId: options?.engine?.getProjectId?.(),
-    });
-    res.json(buildHealthPayload({
-      database: health.database,
-      taskIdIntegrityReport: health.taskIdIntegrity,
-      migration: health.migration,
-      cliPackageVersion,
-      engineAvailable: hasDashboardEngine(options),
-    }));
+    try {
+      const health = await withDashboardHealthTimeout(
+        startDashboardHealthProbe(),
+        DASHBOARD_HEALTH_PROBE_TIMEOUT_MS,
+      );
+      res.json(buildHealthPayload({
+        database: health.database,
+        taskIdIntegrityReport: health.taskIdIntegrity,
+        migration: health.migration,
+        cliPackageVersion,
+        engineAvailable: hasDashboardEngine(options),
+      }));
+    } catch (error) {
+      if (!(error instanceof DashboardHealthProbeTimeout)) throw error;
+
+      /*
+       * A timed-out probe is not evidence of a healthy database. Return a
+       * bounded, explicit degraded response so the central node monitor can
+       * fail over instead of treating an unresponsive node as live.
+       */
+      const cachedDatabase = store.getDatabaseHealth();
+      const cachedTaskIdIntegrity = typeof store.getTaskIdIntegrityReport === "function"
+        ? store.getTaskIdIntegrityReport()
+        : {
+            status: "error" as const,
+            checkedAt: new Date().toISOString(),
+            anomalies: [] as [],
+            error: error.message,
+          };
+      runtimeLogger.warn("[health] PostgreSQL probe timed out; returning degraded response", {
+        timeoutMs: DASHBOARD_HEALTH_PROBE_TIMEOUT_MS,
+      });
+      res.json(buildHealthPayload({
+        database: {
+          ...cachedDatabase,
+          healthy: false,
+          corruptionDetected: false,
+          corruptionErrors: [error.message],
+          isRunning: true,
+        },
+        taskIdIntegrityReport: cachedTaskIdIntegrity,
+        cliPackageVersion,
+        engineAvailable: hasDashboardEngine(options),
+      }));
+    }
   });
 
   app.get("/api/engine/status", (req, res) => {
