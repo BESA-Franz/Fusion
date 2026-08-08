@@ -39,7 +39,7 @@ export type {
   MissionLineageSnapshot,
 } from "./tasks/symbol-lock-lineage-approval.js";
 export { AGENT_VALID_TRANSITIONS, DUPLICATE_OF_METADATA_KEY, REPORT_ATTACHMENT_SOURCE, assertNotWorkspaceTaskMerge, isWorkspaceTask, WorkspaceTaskMergeError, PLANNER_AGENT_ROLE} from "./types.js";
-export { WEDGE_RENOTIFY_COOLDOWN_MS } from "./types.js";
+export { WEDGE_RENOTIFY_COOLDOWN_MS, normalizeAgentRoles } from "./types.js";
 export {
   resolveEntryPointBranchAssignment,
   sanitizeBranchSegment,
@@ -273,12 +273,17 @@ export type {
   // CLI Agent Executor (U7): node-config executor typing.
   WorkflowNodeExecutorKind,
   WorkflowNodeExecutorConfig,
+  WorkflowAgentRole,
 } from "./workflows/workflow-ir-types.js";
 export {
   DEFAULT_MAX_REWORK_CYCLES,
   MAX_REWORK_CYCLES_CAP,
   resolveMaxReworkCycles,
   resolveOptionalStepRevisionBudget,
+  classifyWorkflowAgentNode,
+  isWorkflowAgentNodeForRole,
+  isWorkflowAgentRole,
+  isWorkflowReviewerNode,
 } from "./workflows/workflow-ir-types.js";
 export {
   instanceNodeId,

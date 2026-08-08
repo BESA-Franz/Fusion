@@ -16,7 +16,7 @@ import { DEFAULT_PROVIDER_INSTANCE_ID, type ProviderInstanceRef, type TaskStore,
 import { getUnmetSchedulingDependencies } from "./scheduler.js";
 import type { ImplementationExit, ImplementationExitReporter } from "./executor/implementation-exit.js";
 import { emitWorkflowLifecycleEvent } from "@fusion/core";
-import { resolveTaskLifecycleColumns, resolveProjectColumnsForRoles, resolveWipTargetForTask, resolveTerminalColumns, RetryStormError, serializeRetryStormError, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, resolveWorkflowIrForTask, columnsWithFlag, evaluateForeachMergeProof, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveReboundTarget, resolveLifecycleColumns, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, hasUserAutoMergeHold, resolveEffectiveAutoMerge, isLiveSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveMaxConsecutiveToolFailureRetries, resolveConsecutiveToolFailureRetryBackoffMs, resolveConsecutiveToolFailureThreshold, resolveExecutorEscalationTarget, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, DEFAULT_MAX_POST_REVIEW_FIXES, COMPLETION_SUMMARY_NODE_ID, PLAN_REVIEW_GROUP_ID, upsertWorkflowStepResult, normalizeWorkflowReviewFindings, AWAITING_APPROVAL_PAUSE_REASON, THINKING_LEVELS, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AgentStore, resolveExecutorFallbackModel, resolveValidatorFallbackModel, parseExplicitDuplicateMarker, nonExecutableDuplicateRedirectReason } from "@fusion/core";
+import { resolveTaskLifecycleColumns, resolveProjectColumnsForRoles, resolveWipTargetForTask, resolveTerminalColumns, RetryStormError, serializeRetryStormError, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, resolveWorkflowIrForTask, columnsWithFlag, evaluateForeachMergeProof, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveReboundTarget, resolveLifecycleColumns, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, hasUserAutoMergeHold, resolveEffectiveAutoMerge, isLiveSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveMaxConsecutiveToolFailureRetries, resolveConsecutiveToolFailureRetryBackoffMs, resolveConsecutiveToolFailureThreshold, resolveExecutorEscalationTarget, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, DEFAULT_MAX_POST_REVIEW_FIXES, COMPLETION_SUMMARY_NODE_ID, PLAN_REVIEW_GROUP_ID, upsertWorkflowStepResult, normalizeWorkflowReviewFindings, AWAITING_APPROVAL_PAUSE_REASON, THINKING_LEVELS, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AgentStore, classifyWorkflowAgentNode, isWorkflowAgentRole, resolveExecutorFallbackModel, resolveValidatorFallbackModel, parseExplicitDuplicateMarker, nonExecutableDuplicateRedirectReason } from "@fusion/core";
 import {
   BLOCKED_THRASH_LIMIT,
   buildExternalBlockMetadataPatch,
@@ -33,6 +33,8 @@ import { moveTaskToReplanColumn, resolvePlannerLanesForTaskAsync, resolveReplanT
 import { latestPlanReviewTerminalAfterReset } from "./plan-review-log-recovery.js";
 import type { TaskStep, WorkflowIr, WorkflowFieldDefinition, WorkflowColumnAgent, EffectiveAgentInput, WorkflowWorkEngineDispatchResult, WorkflowWorkItem, TaskMoveLanes } from "@fusion/core";
 import { WorkflowGraphTaskRunner, type WorkflowGraphTaskRunResult, type WorkflowColumnBoundaryHooks } from "./workflows/workflow-graph-task-runner.js";
+import { isCurrentReviewerNodeOverride, routeWorkflowPrincipal, validateFencedWorkflowPrincipal } from "./agents/workflow-agent-router.js";
+import { WorkflowAgentCapacity } from "./agents/workflow-agent-capacity.js";
 import { createExecutorColumnBoundaryHooks } from "./workflow-column-boundary-hooks.js";
 import { ensureWorkflowCompletionSummary } from "./workflows/workflow-completion-summary.js";
 import { createCodeNodeRunner } from "./execution/code-node-runner.js";
@@ -1981,6 +1983,34 @@ export class TaskExecutor {
   activeWorktrees tracks the worktree paths a task currently holds for liveness/owner checks. In workspace mode a single task acquires N sub-repo worktrees (foundation `task.workspaceWorktrees`), so the value is a SET of paths, not one path. A non-workspace (single-repo) task holds a one-element set — every consumer is converted to membership semantics so the single-repo path is byte-for-byte unchanged (KTD2). Helpers below add/remove/iterate the set.
   */
   private activeWorktrees = new Map<string, Set<string>>();
+  /** Workflow stage reservations are intentionally independent from heartbeat slots. */
+  private readonly workflowAgentCapacity: WorkflowAgentCapacity;
+  /**
+   * FNXC:WorkflowAgentRouting 2026-08-07-03:46:
+   * This process-local index carries a durable work item's narrow authority to
+   * the model tool gate. It is keyed by task only for the live graph turn and
+   * is removed in graph cleanup; `isLive` also revalidates the exact record so
+   * a replaced node cannot inherit authority from its predecessor.
+   */
+  private readonly activeWorkflowAuthorities = new Map<string, {
+    agentId: string;
+    taskId: string;
+    runId: string;
+    workItemId: string;
+    nodeInstanceId: string;
+    /** Direct graph runs have no work-item row; claimed continuations must recheck it per tool call. */
+    requiresDurableFence: boolean;
+    kind: "task-assignee" | "review-node-override";
+  }>();
+
+  /*
+   * FNXC:WorkflowAgentRouting 2026-08-07-04:13:
+   * Every classified graph session must run as its routed durable principal,
+   * including pool and column routes that intentionally receive no policy
+   * elevation. Keep identity separate from the narrower authority index so a
+   * column/pool principal cannot inherit task-assignee tool privileges.
+   */
+  private readonly activeWorkflowPrincipals = new Map<string, { agentId: string; nodeInstanceId: string }>();
 
   /**
    * FNXC:Workspace 2026-06-21-12:00: Register a worktree path under a task's active set, creating the set on first add (KTD2). Single-repo tasks call this once → one-element set.
@@ -2694,13 +2724,71 @@ export class TaskExecutor {
     const actorName = agent?.name ?? `Task worker ${taskId ?? "unknown"}`;
     const isEphemeral = !agent || isEphemeralAgent(agent);
     const policy = resolveEffectiveAgentPermissionPolicy(agent?.permissionPolicy, projectDefaultPolicy);
+    const workflowAuthority = taskId ? this.activeWorkflowAuthorities.get(taskId) : undefined;
+    const authorityMatchesActor = workflowAuthority?.agentId === actorId;
     return {
       agentId: actorId,
       agentName: actorName,
       isEphemeral,
       taskId,
-      runId: taskId ? this.getRunContextFor(taskId)?.runId : undefined,
+      runId: authorityMatchesActor ? workflowAuthority!.runId : taskId ? this.getRunContextFor(taskId)?.runId : undefined,
       permissionPolicy: policy,
+      ...(authorityMatchesActor ? {
+        workflowAuthority: {
+          projectId: this.store.getRootDir(),
+          taskId: workflowAuthority!.taskId,
+          runId: workflowAuthority!.runId,
+          workItemId: workflowAuthority!.workItemId,
+          nodeInstanceId: workflowAuthority!.nodeInstanceId,
+          principalAgentId: workflowAuthority!.agentId,
+          kind: workflowAuthority!.kind,
+          isLive: async () => {
+            const current = this.activeWorkflowAuthorities.get(workflowAuthority!.taskId);
+            if (current !== workflowAuthority
+              || !this.activeWorkflowGraphAbortControllers.has(workflowAuthority!.taskId)
+              || this.activeWorkflowGraphAbortControllers.get(workflowAuthority!.taskId)!.signal.aborted) {
+              return false;
+            }
+            if (!workflowAuthority!.requiresDurableFence) return true;
+            /*
+             * FNXC:WorkflowAgentRouting 2026-08-07-04:31:
+             * Tool authority for a claimed continuation survives only while its
+             * exact leased work item still names this principal and node. This
+             * rejects a stale, cancelled, or re-assigned record even when an
+             * old in-process session has not noticed the cancellation yet.
+             */
+            const items = await this.store.listWorkflowWorkItemsForTask(workflowAuthority!.taskId);
+            const item = items.find((candidate) => candidate.id === workflowAuthority!.workItemId);
+            if (item?.state !== "running"
+              || item.principalAgentId !== workflowAuthority!.agentId
+              || item.nodeInstanceId !== workflowAuthority!.nodeInstanceId
+              || !item.leaseOwner
+              || (item.leaseExpiresAt !== null && Date.parse(item.leaseExpiresAt) <= Date.now())) {
+              return false;
+            }
+            const liveTask = await this.store.getTask(workflowAuthority!.taskId);
+            if (workflowAuthority!.kind === "task-assignee") {
+              return liveTask.assignedAgentId === workflowAuthority!.agentId;
+            }
+            /*
+             * FNXC:WorkflowAgentRouting 2026-08-07-04:56:
+             * A reviewer override is authority for one exact IR node attempt,
+             * not a task-wide reviewer grant. Re-read the selected workflow
+             * definition at every gated call so an operator removing or changing
+             * the node override immediately fences an already-running session.
+             */
+            if (workflowAuthority!.kind === "review-node-override") {
+              const liveIr = await resolveWorkflowIrForTask(this.store, workflowAuthority!.taskId);
+              return isCurrentReviewerNodeOverride(
+                liveIr,
+                workflowAuthority!.nodeInstanceId,
+                workflowAuthority!.agentId,
+              );
+            }
+            return false;
+          },
+        },
+      } : {}),
       createApprovalRequest: async (decision, args) => await this.approvalRequestStore.create({
         requester: {
           actorId,
@@ -3629,6 +3717,7 @@ export class TaskExecutor {
     private rootDir: string,
     private options: TaskExecutorOptions = {},
   ) {
+    this.workflowAgentCapacity = new WorkflowAgentCapacity(this.options.agentStore);
     /*
     FNXC:EngineDiagnostics 2026-07-26-09:39:
     Executor bookkeeping that fires on every dispatch/session (construct, execute() entry, worktree ready, session create/register, prompt start, graph event stream, column-boundary warns-as-info, model/plugin setup, skip/duplicate/no-op guards) is debug-only (FUSION_DEBUG=executor). Keep log/warn/error for lifecycle outcomes operators act on: Starting task, ✓/✗ completion, failures, requeues, handoffs, stuck kills, verification failures, real moves.
@@ -6523,6 +6612,14 @@ export class TaskExecutor {
       this.graphRouting.add(task.id);
     }
     let graphAbortController: AbortController | undefined;
+    const workflowCapacityAttemptIds = new Set<string>();
+    /*
+     * FNXC:WorkflowAgentRouting 2026-08-07-05:06:
+     * Direct graph dispatch is also a production session-launch path. Track its
+     * per-node durable fences so direct runs do not degrade principals to a
+     * process-local map while scheduled continuations remain fenced in Postgres.
+     */
+    const directWorkflowPrincipalWorkItemIds = new Set<string>();
     /*
     FNXC:GlobalConcurrencyControls 2026-07-14-18:30:
     The hold/release sweep may have already tryAcquired a global slot for this card before moving it to in-progress. Claim that pre-held slot for the full graph run so utilization stays honest between workflow nodes and triage cannot overfill the cap while this task is still graph-owned.
@@ -6725,6 +6822,239 @@ export class TaskExecutor {
         seams: this.createAuthoritativeWorkflowSeams(settings),
         prepareNodeExecution: (node, nodeTask, requirement) =>
           this.prepareGraphNodeExecution(node, nodeTask, settings, requirement),
+        /*
+         * FNXC:WorkflowAgentRouting 2026-08-07-03:38:
+         * Graph execution resolves permanent workflow principals before handlers
+         * can create a model session. An unavailable explicit owner, column agent,
+         * or reviewer override fails closed at its node instead of silently
+         * selecting a different pool member. The durable work-item fence is
+         * established by the work-item runtime path; this live graph admission
+         * makes the same routing contract authoritative for direct dispatch.
+         */
+        beforeNodeExecution: async (node, nodeTask, context) => {
+          const classifiedRole = classifyWorkflowAgentNode(node);
+          if (!classifiedRole) return undefined;
+          // A classified session without the authoritative IR/agent store must
+          // fail closed; running it as an ambient executor defeats role routing.
+          if (!this.options.agentStore || !columnAgentIr) {
+            return { outcome: "failure" as const, value: `workflow-principal-routing-unavailable:${classifiedRole}` };
+          }
+          const agents = await this.options.agentStore.listAgents({ includeEphemeral: true });
+          const activeSessions = new Map(agents.map((agent) => [agent.id, this.workflowAgentCapacity.activeSessions(agent.id, this.store.getRootDir())]));
+          const fencedPrincipalId = typeof context["workflow:principal-agent-id"] === "string"
+            ? context["workflow:principal-agent-id"]
+            : undefined;
+          const fencedRole = context["workflow:principal-role"];
+          const fencedAuthority = context["workflow:principal-authority"];
+          const nodeInstanceId = typeof context["workflow:node-instance-id"] === "string"
+            ? context["workflow:node-instance-id"]
+            : node.id;
+          /*
+           * FNXC:WorkflowAgentRouting 2026-08-07-04:31:
+           * A work-item resume must consume its persisted principal fence. Do
+           * not call ordinary precedence routing for a row that already names
+           * an agent: that would turn the durable record into display-only
+           * metadata and could silently replace a reviewer or task owner.
+           */
+          const hasFencedPrincipal = fencedPrincipalId
+            && isWorkflowAgentRole(fencedRole)
+            && (fencedAuthority === "task-assignee" || fencedAuthority === "review-node-override" || fencedAuthority === "column-binding" || fencedAuthority === "role-pool");
+          let routed = hasFencedPrincipal
+            && (fencedAuthority === "task-assignee" || fencedAuthority === "review-node-override" || fencedAuthority === "column-binding" || fencedAuthority === "role-pool")
+            ? validateFencedWorkflowPrincipal({
+                task: nodeTask,
+                ir: columnAgentIr,
+                node,
+                principalAgentId: fencedPrincipalId,
+                role: fencedRole,
+                authority: fencedAuthority,
+                agents,
+                nodeInstanceId,
+                activeSessions,
+              })
+            : routeWorkflowPrincipal({
+                task: nodeTask,
+                ir: columnAgentIr,
+                node,
+                agents,
+                activeSessions,
+              });
+          if (routed.status === "unclassified") return undefined;
+          const holdDirectPrincipalWorkItem = async (
+            reason: string,
+            principalAgentId: string | null,
+            authorityKind: "task-assignee" | "review-node-override" | "column-binding" | "role-pool" | null,
+          ): Promise<void> => {
+            if (typeof this.store.upsertWorkflowWorkItem !== "function") return;
+            const item = await this.store.upsertWorkflowWorkItem({
+              runId: `${resolvedRunId ?? `${nodeTask.id}:workflow`}:${nodeInstanceId}`,
+              taskId: nodeTask.id,
+              nodeId: node.id,
+              nodeInstanceId,
+              kind: "task",
+              state: "held",
+              leaseOwner: null,
+              leaseExpiresAt: null,
+              blockedReason: reason,
+              lastError: reason,
+              principalAgentId,
+              workflowRole: classifiedRole,
+              authorityKind,
+            });
+            directWorkflowPrincipalWorkItemIds.add(item.id);
+          };
+          if (routed.status === "held") {
+            const reviewerOverride = classifiedRole === "reviewer" ? node.reviewerAgentId : undefined;
+            const columnBinding = resolveBindingForNode(node.id);
+            const namedPrincipal = reviewerOverride ?? nodeTask.assignedAgentId ?? columnBinding?.agentId;
+            const authorityKind = reviewerOverride
+              ? "review-node-override"
+              : nodeTask.assignedAgentId
+                ? "task-assignee"
+                : columnBinding?.agentId
+                  ? "column-binding"
+                  : null;
+            const reason = `workflow-principal-${routed.reason}:${routed.role}`;
+            /*
+             * FNXC:WorkflowAgentRouting 2026-08-07-06:53:
+             * Direct graph dispatch must preserve an unavailable named principal
+             * or exhausted role pool as durable held work before suspending. A
+             * failure result would otherwise terminalize the task and erase the
+             * exact availability condition operators need to repair or await.
+             */
+            await holdDirectPrincipalWorkItem(reason, namedPrincipal ?? null, authorityKind);
+            return { outcome: "failure" as const, value: reason };
+          }
+          const attemptId = `${resolvedRunId}:${nodeInstanceId}`;
+          /*
+           * FNXC:WorkflowAgentRouting 2026-08-07-05:29:
+           * Workflow-stage admission consumes the project workflow budget, while
+           * an agent's heartbeat retains its separate maxConcurrentRuns budget.
+           * Passing the project limit here closes the direct-graph path, which
+           * otherwise enforced only optional per-agent limits.
+           */
+          let capacity = await this.workflowAgentCapacity.acquire({
+            projectId: this.options.agentStore.workflowProjectId ?? this.store.getRootDir(),
+            agent: routed.route.agent,
+            attemptId,
+            maxProjectSessions: settings.maxConcurrent,
+          });
+          /*
+           * FNXC:WorkflowAgentRouting 2026-08-07-07:32:
+           * A role-pool snapshot is process-local, while admission is durable
+           * across engines. If another engine filled the selected agent between
+           * selection and the atomic acquire, try the next eligible pool member.
+           * Fenced and named principals never take this fallback.
+           */
+          if (capacity.status === "held" && capacity.reason === "agent-capacity"
+            && routed.route.authority === "role-pool" && !hasFencedPrincipal) {
+            const excludedPoolAgentIds = new Set<string>();
+            while (capacity.status === "held" && capacity.reason === "agent-capacity"
+              && routed.route.authority === "role-pool") {
+              excludedPoolAgentIds.add(routed.route.agent.id);
+              const retryRoute = routeWorkflowPrincipal({
+                task: nodeTask,
+                ir: columnAgentIr,
+                node,
+                agents,
+                activeSessions,
+                excludedPoolAgentIds,
+              });
+              if (retryRoute.status !== "routed" || retryRoute.route.authority !== "role-pool") break;
+              routed = retryRoute;
+              capacity = await this.workflowAgentCapacity.acquire({
+                projectId: this.options.agentStore.workflowProjectId ?? this.store.getRootDir(),
+                agent: routed.route.agent,
+                attemptId,
+                maxProjectSessions: settings.maxConcurrent,
+              });
+            }
+          }
+          if (capacity.status === "held") {
+            const reason = `workflow-principal-${capacity.reason}:${routed.route.role}`;
+            await holdDirectPrincipalWorkItem(reason, routed.route.agent.id, routed.route.authority);
+            return { outcome: "failure" as const, value: reason };
+          }
+          let durableWorkItemId = typeof context["workflow:work-item-id"] === "string"
+            ? context["workflow:work-item-id"]
+            : undefined;
+          /*
+           * FNXC:WorkflowAgentRouting 2026-08-07-05:06:
+           * Graph dispatch normally reaches handlers without a scheduler work
+           * item. Persist the exact selected identity before constructing that
+           * handler session, so policy gates and recovery have the same durable
+           * fence as a claimed continuation. A persistence failure releases the
+           * just-acquired capacity and fails closed rather than running ambient.
+           */
+          if (!durableWorkItemId && typeof this.store.upsertWorkflowWorkItem === "function") {
+            try {
+              const item = await this.store.upsertWorkflowWorkItem({
+                runId: `${resolvedRunId ?? `${nodeTask.id}:workflow`}:${nodeInstanceId}`,
+                taskId: nodeTask.id,
+                nodeId: node.id,
+                kind: "task",
+                state: "running",
+                leaseOwner: `executor:${nodeTask.id}`,
+                leaseExpiresAt: null,
+                principalAgentId: routed.route.agent.id,
+                workflowRole: routed.route.role,
+                authorityKind: routed.route.authority,
+                nodeInstanceId,
+              });
+              durableWorkItemId = item.id;
+              directWorkflowPrincipalWorkItemIds.add(item.id);
+            } catch {
+              void this.workflowAgentCapacity.release(attemptId, this.options.agentStore.workflowProjectId ?? this.store.getRootDir());
+              return { outcome: "failure" as const, value: `workflow-principal-fence-unavailable:${routed.route.role}` };
+            }
+          }
+          workflowCapacityAttemptIds.add(attemptId);
+          this.activeWorkflowPrincipals.set(nodeTask.id, {
+            agentId: routed.route.agent.id,
+            nodeInstanceId,
+          });
+          if (durableWorkItemId) context["workflow:work-item-id"] = durableWorkItemId;
+          context["workflow:principal-agent-id"] = routed.route.agent.id;
+          context["workflow:principal-role"] = routed.route.role;
+          context["workflow:principal-authority"] = routed.route.authority;
+          if (routed.route.authority === "task-assignee" || routed.route.authority === "review-node-override") {
+            this.activeWorkflowAuthorities.set(nodeTask.id, {
+              agentId: routed.route.agent.id,
+              taskId: nodeTask.id,
+              runId: resolvedRunId ?? `${nodeTask.id}:${node.id}`,
+              workItemId: durableWorkItemId ?? attemptId,
+              nodeInstanceId,
+              requiresDurableFence: durableWorkItemId !== undefined,
+              kind: routed.route.authority,
+            });
+          } else {
+            this.activeWorkflowAuthorities.delete(nodeTask.id);
+          }
+          context["workflow:release-principal"] = () => {
+            void this.workflowAgentCapacity.release(attemptId, this.options.agentStore?.workflowProjectId ?? this.store.getRootDir());
+            workflowCapacityAttemptIds.delete(attemptId);
+            const principal = this.activeWorkflowPrincipals.get(nodeTask.id);
+            if (principal?.nodeInstanceId === nodeInstanceId) {
+              this.activeWorkflowPrincipals.delete(nodeTask.id);
+              this.activeWorkflowAuthorities.delete(nodeTask.id);
+            }
+            /*
+             * FNXC:WorkflowAgentRouting 2026-08-07-05:37:
+             * A principal fence ends with its handler attempt. Leaving these
+             * fields in shared graph context made the next classified node reuse
+             * the prior role/node fence and fail closed (or worse, inherit it).
+             * Template wrappers restore only their parent node identity after
+             * this release; no principal context crosses a node boundary.
+             */
+            if (context["workflow:principal-agent-id"] === routed.route.agent.id) {
+              delete context["workflow:principal-agent-id"];
+              delete context["workflow:principal-role"];
+              delete context["workflow:principal-authority"];
+              delete context["workflow:work-item-id"];
+            }
+          };
+          return undefined;
+        },
         runCustomNode: customNodeExecution.runner(settings),
         publishTaskProjection: async (taskId, patch) => {
           await this.store.updateTaskAtomic(taskId, (liveTask) => {
@@ -6875,7 +7205,23 @@ export class TaskExecutor {
             + "— re-entering at the column resume node",
           );
         }
-        result = await runner.run(detail, settings, resumeNodeId);
+        /*
+         * FNXC:WorkflowAgentRouting 2026-08-07-07:45:
+         * A direct graph resume owns the same durable continuation as scheduler
+         * work-item dispatch. Rehydrate its fence before the graph reaches
+         * beforeNodeExecution so recovery validates this exact principal instead
+         * of silently choosing a fresh role-pool candidate.
+         */
+        const continuationContext = continuation?.principalAgentId
+          ? {
+              "workflow:work-item-id": continuation.id,
+              "workflow:principal-agent-id": continuation.principalAgentId,
+              "workflow:principal-role": continuation.workflowRole,
+              "workflow:principal-authority": continuation.authorityKind,
+              "workflow:node-instance-id": continuation.nodeInstanceId ?? continuation.nodeId,
+            }
+          : undefined;
+        result = await runner.run(detail, settings, resumeNodeId, continuationContext);
       } catch (err) {
         if (continuation) {
           await this.store.transitionWorkflowWorkItem(continuation.id, "failed", {
@@ -6894,6 +7240,40 @@ export class TaskExecutor {
           visitedNodeIds: [],
         });
         return;
+      }
+      const principalHoldReason = Object.values(result.context ?? {}).find((value): value is string =>
+        typeof value === "string" && value.startsWith("workflow-principal-"),
+      );
+      /*
+       * FNXC:WorkflowAgentRouting 2026-08-07-07:45:
+       * Principal availability is a recoverable continuation hold, not a graph
+       * failure. Do not terminalize the direct fence or call graph failure
+       * handling; the next direct resume must receive the same fenced identity.
+       */
+      if (principalHoldReason) {
+        if (continuation && typeof this.store.transitionWorkflowWorkItem === "function") {
+          await this.store.transitionWorkflowWorkItem(continuation.id, "held", {
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            lastError: principalHoldReason,
+            blockedReason: principalHoldReason,
+          }).catch(() => undefined);
+        }
+        return;
+      }
+      /* Direct graph node fences are terminalized only after the interpreter
+       * returns, preserving their historical principal through all handler and
+       * tool-gate calls while ensuring completed work cannot render as active.
+       * Availability holds intentionally remain held for recovery instead. */
+      if (result.disposition !== "suspended" && directWorkflowPrincipalWorkItemIds.size > 0 && typeof this.store.transitionWorkflowWorkItem === "function") {
+        const terminalState = result.disposition === "completed" ? "succeeded" : "failed";
+        await Promise.all([...directWorkflowPrincipalWorkItemIds].map(async (id) => {
+          await this.store.transitionWorkflowWorkItem(id, terminalState, {
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            lastError: terminalState === "failed" ? "workflow-graph-node-failed" : null,
+          }).catch(() => undefined);
+        }));
       }
       if (result.disposition === "fell-back") {
         executorLog.warn(`[workflow-graph] ${task.id} could not resolve workflow — parking task instead of legacy fallback: ${result.reason}`);
@@ -6970,6 +7350,9 @@ export class TaskExecutor {
         */
         this.options.semaphore?.release();
       }
+      for (const attemptId of workflowCapacityAttemptIds) void this.workflowAgentCapacity.release(attemptId, this.options.agentStore?.workflowProjectId ?? this.store.getRootDir());
+      this.activeWorkflowAuthorities.delete(task.id);
+      this.activeWorkflowPrincipals.delete(task.id);
       if (graphAbortController && this.activeWorkflowGraphAbortControllers.get(task.id) === graphAbortController) {
         this.activeWorkflowGraphAbortControllers.delete(task.id);
       }
@@ -8938,6 +9321,8 @@ export class TaskExecutor {
               agentStore: this.options.agentStore,
               rootDir: this.rootDir,
               settings,
+              /* FNXC:WorkflowAgentRouting 2026-08-07-04:45: reviewer sessions inherit the exact graph-fenced principal, including a node-local override. */
+              agentId: this.activeWorkflowPrincipals.get(seamTask.id)?.agentId,
               onSessionCreated: (s) => this.registerSubagentSession(seamTask.id, s),
               onSessionEnded: (s) => this.unregisterSubagentSession(seamTask.id, s),
             },
@@ -10067,7 +10452,12 @@ export class TaskExecutor {
 
     let outcome: WorkflowStepOutcome = mode === "script"
       ? await this.executeScriptWorkflowStep(live, step, worktreePath, settings, nodeEnv)
-      : await this.executeWorkflowStep(live, step, worktreePath, settings, nodeEnv, { unattended });
+      : await this.executeWorkflowStep(live, step, worktreePath, settings, nodeEnv, {
+        unattended,
+        principalAgentId: typeof graphContext?.["workflow:principal-agent-id"] === "string"
+          ? graphContext["workflow:principal-agent-id"]
+          : undefined,
+      });
     /*
      * FNXC:WorkflowReviewFindings 2026-08-05-06:29:
      * Script nodes retain their exit-code verdict semantics, but an explicitly classified review
@@ -12830,50 +13220,6 @@ export class TaskExecutor {
   }
 
   /*
-  FNXC:EphemeralAgents 2026-07-01-00:00:
-  `ephemeralAgentsEnabled: false` means "never spawn short-lived executor-FN-XXXX workers; only permanent agents run work" (see types.ts ephemeralAgentsEnabled). The legacy spawn refusal lives in EphemeralWorkerManager.onTaskStart (ephemeral-worker-manager.ts), but that runs as a fire-and-forget bookkeeping callback AFTER execution has already begun, so it cannot stop a run. The workflow-engine dispatch paths (executeWorkflowGraph, maybeDispatchWorkflowWorkEngine) execute tasks in-process without ever consulting the toggle. Any task that reaches execute() without a permanent assignment via a non-scheduler path (resume-after-restart, heartbeat re-entry, mission/autopilot, work-engine claim) therefore ran despite the operator disabling ephemeral agents.
-
-  This guard is the executor's last line of defense, mirroring the scheduler cutover gate (scheduler.ts:2464) and the spawn refusal (ephemeral-worker-manager.ts:132). It runs once at the top of the outer dispatch — before all three workflow paths — so a single check covers every workflow dispatch entry point. A task explicitly assigned to a permanent (non-ephemeral) agent is exactly how ephemeral-off mode is meant to run, so those are allowed through; everything else is re-queued for the scheduler to auto-assign a permanent agent or hold.
-  */
-  private async blockOuterDispatchWhenEphemeralDisabled(task: Task): Promise<boolean> {
-    const settings = await this.store.getSettings();
-    if (settings.ephemeralAgentsEnabled !== false) return false;
-
-    // A permanent (non-ephemeral) assignment is the sanctioned executor when
-    // ephemeral workers are off. `assignedAgentId` is only ever set by permanent
-    // assignment — default ephemeral mode never sets it — so when we cannot
-    // resolve the agent (no agentStore) we trust the presence of the id and allow
-    // the run rather than starving a legitimately-assigned task.
-    const assignedId = task.assignedAgentId?.trim();
-    if (assignedId) {
-      if (!this.options.agentStore) return false;
-      const agent = await this.options.agentStore.getAgent(assignedId).catch(() => null);
-      if (agent && !isEphemeralAgent(agent)) return false;
-    }
-
-    const liveTask = (await this.store.getTask(task.id).catch(() => null)) ?? task;
-    const reboundColumn = await resolveReboundColumnFor(this.store, liveTask.id);
-    if (liveTask.column !== reboundColumn) {
-      await this.store.moveTask(liveTask.id, reboundColumn, {
-        preserveProgress: true,
-        preserveWorktree: true,
-        preserveResumeState: true,
-        moveSource: "engine",
-        recoveryRehome: true,
-      });
-    }
-    await this.store.updateTask(liveTask.id, { status: "queued" }, this.getRunContextFor(liveTask.id));
-    await this.store.logEntry(
-      liveTask.id,
-      "queued — ephemeral agents disabled; no permanent executor assigned",
-      "Executor pre-dispatch ephemeral gate blocked workflow/authoritative execution.",
-      this.getRunContextFor(liveTask.id),
-    );
-    executorLog.log(`${liveTask.id}: executor dispatch blocked — ephemeralAgentsEnabled=false and no permanent agent assigned`);
-    return true;
-  }
-
-  /*
   FNXC:GlobalConcurrencyControls 2026-07-15-03:50:
   Structural cleanup for scheduler pre-held global slots: every execute() exit path
   (early return, throw, graph-owned, legacy handoff) must leave no unclaimed registration.
@@ -12975,13 +13321,6 @@ export class TaskExecutor {
       await this.clearStalePauseAbortBeforeDispatch(task);
       if (await this.blockOuterDispatchWhenDependenciesUnmet(task)) {
         // FNXC:GlobalConcurrencyControls 2026-07-14-18:30: release any scheduler pre-held slot when outer dispatch aborts before agent work starts.
-        if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
-        return;
-      }
-      // FNXC:EphemeralAgents 2026-07-01-00:00: gate ALL workflow dispatch paths
-      // (graph/authoritative/work-engine) on ephemeralAgentsEnabled before any of
-      // them can claim the task, so the single check covers all three entry points.
-      if (await this.blockOuterDispatchWhenEphemeralDisabled(task)) {
         if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
         return;
       }
@@ -14384,6 +14723,13 @@ export class TaskExecutor {
         ? [createReflectOnPerformanceTool(this.options.reflectionService, assignedAgentId)]
         : [];
       const assignedAgent = await this.getAuthoritativeAssignedAgent(assignedAgentId);
+      const routedPrincipalAgentId = this.activeWorkflowPrincipals.get(task.id)?.agentId;
+      const routedPrincipalAgent = routedPrincipalAgentId
+        ? await this.getAuthoritativeAssignedAgent(routedPrincipalAgentId)
+        : undefined;
+      if (routedPrincipalAgentId && !routedPrincipalAgent) {
+        throw new Error(`workflow-principal-unavailable:${routedPrincipalAgentId}`);
+      }
 
       // Column-agent SESSION IDENTITY (U4, R2/R3/R4/R8): when the governing execute
       // seam node's declared column binds an agent that supersedes the task's
@@ -14395,7 +14741,13 @@ export class TaskExecutor {
       // `identityAgent` — the effective column agent when a binding governs, else
       // the assigned agent (U5/KTD-3 principal substitution).
       const columnAgentSeam = await this.resolveSeamColumnAgent(task, detail);
-      const identityAgent = columnAgentSeam?.agent ?? assignedAgent;
+      /*
+       * FNXC:WorkflowAgentRouting 2026-08-07-03:46:
+       * Once graph admission has fenced a durable workflow principal, the model
+       * session must use that exact identity instead of re-resolving ownership or
+       * a column binding. This prevents a retry from silently changing authority.
+       */
+      const identityAgent = routedPrincipalAgent ?? columnAgentSeam?.agent ?? assignedAgent;
       const executorRuntimeHint = extractRuntimeHint(identityAgent?.runtimeConfig);
       // U5 (R6): track the effective column-agent principal so the heartbeat
       // scheduler's reverse guard knows this agent is executing a task it may not
@@ -14632,8 +14984,8 @@ export class TaskExecutor {
         taskId: task.id,
         agent: "executor",
         persistAgentToolOutput: settings.persistAgentToolOutput,
-        // Executor sessions are task-scoped ephemeral workers.
-        persistAgentThinkingLog: resolvePersistAgentThinkingLog(settings, { ephemeral: true }),
+        /* FNXC:WorkflowAgentRouting 2026-08-07-04:13: Executor workflow sessions use durable routed principals; preserve permanent-agent logging policy. */
+        persistAgentThinkingLog: resolvePersistAgentThinkingLog(settings, { ephemeral: false }),
         onAgentText: (taskId, delta) => {
           lastAssistantText += delta;
           stuckDetector?.recordActivity(taskId);
@@ -18275,8 +18627,8 @@ export class TaskExecutor {
         taskId: task.id,
         agent: "executor",
         persistAgentToolOutput: settings.persistAgentToolOutput,
-        // Executor sessions are task-scoped ephemeral workers.
-        persistAgentThinkingLog: resolvePersistAgentThinkingLog(settings, { ephemeral: true }),
+        /* FNXC:WorkflowAgentRouting 2026-08-07-04:13: Executor workflow sessions use durable routed principals; preserve permanent-agent logging policy. */
+        persistAgentThinkingLog: resolvePersistAgentThinkingLog(settings, { ephemeral: false }),
         onAgentText: this.options.onAgentText,
         onAgentTool: this.options.onAgentTool,
       });
@@ -19064,7 +19416,7 @@ ${scopeGuard}
     worktreePath: string,
     settings: Settings,
     taskEnv?: NodeJS.ProcessEnv,
-    stepOptions?: { unattended?: boolean },
+    stepOptions?: { unattended?: boolean; principalAgentId?: string },
   ): Promise<WorkflowStepOutcome> {
     let toolMode: "coding" | "readonly" = workflowStep.toolMode || "readonly";
     // (U3) Genuinely-unattended run — set FUSION_HEADLESS=1 below so skills record
@@ -19319,13 +19671,29 @@ ${workflowStep.prompt}
 
 You have access to the file system to review changes.${inlineFixBlock}${verdictBlock}`;
 
+    /*
+     * FNXC:WorkflowAgentRouting 2026-08-07-04:45:
+     * The graph admission fence chooses the permanent identity before this
+     * session exists. Resolve that exact agent for its model, skills, audit,
+     * and log attribution; never fall back to task ownership after routing.
+     */
+    const workflowPrincipal = stepOptions?.principalAgentId
+      ? await this.getAuthoritativeAssignedAgent(stepOptions.principalAgentId)
+      : undefined;
+    if (stepOptions?.principalAgentId && !workflowPrincipal) {
+      throw new Error(`workflow-principal-unavailable:${stepOptions.principalAgentId}`);
+    }
+    const sessionTask = workflowPrincipal
+      ? { ...task, assignedAgentId: workflowPrincipal.id }
+      : task;
     const agentLogger = new AgentLogger({
       store: this.store,
       taskId: task.id,
+      // AgentLogger has a lane enum; its stream label remains the review lane.
       agent: "reviewer",
       persistAgentToolOutput: settings.persistAgentToolOutput,
-      // Review-in-executor sessions are task-scoped ephemeral workers.
-      persistAgentThinkingLog: resolvePersistAgentThinkingLog(settings, { ephemeral: true }),
+      /* FNXC:WorkflowAgentRouting 2026-08-07-04:13: Graph-owned review sessions use their durable routed reviewer principal. */
+      persistAgentThinkingLog: resolvePersistAgentThinkingLog(settings, { ephemeral: false }),
       onAgentText: (taskId, delta) => {
         this.options.onAgentText?.(taskId, delta);
       },
@@ -19341,7 +19709,8 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
     // steps to inherit project execution-lane model settings before defaults.
     // Review gates are independent validation surfaces and must not silently use
     // the same implementation model merely because they execute in this method.
-    const assignedRuntimeConfig = await this.getAssignedAgentRuntimeConfig(task.assignedAgentId);
+    const assignedRuntimeConfig = workflowPrincipal?.runtimeConfig
+      ?? await this.getAssignedAgentRuntimeConfig(task.assignedAgentId);
     const laneModel = isReviewTypeWorkflowStep
       ? resolveValidatorSessionModel(
           task.validatorModelProvider,
@@ -19388,13 +19757,13 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
       // Build skill selection context for workflow step session
       const skillContext = await buildSessionSkillContext({
         agentStore: this.options.agentStore!,
-        task,
+        task: sessionTask,
         sessionPurpose: "executor",
         projectRootDir: this.rootDir,
         pluginRunner: this.options.pluginRunner,
       });
 
-      const workflowAgent = await this.getAuthoritativeAssignedAgent(task.assignedAgentId);
+      const workflowAgent = workflowPrincipal ?? await this.getAuthoritativeAssignedAgent(task.assignedAgentId);
       const workflowRuntimeHint = extractRuntimeHint(workflowAgent?.runtimeConfig);
       // Signal to skills running in this step (e.g. compound-engineering ce-plan /
       // ce-work) that they are inside a Fusion autonomous workflow step, NOT an

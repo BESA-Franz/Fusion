@@ -1745,11 +1745,10 @@ export interface ProjectSettings {
    * FN-7557: default is now "auto-approve-all" (previously deferred to workflow via "workflow"). Unset/new projects bypass the manual awaiting-approval gate by default; projects with an explicit stored value are unaffected.
    */
   planApprovalMode?: "workflow" | "auto-approve-all" | "require-all";
-  /** Controls task-worker execution mode.
-   *  - true (default): spawn short-lived `executor-FN-XXXX` ephemeral workers per task
-   *  - false: disable ephemeral workers; scheduler auto-assigns dispatchable tasks
-   *    to permanent executor agents using the reporting chain heuristic.
-   *  Tasks without an eligible permanent executor remain queued. */
+  /**
+   * @deprecated FN-8764 accepts this legacy input only so upgrades can discard it.
+   * Workflow stages always route through durable multi-role principals; this flag has no effect.
+   */
   ephemeralAgentsEnabled?: boolean;
   /*
   FNXC:EphemeralAgentTaskCreation 2026-07-30-12:00:

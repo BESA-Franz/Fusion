@@ -577,7 +577,8 @@ Create a new non-ephemeral agent.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | ✓ | Agent name |
-| `role` | union | ✓ | Agent role/capability |
+| `role` | union | — | Deprecated singular role; use roles for multi-role agents. |
+| `roles` | array | — | Canonical permanent-agent role tags. |
 | `soul` | string | — | Agent personality/identity text |
 | `instructions_text` | string | — | Inline custom instructions |
 | `instructions_path` | string | — | Path to instructions markdown |
@@ -585,6 +586,7 @@ Create a new non-ephemeral agent.
 | `heartbeat_interval_ms` | number | — |  |
 | `heartbeat_timeout_ms` | number | — |  |
 | `max_concurrent_runs` | number | — |  |
+| `max_workflow_sessions` | number | — | Max concurrent workflow sessions, independent of heartbeat runs |
 | `message_response_mode` | union | — |  |
 
 ### fn_agent_update
@@ -595,7 +597,8 @@ Update editable configuration for an existing non-ephemeral agent. Agent callers
 |-----------|------|----------|-------------|
 | `agent_id` | string | ✓ | Target agent ID or name to update |
 | `name` | string | — | New display name |
-| `role` | union | — | Agent role/capability |
+| `role` | union | — | Deprecated singular role; replaces roles for compatibility. |
+| `roles` | array | — | Canonical permanent-agent role tags. |
 | `title` | string | — | Optional title shown for the agent |
 | `icon` | string | — | Optional compact icon/emoji |
 | `soul` | string | — | Agent personality/identity text |
@@ -606,6 +609,7 @@ Update editable configuration for an existing non-ephemeral agent. Agent callers
 | `heartbeat_interval_ms` | number | — | Heartbeat polling interval in ms |
 | `heartbeat_timeout_ms` | number | — | Heartbeat timeout in ms |
 | `max_concurrent_runs` | number | — | Max concurrent heartbeat runs |
+| `max_workflow_sessions` | number | — | Max concurrent workflow sessions, independent of heartbeat runs |
 | `message_response_mode` | union | — | How agent responds to messages |
 
 ### fn_agent_set_instructions

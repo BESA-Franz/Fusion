@@ -284,14 +284,6 @@ export function GeneralSection({ form, setForm, projectId, addToast, prefixError
           {!isKnownSelectableWorkflow(refinementTaskWorkflowValue) && (<option value={refinementTaskWorkflowValue}>{refinementTaskWorkflowValue}</option>)}
         </select>
       </div>
-      <div className="form-group">
-        {/* FNXC:SettingsHelp 2026-07-16-12:45: Inline help moved behind the shared "?" affordance — operator requirement: no inline description paragraphs in Settings. The tip is a SIBLING of the checkbox label (a button inside a label breaks click-to-toggle). */}
-        <div className="settings-field-label-row">
-          <label htmlFor="ephemeralAgentsEnabled" className="checkbox-label">
-            <input id="ephemeralAgentsEnabled" type="checkbox" checked={form.ephemeralAgentsEnabled !== false} onChange={(e) => setForm((f) => ({ ...f, ephemeralAgentsEnabled: e.target.checked }))}/>{t("settings.general.useEphemeralTaskWorkerAgents", " Use ephemeral task-worker agents ")}</label>
-          <SettingsHelpTip settingKey="ephemeralAgentsEnabled">{t("settings.general.whenEnabledDefaultFusionSpawnsShortLived", " When enabled (default), Fusion spawns short-lived ")}<code>executor-FN-XXXX</code>{t("settings.general.agentsToRunEachTaskWhenDisabledOnly", " agents to run each task. When disabled, only permanent agents execute tasks and the scheduler auto-assigns work using the agent reporting chain. Tasks with no eligible permanent agent stay queued. ")}</SettingsHelpTip>
-        </div>
-      </div>
       {/*
         FNXC:EphemeralAgentTaskCreation 2026-07-30-12:00:
         Operators choose free creation, an operator-mailbox proposal, or denial for ephemeral worker follow-ups.

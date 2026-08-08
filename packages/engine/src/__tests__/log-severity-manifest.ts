@@ -120,6 +120,5 @@ export const logSeverityManifest: SeverityManifestEntry[] = [
   { pkg: "engine", file: "run-verification-tool.ts", anchor: "executorLog.debug(`[fn_run_verification] command failed (exit=", priorSeverity: "warn", severity: "debug" },
   { pkg: "engine", file: "worktree-acquisition.ts", anchor: "logger.debug(`Reusing existing worktree: ${path}`)", priorSeverity: "log", severity: "debug" },
   { pkg: "engine", file: "worktree-acquisition.ts", anchor: "logger.debug(`Reusing existing worktree: ${worktreePath}`)", priorSeverity: "log", severity: "debug" },
-  { pkg: "engine", file: "ephemeral-worker-manager.ts", anchor: "this.log.debug(`Skipping task-worker creation for ${task.id}: task already has execution owner`)", priorSeverity: "warn", severity: "debug" },
   { pkg: "core", file: "postgres/embedded-lifecycle.ts", anchor: "log.debug(`embedded postgres: already running on port", priorSeverity: "log", severity: "debug" },
 ];

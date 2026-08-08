@@ -11,6 +11,7 @@ import {
   isProjectSettingsKey,
 } from "../types.js";
 import { NON_DEFAULT_PROJECT_SETTINGS_KEYS } from "../config/settings-schema.js";
+import { canonicalizeSettings } from "../task-store/settings-helpers.js";
 import { BUILTIN_WORKFLOW_SETTINGS } from "../workflows/builtin-workflow-settings.js";
 
 function assertExactKeyCoverage(scopeName: string, actual: readonly string[], expected: readonly string[]): void {
@@ -285,10 +286,12 @@ describe("settings key parity", () => {
     expect(isGlobalSettingsKey("executorAllowSiblingBranchRename")).toBe(false);
   });
 
-  it("defaults ephemeralAgentsEnabled to true and keeps it project-scoped", () => {
-    expect(DEFAULT_PROJECT_SETTINGS.ephemeralAgentsEnabled).toBe(true);
-    expect(isProjectSettingsKey("ephemeralAgentsEnabled")).toBe(true);
+  it("retires the ephemeral workflow-stage setting while accepting stale input", () => {
+    expect(DEFAULT_PROJECT_SETTINGS).not.toHaveProperty("ephemeralAgentsEnabled");
+    expect(isProjectSettingsKey("ephemeralAgentsEnabled")).toBe(false);
     expect(isGlobalSettingsKey("ephemeralAgentsEnabled")).toBe(false);
+    expect(canonicalizeSettings({ ephemeralAgentsEnabled: false } as import("../types.js").Settings))
+      .not.toHaveProperty("ephemeralAgentsEnabled");
   });
 
   it("defaults ephemeralAgentsCanCreateTasks to true and keeps it project-scoped", () => {

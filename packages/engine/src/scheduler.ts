@@ -2998,6 +2998,7 @@ export class Scheduler {
           } else {
             this.wasPermanentAgentUnavailable.delete(task.id);
           }
+          this.wasPermanentAgentUnavailable.delete(task.id);
 
           const oscillationSettings = latestSettings as Settings & {
             dispatchOscillationSettleMs?: number;

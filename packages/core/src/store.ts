@@ -1891,7 +1891,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     return cancelActiveWorkflowWorkItemsForTaskImpl(this, taskId, opts, tx);
   }
   async listDueWorkflowWorkItems(filter: WorkflowWorkItemDueFilter = {}): Promise<WorkflowWorkItem[]> {
-    return listDueWorkflowWorkItemsImpl(this, filter);
+    return listDueWorkflowWorkItemsImpl(this, { ...filter, projectId: this.asyncLayer?.projectId });
   }
   async acquireWorkflowWorkItemLease( id: string, leaseOwner: string, opts: { leaseDurationMs: number; now?: string }, ): Promise<WorkflowWorkItem | null> {
     return acquireWorkflowWorkItemLeaseImpl(this, id, leaseOwner, opts);

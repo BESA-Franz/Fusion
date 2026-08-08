@@ -66,7 +66,9 @@ type MovedProjectSettingsKey =
   | "validatorFallbackThinkingLevel";
 
 type NonDefaultProjectSettingsKey = "ephemeralAgentTaskCreationPolicy" | "selectedWorkflowModelLanes";
-type ProjectSettingsSchema = Omit<ProjectSettings, MovedProjectSettingsKey | NonDefaultProjectSettingsKey>; 
+/** Legacy inputs that remain typed only long enough for read/write compatibility stripping. */
+type RetiredProjectSettingsKey = "ephemeralAgentsEnabled";
+type ProjectSettingsSchema = Omit<ProjectSettings, MovedProjectSettingsKey | NonDefaultProjectSettingsKey | RetiredProjectSettingsKey>;
 
 /**
  * Settings schema source of truth.
@@ -629,7 +631,6 @@ export const DEFAULT_PROJECT_SETTINGS = {
   // proportional to the change; the thin merge gate carries cross-cutting
   // coverage. Falls back to package/explicit command when no tests resolve.
   scopeVerificationToChangedFiles: true,
-  ephemeralAgentsEnabled: true,
   /*
   FNXC:EphemeralAgentTaskCreation 2026-07-01-00:00:
   Default-on so ephemeral task-worker agents keep the ability to open follow-up tasks via fn_task_create. Operators who want to confine task creation to humans/permanent agents flip this off.

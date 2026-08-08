@@ -14,10 +14,18 @@ import { validateWorktrunkSettings } from "../config/worktrunk-settings.js";
  * and rewriting legacy path values left over from the kb → fn rename.
  */
 export function canonicalizeSettings(settings: Settings): Settings {
-  // Strip legacy globalMaxConcurrent from project settings - this field was
-  // deprecated in favor of the global-level maxConcurrent in concurrency settings.
-  const { globalMaxConcurrent, ...rest } = settings as Settings & { globalMaxConcurrent?: number };
-  const base = globalMaxConcurrent !== undefined ? (rest as Settings) : settings;
+  /*
+  FNXC:WorkflowAgentRouting 2026-08-07-06:08:
+  FN-8764 retires the ephemeral workflow-stage switch. Existing settings and stale clients
+  may still send it, but it must be discarded rather than influence durable principal routing.
+  */
+  const { globalMaxConcurrent, ephemeralAgentsEnabled: _retiredEphemeralAgentsEnabled, ...rest } = settings as Settings & {
+    globalMaxConcurrent?: number;
+    ephemeralAgentsEnabled?: boolean;
+  };
+  const base = globalMaxConcurrent !== undefined || _retiredEphemeralAgentsEnabled !== undefined
+    ? (rest as Settings)
+    : settings;
 
   const canonicalWorktrunk = (() => {
     try {
