@@ -155,6 +155,26 @@ describe("hold/release sweep instrumentation", () => {
     expect(warnLine).toContain("prefetch");
   });
 
+  it("prefetches workflow selections with a bounded read concurrency", async () => {
+    const tasks = Array.from({ length: 8 }, (_, index) => task({ id: `H-${index}`, column: "todo" }));
+    const store = storeWith(tasks, singleWipIr(), { maxConcurrent: 20 });
+    let active = 0;
+    let maxActive = 0;
+    store.getTaskWorkflowSelectionAsync = vi.fn(async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return { workflowId: WF, stepIds: [] };
+    });
+
+    await runHoldReleaseSweep(store, { now: () => 1_000_000 });
+
+    expect(maxActive).toBeGreaterThan(1);
+    expect(maxActive).toBeLessThanOrEqual(4);
+    expect(store.getTaskWorkflowSelectionAsync).toHaveBeenCalledTimes(tasks.length);
+  });
+
   it("keeps a quiet sweep at debug so a full board does not bury real scheduler events", async () => {
     const log = vi.spyOn(schedulerLog, "log").mockImplementation(() => {});
     const debug = vi.spyOn(schedulerLog, "debug").mockImplementation(() => {});

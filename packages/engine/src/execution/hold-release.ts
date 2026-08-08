@@ -46,6 +46,7 @@ import {
   resolveCapacityPoolId,
   TransitionRejectionError,
   resolveWorkflowIrForTask,
+  resolveWorkflowIrById,
   isUnplannedSeedPrompt,
   isDuplicateRedirectOnlyPrompt,
   isWorkflowOptionalGroupEnabled,
@@ -124,13 +125,26 @@ export interface HoldReleaseResult {
 // resolveWorkflowIrForTask (GitHub #1402); the optional per-sweep irCache Map is
 // threaded straight through.
 
-async function effectiveWorkflowId(store: TaskStore, taskId: string): Promise<string> {
+interface WorkflowSelectionSnapshot {
+  workflowId?: string;
+  readFailed: boolean;
+  effectivePoolId: string;
+}
+
+async function readWorkflowSelectionSnapshot(store: TaskStore, taskId: string): Promise<WorkflowSelectionSnapshot> {
   try {
-    return resolveCapacityPoolId((await store.getTaskWorkflowSelectionAsync(taskId))?.workflowId);
+    const selection = store.getTaskWorkflowSelectionAsync
+      ? await store.getTaskWorkflowSelectionAsync(taskId)
+      : store.getTaskWorkflowSelection(taskId);
+    return {
+      workflowId: selection?.workflowId,
+      readFailed: false,
+      effectivePoolId: resolveCapacityPoolId(selection?.workflowId),
+    };
   } catch {
     /* An unreadable selection is indistinguishable from no selection for pooling
        purposes, so it takes the same bucket rather than a second convention. */
-    return resolveCapacityPoolId(undefined);
+    return { readFailed: true, effectivePoolId: resolveCapacityPoolId(undefined) };
   }
 }
 
@@ -534,6 +548,15 @@ const heldSince = new Map<string, { reason: string; sinceMs: number }>();
 /** Sweeps slower than this are the delay rather than a symptom of it — log loudly. */
 const SLOW_SWEEP_WARN_MS = 2_000;
 
+/**
+ * Bound the read-only workflow-selection prefetch. A hold-release sweep runs
+ * on the scheduler's event loop; awaiting every selection one after another
+ * makes board size directly add database round-trip latency and can starve
+ * the dashboard HTTP layer. Four concurrent reads reduce that latency while
+ * keeping pressure on the shared PostgreSQL pool bounded.
+ */
+const PREFETCH_CONCURRENCY = 4;
+
 /** Record/refresh the held-since clock for a task and return how long it has been held. */
 function trackHeld(taskId: string, reason: string, nowMs: number): number {
   const existing = heldSince.get(taskId);
@@ -571,17 +594,42 @@ export async function runHoldReleaseSweep(
   // check is unaffected — this only trims the sweep pre-check cost.
   const irCache = new Map<string, WorkflowIr>();
   const effectiveWorkflowIdByTask = new Map<string, string>();
+  const workflowSelectionByTask = new Map<string, WorkflowSelectionSnapshot>();
   /*
   FNXC:HoldReleaseInstrumentation 2026-07-25-14:35:
-  This prefetch is a SEQUENTIAL await per non-archived task, so its cost scales with total board
+  This prefetch used to await one selection per task in series, so its cost scaled with total board
   size rather than with the number of held cards — the prime suspect for a slow sweep on a large
-  board. Timed separately from the sweep total so the two are distinguishable in one log line.
+  board. Keep the reads bounded and timed separately so the two are distinguishable in one log line.
   */
   const prefetchStartedMs = deps.now();
-  for (const t of allTasks) {
-    effectiveWorkflowIdByTask.set(t.id, await effectiveWorkflowId(store, t.id));
+  for (let offset = 0; offset < allTasks.length; offset += PREFETCH_CONCURRENCY) {
+    const batch = allTasks.slice(offset, offset + PREFETCH_CONCURRENCY);
+    const selections = await Promise.all(
+      batch.map(async (t) => [t.id, await readWorkflowSelectionSnapshot(store, t.id)] as const),
+    );
+    for (const [taskId, selection] of selections) {
+      workflowSelectionByTask.set(taskId, selection);
+      effectiveWorkflowIdByTask.set(taskId, selection.effectivePoolId);
+    }
   }
   const prefetchMs = deps.now() - prefetchStartedMs;
+
+  // Resolve distinct workflow definitions before walking the task snapshot.
+  // Custom definitions are remote reads too; resolving them one task at a time
+  // would reintroduce board-size latency even after selection prefetching.
+  const workflowIds = [
+    ...new Set(
+      [...workflowSelectionByTask.values()]
+        .filter((selection) => !selection.readFailed)
+        .map((selection) => selection.workflowId ?? "builtin:coding"),
+    ),
+  ];
+  const irPrefetchStartedMs = deps.now();
+  for (let offset = 0; offset < workflowIds.length; offset += PREFETCH_CONCURRENCY) {
+    const batch = workflowIds.slice(offset, offset + PREFETCH_CONCURRENCY);
+    await Promise.all(batch.map((workflowId) => resolveWorkflowIrById(store, workflowId, irCache)));
+  }
+  const irPrefetchMs = deps.now() - irPrefetchStartedMs;
 
   for (const task of allTasks) {
     // Skip paused / recovery-backoff tasks exactly as the legacy scheduler does.
@@ -592,7 +640,13 @@ export async function runHoldReleaseSweep(
       continue;
     }
 
-    const ir = await resolveWorkflowIrForTask(store, task.id, irCache);
+    const selection = workflowSelectionByTask.get(task.id);
+    // Keep the resolver's historical fail-soft behavior when the selection
+    // read itself failed; otherwise resolve directly from the prefetched id so
+    // the same task is not read twice in one sweep.
+    const ir = selection?.readFailed
+      ? await resolveWorkflowIrForTask(store, task.id, irCache)
+      : await resolveWorkflowIrById(store, selection?.workflowId ?? "builtin:coding", irCache);
     if (!isHeldTask(ir, task)) continue;
 
     const column = findColumn(ir, task.column);
@@ -689,7 +743,7 @@ export async function runHoldReleaseSweep(
     return entry ? Math.max(max, deps.now() - entry.sinceMs) : max;
   }, 0);
   const summary =
-    `Hold-release sweep: ${sweepMs}ms (prefetch ${prefetchMs}ms over ${allTasks.length} tasks), `
+    `Hold-release sweep: ${sweepMs}ms (prefetch ${prefetchMs}ms, ir-prefetch ${irPrefetchMs}ms over ${allTasks.length} tasks), `
     + `released=${result.released.length}, held=${result.held.length}`
     + (longestHeldMs > 0 ? `, longest held ${longestHeldMs}ms` : "");
   if (sweepMs >= SLOW_SWEEP_WARN_MS) {
