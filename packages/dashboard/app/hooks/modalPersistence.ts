@@ -19,11 +19,15 @@ function savePlanningItem(baseKey: string, value: string, projectId?: string): v
   } catch {
     try {
       removeScopedItem(baseKey, projectId);
-    } catch {}
+    } catch {
+      // Best-effort cleanup; storage remains unavailable.
+    }
 
     try {
       setScopedItem(baseKey, value, projectId);
-    } catch {}
+    } catch {
+      // Best-effort retry; the caller continues without persisted UI state.
+    }
   }
 }
 
