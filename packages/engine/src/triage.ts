@@ -152,6 +152,7 @@ import { buildSessionSkillContext } from "./cli-runtime/session-skill-context.js
 import {
   PRIORITY_SPECIFY,
   computeTopLevelConcurrencyClaimedFromStore,
+  formatAdmissionCapacityQueuedReason,
   dropPreHeldExecutorSlot,
   persistedTopLevelAgentTaskIdsFromStore,
   projectAdmissionCoordinator,
@@ -2182,6 +2183,13 @@ export class TriageProcessor {
         a payload with no reason field at all would read as "unknown".
         */
         const blockedBy = worktreeRoom <= 0 && projectRoom > 0 ? "worktree cap" : "running-agent cap";
+        const capacityReason = formatAdmissionCapacityQueuedReason({
+          maxConcurrent,
+          maxWorktrees: settings.maxWorktrees ?? 4,
+          worktreeLimitEnabled: settings.worktreeLimitEnabled,
+          claimed,
+          holderTaskIds: await persistedTopLevelAgentTaskIdsFromStore(this.store, allTasks),
+        });
         planLog.log(
           `Plan throttled by ${blockedBy}: eligible=${triageTasks.length} [${eligibleIds.join(", ")}], ` +
           `maxConcurrent=${maxConcurrent}, claimed=${claimed}, processing=${this.processing.size}` +
@@ -2264,6 +2272,16 @@ export class TriageProcessor {
               put so the next poll retries.
               */
               this.lastPlanThrottleSignature = throttleSignature;
+              /*
+              FNXC:ConcurrencyAdmission 2026-08-08-04:27:
+              Triage used to emit capacity only to synthetic run-audit rows, leaving the task's
+              shared board/API log silent. Mirror genuine live-cap exhaustion onto each queued
+              candidate without awaiting it in the poll; the signature prevents poll spam.
+              */
+              void Promise.all(eligibleIds.map((taskId) => this.store.logEntry(taskId, capacityReason)))
+                .catch((logErr: unknown) => {
+                  planLog.warn(`Failed to write planning capacity reason: ${logErr instanceof Error ? logErr.message : String(logErr)}`);
+                });
             })
             .catch((auditErr: unknown) => {
               planLog.warn(`Failed to write plan-admission-throttled run-audit event: ${auditErr instanceof Error ? auditErr.message : String(auditErr)}`);
