@@ -858,9 +858,11 @@ describe("Cross-platform agent-browser install workflow", () => {
     const packFixture = workflow.jobs?.["pack-fixture"];
     const installSmoke = workflow.jobs?.["install-smoke"];
     expect(packFixture?.["runs-on"]).toBe("ubuntu-latest");
-    // FNXC:CI 2026-07-26-23:05: pack fixture must keep skip-install so the composite
-    // takes the no-store-cache setup-node path (see setup-node-pnpm action).
-    expect(findCompositeSetupStep(packFixture?.steps ?? [])?.with?.["skip-install"]).toBe("true");
+    // The pack fixture builds the full CLI/plugin-SDK publish surface before
+    // packing; the old skip-install path left the publish guard's declarations
+    // absent and never exercised the real consumer boundary.
+    expect(findCompositeSetupStep(packFixture?.steps ?? [])?.with?.["skip-install"]).toBeUndefined();
+    expect(packFixture?.steps?.some((step: any) => step.name === "Build full Fusion CLI package surface")).toBe(true);
     expect(installSmoke?.needs).toBe("pack-fixture");
     expect(installSmoke?.["runs-on"]).toBe("${{ matrix.os }}");
     expect(installSmoke?.strategy?.matrix?.os).toEqual(["ubuntu-latest", "macos-latest", "windows-latest"]);
