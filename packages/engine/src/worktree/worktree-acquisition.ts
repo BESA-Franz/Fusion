@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import {acquireWorktreePathReservation, canonicalizeWorktreePath, type RunMutationContext, type Settings, type Task, type TaskStore, type SecretsStore} from "@fusion/core";
@@ -667,7 +668,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
       );
       if (isInsideWorktreesDir(rootDir, pinnedPath, settings)) {
         try {
-          await removeWorktree({
+          const removal = await removeWorktree({
             rootDir,
             worktreePath: pinnedPath,
             settings,
@@ -675,6 +676,24 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
             taskId: task.id,
             audit: undefined,
           });
+          const staleClassification = classification.ok ? "foreign-branch" : classification.classification;
+          if (!removal.removed && staleClassification !== "unregistered") {
+            /*
+             * An interrupted creation can leave an ordinary directory that is
+             * not registered in Git. Native `git worktree remove` quite
+             * correctly refuses that path, but pinned acquisition owns this
+             * exact task-id directory and must clear it before recreating the
+             * checkout. The path guard above and the classifier's registration
+             * probe keep this cleanup inside the configured worktree root.
+             */
+            await rm(pinnedPath, { recursive: true, force: true });
+            await audit?.git({
+              type: "worktree:remove",
+              target: pinnedPath,
+              metadata: { taskId: task.id, classification: staleClassification, source: "pinned-stale-directory" },
+            });
+            await store.logEntry(task.id, `Removed unregistered stale task-pinned directory ${pinnedPath}`, undefined, runContext);
+          }
         } catch (removeErr) {
           /*
            * FNXC:TaskPinnedWorktrees 2026-07-16-12:30:
