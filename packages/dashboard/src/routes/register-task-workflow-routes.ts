@@ -2387,6 +2387,15 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       // Re-read only after acquiring the recommendation identity lock; this is the queue winner's authority.
       const parent = await scopedStore.getTask(req.params.id).catch(() => null);
       if (!parent || parent.deletedAt) throw notFound("Task not found");
+      const resolveArchiveColumnsForTask = async (taskId: string): Promise<Set<string>> => {
+        try {
+          const ir = await resolveWorkflowIrForTask(scopedStore, taskId);
+          const columns = columnsWithFlag(ir, "archived");
+          return new Set(columns.length > 0 ? columns : ["archived"]);
+        } catch {
+          return new Set(["archived"]);
+        }
+      };
       const completeColumns = await (async () => {
         try {
           const ir = await resolveWorkflowIrForTask(scopedStore, parent.id);
@@ -2436,7 +2445,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         soft-deleted children are historical records, not an actionable Created result; conflict
         rather than silently resurrecting or linking a second child.
         */
-        if (!linked || linked.deletedAt || linked.column === "archived") {
+        const linkedArchiveColumns = linked
+          ? await resolveArchiveColumnsForTask(linked.id)
+          : new Set<string>();
+        if (!linked || linked.deletedAt || linkedArchiveColumns.has(linked.column)) {
           throw conflict("Recommendation link points to an unavailable task");
         }
         return res.status(200).json({ task: linked, parent });
@@ -2451,16 +2463,9 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       */
       const existing = (await scopedStore.listTasks({ slim: false, includeArchived: true, includeDeleted: true }))
         .find((task) => task.proposalClaimId === proposalClaimId);
-      const existingArchiveColumns = await (async () => {
-        if (!existing) return new Set<string>();
-        try {
-          const ir = await resolveWorkflowIrForTask(scopedStore, existing.id);
-          const columns = columnsWithFlag(ir, "archived");
-          return new Set(columns.length > 0 ? columns : ["archived"]);
-        } catch {
-          return new Set(["archived"]);
-        }
-      })();
+      const existingArchiveColumns = existing
+        ? await resolveArchiveColumnsForTask(existing.id)
+        : new Set<string>();
       /*
       FNXC:TaskRecommendations 2026-08-08-08:44:
       Deterministic reconciliation moves a child to its workflow's archived trait, which may be
