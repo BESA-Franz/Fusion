@@ -81,6 +81,21 @@ pgDescribe("moveTaskIf live storage path", () => {
     expect(emittedRoute).toEqual({ id: "node_pc3", source: "task-override" });
   });
 
+  it("invalidates a stale dispatch route when a todo task override changes", async () => {
+    const store = harness.store();
+    const task = await store.createTask({ description: "invalidate stale node route", nodeId: "node-old" });
+    await store.updateTask(task.id, {
+      effectiveNodeId: "node-old",
+      effectiveNodeSource: "task-override",
+    });
+
+    const updated = await store.updateTask(task.id, { nodeId: "node-new" });
+
+    expect(updated).toMatchObject({ nodeId: "node-new" });
+    expect(updated.effectiveNodeId).toBeUndefined();
+    expect(updated.effectiveNodeSource).toBeUndefined();
+  });
+
   it("does not overwrite a route changed by another TaskStore after the predicate snapshot", async () => {
     const store = harness.store();
     const { TaskStore } = await import("../store.js");

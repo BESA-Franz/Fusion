@@ -488,10 +488,25 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       } else if (updates.scopeAutoWiden !== undefined) {
         task.scopeAutoWiden = [...updates.scopeAutoWiden];
       }
-      if (updates.nodeId === null) {
-        task.nodeId = undefined;
-      } else if (updates.nodeId !== undefined) {
-        task.nodeId = updates.nodeId;
+      if (updates.nodeId !== undefined) {
+        const previousNodeId = task.nodeId;
+        task.nodeId = updates.nodeId === null ? undefined : updates.nodeId;
+        /*
+         * A persisted effective route is a dispatch-time snapshot. Changing a
+         * task override while the card is not checked out must invalidate that
+         * snapshot; otherwise the scheduler keeps dispatching to the old node
+         * even though the task's nodeId now points elsewhere. Active WIP
+         * changes are rejected by the node-override guard before this path.
+         */
+        if (
+          task.nodeId !== previousNodeId
+          && updates.effectiveNodeId === undefined
+          && updates.effectiveNodeSource === undefined
+          && !task.checkedOutBy
+        ) {
+          task.effectiveNodeId = undefined;
+          task.effectiveNodeSource = undefined;
+        }
       }
       if (updates.effectiveNodeId === null) {
         task.effectiveNodeId = undefined;
