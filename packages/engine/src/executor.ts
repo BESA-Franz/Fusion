@@ -29,7 +29,7 @@ import { finalizeProvenAutoMergeTask } from "./merge/auto-merge-finalization.js"
 import { mergeEffectiveSettings } from "./project/effective-settings.js";
 import { canExecuteTaskOnNode } from "./project/effective-node.js";
 import { generateFeatureVideo, type GenerateFeatureVideoOptions } from "./review-artifacts/feature-video.js";
-import { moveTaskToReplanColumn, resolvePlannerLanes, resolvePlannerLanesForTaskAsync, resolveReplanTargetColumn } from "./execution/replan-target.js";
+import { moveTaskToReplanColumn, resolvePlannerLanesForTaskAsync, resolveReplanTargetColumn } from "./execution/replan-target.js";
 import { latestPlanReviewTerminalAfterReset } from "./plan-review-log-recovery.js";
 import type { TaskStep, WorkflowIr, WorkflowFieldDefinition, WorkflowColumnAgent, EffectiveAgentInput, WorkflowWorkEngineDispatchResult, WorkflowWorkItem, TaskMoveLanes } from "@fusion/core";
 import { WorkflowGraphTaskRunner, type WorkflowGraphTaskRunResult, type WorkflowColumnBoundaryHooks } from "./workflows/workflow-graph-task-runner.js";
@@ -3159,41 +3159,25 @@ export class TaskExecutor {
    * default board. When the emitter itself could not resolve (`lanes` undefined on the payload), the
    * legacy ids answer, which is exactly what `resolvePlannerLanes` degraded to anyway.
    */
-  private isBackwardMoveOutOfPlanning(taskId: string, from: string, to: string, moveLanes: TaskMoveLanes | undefined): boolean {
+  private isBackwardMoveOutOfPlanning(from: string, to: string, moveLanes: TaskMoveLanes | undefined): boolean {
     /*
-    FNXC:WorkflowResolvedColumns 2026-07-31-23:59 (fallback CHANGED — adopting the better argument
-    from the duplicate PR #3140):
-    The payload is the real path and is preferred. The FALLBACK, for the case where the emitter could
-    not resolve, is the SYNC resolver rather than the legacy literals.
+    FNXC:WorkflowResolvedColumns 2026-08-08 — NO SYNC FALLBACK:
+    The event payload is the only authoritative source available in this synchronous listener. The
+    PostgreSQL sync resolver returns the DEFAULT workflow for custom tasks, so consulting it here
+    silently applies the wrong board and can abort live work after a backward move. If an older event
+    boundary drops the payload, keep the legacy ids as a fail-soft compatibility path rather than
+    pretending that a synchronous resolver can recover the task's workflow.
 
-    I had it the other way round. Falling back to literals reads cleaner and drops these guards off
-    `check-inert-sync-lanes` — but it makes the NO-PAYLOAD path strictly WORSE, because
-    `resolvePlannerLanes` is best-effort (it answers correctly under legacy SQLite, and only degrades
-    to the default board under PostgreSQL) whereas a literal can never be right on a renamed board.
-    Optimising the guard off a ratchet at the cost of the degraded path is scoring the number.
-
-    THESE TWO GUARDS STAY COUNTED by `check-inert-sync-lanes`, which is the honest state: the sync
-    call is still here, so the ratchet should still point at it. `executor.ts` goes 4 -> 2, from the
-    `isPlannerColumnFor` deletion below, not from these.
-
-    That took two corrections to get right, recorded because the intermediate state was wrong in a way
-    that looked authoritative. I predicted "stays counted", the gate reported ZERO, and I wrote the
-    under-reporting down as fact. It was a gate defect, not a property of this code: the scan
-    registered a sync local only from a direct call initializer and did not follow one through a
-    conditional (#3169) or through the object literal these lanes are rebuilt into (#3170). With both
-    hops followed the gate reports 2 here — the original prediction.
-
-    The shape was deliberately NOT rewritten to whatever form the scanner recognised. Payload-first
-    with a sync fallback is correct on the merits, and a guard that pushes authors toward a worse
-    degraded path to keep its own count tidy is a guard doing harm — so the scanner was fixed instead.
+    The emitter already resolves lanes asynchronously before emitting `task:moved`; the remaining
+    fallback is intentionally visible as a literal and therefore remains covered by the lifecycle
+    audits until every event boundary preserves `lanes`.
     */
-    const sync = moveLanes ? undefined : resolvePlannerLanes(this.store, taskId);
     const lanes = {
-      hold: moveLanes?.hold ?? sync?.hold ?? "todo",
-      intake: moveLanes?.intake ?? sync?.intake ?? "triage",
-      wip: moveLanes?.wip ?? sync?.wip ?? "in-progress",
-      review: moveLanes?.review ?? sync?.review ?? "in-review",
-      complete: moveLanes?.complete ?? sync?.complete ?? "done",
+      hold: moveLanes?.hold ?? "todo",
+      intake: moveLanes?.intake ?? "triage",
+      wip: moveLanes?.wip ?? "in-progress",
+      review: moveLanes?.review ?? "in-review",
+      complete: moveLanes?.complete ?? "done",
     };
     if (from !== lanes.hold && from !== lanes.intake) return false;
     const forwardTargets = [lanes.wip, lanes.review, lanes.complete].filter(
@@ -3851,7 +3835,7 @@ export class TaskExecutor {
             }
           }),
         );
-      } else if (this.isBackwardMoveOutOfPlanning(task.id, from, to, lanes)) {
+      } else if (this.isBackwardMoveOutOfPlanning(from, to, lanes)) {
         /*
         FNXC:PlanningEvacuation 2026-07-25-23:00:
         A card pulled BACKWARD out of a planner lane (the reported case: todo → Ideas) must stop all
