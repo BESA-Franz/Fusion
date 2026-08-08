@@ -102,7 +102,6 @@ export class DesktopLocalServerManager {
        */
       /* FNXC:PostgresDesktopLifecycle 2026-07-14-19:10: The legacy desktop entrypoint must reuse TaskStore's PostgreSQL layer so CentralCore does not allocate a duplicate pool or rerun schema bootstrap. */
       const centralCore = new CentralCore(undefined, { asyncLayer: store.getAsyncLayer() });
-      let engineManager: InstanceType<typeof ProjectEngineManager> | undefined;
       let nodeRuntimeLease: Awaited<ReturnType<InstanceType<typeof CentralCore>["acquireNodeRuntimeLease"]>> | undefined;
       const providerSeeding: { dispose?: () => void } = {};
       cleanup = async () => {
@@ -123,13 +122,12 @@ export class DesktopLocalServerManager {
       // FNXC:DesktopNodeIdentity 2026-08-05-02:53: Engine ownership and task-workflow routing must receive one resolution result, including the registry-local identity.
       const { processNodeId, registryLocalNodeId } = await resolveDesktopNodeIdentity(centralCore);
       nodeRuntimeLease = await centralCore.acquireNodeRuntimeLease(processNodeId);
-      engineManager = new ProjectEngineManager(centralCore, { processNodeId });
-      const activeEngineManager = engineManager;
+      const engineManager = new ProjectEngineManager(centralCore, { processNodeId });
       // FNXC:DesktopRuntime 2026-07-03-03:30: never auto-register the runtime root as a project (see engine-runtime.ts).
-      await activeEngineManager.startAll();
-      activeEngineManager.startReconciliation();
+      await engineManager.startAll();
+      engineManager.startReconciliation();
       const rootProject = await resolveDesktopRuntimePrimaryProject(centralCore);
-      const primaryEngine = rootProject ? await activeEngineManager.ensureEngine(rootProject.id) : undefined;
+      const primaryEngine = rootProject ? await engineManager.ensureEngine(rootProject.id) : undefined;
       /*
        * FNXC:DesktopRuntime 2026-07-07-00:00:
        * FN-7622: this legacy path had the same truncated-provider-list gap as local-runtime.ts — wire
@@ -204,7 +202,7 @@ export class DesktopLocalServerManager {
 
       const app = createServer(store as never, {
         ...(primaryEngine ? { engine: primaryEngine } : {}),
-        engineManager: activeEngineManager,
+        engineManager,
         centralCore,
         processNodeId,
         registryLocalNodeId,
@@ -212,7 +210,7 @@ export class DesktopLocalServerManager {
         modelRegistry,
         ...(pluginStore && pluginLoader ? { pluginStore: pluginStore as never, pluginLoader, pluginRunner: pluginLoader } : {}),
         ...(ensureBundledPluginInstalledCallback ? { ensureBundledPluginInstalled: ensureBundledPluginInstalledCallback } : {}),
-        onProjectFirstAccessed: (projectId: string) => activeEngineManager.onProjectAccessed(projectId),
+        onProjectFirstAccessed: (projectId: string) => engineManager.onProjectAccessed(projectId),
         // FNXC:SystemPanel 2026-07-12-14:20: System panel restart via Electron
         // app.relaunch(); see resolveDesktopSystemControl in local-runtime.ts.
         ...(await resolveDesktopSystemControl()),
