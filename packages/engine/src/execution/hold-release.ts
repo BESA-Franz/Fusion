@@ -534,6 +534,15 @@ const heldSince = new Map<string, { reason: string; sinceMs: number }>();
 /** Sweeps slower than this are the delay rather than a symptom of it — log loudly. */
 const SLOW_SWEEP_WARN_MS = 2_000;
 
+/**
+ * Bound the read-only workflow-selection prefetch. A hold-release sweep runs
+ * on the scheduler's event loop; awaiting every selection one after another
+ * makes board size directly add database round-trip latency and can starve
+ * the dashboard HTTP layer. Four concurrent reads reduce that latency while
+ * keeping pressure on the shared PostgreSQL pool bounded.
+ */
+const PREFETCH_CONCURRENCY = 4;
+
 /** Record/refresh the held-since clock for a task and return how long it has been held. */
 function trackHeld(taskId: string, reason: string, nowMs: number): number {
   const existing = heldSince.get(taskId);
@@ -573,13 +582,19 @@ export async function runHoldReleaseSweep(
   const effectiveWorkflowIdByTask = new Map<string, string>();
   /*
   FNXC:HoldReleaseInstrumentation 2026-07-25-14:35:
-  This prefetch is a SEQUENTIAL await per non-archived task, so its cost scales with total board
+  This prefetch used to await one selection per task in series, so its cost scaled with total board
   size rather than with the number of held cards — the prime suspect for a slow sweep on a large
-  board. Timed separately from the sweep total so the two are distinguishable in one log line.
+  board. Keep the reads bounded and timed separately so the two are distinguishable in one log line.
   */
   const prefetchStartedMs = deps.now();
-  for (const t of allTasks) {
-    effectiveWorkflowIdByTask.set(t.id, await effectiveWorkflowId(store, t.id));
+  for (let offset = 0; offset < allTasks.length; offset += PREFETCH_CONCURRENCY) {
+    const batch = allTasks.slice(offset, offset + PREFETCH_CONCURRENCY);
+    const selections = await Promise.all(
+      batch.map(async (t) => [t.id, await effectiveWorkflowId(store, t.id)] as const),
+    );
+    for (const [taskId, workflowId] of selections) {
+      effectiveWorkflowIdByTask.set(taskId, workflowId);
+    }
   }
   const prefetchMs = deps.now() - prefetchStartedMs;
 
