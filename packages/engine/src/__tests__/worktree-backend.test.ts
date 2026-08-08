@@ -914,6 +914,38 @@ describe("removeWorktree", () => {
     expect(audit.git).toHaveBeenCalledWith({ type: "worktree:remove", target: "/repo/.worktrees/fn-1" });
   });
 
+  it("classifies an unregistered task-pinned stale directory so acquisition can recreate it", async () => {
+    const worktreePath = "/repo/.worktrees/fn-1";
+    const validationError = {
+      message: `Command failed: git worktree remove --force ${worktreePath}`,
+      stderr: `fatal: '${worktreePath}' is not a working tree`,
+      status: 128,
+    };
+    execMock
+      .mockRejectedValueOnce(validationError)
+      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "worktree /repo\nbranch refs/heads/main\n", stderr: "" });
+    const audit = { git: vi.fn().mockResolvedValue(undefined) } as any;
+
+    await expect(
+      removeWorktree({
+        rootDir: "/repo",
+        worktreePath,
+        settings: {},
+        audit,
+        taskId: "fn-1",
+        reason: RemovalReason.PoolPrune,
+      }),
+    ).resolves.toMatchObject({
+      removed: false,
+      harmless: true,
+      classification: "not-registered-after-prune",
+    });
+
+    expect(execMock).toHaveBeenNthCalledWith(2, "git worktree prune", expect.objectContaining({ cwd: "/repo" }));
+    expect(execMock).toHaveBeenNthCalledWith(3, "git worktree list --porcelain", expect.objectContaining({ cwd: "/repo" }));
+  });
+
   it("classifies FN-343 nonstandard temp merge worktree remove failures as harmless when porcelain is absent after prune", async () => {
     const tempPath = "/var/folders/demo/T/fusion-ai-merge-fn-327-A5uY3j";
     const validationError = {

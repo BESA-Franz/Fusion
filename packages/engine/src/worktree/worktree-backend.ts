@@ -82,14 +82,32 @@ function isMergeTempCleanupCandidate(input: { worktreePath: string; reason: Remo
   return HARMLESS_MERGE_REMOVE_ERROR_PATTERNS.some((pattern) => pattern.test(detail));
 }
 
+function isPinnedReclaimCandidate(input: {
+  rootDir: string;
+  worktreePath: string;
+  reason: RemovalReason;
+  taskId?: string;
+  settings: Partial<Settings>;
+}, error: unknown): boolean {
+  if (input.reason !== RemovalReason.PoolPrune || !input.taskId) return false;
+  const expectedPath = resolveTaskWorktreePath(input.rootDir, input.settings, input.taskId);
+  if (normalizeComparablePath(expectedPath) !== normalizeComparablePath(input.worktreePath)) return false;
+  return HARMLESS_MERGE_REMOVE_ERROR_PATTERNS.some((pattern) => pattern.test(previewError(error)));
+}
+
 async function classifyHarmlessMergeRemoveFailure(input: {
   rootDir: string;
   worktreePath: string;
   reason: RemovalReason;
   taskId?: string;
+  settings?: Partial<Settings>;
   audit?: RunAuditor;
 }, error: unknown): Promise<WorktreeRemoveOutcome | null> {
-  if (!isMergeTempCleanupCandidate(input, error)) return null;
+  const isMergeTemp = isMergeTempCleanupCandidate(input, error);
+  const isPinnedReclaim = input.settings
+    ? isPinnedReclaimCandidate({ ...input, settings: input.settings }, error)
+    : false;
+  if (!isMergeTemp && !isPinnedReclaim) return null;
 
   const stderrPreview = previewError(error);
   const pathExists = existsSync(input.worktreePath);
@@ -1145,7 +1163,7 @@ export async function removeWorktree(input: {
     }
     return { removed: true, classification: "removed" };
   } catch (error) {
-    const classified = await classifyHarmlessMergeRemoveFailure(input, error);
+    const classified = await classifyHarmlessMergeRemoveFailure({ ...input, settings: input.settings }, error);
     if (classified) return classified;
 
     if (!(error instanceof WorktrunkOperationError) || input.settings.worktrunk?.onFailure !== "fallback-native") {
@@ -1170,7 +1188,7 @@ export async function removeWorktree(input: {
       await input.audit?.git({ type: "worktree:remove", target: input.worktreePath });
       return { removed: true, classification: "removed" };
     } catch (nativeError) {
-      const classified = await classifyHarmlessMergeRemoveFailure(input, nativeError);
+      const classified = await classifyHarmlessMergeRemoveFailure({ ...input, settings: input.settings }, nativeError);
       if (classified) return classified;
       throw nativeError;
     }
