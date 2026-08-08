@@ -70,6 +70,7 @@ import { and, eq, gt, lte, sql } from "drizzle-orm";
  * Each helper targets the project-schema tables via Drizzle and is the async
  * equivalent of the sync this.db.prepare() call sites below.
  */
+import type { QueryHandle } from "../async-stores/async-mission-store-queries.js";
 import {
   writeAgent as writeAgentAsync,
   readAgent as readAgentAsync,
@@ -102,8 +103,40 @@ import {
 } from "../async-stores/async-agent-store.js";
 import { createLogger } from "../process/logger.js";
 import { FsWatchPollController } from "../process/fs-watch-poll-controller.js";
+import {
+  BUILTIN_WORKFLOW_AGENT_BUNDLE_CONFIG,
+  BUILTIN_WORKFLOW_ROLE_AGENT_DEFAULT_LIST,
+  type BuiltinWorkflowRole,
+} from "./workflow-role-agent-defaults.js";
 
 const agentStoreLog = createLogger("agent-store");
+
+/*
+FNXC:WorkflowAgentIdentities 2026-08-08-06:11:
+Only a unique subset of the two managed mirror names is an incomplete default bundle eligible for
+repair. Extra or duplicate inventory entries are operator-owned configuration and must not be
+silently normalized during startup.
+*/
+function isCanonicalOrPartialBuiltinWorkflowBundle(config: InstructionsBundleConfig | undefined): boolean {
+  if (config?.mode !== "managed" || config.entryFile !== "AGENTS.md") return false;
+  return config.files.every((file) => (file === "AGENTS.md" || file === "soul.md")
+    && config.files.indexOf(file) === config.files.lastIndexOf(file));
+}
+
+function isCompleteBuiltinWorkflowBundle(config: InstructionsBundleConfig | undefined): boolean {
+  return isCanonicalOrPartialBuiltinWorkflowBundle(config)
+    && config!.files.length === BUILTIN_WORKFLOW_AGENT_BUNDLE_CONFIG.files.length;
+}
+
+function compareBuiltinWorkflowOwnerAge(a: Agent, b: Agent): number {
+  const aTime = Date.parse(a.createdAt);
+  const bTime = Date.parse(b.createdAt);
+  const aValid = Number.isFinite(aTime);
+  const bValid = Number.isFinite(bTime);
+  if (aValid && bValid && aTime !== bTime) return aTime - bTime;
+  if (aValid !== bValid) return aValid ? -1 : 1;
+  return a.id.localeCompare(b.id);
+}
 
 /** Database row shape returned by SELECT on agentRatings. */
 interface AgentRatingRow {
@@ -731,10 +764,10 @@ export class AgentStore extends EventEmitter {
    * @param name - Agent name to match exactly
    * @returns Matching non-ephemeral agent, or null when none exists
    */
-  async findAgentByName(name: string): Promise<Agent | null> {
+  async findAgentByName(name: string, executor?: QueryHandle): Promise<Agent | null> {
     // FNXC:SqliteFinalRemoval 2026-06-25-23:45:
     // Backend mode: read via async Drizzle helper, filter ephemeral in-memory.
-        const agents = await findAgentRowsByNameAsync(this.asyncLayer!.db, name);
+        const agents = await findAgentRowsByNameAsync(executor ?? this.asyncLayer!.db, name);
     for (const agent of agents) {
       if (!isEphemeralAgent(agent)) {
         return this.parseAgent(agent as unknown as AgentData);
@@ -772,7 +805,7 @@ export class AgentStore extends EventEmitter {
    * @returns The created agent
    * @throws Error if input is invalid or a duplicate non-ephemeral name exists
    */
-  async createAgent(input: AgentCreateInput): Promise<Agent> {
+  async createAgent(input: AgentCreateInput, executor?: QueryHandle): Promise<Agent> {
     if (!input.name?.trim()) {
       throw new Error("Agent name is required");
     }
@@ -783,7 +816,7 @@ export class AgentStore extends EventEmitter {
     const ephemeral = isEphemeralAgent({ metadata, name: input.name, role: roles[0], reportsTo: input.reportsTo });
 
     if (!ephemeral) {
-      const existing = await this.findAgentByName(normalizedName);
+      const existing = await this.findAgentByName(normalizedName, executor);
       if (existing) {
         throw new Error(`Agent with name "${normalizedName}" already exists (agentId: ${existing.id})`);
       }
@@ -838,7 +871,7 @@ export class AgentStore extends EventEmitter {
       ...(resolvedHeartbeatProcedurePath && { heartbeatProcedurePath: resolvedHeartbeatProcedurePath }),
     };
 
-    await this.writeAgent(agent);
+    await this.writeAgent(agent, executor);
     this.emit("agent:created", agent);
 
     return agent;
@@ -1960,11 +1993,14 @@ export class AgentStore extends EventEmitter {
    * @param filter - Optional filter criteria
    * @returns Array of agents
    */
-  async listAgents(filter?: { state?: AgentState; role?: AgentCapability; includeEphemeral?: boolean }): Promise<Agent[]> {
+  async listAgents(
+    filter?: { state?: AgentState; role?: AgentCapability; includeEphemeral?: boolean },
+    executor?: QueryHandle,
+  ): Promise<Agent[]> {
     // FNXC:WorkflowAgentRouting 2026-08-07-03:12:
     // Role-pool membership is canonical multi-tag state, so SQL must not use the
     // deprecated singular projection to exclude a matching durable principal.
-    const agents = await listAgentRowsAsync(this.asyncLayer!.db, { state: filter?.state });
+    const agents = await listAgentRowsAsync(executor ?? this.asyncLayer!.db, { state: filter?.state });
     return agents
       .map((a) => this.parseAgent(a as unknown as AgentData))
       .filter((agent) => !filter?.role || agent.roles.includes(filter.role))
@@ -1978,38 +2014,78 @@ export class AgentStore extends EventEmitter {
    * members with the same tag.
    */
   async provisionBuiltinWorkflowRoleAgents(): Promise<Agent[]> {
-    const provision = async (): Promise<Agent[]> => {
-      const definitions: ReadonlyArray<{ role: AgentCapability; name: string; title: string }> = [
-        { role: "triage", name: "Workflow Planner", title: "Built-in workflow planning owner" },
-        { role: "executor", name: "Workflow Executor", title: "Built-in workflow execution owner" },
-        { role: "reviewer", name: "Workflow Reviewer", title: "Built-in workflow review owner" },
-        { role: "merger", name: "Workflow Merger", title: "Built-in workflow merge owner" },
-      ];
-      const existing = await this.listAgents({ includeEphemeral: true });
-      const builtins = new Map(
-        existing
-          .filter((agent) => agent.metadata?.builtInWorkflowRole === true)
-          .map((agent) => [agent.metadata.workflowRole as AgentCapability, agent]),
-      );
-      const result: Agent[] = [];
-      for (const definition of definitions) {
-        const present = builtins.get(definition.role);
-        if (present) {
-          result.push(present);
-          continue;
+    const provision = async (executor?: QueryHandle): Promise<Agent[]> => {
+      const existing = await this.listAgents({ includeEphemeral: true }, executor);
+      const supportedRoles = new Set<BuiltinWorkflowRole>(BUILTIN_WORKFLOW_ROLE_AGENT_DEFAULT_LIST.map(({ role }) => role));
+      const groups = new Map<BuiltinWorkflowRole, Agent[]>();
+      for (const agent of existing) {
+        const role = agent.metadata?.workflowRole;
+        if (agent.metadata?.builtInWorkflowRole === true && typeof role === "string" && supportedRoles.has(role as BuiltinWorkflowRole)) {
+          const group = groups.get(role as BuiltinWorkflowRole) ?? [];
+          group.push(agent);
+          groups.set(role as BuiltinWorkflowRole, group);
         }
-        result.push(await this.createAgent({
-          name: definition.name,
-          roles: [definition.role],
-          title: definition.title,
-          metadata: { builtInWorkflowRole: true, workflowRole: definition.role },
-          // Disabled scheduling does not make the agent unavailable for graph sessions.
-          runtimeConfig: { enabled: false },
-        }));
+      }
+
+      /*
+      FNXC:WorkflowAgentIdentities 2026-08-08-06:11:
+      Corrupt legacy data can contain multiple provenance owners. Select by creation time then id,
+      not query order, and demote only the two built-in provenance keys so every losing durable
+      agent remains usable with its operator-owned identity and policy intact.
+      */
+      const winners = new Map<BuiltinWorkflowRole, Agent>();
+      for (const [role, group] of groups) {
+        group.sort(compareBuiltinWorkflowOwnerAge);
+        winners.set(role, group[0]!);
+        for (const loser of group.slice(1)) {
+          const { builtInWorkflowRole: _builtIn, workflowRole: _role, ...metadata } = loser.metadata;
+          await this.writeAgent({ ...loser, metadata, updatedAt: new Date().toISOString() }, executor);
+        }
+      }
+
+      const result: Agent[] = [];
+      for (const definition of BUILTIN_WORKFLOW_ROLE_AGENT_DEFAULT_LIST) {
+        let agent = winners.get(definition.role);
+        if (!agent) {
+          agent = await this.createAgent({
+            name: definition.name,
+            roles: [definition.role],
+            title: definition.title,
+            metadata: { builtInWorkflowRole: true, workflowRole: definition.role },
+            runtimeConfig: { enabled: false },
+            instructionsText: definition.instructionsText,
+            soul: definition.soul,
+            bundleConfig: { ...BUILTIN_WORKFLOW_AGENT_BUNDLE_CONFIG, files: [...BUILTIN_WORKFLOW_AGENT_BUNDLE_CONFIG.files] },
+          }, executor);
+        } else {
+          const canonicalOrPartialBundle = isCanonicalOrPartialBuiltinWorkflowBundle(agent.bundleConfig);
+          const customInstructions = Boolean(agent.instructionsPath?.trim())
+            || agent.bundleConfig?.mode === "external"
+            || (agent.bundleConfig !== undefined && !canonicalOrPartialBundle)
+            || (Boolean(agent.instructionsText?.trim()) && agent.instructionsText !== definition.instructionsText);
+          const updates: Partial<Agent> = {};
+          if (!customInstructions && !agent.instructionsText?.trim()) updates.instructionsText = definition.instructionsText;
+          if (!agent.soul?.trim()) updates.soul = definition.soul;
+          // FNXC:WorkflowAgentIdentities 2026-08-08-06:38: Do not rewrite complete canonical
+          // rows on every startup; partial default-owned inventories converge once, while
+          // noncanonical inventories remain operator-owned.
+          if (!customInstructions && !isCompleteBuiltinWorkflowBundle(agent.bundleConfig)) {
+            updates.bundleConfig = { ...BUILTIN_WORKFLOW_AGENT_BUNDLE_CONFIG, files: [...BUILTIN_WORKFLOW_AGENT_BUNDLE_CONFIG.files] };
+          }
+          if (Object.keys(updates).length > 0) {
+            agent = { ...agent, ...updates, updatedAt: new Date().toISOString() };
+            await this.writeAgent(agent, executor);
+          }
+        }
+        result.push(agent);
       }
       return result;
     };
-    if (!this.asyncLayer) return provision();
+    if (!this.asyncLayer) {
+      const agents = await provision();
+      await Promise.all(agents.map((agent) => this.materializeBuiltinWorkflowRoleBundle(agent)));
+      return agents;
+    }
     /*
      * FNXC:WorkflowAgentRouting 2026-08-07-07:16:
      * Startup and onboarding can run in separate engine processes. Serialize the
@@ -2018,10 +2094,28 @@ export class AgentStore extends EventEmitter {
      * duplicate owners. User-created same-role agents are intentionally outside
      * this provenance lock and remain valid pool members.
      */
-    return this.asyncLayer.transactionImmediate(async (tx) => {
+    /*
+     * FNXC:WorkflowAgentRouting 2026-08-07-16:22:
+     * The provisioning work MUST run on `tx`, not on the pool. The lock holder
+     * previously called provision() with no executor, so its reads/writes asked
+     * the pool for a SECOND connection while concurrent callers occupied the
+     * remaining slots blocking on this same advisory lock. With DEFAULT_POOL_MAX=3
+     * that self-deadlocks: the holder can never finish, the waiters can never take
+     * the lock, and every later query — i.e. every DB-backed API route — queues
+     * forever behind an exhausted pool. Keep the lock and the work on one connection.
+     */
+    const agents = await this.asyncLayer.transactionImmediate(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${this.backendProjectId}), hashtext('builtin-workflow-role-provisioning'))`);
-      return provision();
+      return provision(tx);
     });
+    /*
+    FNXC:WorkflowAgentIdentities 2026-08-08-06:11:
+    Commit durable ownership before writing managed mirrors. A filesystem failure leaves a complete,
+    retryable row state; later provisioning can converge without holding an agent file lock while it
+    waits for the project advisory lock.
+    */
+    await Promise.all(agents.map((agent) => this.materializeBuiltinWorkflowRoleBundle(agent)));
+    return agents;
   }
 
   /**
@@ -2813,6 +2907,41 @@ export class AgentStore extends EventEmitter {
     return null;
   }
 
+  /** Seed only missing or blank default-owned mirror files after the provisioning transaction commits. */
+  private async materializeBuiltinWorkflowRoleBundle(agent: Agent): Promise<void> {
+    // FNXC:WorkflowAgentIdentities 2026-08-08-06:38: Take the per-agent file lock only after
+    // the advisory transaction commits, serializing default seeding with dashboard file edits
+    // without creating inverse DB/file waits.
+    return this.withLock(agent.id, async () => {
+      const role = agent.metadata?.workflowRole;
+      const definition = BUILTIN_WORKFLOW_ROLE_AGENT_DEFAULT_LIST.find((candidate) => candidate.role === role);
+      if (!definition || agent.metadata?.builtInWorkflowRole !== true) return;
+      const config = agent.bundleConfig;
+      if (!isCanonicalOrPartialBuiltinWorkflowBundle(config)) return;
+      /*
+      FNXC:WorkflowAgentIdentities 2026-08-08-06:27:
+      A non-default inline body or any path is an operator-owned instruction source, even when a
+      legacy canonical mirror config remains on the row. Do not create default mirror files beside
+      that source: startup may repair default-owned rows, but it must never inject a competing setup.
+      */
+      if (agent.instructionsPath?.trim()
+        || (agent.instructionsText?.trim() && agent.instructionsText !== definition.instructionsText)) return;
+      // FNXC:WorkflowAgentIdentities 2026-08-08-06:38: Follow the public bundle APIs'
+      // legacy/display-name compatibility rule so upgrades never strand existing managed files
+      // in a second directory.
+      const bundleDir = await this.resolveCompatibleBundleDir(agent.id, true);
+      await mkdir(bundleDir, { recursive: true });
+      for (const [file, content] of [["AGENTS.md", definition.instructionsText], ["soul.md", definition.soul]] as const) {
+        const path = join(bundleDir, file);
+        let current = "";
+        try { current = await readFile(path, "utf-8"); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        if (!current.trim()) await writeFile(path, content, "utf-8");
+      }
+    });
+  }
+
   private getCanonicalBundleDir(agent: Agent): string {
     return join(this.agentsDir, getCanonicalAgentInstructionsBundleDirName(agent.name, agent.id));
   }
@@ -3047,10 +3176,10 @@ export class AgentStore extends EventEmitter {
     };
   }
 
-  private async writeAgent(agent: Agent): Promise<void> {
+  private async writeAgent(agent: Agent, executor?: QueryHandle): Promise<void> {
     // FNXC:SqliteFinalRemoval 2026-06-25-23:40:
     // Backend mode: delegate to async Drizzle writeAgent helper.
-        await writeAgentAsync(this.asyncLayer!.db, agent, this.asyncLayer!.projectId);
+        await writeAgentAsync(executor ?? this.asyncLayer!.db, agent, this.asyncLayer!.projectId);
     return;
 }
 

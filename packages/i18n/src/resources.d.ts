@@ -5953,6 +5953,7 @@ export default interface Resources {
         "ephemeralAgentTaskCreationPolicyDeny": "Deny",
         "ephemeralAgentTaskCreationPolicyHint": "No default — unset policy falls back to Allow. Upon validation sends a proposal to your mailbox for one-click approval; Deny rejects follow-up task creation.",
         "ephemeralAgentTaskCreationPolicyUponValidation": "Upon validation",
+        "ephemeralAgentsCompatibilityHint": "Retained for configuration compatibility. Default: enabled. This setting does not affect scheduler assignment or admission, executor workflow dispatch or re-entry, mission start, or workflow-stage principal routing.",
         "fN": "FN",
         "followDashboardLanguage": "Follow dashboard language",
         "general": "General",
@@ -5961,6 +5962,8 @@ export default interface Resources {
         "hardCapOnTheSynthesizedEarlierRoomContext": "Hard cap on the synthesized \"Earlier room context\" summary block. Default: 3000.",
         "learnMore": "Learn more",
         "loweringThisWindowMeansReliabilityMetricsChartsAnd": " Lowering this window means Reliability metrics/charts and the Activity feed will not show history older than the selected range. Per-task task detail history is unaffected. Default: 30 days. ",
+        "maxRecommendationsPerTask": "Maximum recommendations per task",
+        "maxRecommendationsPerTaskHelp": "Default: 3. Set 0 to disable recommendations; choose a whole number from 1 to 20 to cap each completed task.",
         "mobileNavPrimaryItems": "Mobile footer quick actions",
         "mobileNavPrimaryItemsHint": "Default: Dashboard, Tasks, Agents, Missions, Chat, Mailbox. Add eligible destinations; unselected destinations remain in More.",
         "moveNavItemEarlier": "Move {{item}} earlier",
@@ -8018,6 +8021,14 @@ export default interface Resources {
         "title": "Provenance",
         "undoTask": "Undo task"
       },
+      "recommendations": {
+        "create": "Create task",
+        "created": "Created {{taskId}}",
+        "creating": "Creating…",
+        "error": "Could not create task. Try again.",
+        "retry": "Retry creating task",
+        "title": "Recommendations"
+      },
       "recoveryState": "Recovery state",
       "refine": {
         "btn": "Refine",
@@ -8153,6 +8164,7 @@ export default interface Resources {
         "logs": "Logs",
         "model": "Model",
         "pullRequest": "Pull Request",
+        "recommendations": "Recommendations",
         "review": "Review",
         "routing": "Routing",
         "stats": "Stats",

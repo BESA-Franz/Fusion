@@ -22,8 +22,8 @@ import {
 import type { WorkflowRuntimePrimitives } from "../execution/runtime-primitives.js";
 import { ensureWorkflowCompletionSummary } from "./workflow-completion-summary.js";
 import { requiresNonEmptyWorkflowArtifact } from "../execution/required-workflow-artifacts.js";
-import { schedulerLog } from "../logger.js";
 import { findWorkflowNodeInstance, type WorkflowPrincipalRouteResult } from "../agents/workflow-agent-router.js";
+import { schedulerLog } from "../logger.js";
 
 export type WorkflowTaskRuntimeDisposition = "completed" | "failed" | "manual-required";
 
@@ -357,6 +357,14 @@ export class WorkflowTaskRuntime {
     });
   }
 
+  /*
+   * FNXC:WorkflowAgentRouting 2026-08-08-03:20:
+   * The durable write is fire-and-forget by design (the caller's verdict does not depend on it),
+   * but it must not be UNHANDLED. The promise was dropped bare: a rejection — most likely the
+   * store's terminal guard when a peer already closed the row — became an unhandled rejection
+   * while the caller had already returned "failed" as if the row were persisted. Keep it
+   * non-blocking, attach a handler, and say so when it fails.
+   */
   private failWorkItem(workItem: WorkflowWorkItem, reason: string): WorkflowTaskRuntimeResult {
     void Promise.resolve(this.deps.store.transitionWorkflowWorkItem!(workItem.id, "failed", {
       leaseOwner: null,

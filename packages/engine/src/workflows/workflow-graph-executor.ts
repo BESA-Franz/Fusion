@@ -1680,6 +1680,17 @@ export class WorkflowGraphExecutor {
            * the task or convert an operator-visible hold into graph failure.
            */
           if (preflight.outcome === "failure" && typeof preflight.value === "string" && preflight.value.startsWith("workflow-principal-")) {
+            /*
+             * FNXC:WorkflowAgentRouting 2026-08-07-23:05:
+             * Carry the refusal REASON out on the shared context. The suspension marker
+             * itself has no field for it, so throwing alone reduced every distinct routing
+             * refusal — unavailable owner, exhausted pool, missing agent store — to an
+             * indistinguishable `capacity` suspend at the caller. Context survives the
+             * unwind (see the catch below), which is what lets the executor recognise this
+             * as a principal hold, park the continuation `held` instead of leaving it
+             * `running` forever, and name the reason in the task log.
+             */
+            context[`node:${node.id}:principal-hold`] = preflight.value;
             throw new WorkflowGraphSuspended({
               reason: "capacity",
               nodeId: node.id,

@@ -5,8 +5,7 @@ import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const taskStore = join(here, "../task-store");
-const workItemsSourcePath = join(taskStore, "async", "async-workflow-workitems.ts");
-const workItemsSource = readFileSync(workItemsSourcePath, "utf8");
+const workItemsSource = readFileSync(join(taskStore, "async", "async-workflow-workitems.ts"), "utf8");
 const workItemFacadeSource = readFileSync(join(taskStore, "workflow-workitems-ops-2.ts"), "utf8");
 const auditedPersistenceSource = readFileSync(join(taskStore, "project-store-ops.ts"), "utf8");
 const persistenceSource = readFileSync(join(taskStore, "workflow-task-create-ops.ts"), "utf8");
@@ -61,7 +60,7 @@ describe("FN-8592 workflow task serialization protocol", () => {
 
   it("rejects plan-review passed persistence outside the enumerated protected writer set", () => {
     const allowed = new Set([
-      workItemsSourcePath,
+      join(taskStore, "async", "async-workflow-workitems.ts"),
       // The embedded-store conditional fallback reads this same predicate in
       // one SQLite immediate transaction; it is not a PostgreSQL bypass.
       join(taskStore, "workflow-workitems-ops-2.ts"),
@@ -79,7 +78,7 @@ describe("FN-8592 workflow task serialization protocol", () => {
 
   it("rejects unprotected PostgreSQL active-state mutation sites anywhere in core", () => {
     const allowed = new Set([
-      workItemsSourcePath,
+      join(taskStore, "async", "async-workflow-workitems.ts"),
       join(taskStore, "workflow-workitems-ops-2.ts"),
       join(taskStore, "project-store-ops.ts"),
     ]);

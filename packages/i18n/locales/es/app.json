@@ -6000,7 +6000,10 @@
       "taskCreateWorkflow": "",
       "taskCreateWorkflowHelp": "",
       "refinementTaskWorkflow": "",
-      "refinementTaskWorkflowHelp": ""
+      "refinementTaskWorkflowHelp": "",
+      "ephemeralAgentsCompatibilityHint": "",
+      "maxRecommendationsPerTask": "",
+      "maxRecommendationsPerTaskHelp": ""
     },
     "globalGeneral": {
       "andShowsUpdateNoticesInTheCLIAnd": "",
@@ -8020,7 +8023,8 @@
       "worktreeTerminal": "Terminal",
       "workflow": "Flujo de trabajo",
       "summary": "Summary",
-      "cost": ""
+      "cost": "",
+      "recommendations": ""
     },
     "terminal": {
       "loading": ""
@@ -8122,6 +8126,14 @@
       "totalCostLabel": "",
       "totalTokens": "",
       "unknownModel": ""
+    },
+    "recommendations": {
+      "title": "",
+      "created": "",
+      "creating": "",
+      "retry": "",
+      "create": "",
+      "error": ""
     }
   },
   "taskDocuments": {

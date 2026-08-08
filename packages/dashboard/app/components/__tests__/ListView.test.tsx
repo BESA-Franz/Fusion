@@ -2746,6 +2746,62 @@ describe("ListView", () => {
     expect(screen.queryByText("Plan Review")).not.toBeInTheDocument();
   });
 
+  /*
+  FNXC:TaskCardBadgePrecedence 2026-08-06-14:53:
+  Grouped/mobile cards and ungrouped/desktop rows consume the same stale Planning snapshot as the
+  board card. Code Review must be the only lifecycle badge in both DOM branches, with no empty
+  status shell or Planning accessibility label left behind.
+  */
+  it("renders Code Review without Planning in desktop rows and mobile grouped cards", () => {
+    showAllColumnsByDefault();
+    const task = createMockTask({
+      id: "FN-8814-list",
+      column: "in-review",
+      status: "planning",
+      enabledWorkflowSteps: ["plan-review", "code-review"],
+      workflowStepResults: [
+        {
+          workflowStepId: "plan-review",
+          workflowStepName: "Plan Review",
+          status: "passed",
+          startedAt: "2026-08-06T14:40:00.000Z",
+          completedAt: "2026-08-06T14:41:00.000Z",
+        },
+        {
+          workflowStepId: "code-review",
+          workflowStepName: "Code Review",
+          status: "pending",
+          startedAt: "2026-08-06T14:42:00.000Z",
+        },
+      ],
+    });
+
+    const desktopViewport = mockDesktopViewport();
+    try {
+      const { unmount } = renderListView({ tasks: [task] });
+      const row = screen.getByText(task.id).closest("tr") as HTMLElement;
+      expect(within(row).getByTestId("list-code-review-FN-8814-list")).toHaveTextContent("Code Review");
+      expect(within(row).queryByText("Planning")).not.toBeInTheDocument();
+      expect(within(row).queryByLabelText("Planning")).not.toBeInTheDocument();
+      expect(row.querySelectorAll(".list-status-badge")).toHaveLength(1);
+      unmount();
+    } finally {
+      desktopViewport.mockRestore();
+    }
+
+    const mobileViewport = mockMobileViewport();
+    try {
+      renderListView({ tasks: [task] });
+      const card = screen.getByText(task.id).closest(".list-card") as HTMLElement;
+      expect(within(card).getByTestId("list-code-review-FN-8814-list")).toHaveTextContent("Code Review");
+      expect(within(card).queryByText("Planning")).not.toBeInTheDocument();
+      expect(within(card).queryByLabelText("Planning")).not.toBeInTheDocument();
+      expect(card.querySelectorAll(".list-status-badge")).toHaveLength(1);
+    } finally {
+      mobileViewport.mockRestore();
+    }
+  });
+
   it("FN-8475 renders Todo planning in desktop table rows without a placeholder", () => {
     const matchMediaSpy = mockDesktopViewport();
     try {
@@ -2786,6 +2842,67 @@ describe("ListView", () => {
       expect(card.querySelector(".list-status-badge")).toHaveTextContent("Planning");
     } finally {
       matchMediaSpy.mockRestore();
+    }
+  });
+
+  it.each([null, undefined])("renders exactly one WIP lifecycle badge for empty status on desktop and grouped list paths (%s)", (status) => {
+    const task = createMockTask({ id: `FN-8826-${status ?? "null"}`, column: "in-progress", status: status as any });
+
+    const desktopViewport = mockDesktopViewport();
+    try {
+      const { unmount } = renderListView({ tasks: [task] });
+      const row = screen.getByText(task.id).closest("tr") as HTMLElement;
+      expect(row.querySelector(".list-status-badge")).toHaveTextContent(/in progress/i);
+      expect(row.querySelectorAll(".list-status-badge")).toHaveLength(1);
+      unmount();
+    } finally {
+      desktopViewport.mockRestore();
+    }
+
+    const mobileViewport = mockMobileViewport();
+    try {
+      renderListView({ tasks: [task] });
+      const card = screen.getByText(task.id).closest(".list-card") as HTMLElement;
+      expect(card.querySelector(".list-status-badge")).toHaveTextContent(/in progress/i);
+      expect(card.querySelectorAll(".list-status-badge")).toHaveLength(1);
+    } finally {
+      mobileViewport.mockRestore();
+    }
+  });
+
+  it("uses task-specific custom WIP traits and keeps populated status authoritative", () => {
+    const workflowPayload = {
+      ...DEFAULT_LANE_PAYLOAD,
+      defaultWorkflowId: "wf-custom",
+      workflows: [{
+        id: "wf-custom",
+        name: "Custom",
+        columns: [
+          { id: "ideas", name: "Ideas", flags: { intake: true } },
+          { id: "building", name: "Building", flags: { countsTowardWip: true } },
+          { id: "shipped", name: "Shipped", flags: { complete: true } },
+        ],
+      }],
+      taskWorkflowIds: { "FN-8826-custom": "wf-custom" },
+    };
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue(workflowPayload);
+    writeBoardWorkflowsCache(TEST_PROJECT_ID, workflowPayload);
+
+    const desktopViewport = mockDesktopViewport();
+    try {
+      const first = renderListView({
+        tasks: [createMockTask({ id: "FN-8826-custom", column: "building" as any, status: undefined as any })],
+      });
+      const row = screen.getByText("FN-8826-custom").closest("tr") as HTMLElement;
+      expect(row.querySelector(".list-status-badge")).toHaveTextContent("Building");
+      expect(row.querySelectorAll(".list-status-badge")).toHaveLength(1);
+      first.unmount();
+
+      renderListView({ tasks: [createMockTask({ id: "FN-8826-custom", column: "building" as any, status: "executing" })] });
+      const executingRow = screen.getByText("FN-8826-custom").closest("tr") as HTMLElement;
+      expect(executingRow.querySelector(".list-status-badge")).toHaveTextContent("executing");
+    } finally {
+      desktopViewport.mockRestore();
     }
   });
 

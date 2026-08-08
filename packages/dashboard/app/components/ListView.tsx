@@ -22,9 +22,14 @@ import { useViewportMode } from "../hooks/useViewportMode";
 import { mergeTaskSnapshot } from "../hooks/useTasks";
 import { getScopedItem, removeScopedItem, setScopedItem } from "../utils/projectStorage";
 import { ALL_WORKFLOWS_BOARD_VIEW_ID } from "../utils/boardWorkflowSelection";
-import { getRunningOptionalGateBadge, getRunningWorkflowStepLabel, getUnifiedTaskProgress } from "../utils/taskProgress";
+import {
+  getRunningOptionalGateBadge,
+  getRunningWorkflowStepLabel,
+  getUnifiedTaskProgress,
+  isNonPlanningOptionalGateBadge,
+} from "../utils/taskProgress";
 import { isTaskAgentActive } from "../utils/taskActivity";
-import { getTaskStatusBadgeLabel, hasTaskStatusBadge, isTaskPlanningActive, type TaskStatusBadgeContext } from "../utils/taskStatusBadgeLabel";
+import { getTaskStatusBadgeLabel, getTaskWipLifecycleBadgeLabel, hasTaskStatusBadge, isTaskPlanningActive, type TaskStatusBadgeContext } from "../utils/taskStatusBadgeLabel";
 import { isReviewBudgetExhaustedApproval } from "../utils/reviewBudgetApproval";
 import { useConfirm } from "../hooks/useConfirm";
 import { extractDependencyDeleteConflict, extractLineageDeleteConflict } from "../utils/taskDelete";
@@ -34,7 +39,7 @@ import { writeBoardWorkflowsCache } from "../utils/boardWorkflowsCache";
 import { useBoardWorkflows } from "../hooks/useBoardWorkflows";
 import { useUnmappedWorkflowRefetch } from "../hooks/useUnmappedWorkflowRefetch";
 import { TaskContextMenu, buildTaskActionMenuModel, getTaskPrAutomationLabel, type TaskContextMenuColumnMetadata, type TaskMenuActionDescriptor } from "./TaskContextMenu";
-import type { DetailTaskOpenOptions } from "../hooks/useModalManager";
+import type { DetailTaskOpenOptions, DetailTaskTab } from "../hooks/useModalManager";
 import { isTaskReverted, partitionRevertedTasks } from "../utils/taskRevert";
 
 const COLUMN_COLOR_MAP: Record<Column, string> = {
@@ -506,6 +511,7 @@ export function ListView({
     const persistedSelection = readSelectedTaskId(projectId);
     return persistedSelection ? tasks.find((task) => task.id === persistedSelection) ?? null : null;
   });
+  const [selectedTaskInitialTab, setSelectedTaskInitialTab] = useState<DetailTaskTab | undefined>();
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => readSidebarWidth(projectId));
   const splitLayoutRef = useRef<HTMLDivElement>(null);
   const [splitLayoutContainer, setSplitLayoutContainer] = useState<HTMLDivElement | null>(null);
@@ -941,6 +947,11 @@ export function ListView({
     */
     return fromOwnWorkflow ?? (own ? undefined : columnFlagsById.get(task.column));
   }, [columnFlagsById, taskContextMenuColumnsByTaskId]);
+
+  const getTaskColumnDisplayLabel = useCallback((task: Task): string => {
+    return taskContextMenuColumnsByTaskId.get(task.id)?.find((column) => column.id === task.column)?.label
+      ?? getListColumnLabel(task.column);
+  }, [getListColumnLabel, taskContextMenuColumnsByTaskId]);
 
   const getTaskPlanningWorkflowId = useCallback((task: Task): string | null => {
     const taskWorkflowId = (task as Task & { workflowId?: string | null }).workflowId;
@@ -2383,6 +2394,7 @@ export function ListView({
 
       setSelectedTaskId(task.id);
       setSelectedTaskSnapshot(task);
+      setSelectedTaskInitialTab(undefined);
     },
     [closeContextMenu, onOpenDetail, onPopOut, openMobileTasksInPopup, useSinglePaneList]
   );
@@ -2434,11 +2446,18 @@ export function ListView({
     }
     setSelectedTaskId(null);
     setSelectedTaskSnapshot(null);
+    setSelectedTaskInitialTab(undefined);
   }, []);
 
-  const handleEmbeddedOpenDetail = useCallback((nextTask: Task | TaskDetail) => {
+  /*
+  FNXC:SharedBranchPromotionAdvisories 2026-08-08-02:16:
+  FN-8823 Review links can originate inside List's embedded task detail. Retain
+  their requested tab while swapping to the landed member instead of its default.
+  */
+  const handleEmbeddedOpenDetail = useCallback((nextTask: Task | TaskDetail, initialTab?: DetailTaskTab) => {
     setSelectedTaskId(nextTask.id);
     setSelectedTaskSnapshot(nextTask);
+    setSelectedTaskInitialTab(initialTab);
 
     if ("prompt" in nextTask) {
       detailFetchTargetRef.current = null;
@@ -3127,8 +3146,6 @@ export function ListView({
                             && Boolean(task.recentAgentActivityAt)
                             && isAgentActive;
                           const isLivePlanning = isTaskPlanningActive(task, { globalPaused });
-                          const hasStatus = (hasTaskStatusBadge(visualStatus) && visualStatus !== "queued")
-                            || isTransientPlannerActive;
                           const isReviewBudgetExhausted = isReviewBudgetExhaustedApproval(task);
                           /*
                           FNXC:WorkflowLifecycleColumns 2026-07-30-01:10 (corrected): pass the resolved flags so the
@@ -3142,6 +3159,29 @@ export function ListView({
                           const optionalGateBadge = getRunningOptionalGateBadge(task, getTaskColumnFlags(task));
                           const showOptionalGateBadge = Boolean(optionalGateBadge) && isAgentActive;
                           /*
+                          FNXC:TaskCardBadgePrecedence 2026-08-06-14:53:
+                          Keep card and both list render paths on the shared precedence rule: a visible
+                          non-planning review gate displaces only Planning, while Plan Review remains
+                          additive and pause/stuck/approval states keep their existing render branches. The table
+                          path also omits its otherwise-empty dash shell when the gate is the sole badge.
+                          */
+                          const suppressPlanningStatusBadge = showOptionalGateBadge && isNonPlanningOptionalGateBadge(optionalGateBadge);
+                          const isPlanningStatusBadge = !isReviewBudgetExhausted
+                            && (isLivePlanning || isTransientPlannerActive || visualStatus === "planning");
+                          const wipLifecycleBadgeLabel = !isPaused
+                            && !isStuckState
+                            && !isReviewBudgetExhausted
+                            && !showOptionalGateBadge
+                            ? getTaskWipLifecycleBadgeLabel(visualStatus, t, {
+                              isWipColumn: isWipColumnRole(getTaskColumnFlags(task), task.column),
+                              lifecycleLabel: getTaskColumnDisplayLabel(task),
+                            })
+                            : null;
+                          const hasStatus = ((hasTaskStatusBadge(visualStatus) && visualStatus !== "queued")
+                            || isTransientPlannerActive
+                            || Boolean(wipLifecycleBadgeLabel))
+                            && !(suppressPlanningStatusBadge && isPlanningStatusBadge);
+                          /*
                           FNXC:TaskStatusBadge 2026-07-26-14:05:
                           Same rule as TaskCard: the gate badge owns the gate's name ("Plan Review"), so the
                           status badge drops U12's workflow-step-name override while that badge renders and
@@ -3151,7 +3191,8 @@ export function ListView({
                             ? t("tasks.reviewBudgetExhausted", "Review budget exhausted")
                             : isLivePlanning || isTransientPlannerActive
                               ? t("tasks.statusPlanning", "Planning")
-                              : getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null });
+                              : wipLifecycleBadgeLabel
+                                ?? getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null });
                           const hasDependencies = Boolean(task.dependencies && task.dependencies.length > 0);
                           const taskProgress = getTaskProgress(task, getTaskColumnFlags(task));
                           const hasProgress = taskProgress.hasProgress;
@@ -3400,8 +3441,6 @@ export function ListView({
                               && Boolean(task.recentAgentActivityAt)
                               && isAgentActive;
                             const isLivePlanning = isTaskPlanningActive(task, { globalPaused });
-                            const showStatusBadge = (hasTaskStatusBadge(visualStatus) && visualStatus !== "queued")
-                              || isTransientPlannerActive;
                             /*
                           FNXC:WorkflowLifecycleColumns 2026-07-30-01:10 (corrected): pass the resolved flags so the
                           badge's review-lane gate is not the literal — but through `getTaskColumnFlags(task)`, NOT
@@ -3413,13 +3452,30 @@ export function ListView({
                           */
                           const optionalGateBadge = getRunningOptionalGateBadge(task, getTaskColumnFlags(task));
                             const showOptionalGateBadge = Boolean(optionalGateBadge) && isAgentActive;
+                            const suppressPlanningStatusBadge = showOptionalGateBadge && isNonPlanningOptionalGateBadge(optionalGateBadge);
+                            const isPlanningStatusBadge = !isReviewBudgetExhausted
+                              && (isLivePlanning || isTransientPlannerActive || visualStatus === "planning");
+                            const wipLifecycleBadgeLabel = !isPaused
+                              && !isStuckState
+                              && !isReviewBudgetExhausted
+                              && !showOptionalGateBadge
+                              ? getTaskWipLifecycleBadgeLabel(visualStatus, t, {
+                                isWipColumn: isWipColumnRole(getTaskColumnFlags(task), task.column),
+                                lifecycleLabel: getTaskColumnDisplayLabel(task),
+                              })
+                              : null;
+                            const showStatusBadge = ((hasTaskStatusBadge(visualStatus) && visualStatus !== "queued")
+                              || isTransientPlannerActive
+                              || Boolean(wipLifecycleBadgeLabel))
+                              && !(suppressPlanningStatusBadge && isPlanningStatusBadge);
                             // FNXC:TaskStatusBadge 2026-07-26-14:05: the step-name override yields to the
                             // gate badge — see the grouped-card render path above.
                             const statusBadgeLabel = isReviewBudgetExhausted
                               ? t("tasks.reviewBudgetExhausted", "Review budget exhausted")
                               : isLivePlanning || isTransientPlannerActive
                                 ? t("tasks.statusPlanning", "Planning")
-                                : getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null });
+                                : wipLifecycleBadgeLabel
+                                  ?? getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null });
                             const isDragging = draggingTaskId === task.id;
 
                             return (
@@ -3494,7 +3550,7 @@ export function ListView({
                                       >
                                         {statusBadgeLabel}
                                       </span>
-                                    ) : (
+                                    ) : showOptionalGateBadge ? null : (
                                       <span className="list-status-badge">-</span>
                                     )}
                                     {showOptionalGateBadge && optionalGateBadge && (
@@ -3633,6 +3689,7 @@ export function ListView({
                       tasks={tasks}
                       globalPaused={globalPaused}
                       embedded
+                      initialTab={selectedTaskInitialTab}
                       onRequestClose={closeEmbeddedTaskDetail}
                       onOpenDetail={handleEmbeddedOpenDetail}
                       onMoveTask={onMoveTask}

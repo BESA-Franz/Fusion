@@ -12,10 +12,22 @@ Keep `chat` as the public initial-tab id for the renamed Activity task-detail ta
 */
 export type DetailTaskTab =
   | "summary"
+  /*
+  FNXC:TaskRecommendations 2026-08-08-07:15:
+  Recommendations are a shared completed-task detail tab. Keep the public modal-manager union in
+  sync so every dashboard host can request it without falling back to a local-only tab type.
+  */
+  | "recommendations"
   | "chat"
   | "definition"
   | "logs"
+  /*
+  FNXC:SharedBranchPromotionAdvisories 2026-08-08-02:16:
+  FN-8823 routes landed-member promotion advisories directly to their persisted
+  Review items, so every Task Detail host must accept the existing review tab.
+  */
   | "changes"
+  | "review"
   | "comments"
   | "model"
   | "workflow"

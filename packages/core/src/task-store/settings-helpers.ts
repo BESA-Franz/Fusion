@@ -15,17 +15,12 @@ import { validateWorktrunkSettings } from "../config/worktrunk-settings.js";
  */
 export function canonicalizeSettings(settings: Settings): Settings {
   /*
-  FNXC:WorkflowAgentRouting 2026-08-07-06:08:
-  FN-8764 retires the ephemeral workflow-stage switch. Existing settings and stale clients
-  may still send it, but it must be discarded rather than influence durable principal routing.
+  FNXC:WorkflowAgentRouting 2026-08-07-08:45:
+  Strip only the obsolete globalMaxConcurrent key. ephemeralAgentsEnabled remains a persisted
+  compatibility input; scheduler, executor, and mission routing deliberately ignore its value.
   */
-  const { globalMaxConcurrent, ephemeralAgentsEnabled: _retiredEphemeralAgentsEnabled, ...rest } = settings as Settings & {
-    globalMaxConcurrent?: number;
-    ephemeralAgentsEnabled?: boolean;
-  };
-  const base = globalMaxConcurrent !== undefined || _retiredEphemeralAgentsEnabled !== undefined
-    ? (rest as Settings)
-    : settings;
+  const { globalMaxConcurrent, ...rest } = settings as Settings & { globalMaxConcurrent?: number };
+  const base = globalMaxConcurrent !== undefined ? (rest as Settings) : settings;
 
   const canonicalWorktrunk = (() => {
     try {

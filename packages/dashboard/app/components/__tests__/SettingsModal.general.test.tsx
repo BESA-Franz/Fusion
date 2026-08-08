@@ -1369,6 +1369,16 @@ describe("SettingsModal", () => {
   });
 
   describe("General · Project", () => {
+    it("renders the recommendation cap with the default and bounded numeric control", async () => {
+      renderModal({ initialSection: "general" });
+      await waitForSettingsModalReady();
+
+      const input = screen.getByLabelText("Maximum recommendations per task") as HTMLInputElement;
+      expect(input.value).toBe("3");
+      expect(input).toHaveAttribute("min", "0");
+      expect(input).toHaveAttribute("max", "20");
+    });
+
     it("populates the Discussion category selector from the report category route", async () => {
       mockListDiscussionCategories.mockResolvedValue({ categories: [{ id: "DC_ideas", name: "Ideas", slug: "ideas" }] });
       renderModal({ initialSection: "general" });
@@ -1390,6 +1400,43 @@ describe("SettingsModal", () => {
       expect(select.value).toBe("off");
       expect(screen.getByRole("option", { name: "Require changeset (.changeset/*.md)" })).toBeInTheDocument();
       expect(screen.getByRole("option", { name: "Require changelog update (existing changelog)" })).toBeInTheDocument();
+    });
+
+    it("renders the enabled default in routing-inert ephemeral agent compatibility help", async () => {
+      renderModal({ initialSection: "general" });
+      await waitForSettingsModalReady();
+
+      const helpTrigger = screen.getByTestId("settings-help-ephemeralAgentsEnabled");
+      const helpId = helpTrigger.getAttribute("aria-describedby");
+      expect(helpId).toBeTruthy();
+
+      const helpNote = document.getElementById(helpId!);
+      expect(helpNote).toHaveAttribute("role", "note");
+      expect(helpNote).toHaveTextContent(/default: enabled/i);
+      expect(helpNote).toHaveTextContent(/does not affect scheduler assignment or admission, executor workflow dispatch or re-entry, mission start, or workflow-stage principal routing/i);
+    });
+
+    it("persists the routing-inert ephemeral agent compatibility input", async () => {
+      renderModal({ initialSection: "general" });
+      await waitForSettingsModalReady();
+
+      const toggle = screen.getByLabelText("Use ephemeral task-worker agents") as HTMLInputElement;
+      expect(toggle.checked).toBe(true);
+      await settingsModalUser.click(toggle);
+
+      await waitFor(() => expect(mockUpdateSettings).toHaveBeenCalled());
+      expect(mockUpdateSettings.mock.calls[0]?.[0]).toMatchObject({ ephemeralAgentsEnabled: false });
+    });
+
+    it("defaults the ephemeral agent compatibility input when an upgraded record omits it", async () => {
+      const { ephemeralAgentsEnabled: _omitted, ...upgradeSettings } = defaultSettings;
+      mockFetchSettings.mockResolvedValueOnce(upgradeSettings);
+      mockFetchSettingsByScope.mockResolvedValueOnce({ global: defaultSettings, project: {} });
+
+      renderModal({ initialSection: "general" });
+      await waitForSettingsModalReady();
+
+      expect((screen.getByLabelText("Use ephemeral task-worker agents") as HTMLInputElement).checked).toBe(true);
     });
 
     it("reports Quick Chat launcher changes immediately before save", async () => {
@@ -2251,6 +2298,7 @@ describe("SettingsModal", () => {
       expect(payload.taskPrefix).toBeNull();
       expect(payload.autoMerge).toBeNull();
       expect(payload.maxConcurrent).toBeNull();
+      expect(payload.maxRecommendationsPerTask).toBeNull();
       // Global-only key must never appear in a project-scope reset payload.
       expect(payload).not.toHaveProperty("themeMode");
       expect(mockUpdateGlobalSettings).not.toHaveBeenCalled();

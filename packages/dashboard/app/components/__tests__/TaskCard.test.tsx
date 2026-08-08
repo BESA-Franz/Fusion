@@ -400,7 +400,11 @@ describe("TaskCard", () => {
     render(<TaskCard task={staleSnapshotTask} onOpenDetail={noop} addToast={noop} />);
 
     expect(screen.queryByTestId("planner-overseer-state-badge")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("card-header-badges")).not.toBeInTheDocument();
+    if (column === "in-progress") {
+      expect(screen.getByTestId("card-header-badges")).toHaveTextContent(/in progress/i);
+    } else {
+      expect(screen.queryByTestId("card-header-badges")).not.toBeInTheDocument();
+    }
   });
 
   it("does not render an overseer badge for a stale non-idle oversight-off snapshot", () => {
@@ -2472,6 +2476,38 @@ describe("TaskCard", () => {
     expect(screen.getByText("executing")).toBeDefined();
   });
 
+  it.each([null, undefined, "   "])("restores one WIP lifecycle badge for an empty status (%s)", (status) => {
+    const { container } = render(
+      <TaskCard task={makeTask({ status: status as any })} onOpenDetail={noop} addToast={noop} />,
+    );
+
+    expect(container.querySelector(".card-status-badge")).toHaveTextContent(/in progress/i);
+    expect(container.querySelector(".card-status-badge")).toHaveClass("card-status-badge--in-progress");
+    expect(container.querySelectorAll(".card-status-badge")).toHaveLength(1);
+  });
+
+  it("uses a renamed WIP lane label without replacing richer or paused states", () => {
+    const { container, rerender } = render(
+      <TaskCard
+        task={makeTask({ column: "building" as any, status: undefined as any })}
+        taskColumnFlags={{ countsTowardWip: true }}
+        taskMoveColumns={[{ id: "building" as any, label: "Building", flags: { countsTowardWip: true } }]}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+    expect(screen.getByText("Building")).toHaveClass("card-status-badge");
+    expect(container.querySelectorAll(".card-status-badge")).toHaveLength(1);
+
+    rerender(<TaskCard task={makeTask({ status: "executing" })} onOpenDetail={noop} addToast={noop} />);
+    expect(screen.getByText("executing")).toBeInTheDocument();
+    expect(container.querySelector(".card-status-badge")).not.toHaveTextContent(/in progress/i);
+
+    rerender(<TaskCard task={makeTask({ status: undefined as any, paused: true })} onOpenDetail={noop} addToast={noop} />);
+    expect(screen.getByText("paused")).toBeInTheDocument();
+    expect(container.querySelector(".card-status-badge")).not.toHaveTextContent(/in progress/i);
+  });
+
   it("FN-8493 renders the idle Queued to revise label, not Replan, for a bare needs-replan Board card", () => {
     // FNXC:TaskActivity 2026-08-01-17:53: needs-replan holds no concurrency slot, so the card is
     // idle — it renders the descriptive waiting label instead of the live "Revising" copy.
@@ -2706,6 +2742,72 @@ describe("TaskCard", () => {
     expect(badge?.className).toContain("pulsing");
     expect(container.querySelector(".card-progress")).toBeNull();
     expect(container.querySelector(".card-steps-list")).toBeNull();
+  });
+
+  /*
+  FNXC:TaskCardBadgePrecedence 2026-08-06-14:53:
+  The reported snapshot retains Planning while Code Review starts. The real card must render only the
+  review gate; Plan Review remains separately covered as the valid Planning + Plan Review pairing.
+  */
+  it("renders Code Review without a stale Planning status badge", () => {
+    const { container } = render(
+      <TaskCard
+        task={makeTask({
+          id: "FN-8814",
+          column: "in-review",
+          status: "planning" as any,
+          enabledWorkflowSteps: ["plan-review", "code-review"],
+          workflowStepResults: [
+            {
+              workflowStepId: "plan-review",
+              workflowStepName: "Plan Review",
+              status: "passed",
+              startedAt: "2026-08-06T14:40:00.000Z",
+              completedAt: "2026-08-06T14:41:00.000Z",
+            },
+            {
+              workflowStepId: "code-review",
+              workflowStepName: "Code Review",
+              status: "pending",
+              startedAt: "2026-08-06T14:42:00.000Z",
+            },
+          ],
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    expect(screen.getByTestId("card-code-review-FN-8814")).toHaveTextContent("Code Review");
+    expect(screen.queryByText("Planning")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Planning")).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".card-status-badge")).toHaveLength(1);
+  });
+
+  it.each([
+    { name: "pending but not started", result: { status: "pending" as const, startedAt: undefined } },
+    { name: "completed", result: { status: "passed" as const, startedAt: "2026-08-06T14:42:00.000Z", completedAt: "2026-08-06T14:43:00.000Z" } },
+  ])("keeps Planning when Code Review is $name", ({ result }) => {
+    render(
+      <TaskCard
+        task={makeTask({
+          id: `FN-8814-${result.status}`,
+          column: "in-review",
+          status: "planning" as any,
+          enabledWorkflowSteps: ["code-review"],
+          workflowStepResults: [{
+            workflowStepId: "code-review",
+            workflowStepName: "Code Review",
+            ...result,
+          }],
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    expect(screen.getByText("Planning")).toBeInTheDocument();
+    expect(screen.queryByTestId(`card-code-review-FN-8814-${result.status}`)).not.toBeInTheDocument();
   });
 
   it("does not badge Code Review while the card is still in-progress", () => {
