@@ -167,7 +167,7 @@ export interface MainContentProps {
   memoryEnabled: boolean;
   goalsEnabled: boolean;
   handleOpenMission: (missionId: string) => void;
-  openPlanningWithInitialPlanWithNav: (initialPlan: string, workflowId?: string | null) => void;
+  openPlanningWithInitialPlanWithNav: (initialPlan: string, workflowId?: string | null, sourceIssue?: { provider: "github"; repository: string; issueNumber: number; url: string; title?: string }) => void;
   ingestCreatedTasks: (tasks: Task[]) => void;
   nodesEnabled: boolean;
   openWorkflowEditorWithNav: (workflowId?: string) => void;

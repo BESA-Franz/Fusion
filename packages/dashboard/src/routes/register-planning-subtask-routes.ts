@@ -666,6 +666,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
         thinkingLevel,
         clarificationEnabled,
         workflowId,
+        sourceIssue,
       } = req.body;
 
       if (!initialPlan || typeof initialPlan !== "string") {
@@ -692,6 +693,16 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
       if (existingSessionId !== undefined && typeof existingSessionId !== "string") {
         throw badRequest("existingSessionId must be a string when provided");
       }
+
+      const validatedSourceIssue = (() => {
+        if (sourceIssue === undefined) return undefined;
+        if (!sourceIssue || typeof sourceIssue !== "object" || (sourceIssue as { provider?: unknown }).provider !== "github") throw badRequest("sourceIssue must be a GitHub issue");
+        const value = sourceIssue as { repository?: unknown; issueNumber?: unknown; url?: unknown; title?: unknown };
+        if (typeof value.repository !== "string" || typeof value.issueNumber !== "number" || !Number.isInteger(value.issueNumber) || value.issueNumber <= 0 || typeof value.url !== "string") throw badRequest("sourceIssue is malformed");
+        const match = value.url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)\/?$/i);
+        if (!match || match[3] !== String(value.issueNumber) || `${match[1]}/${match[2]}`.toLowerCase() !== value.repository.toLowerCase()) throw badRequest("sourceIssue URL must match repository and issue number");
+        return { provider: "github" as const, repository: value.repository, externalIssueId: String(value.issueNumber), issueNumber: value.issueNumber, url: value.url, ...(typeof value.title === "string" ? { title: value.title } : {}) };
+      })();
 
       if (thinkingLevel !== undefined && !THINKING_LEVELS.includes(thinkingLevel as ThinkingLevel)) {
         throw badRequest("thinkingLevel must be one of: " + THINKING_LEVELS.join(", "));
@@ -776,7 +787,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
             validatedThinkingLevel,
             settings.promptOverrides,
             ctx.options?.pluginRunner as SkillPluginRunner,
-            { ...runtime, workflowId },
+            { ...runtime, workflowId, sourceIssue: validatedSourceIssue },
           );
         } else {
           await startExistingSession(
@@ -788,7 +799,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
             settings.promptOverrides,
             ctx.options?.pluginRunner as SkillPluginRunner,
             undefined,
-            { ...runtime, workflowId },
+            { ...runtime, workflowId, sourceIssue: validatedSourceIssue },
           );
         }
         res.status(201).json({ sessionId: existingSessionId });
@@ -799,6 +810,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
       const planningOptions = {
         projectId,
         workflowId,
+        ...(validatedSourceIssue ? { sourceIssue: validatedSourceIssue } : {}),
         ...runtime,
         pluginRunner: ctx.options?.pluginRunner as SkillPluginRunner,
       };
@@ -1196,6 +1208,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
       const summaryOverride = parsePlanningSummaryOverride(summaryInput);
 
       const { store: scopedStore } = await getProjectContext(req);
+      const projectSettings = await scopedStore.getSettings();
       const {
         getSession,
         getSummary,
@@ -1210,6 +1223,12 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
         planningProposalClaimId,
         formatPlanningTaskHandoff,
       } = await import("../planning.js");
+      const planningSourceModule = await import("../planning.js");
+      const resolvePlanningSourceIssue = "resolvePlanningSourceIssue" in planningSourceModule
+        ? planningSourceModule.resolvePlanningSourceIssue
+        : undefined;
+      const { resolvePlanningGithubTrackingDecision } = await import("../github-tracking.js");
+      const { appendSourceIssueBlock } = await import("../github.js");
 
       let session = await getSession(sessionId);
       let summary = summaryOverride ?? getSummary(sessionId);
@@ -1459,13 +1478,24 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
       const originalRequest = typeof initialPlan === "string" && initialPlan.trim()
         ? initialPlan.trim()
         : summary.description.trim();
-      // Create the task
+      /*
+      FNXC:GitHubPlanningSourceIssue 2026-08-09-08:09:
+      Planning creates truthful GitHub provenance from only persisted structured context or a canonical
+      seed. A live holder suppresses tracking rather than blocking the task, while post-create adoption
+      remains the cross-process authority that prevents duplicate GitHub tracking streams.
+      */
+      // Older route harnesses and pre-rollout planning adapters do not export the additive resolver.
+      const sourceContext = session && typeof resolvePlanningSourceIssue === "function" ? resolvePlanningSourceIssue(session) : undefined;
+      const trackingDecision = sourceContext
+        ? await resolvePlanningGithubTrackingDecision(scopedStore, projectSettings, { owner: sourceContext.sourceIssue.repository.split("/")[0], repo: sourceContext.sourceIssue.repository.split("/")[1], issueNumber: sourceContext.sourceIssue.issueNumber, url: sourceContext.sourceIssue.url ?? "" })
+        : undefined;
+      // Create the task. Provenance is truthful even when a live importer suppresses tracking.
       const task = await scopedStore.createTask({
         title: summary.title,
-        description: planMd,
+        description: sourceContext ? appendSourceIssueBlock(planMd, sourceContext.markdown, sourceContext.sourceIssue.url ?? "") : planMd,
         dependencies: summary.suggestedDependencies.length > 0 ? summary.suggestedDependencies : undefined,
         priority: isTaskPriority(summary.priority) ? summary.priority : DEFAULT_TASK_PRIORITY,
-        source: { sourceType: "api" },
+        ...(sourceContext ? { sourceIssue: sourceContext.sourceIssue, source: { sourceType: "github_import" as const, sourceMetadata: sourceContext.sourceMetadata }, ...(trackingDecision?.githubTracking ? { githubTracking: trackingDecision.githubTracking } : {}) } : { source: { sourceType: "api" as const } }),
         branch: resolvedBranch,
         baseBranch: resolvedBaseBranch,
         /*
@@ -1496,6 +1526,22 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
           () => scopedStore.upsertTaskDocument(task.id, { key: "original-description", content: originalRequest, author: "planning", metadata: { planningSessionId: sessionId, source: "planning-mode-initial-plan" } }),
           { taskId: task.id, sessionId },
         );
+      }
+
+      if (sourceContext) {
+        await runPlanningCreateSideEffect(
+          "Planning create-task GitHub issue document write failed",
+          () => scopedStore.upsertTaskDocument(task.id, { key: "github-issue", content: sourceContext.markdown, author: "planning", metadata: { planningSessionId: sessionId, source: "github-source-issue" } }),
+          { taskId: task.id, sessionId },
+        );
+        await runPlanningCreateSideEffect(
+          "Planning create-task GitHub source log failed",
+          () => scopedStore.logEntry(task.id, "Imported from GitHub", sourceContext.sourceIssue.url),
+          { taskId: task.id, sessionId },
+        );
+        if (trackingDecision?.suppressedByTaskId) {
+          await runPlanningCreateSideEffect("Planning create-task duplicate source issue log failed", () => scopedStore.logEntry(task.id, `Source issue already tracked by ${trackingDecision.suppressedByTaskId}`), { taskId: task.id, sessionId });
+        }
       }
 
       // Log the planning mode creation.
@@ -1619,6 +1665,11 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
 
       const { store: scopedStore } = await getProjectContext(req);
       const { getSession, releaseSession, formatInterviewQA, formatPlanningTaskHandoff, mergePlanningSubtaskDrafts } = await import("../planning.js");
+      const planningSourceModule = await import("../planning.js");
+      const resolvePlanningSourceIssue = "resolvePlanningSourceIssue" in planningSourceModule
+        ? planningSourceModule.resolvePlanningSourceIssue
+        : undefined;
+      const { appendSourceIssueBlock } = await import("../github.js");
 
       const session = await getSession(planningSessionId);
       if (!session) {
@@ -1630,6 +1681,12 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
         throw badRequest("Planning session is not complete");
       }
 
+      /*
+      FNXC:GitHubPlanningSourceIssue 2026-08-09-05:36:
+      A planning breakdown preserves the source text on every child but must not create N source
+      links or tracking streams for one GitHub issue.
+      */
+      const sourceContext = typeof resolvePlanningSourceIssue === "function" ? resolvePlanningSourceIssue(session) : undefined;
       const qaSection = formatInterviewQA(session.history);
       const logDetails = qaSection
         ? `Source: ${session.initialPlan.slice(0, 200)}\n\n${qaSection}`
@@ -1737,7 +1794,7 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
         */
         const task = await scopedStore.createTask({
           title: item.title.trim(),
-          description: planMd,
+          description: sourceContext ? appendSourceIssueBlock(planMd, sourceContext.markdown, sourceContext.sourceIssue.url ?? "") : planMd,
           dependencies: undefined,
           priority: isTaskPriority(item.priority) ? item.priority : DEFAULT_TASK_PRIORITY,
           source: { sourceType: "api", sourceMetadata: { planningSessionId } },

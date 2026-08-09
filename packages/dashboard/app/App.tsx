@@ -1262,8 +1262,8 @@ function AppInner() {
     handleTaskViewChange("planning");
   }, [handleTaskViewChange, modalManager]);
 
-  const openPlanningWithInitialPlanWithNav = useCallback((initialPlan: string, workflowId?: string | null) => {
-    modalManager.openPlanningWithInitialPlan(initialPlan, workflowId);
+  const openPlanningWithInitialPlanWithNav = useCallback((initialPlan: string, workflowId?: string | null, sourceIssue?: { provider: "github"; repository: string; issueNumber: number; url: string; title?: string }) => {
+    modalManager.openPlanningWithInitialPlan(initialPlan, workflowId, sourceIssue);
     handleTaskViewChange("planning");
   }, [handleTaskViewChange, modalManager]);
 

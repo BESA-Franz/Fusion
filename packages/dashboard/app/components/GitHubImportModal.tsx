@@ -50,7 +50,7 @@ interface GitHubImportModalProps {
   onClose: () => void;
   onImport: (task: Task) => void;
   /** Optional because callers without Planning Mode retain the direct-import-only surface. */
-  onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
+  onPlanningMode?: (initialPlan: string, workflowId?: string | null, sourceIssue?: { provider: "github"; repository: string; issueNumber: number; url: string; title?: string }) => void;
   /*
   FNXC:GitHubImport 2026-07-30-12:00:
   Chat is deliberately separate from direct import: it seeds a GitHub issue/PR link in the composer,
@@ -376,10 +376,9 @@ const ISSUES_PAGE_SIZE = 30;
  * Keep this prompt composition pure so every check row carries its repository, PR, branch, status, and details-link evidence.
  */
 /*
-FNXC:GitHubImport 2026-07-30-00:00:
-Operators can choose direct task import or Planning Mode for GitHub issues. Planning receives a
-self-contained issue seed, including the source URL, but intentionally does not establish GitHub
-sourceIssue tracking or deduplication; those remain exclusive to direct import.
+FNXC:GitHubImport 2026-08-09-05:36:
+Planning receives both the canonical seed and structured GitHub provenance so the server can preserve
+issue context and safely adopt the source issue without treating arbitrary prose URLs as links.
 */
 export function buildIssuePlanningSeed(issue: GitHubIssue): string {
   return [
@@ -1191,8 +1190,8 @@ export function GitHubImportModal({ isOpen, onClose, onImport, onPlanningMode, o
     const seed = buildIssuePlanningSeed(selectedIssue);
     // FNXC:GitHubImport 2026-07-30-00:00: Embedded close navigates to Board, so close first and open Planning last to preserve Planning as the final destination.
     onClose();
-    onPlanningMode(seed);
-  }, [activeTab, importing, isUrlImported, issues, onClose, onPlanningMode, selectedIssueNumber]);
+    onPlanningMode(seed, undefined, { provider: "github", repository: `${owner}/${repo}`, issueNumber: selectedIssue.number, url: selectedIssue.html_url, title: selectedIssue.title });
+  }, [activeTab, importing, isUrlImported, issues, onClose, onPlanningMode, owner, repo, selectedIssueNumber]);
 
   const fetchPullDetail = useCallback((force: boolean) => {
     const requestId = ++pullDetailRequestRef.current;

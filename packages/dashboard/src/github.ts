@@ -137,6 +137,56 @@ export function buildGitHubIssueSource(owner: string, repo: string, issue: { num
   };
 }
 
+/*
+FNXC:GitHubPlanningSourceIssue 2026-08-09-05:36:
+Source adoption accepts only the complete seed shape emitted by buildIssuePlanningSeed. A prose URL is
+not provenance: a false link can create GitHub side effects, while a missed link is safely recoverable.
+The planning create path recovers title/body from this persisted seed and never re-fetches GitHub.
+*/
+export function extractSeedIssueContext(initialPlan: string): { title?: string; body?: string; owner: string; repo: string; issueNumber: number; url: string } | null {
+  const lines = initialPlan.split(/\r?\n/);
+  const firstIndex = lines.findIndex((line) => line.trim().length > 0);
+  const lastIndex = lines.findLastIndex((line) => line.trim().length > 0);
+  if (firstIndex < 0 || lastIndex < 0) return null;
+  const titleMatch = lines[firstIndex].match(/^Plan work for GitHub issue:\s*(.*)$/);
+  if (!titleMatch) return null;
+  const descriptionIndex = lines.findIndex((line, index) => index > firstIndex && line === "Issue description:");
+  if (descriptionIndex < 0 || descriptionIndex >= lastIndex) return null;
+  const sourceMatch = lines[lastIndex].match(/^Source:\s*(https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)\/?)(?:\s*)$/i);
+  if (!sourceMatch || Number.parseInt(sourceMatch[4], 10) <= 0) return null;
+  const body = lines.slice(descriptionIndex + 1, lastIndex).join("\n").trim();
+  return {
+    ...(titleMatch[1].trim() ? { title: titleMatch[1].trim() } : {}),
+    ...(body && body !== "(no description)" ? { body } : {}),
+    owner: sourceMatch[2], repo: sourceMatch[3], issueNumber: Number.parseInt(sourceMatch[4], 10), url: sourceMatch[1],
+  };
+}
+
+export function parseGitHubIssueSeedSource(initialPlan: string): { owner: string; repo: string; issueNumber: number; url: string } | null {
+  const context = extractSeedIssueContext(initialPlan);
+  return context ? { owner: context.owner, repo: context.repo, issueNumber: context.issueNumber, url: context.url } : null;
+}
+
+export function buildPlanningSourceIssueContext(input: { owner: string; repo: string; issueNumber: number; url: string; title?: string; body?: string }): { sourceIssue: TaskSourceIssue; sourceMetadata: Record<string, unknown>; markdown: string } {
+  const { sourceIssue, sourceMetadata } = buildGitHubIssueSource(input.owner, input.repo, { number: input.issueNumber, html_url: input.url });
+  const issueLine = input.title ? `- **Issue:** #${input.issueNumber} — ${input.title}` : `- **Issue:** #${input.issueNumber}`;
+  const markdown = ["## Source Issue", "", `- **Repository:** ${input.owner}/${input.repo}`, issueLine, `- **URL:** ${input.url}`, ...(input.body ? ["", "### Original issue description", "", input.body] : [])].join("\n");
+  return { sourceIssue, sourceMetadata, markdown };
+}
+
+export function appendSourceIssueBlock(description: string, markdown: string, issueUrl: string): string {
+  const headings = [...description.matchAll(/^## (?!#).*$/gm)];
+  const urlLine = new RegExp(`^- \\*\\*URL:\\*\\*\\s*${issueUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "im");
+  const hasMatchingBlock = headings.some((heading, index) => {
+    if (!/^## Source Issue\s*$/i.test(heading[0])) return false;
+    const start = (heading.index ?? 0) + heading[0].length;
+    const end = headings[index + 1]?.index ?? description.length;
+    return urlLine.test(description.slice(start, end));
+  });
+  if (hasMatchingBlock) return description;
+  return `${description.trimEnd()}\n\n${markdown}`;
+}
+
 function equalsIgnoreCase(left: string | undefined, right: string | undefined): boolean {
   return Boolean(left && right && left.toLocaleLowerCase() === right.toLocaleLowerCase());
 }

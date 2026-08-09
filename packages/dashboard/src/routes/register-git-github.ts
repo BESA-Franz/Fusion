@@ -20,7 +20,7 @@ import type {
   Task,
   TaskStore,
 } from "@fusion/core";
-import { classifyGhError, getCurrentRepo, isGhAuthenticated, loadWorkspaceConfig, resolveTaskGithubTracking } from "@fusion/core";
+import { classifyGhError, getCurrentRepo, isGhAuthenticated, loadWorkspaceConfig } from "@fusion/core";
 import {
   dropAutostashHandle,
   generateSyntheticRunId,
@@ -46,6 +46,7 @@ import { GitHubClient, buildGitHubIssueSource, isGitHubIssueAlreadyImported, typ
 import { importIssueImageAttachments, githubImagePolicy } from "../issue-image-attachments.js";
 import { GitHubIssueCommentService } from "../github-issue-comment.js";
 import { GitHubTrackingCommentService } from "../github-tracking-comments.js";
+import { resolveImportedIssueGithubTracking } from "../github-tracking.js";
 import { GitHubTrackingStateService } from "../github-tracking-state.js";
 import { GitHubTrackingReconciler, RECONCILE_SCAN_LIMIT } from "../github-tracking-reconciler.js";
 import { GitHubSourceIssueCloseService } from "../github-source-issue-close.js";
@@ -2184,34 +2185,6 @@ async function resolveImportedIssueTranslation(
     // Translation lookup must never break an import.
     return null;
   }
-}
-
-async function resolveImportedIssueGithubTracking(
-  store: TaskStore,
-  projectSettings: Awaited<ReturnType<TaskStore["getSettings"]>>,
-): Promise<{ enabled: true } | undefined> {
-  /*
-  FNXC:GithubImportTracking 2026-07-16-11:22:
-  FN-8115 shares the import request's project settings with translation and tracking, removing duplicate project-store reads after FN-8112 stabilized the prior test setup. The global settings read remains distinct because tracking precedence still requires it.
-  */
-  if (projectSettings.githubLinkImportedIssuesToTracking === true) {
-    /*
-    FNXC:GithubImportTracking 2026-07-01-00:00:
-    The imported-issue linking option is narrower than the general new-task default. Dashboard imports force githubTracking.enabled only for GitHub source issues so the post-create hook adopts sourceIssue instead of opening a separate Fusion tracking issue.
-    */
-    return { enabled: true };
-  }
-  const globalSettings = await store.getGlobalSettingsStore().getSettings();
-  const resolvedTracking = resolveTaskGithubTracking(
-    { githubTracking: undefined },
-    projectSettings,
-    globalSettings,
-  );
-  /*
-  FNXC:GithubImportTracking 2026-06-26-00:00:
-  Dashboard GitHub issue imports must mark tasks tracking-enabled only when project/global defaults resolve on. The post-create hook uses the GitHub sourceIssue to link source_issue_linked and prevents duplicate Fusion-created tracking issues.
-  */
-  return resolvedTracking.enabled ? { enabled: true } : undefined;
 }
 
 export function getDefaultGitHubRepo(store: TaskStore): { owner: string; repo: string } | null {

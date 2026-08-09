@@ -3,7 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { GitHubClient, CreatePrParams, PrComment, isGitHubIssueAlreadyImported, isPrMergeReady } from "../github.js";
+import {
+  appendSourceIssueBlock,
+  buildGitHubIssueSource,
+  buildPlanningSourceIssueContext,
+  extractSeedIssueContext,
+  GitHubClient,
+  CreatePrParams,
+  parseGitHubIssueSeedSource,
+  PrComment,
+  isGitHubIssueAlreadyImported,
+  isPrMergeReady,
+} from "../github.js";
 
 // Mock the gh-cli module from @fusion/core
 vi.mock("@fusion/core", async () => {
@@ -42,6 +53,71 @@ const mockGetCurrentRepo = vi.mocked(getCurrentRepo);
 function createGraphQlBatchPayload(repository: Record<string, unknown>) {
   return JSON.stringify({ data: { repository } });
 }
+
+describe("GitHub planning source issue helpers", () => {
+  const canonicalSeed = [
+    "Plan work for GitHub issue: Preserve original context",
+    "",
+    "Issue description:",
+    "Keep this body verbatim.",
+    "",
+    "Source: https://github.com/Owner/Repo/issues/42",
+  ].join("\n");
+
+  it("parses only the canonical issue-planning seed shape", () => {
+    expect(extractSeedIssueContext(canonicalSeed)).toEqual({
+      title: "Preserve original context",
+      body: "Keep this body verbatim.",
+      owner: "Owner",
+      repo: "Repo",
+      issueNumber: 42,
+      url: "https://github.com/Owner/Repo/issues/42",
+    });
+    expect(parseGitHubIssueSeedSource(`${canonicalSeed}\nExtra prose`)).toBeNull();
+    expect(parseGitHubIssueSeedSource("A prose link https://github.com/owner/repo/issues/42")).toBeNull();
+    expect(parseGitHubIssueSeedSource(canonicalSeed.replace("/issues/42", "/pull/42"))).toBeNull();
+    expect(parseGitHubIssueSeedSource(canonicalSeed.replace("github.com", "example.com"))).toBeNull();
+    expect(parseGitHubIssueSeedSource(canonicalSeed.replace("Issue description:\n", ""))).toBeNull();
+    // The fallback is intentionally an exact seed shape, not a loose prose parser.
+    expect(parseGitHubIssueSeedSource(`  ${canonicalSeed}`)).toBeNull();
+    expect(parseGitHubIssueSeedSource(canonicalSeed.replace("Issue description:", " Issue description:"))).toBeNull();
+    expect(parseGitHubIssueSeedSource(canonicalSeed.replace("\nSource:", "\n Source:"))).toBeNull();
+  });
+
+  it("preserves source context once and omits the empty issue body", () => {
+    const empty = extractSeedIssueContext(canonicalSeed.replace("Keep this body verbatim.", "(no description)"));
+    expect(empty?.body).toBeUndefined();
+    const context = buildPlanningSourceIssueContext({ ...empty!, title: "Preserve original context" });
+    expect(context.sourceIssue).toEqual(buildGitHubIssueSource("Owner", "Repo", {
+      number: 42,
+      html_url: "https://github.com/Owner/Repo/issues/42",
+    }).sourceIssue);
+    expect(context.sourceMetadata).toEqual(buildGitHubIssueSource("Owner", "Repo", {
+      number: 42,
+      html_url: "https://github.com/Owner/Repo/issues/42",
+    }).sourceMetadata);
+    expect(context.markdown).not.toContain("### Original issue description");
+
+    const rich = buildPlanningSourceIssueContext(extractSeedIssueContext(canonicalSeed)!);
+    const description = appendSourceIssueBlock("Generated plan", rich.markdown, rich.sourceIssue.url!);
+    expect(description).toContain("## Source Issue");
+    expect(description).toContain("Keep this body verbatim.");
+    expect(appendSourceIssueBlock(description, rich.markdown, rich.sourceIssue.url!.toUpperCase())).toBe(description);
+
+    const unrelatedUrlAfterAnotherSourceBlock = [
+      "Generated plan",
+      "",
+      "## Source Issue",
+      "",
+      "- **URL:** https://github.com/other/repo/issues/7",
+      "",
+      "## References",
+      "",
+      `- **URL:** ${rich.sourceIssue.url}`,
+    ].join("\n");
+    expect(appendSourceIssueBlock(unrelatedUrlAfterAnotherSourceBlock, rich.markdown, rich.sourceIssue.url!)).toContain("- **Repository:** Owner/Repo");
+  });
+});
 
 describe("GitHubClient", () => {
   let client: GitHubClient;

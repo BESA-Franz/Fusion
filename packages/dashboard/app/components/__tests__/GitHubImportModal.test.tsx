@@ -427,7 +427,41 @@ describe("GitHubImportModal", () => {
     expect(sequence).toEqual(["board", "planning"]);
     expect(destination).toBe("planning");
     expect(onPlanningMode).toHaveBeenCalledTimes(1);
+    expect(onPlanningMode).toHaveBeenCalledWith(
+      buildIssuePlanningSeed(issue),
+      undefined,
+      {
+        provider: "github",
+        repository: "dustinbyrne/kb",
+        issueNumber: issue.number,
+        url: issue.html_url,
+        title: issue.title,
+      },
+    );
     expect(apiImportGitHubIssue).not.toHaveBeenCalled();
+  });
+
+  it("passes structured GitHub source context from the modal Plan action", async () => {
+    const issue = { number: 45, title: "Modal plan", body: "Keep this issue context.", html_url: "https://github.com/dustinbyrne/kb/issues/45", labels: [], state: "open" };
+    const onPlanningMode = vi.fn();
+    vi.mocked(fetchGitRemotes).mockResolvedValueOnce(singleRemote);
+    vi.mocked(apiFetchGitHubIssues).mockResolvedValueOnce([issue]);
+
+    render(<GitHubImportModal isOpen onClose={onClose} onImport={onImport} onPlanningMode={onPlanningMode} tasks={[]} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Select issue #45/i }));
+    fireEvent.click(screen.getByTestId("github-import-action-plan"));
+
+    expect(onPlanningMode).toHaveBeenCalledWith(
+      buildIssuePlanningSeed(issue),
+      undefined,
+      {
+        provider: "github",
+        repository: "dustinbyrne/kb",
+        issueNumber: issue.number,
+        url: issue.html_url,
+        title: issue.title,
+      },
+    );
   });
 
   it("renders Plan only for selectable GitHub issues with Planning Mode", async () => {
