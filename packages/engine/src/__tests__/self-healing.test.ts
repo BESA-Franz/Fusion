@@ -8834,6 +8834,46 @@ describe("SelfHealingManager", () => {
 
       recovery.stop();
     });
+
+    it("skips soft-deleted archive snapshots and continues after a per-task failure", async () => {
+      const deletedTask = {
+        id: "FN-PLAN-DELETED",
+        deletedAt: "2026-01-01T00:00:30.000Z",
+        planningStartedAt: "2026-01-01T00:00:00.000Z",
+      } as Task;
+      const failedTask = {
+        id: "FN-PLAN-ERROR",
+        planningStartedAt: "2026-01-01T00:00:00.000Z",
+      } as Task;
+      const healthyTask = {
+        id: "FN-PLAN-HEALTHY",
+        planningStartedAt: "2026-01-01T00:00:00.000Z",
+        cumulativePlanningMs: 10,
+      } as Task;
+      const updateTaskAtomic = vi.fn(async (id: string, updater: (live: Task) => Partial<Task> | null) => {
+        if (id === failedTask.id) throw new Error("soft-deleted archive snapshot");
+        const patch = updater(healthyTask);
+        if (patch) Object.assign(healthyTask, patch);
+        return patch;
+      });
+      const recoveryStore = createMockStore({
+        listTasks: vi.fn().mockResolvedValue([deletedTask, failedTask, healthyTask]),
+        updateTaskAtomic,
+      });
+      const recovery = new SelfHealingManager(recoveryStore, {
+        rootDir: "/tmp/test-project",
+        getPlanningTaskIds: () => new Set<string>(),
+        hasActivePlanningWorkflowSession: () => false,
+      });
+      vi.setSystemTime(new Date("2026-01-01T00:00:01.000Z"));
+
+      expect(await recovery.finalizeOrphanedPlanningSegments()).toBe(1);
+      expect(updateTaskAtomic).toHaveBeenCalledTimes(2);
+      expect(updateTaskAtomic).not.toHaveBeenCalledWith(deletedTask.id, expect.any(Function));
+      expect(healthyTask).toMatchObject({ planningStartedAt: null, cumulativePlanningMs: 1010 });
+
+      recovery.stop();
+    });
   });
 
   describe("recoverOrphanedPlanningTasks", () => {

@@ -14700,37 +14700,44 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
     const tasks = await this.store.listTasks({});
     let finalized = 0;
     for (const task of tasks) {
-      if (!task.planningStartedAt || planningIds.has(task.id) || this.options.hasActivePlanningWorkflowSession?.(task.id)) continue;
-      let applied = false;
-      const endMs = Date.now();
-      if (typeof this.store.updateTaskAtomic === "function") {
-        await this.store.updateTaskAtomic(task.id, (live) => {
-          if (!live.planningStartedAt || planningIds.has(live.id) || this.options.hasActivePlanningWorkflowSession?.(live.id)) return null;
-          const patch = finalizePlanningSegment(live, endMs);
-          applied = patch.planningStartedAt === null;
-          return patch;
-        });
-      } else {
-        const live = await this.store.getTask(task.id);
-        if (live?.planningStartedAt && !planningIds.has(live.id) && !this.options.hasActivePlanningWorkflowSession?.(live.id)) {
-          const patch = finalizePlanningSegment(live, endMs);
-          if (patch.planningStartedAt === null) { await this.store.updateTask(task.id, patch); applied = true; }
+      // Archived snapshots can still contain the planning marker, but their
+      // corresponding live row is soft-deleted and must never be mutated.
+      if (task.deletedAt || !task.planningStartedAt || planningIds.has(task.id) || this.options.hasActivePlanningWorkflowSession?.(task.id)) continue;
+      try {
+        let applied = false;
+        const endMs = Date.now();
+        if (typeof this.store.updateTaskAtomic === "function") {
+          await this.store.updateTaskAtomic(task.id, (live) => {
+            if (!live.planningStartedAt || planningIds.has(live.id) || this.options.hasActivePlanningWorkflowSession?.(live.id)) return null;
+            const patch = finalizePlanningSegment(live, endMs);
+            applied = patch.planningStartedAt === null;
+            return patch;
+          });
+        } else {
+          const live = await this.store.getTask(task.id);
+          if (live?.planningStartedAt && !planningIds.has(live.id) && !this.options.hasActivePlanningWorkflowSession?.(live.id)) {
+            const patch = finalizePlanningSegment(live, endMs);
+            if (patch.planningStartedAt === null) { await this.store.updateTask(task.id, patch); applied = true; }
+          }
         }
-      }
-      if (applied) {
-        finalized++;
-        // FNXC:TaskTiming 2026-07-30-21:40: this recovery is operator-auditable
-        // without persisting duration prose; the atomically finalized task id
-        // and fixed no-live-owner reason are sufficient forensic evidence.
-        await this.store.recordRunAuditEvent?.({
-          taskId: task.id,
-          agentId: "self-healing",
-          runId: generateSyntheticRunId("orphaned-planning-segment", task.id),
-          domain: "database",
-          mutationType: "task:reconcile-orphaned-planning-segment",
-          target: task.id,
-          metadata: { taskId: task.id, finalizedCount: 1, reason: "no-live-planning-owner" },
-        });
+        if (applied) {
+          finalized++;
+          // FNXC:TaskTiming 2026-07-30-21:40: this recovery is operator-auditable
+          // without persisting duration prose; the atomically finalized task id
+          // and fixed no-live-owner reason are sufficient forensic evidence.
+          await this.store.recordRunAuditEvent?.({
+            taskId: task.id,
+            agentId: "self-healing",
+            runId: generateSyntheticRunId("orphaned-planning-segment", task.id),
+            domain: "database",
+            mutationType: "task:reconcile-orphaned-planning-segment",
+            target: task.id,
+            metadata: { taskId: task.id, finalizedCount: 1, reason: "no-live-planning-owner" },
+          });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.warn(`[self-healing] orphaned planning segment ${task.id} could not be finalized: ${message}`);
       }
     }
     if (finalized === 0) {
