@@ -153,6 +153,23 @@ describe("executor shared-branch autoMerge:false liveness gates", () => {
     expect(sendBack).not.toHaveBeenCalled();
   });
 
+  it("allows pre-merge remediation when project auto-merge is off but the member is not user-held", async () => {
+    const { executor } = makeExecutor({ status: "open", branchName: "mission/M-1980" });
+    const task = makeInReviewTask({ autoMerge: undefined, autoMergeProvenance: "mission" });
+    const sendBack = vi.spyOn(executor as any, "sendTaskBackForFix").mockResolvedValue(undefined);
+
+    await expect((executor as any).requestPreMergeOptionalStepFix(task.id, task, {
+      stepName: "Code Review",
+      feedback: "Please revise",
+      phase: "pre-merge",
+      status: "failed",
+      verdict: "REVISE",
+      nodeId: "code-review",
+    })).resolves.toBe(true);
+
+    expect(sendBack).toHaveBeenCalledOnce();
+  });
+
   it("does not let failed-step recovery reopen an operator-held member", async () => {
     const { executor } = makeExecutor({ status: "open", branchName: "mission/M-1980" });
     const task = makeInReviewTask({
@@ -171,6 +188,26 @@ describe("executor shared-branch autoMerge:false liveness gates", () => {
     await expect(executor.recoverFailedPreMergeWorkflowStep(task)).resolves.toBe(false);
 
     expect(sendBack).not.toHaveBeenCalled();
+  });
+
+  it("allows failed-step recovery for a non-user-held member under project auto-merge off", async () => {
+    const { executor } = makeExecutor({ status: "open", branchName: "mission/M-1980" });
+    const task = makeInReviewTask({
+      autoMerge: undefined,
+      autoMergeProvenance: "mission",
+      workflowStepResults: [{
+        workflowStepId: "code-review",
+        workflowStepName: "Code Review",
+        phase: "pre-merge",
+        status: "failed",
+        output: "Please revise",
+      }],
+    });
+    const sendBack = vi.spyOn(executor as any, "sendTaskBackForFix").mockResolvedValue(undefined);
+
+    await expect(executor.recoverFailedPreMergeWorkflowStep(task)).resolves.toBe(true);
+
+    expect(sendBack).toHaveBeenCalledOnce();
   });
 
   it("holds an open shared group that would integrate directly into main", async () => {
