@@ -43,6 +43,18 @@ interface MessageComposerProps {
 
 const MAX_CONTENT_LENGTH = 2000;
 
+/**
+ * FNXC:NativeStructureProjectIsolation 2026-08-09-05:13:
+ * DataTransfer is controlled by foreign windows and attackers. The parser validates only shape, so
+ * this consumer rejects foreign project refs and stamps unscoped refs before they enter mail metadata.
+ */
+export function resolveDroppedNativeStructureRef(ref: NativeStructureRef | null, projectId?: string): NativeStructureRef | null {
+  if (!ref) return null;
+  if (!projectId) return ref;
+  if (ref.projectId && ref.projectId !== projectId) return null;
+  return { ...ref, projectId };
+}
+
 // ── Component ─────────────────────────────────────────────────────────────
 
 export function MessageComposer({
@@ -166,9 +178,9 @@ export function MessageComposer({
     if (!hasNativeStructureDrag(event.dataTransfer)) return;
     event.preventDefault();
     setIsNativeStructureDragOver(false);
-    const ref = readNativeStructureRef(event.dataTransfer);
+    const ref = resolveDroppedNativeStructureRef(readNativeStructureRef(event.dataTransfer), projectId);
     if (ref) addNativeStructure(ref);
-  }, [addNativeStructure]);
+  }, [addNativeStructure, projectId]);
 
   const scrollTextareaIntoView = useCallback(() => {
     if (typeof textareaRef.current?.scrollIntoView !== "function") {
