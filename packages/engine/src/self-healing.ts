@@ -37,6 +37,7 @@ import { type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PR
   resolveProjectColumnsForRoles,
   REVIEW_ROLES,
   pruneTaskLifecycleEvents,
+  pruneGitHubCheckStatesAsync,
 } from "@fusion/core";
 import { finalizePlanningSegment } from "@fusion/core";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
@@ -898,6 +899,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   private symbolLockNoActionAudited = false;
   private maintenanceTickCounter = 0;
   private readonly taskLifecycleRetentionLastPrunedAt = new Map<string, number>();
+  private readonly githubCheckStateRetentionLastPrunedAt = new Map<string, number>();
   private readonly processBootStartedAt = Date.now();
   private lastDbCorruptionNotifiedAt: number | null = null;
 
@@ -2179,6 +2181,26 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     }
   }
 
+  /*
+  FNXC:PrMergeEventDrivenChecks 2026-08-09-14:35:
+  Scheduled maintenance owns the 14-day core retention window because inactive repositories stop
+  sending webhooks. Failures are diagnostic-only and an empty partition is never substituted.
+  */
+  private async pruneGitHubCheckStatesForMaintenance(): Promise<void> {
+    const layer = this.store.getAsyncLayer();
+    const projectId = layer?.projectId?.trim();
+    if (!layer || !projectId) return;
+    const now = Date.now();
+    const lastPrunedAt = this.githubCheckStateRetentionLastPrunedAt.get(projectId) ?? 0;
+    if (now - lastPrunedAt < 6 * 60 * 60 * 1000) return;
+    try {
+      await pruneGitHubCheckStatesAsync(layer, projectId);
+      this.githubCheckStateRetentionLastPrunedAt.set(projectId, now);
+    } catch (error) {
+      log.warn(`GitHub check-state retention failed for project ${projectId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private isPastInterruptedMergeGrace(task: Task, timeoutMs: number): boolean {
     const updatedAt = task.updatedAt ? Date.parse(task.updatedAt) : 0;
     if (!Number.isFinite(updatedAt) || updatedAt <= 0) return false;
@@ -2551,6 +2573,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           name: "prune-task-lifecycle-events",
           fn: async () => this.pruneTaskLifecycleEventsForMaintenance(),
         },
+        { name: "prune-github-check-states", fn: async () => this.pruneGitHubCheckStatesForMaintenance() },
         { name: "cleanup-orphans", fn: () => this.cleanupOrphans() },
         {
           name: "cleanup-stale-temp-merge-worktrees",

@@ -1890,6 +1890,33 @@ export const deployments = projectSchema.table("deployments", {
   index("idxDeploymentsService").on(t.service),
 ]);
 
+/*
+FNXC:PrMergeEventDrivenChecks 2026-08-09-14:35:
+Persist terminal GitHub CI by mandatory project, repository, and commit identity so event-driven
+required checks cannot admit stale or cross-project results; received_at supports scheduled retention.
+*/
+export const githubCheckStates = projectSchema.table("github_check_states", {
+  id: integer("id").generatedAlwaysAsIdentity().notNull(),
+  projectId: text("project_id").notNull().default(""),
+  repo: text("repo").notNull(),
+  headSha: text("head_sha").notNull(),
+  checkName: text("check_name").notNull(),
+  state: text("state").notNull(),
+  eventKind: text("event_kind"),
+  externalId: text("external_id"),
+  detailsUrl: text("details_url"),
+  reportedAt: text("reported_at").notNull(),
+  receivedAt: text("received_at").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  meta: jsonb("meta"),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.id], name: "github_check_states_pkey" }),
+  uniqueIndex("idxGithubCheckStatesIdentity").on(t.projectId, t.repo, t.headSha, t.checkName),
+  index("idxGithubCheckStatesProjectCommit").on(t.projectId, t.repo, t.headSha),
+  index("idxGithubCheckStatesProjectReceived").on(t.projectId, t.receivedAt),
+]);
+
 export const incidents = projectSchema.table("incidents", {
   id: integer("id").generatedAlwaysAsIdentity().primaryKey(),
   projectId: text("project_id").notNull().default(""),
@@ -2398,7 +2425,7 @@ export const projectTableNames = [
   "milestones", "slices", "mission_features", "ideation_sessions", "ideation_candidates", "mission_events", "plugins",
   "routines", "project_insights", "project_insight_runs", "project_insight_run_events",
   "todo_lists", "todo_items", "usage_events", "plugin_activations",
-  "knowledge_pages", "deployments", "incidents", "ai_sessions", "messages",
+  "knowledge_pages", "deployments", "github_check_states", "incidents", "ai_sessions", "messages",
   "agent_ratings", "chat_sessions", "cli_sessions", "chat_messages",
   "run_audit_events", "mission_contract_assertions", "mission_feature_assertions",
   "mission_validator_runs", "mission_validator_failures",

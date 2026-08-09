@@ -78,6 +78,8 @@ export {
 } from "./ai/openai-models.js";
 export type { OpenAiCodexProviderRegistration } from "./ai/openai-models.js";
 export { resolveRequiredCheckNames } from "./config/required-checks.js";
+export { mergeIngestedCheckStates } from "./config/ingested-checks.js";
+export type { IngestedCheckState, IngestedCheckStateValue, MergeablePrCheck } from "./config/ingested-checks.js";
 export { detectImageMimeFromBytes } from "./i18n/image-mime.js";
 export type { DetectedImageMime } from "./i18n/image-mime.js";
 export {
@@ -2615,6 +2617,14 @@ export {
   releaseIncidentFixTaskClaimAsync,
 } from "./task-store/async/async-monitor.js";
 export type { Deployment as AsyncDeployment, Incident as AsyncIncident } from "./task-store/async/async-monitor.js";
+export {
+  createIngestedCheckResolver,
+  listGitHubCheckStatesAsync,
+  pruneGitHubCheckStatesAsync,
+  recordGitHubCheckStateAsync,
+  GITHUB_CHECK_STATE_RETENTION_MS,
+} from "./task-store/async/async-ci-checks.js";
+export type { GitHubCheckState, GitHubCheckStateInput } from "./task-store/async/async-ci-checks.js";
 
 // FNXC:RuntimeSatelliteCompletion 2026-06-24-23:40:
 // Async AiSessionStore helpers exported for the dashboard AiSessionStore dual-path.

@@ -45,6 +45,8 @@ FNXC:PrMergeRequiredChecks 2026-08-09-07:48:
 The dashboard aliases @fusion/core to this browser-safe barrel. Re-export the pure shared normalizer here so Settings cannot fork name-trimming semantics from the CLI and server merge gates.
 */
 export { resolveRequiredCheckNames } from "./config/required-checks.js";
+export { mergeIngestedCheckStates } from "./config/ingested-checks.js";
+export type { IngestedCheckState, IngestedCheckStateValue, MergeablePrCheck } from "./config/ingested-checks.js";
 
 /*
  * FNXC:WorkflowDeprecation 2026-07-15-16:35:
