@@ -85,6 +85,8 @@ import { type UsageEventInput } from "./tasks/usage-events.js";
 import { assertNotLinkedWorktreeOfExistingProject, assertProjectRootDir } from "./central/project-root-guard.js";
 import { type DistributedTaskIdAllocator } from "./tasks/distributed-task-id.js";
 import { type TaskIdIntegrityReport } from "./tasks/task-id-integrity.js";
+import { AgentStore } from "./agents/agent-store.js";
+import type { IntakeOwnershipExemption } from "./tasks/task-intake-owner-resolver.js";
 
 // file. These are pure behavior-invariant moves — the extracted symbols are
 // byte-identical to their pre-extraction form. store.ts remains the facade and
@@ -502,6 +504,23 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
    * This is the PostgreSQL-backed allocator that handles task ID reservation/commit/abort against the distributed_task_id tables.
    */
   public asyncDistributedTaskIdAllocator: DistributedTaskIdAllocator | null = null;
+
+  /*
+  FNXC:IntakeOwnership 2026-08-09-18:04:
+  Every task create must read the same project-scoped durable-agent snapshot without
+  constructing a disposable AgentStore per row. Reuse this store-owned seam so normal
+  Dashboard, API, CLI, and reserved-ID intake share agent-backend lifecycle ownership.
+  */
+  private intakeOwnerAgentStore: AgentStore | null = null;
+
+  public getIntakeOwnerAgentStore(): AgentStore {
+    if (!this.asyncLayer) throw new Error("Task intake ownership requires an async agent backend");
+    return this.intakeOwnerAgentStore ??= new AgentStore({
+      rootDir: this.rootDir,
+      asyncLayer: this.asyncLayer,
+      projectId: this.asyncLayer.projectId,
+    });
+  }
 
   public agentLogBuffer: Array<{
     taskId: string;
@@ -1090,7 +1109,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   /**
    * FNXC:RuntimeTaskOrchestrationAsync 2026-06-24-13:25:
    */
-  public async _createTaskInternalBackend( input: TaskCreateInput, title: string | undefined, resolvedWorkflowSteps: string[] | undefined, id: string, options?: { createdAt?: string; updatedAt?: string; promptOverride?: string; invokeTaskCreatedHook?: boolean; resolvedEntryColumn?: string; onProposalClaimConflict?: (task: Task) => void; deferTaskCreatedEvent?: boolean; onTaskInserted?: (task: Task) => void; }, ): Promise<Task> {
+  public async _createTaskInternalBackend( input: TaskCreateInput, title: string | undefined, resolvedWorkflowSteps: string[] | undefined, id: string, options?: { createdAt?: string; updatedAt?: string; promptOverride?: string; invokeTaskCreatedHook?: boolean; resolvedEntryColumn?: string; resolvedWorkflowIdForOwnership?: string; onProposalClaimConflict?: (task: Task) => void; deferTaskCreatedEvent?: boolean; onTaskInserted?: (task: Task) => void; ownershipExemption?: IntakeOwnershipExemption; }, ): Promise<Task> {
     return _createTaskInternalBackendImpl(this, input, title, resolvedWorkflowSteps, id, options);
   }
 
@@ -1100,13 +1119,13 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public async _maybeAutoArchiveSameAgentDuplicateBackend( task: Task, input: TaskCreateInput, ): Promise<void> {
     return _maybeAutoArchiveSameAgentDuplicateBackendImpl(this, task, input);
   }
-  async createTask( input: TaskCreateInput, options?: { onSummarize?: (description: string) => Promise<string | null>; settings?: { autoSummarizeTitles?: boolean }; invokeTaskCreatedHook?: boolean; onProposalClaimConflict?: (task: Task) => void; } ): Promise<Task> {
+  async createTask( input: TaskCreateInput, options?: { onSummarize?: (description: string) => Promise<string | null>; settings?: { autoSummarizeTitles?: boolean }; invokeTaskCreatedHook?: boolean; onProposalClaimConflict?: (task: Task) => void; ownershipExemption?: IntakeOwnershipExemption; } ): Promise<Task> {
     return createTaskImpl(this, input, options);
   }
-  async createTaskWithReservedId( input: TaskCreateInput, options: { taskId: string; createdAt?: string; updatedAt?: string; prompt?: string; applyDefaultWorkflowSteps?: boolean; invokeTaskCreatedHook?: boolean; }, ): Promise<Task> {
+  async createTaskWithReservedId( input: TaskCreateInput, options: { taskId: string; createdAt?: string; updatedAt?: string; prompt?: string; applyDefaultWorkflowSteps?: boolean; invokeTaskCreatedHook?: boolean; ownershipExemption?: IntakeOwnershipExemption; }, ): Promise<Task> {
     return createTaskWithReservedIdImpl(this, input, options);
   }
-  public async _createTaskInternal( input: TaskCreateInput, title: string | undefined, resolvedWorkflowSteps: string[] | undefined, id: string, options?: { createdAt?: string; updatedAt?: string; promptOverride?: string; invokeTaskCreatedHook?: boolean; resolvedEntryColumn?: string; onProposalClaimConflict?: (task: Task) => void; deferTaskCreatedEvent?: boolean; onTaskInserted?: (task: Task) => void; }, ): Promise<Task> {
+  public async _createTaskInternal( input: TaskCreateInput, title: string | undefined, resolvedWorkflowSteps: string[] | undefined, id: string, options?: { createdAt?: string; updatedAt?: string; promptOverride?: string; invokeTaskCreatedHook?: boolean; resolvedEntryColumn?: string; resolvedWorkflowIdForOwnership?: string; onProposalClaimConflict?: (task: Task) => void; deferTaskCreatedEvent?: boolean; onTaskInserted?: (task: Task) => void; ownershipExemption?: IntakeOwnershipExemption; }, ): Promise<Task> {
     /*
     FNXC:SqliteDualPathCleanup 2026-07-26-14:05:
     Task create is PostgreSQL-only (layer.transactionImmediate + insertTaskRowInTransaction). The former sync SQLite _createTaskInternalImpl arm is deleted; production always injects AsyncDataLayer.
@@ -3084,6 +3103,8 @@ Issue #2149 requires read-only type filtering to occur in the file-store before 
     return clearTaskWorkflowSelectionImpl(this, taskId);
   }
   async close(): Promise<void> {
+    this.intakeOwnerAgentStore?.close();
+    this.intakeOwnerAgentStore = null;
     return closeImpl(this);
   }
   get fts5Available(): boolean {
