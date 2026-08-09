@@ -56,6 +56,7 @@ import {
 import * as engineModule from "@fusion/engine";
 import { createPlanningBoardTools } from "./planning-board-tools.js";
 import { buildPlanningSourceIssueContext, extractSeedIssueContext } from "./github.js";
+import { extractIssueImageUrls, githubImagePolicy, importIssueImagesFromUrls } from "./issue-image-attachments.js";
 
 // The planning lane has no ambient task; fn_workflow_select therefore has no
 // default target and an agent must pass an explicit task_id.
@@ -75,10 +76,17 @@ type PlanningMcpServers = Awaited<ReturnType<typeof resolveMcpServersForStore>>[
 FNXC:PlanningMode 2026-07-21-09:15:
 Planning questions must never create dashboard Mailbox messages. Retain the optional MessageStore input only as a source-compatible no-op for callers compiled against the prior planning API while route and session code omit every mailbox read/write path.
 */
+export type PlanningSourceIssue = TaskSourceIssue & {
+  title?: string;
+  imageUrls?: string[];
+  commentsUnavailable?: boolean;
+  droppedBodyCount?: number;
+};
+
 type PlanningSessionOptions = {
   projectId?: string;
   /** Structured import provenance; only GitHub is accepted by the route boundary. */
-  sourceIssue?: TaskSourceIssue & { title?: string };
+  sourceIssue?: PlanningSourceIssue;
   ntfyConfig?: PlanningNtfyConfig;
   clarificationEnabled?: boolean;
   /** Workflow selected by the planning entry point; retained for agent rebuilds. */
@@ -336,7 +344,7 @@ export interface DraftInputPayload {
   summarizedFor?: string;
   validated?: boolean;
   workflowId?: string;
-  sourceIssue?: (TaskSourceIssue & { title?: string });
+  sourceIssue?: PlanningSourceIssue;
   createdTaskId?: string;
   createClaimStatus?: "none" | "creating" | "created";
   claimOwnerToken?: string;
@@ -407,7 +415,7 @@ interface Session {
   /** Workflow selected at session start, retained for agent reconstruction. */
   workflowId?: string;
   /** Structured GitHub import provenance persisted in inputPayload. */
-  sourceIssue?: TaskSourceIssue & { title?: string };
+  sourceIssue?: PlanningSourceIssue;
   /** Model override the user picked at draft-create time. Persisted in inputPayload so reopen restores it. */
   draftModelProvider?: string;
   draftModelId?: string;
@@ -497,6 +505,16 @@ export function resolvePlanningSourceIssue(session: Pick<Session, "initialPlan" 
     return buildPlanningSourceIssueContext({ owner, repo, issueNumber: explicit.issueNumber, url: explicit.url, title: enrich?.title ?? explicit.title, body: enrich?.body });
   }
   return seed ? buildPlanningSourceIssueContext(seed) : undefined;
+}
+
+/** Resolve persisted planning image URLs without re-fetching issue data. */
+export function resolvePlanningIssueImageUrls(session: Pick<Session, "initialPlan" | "sourceIssue">): { urls: string[]; commentsUnavailable: boolean; droppedBodyCount: number } {
+  const persisted = session.sourceIssue;
+  // FNXC:GitHubPlanningSourceIssue 2026-08-09-14:51: An empty persisted list is an intentional post-capture result (including L2 drops), not a legacy omission eligible for seed fallback.
+  if (Array.isArray(persisted?.imageUrls)) return { urls: persisted.imageUrls, commentsUnavailable: persisted.commentsUnavailable === true, droppedBodyCount: persisted.droppedBodyCount ?? 0 };
+  const seed = extractSeedIssueContext(session.initialPlan);
+  if (!seed) return { urls: [], commentsUnavailable: false, droppedBodyCount: 0 };
+  return { urls: extractIssueImageUrls(seed.body, githubImagePolicy()), commentsUnavailable: true, droppedBodyCount: 0 };
 }
 
 interface RateLimitEntry {
@@ -4427,6 +4445,13 @@ export async function createTaskFromPlanSession(
     if (sourceContext) {
       await sideEffect("Planning create-task GitHub issue document write failed", () => store.upsertTaskDocument?.(task.id, { key: "github-issue", content: sourceContext.markdown, author: "planning", metadata: { planningSessionId: sessionId, source: "github-source-issue" } }));
       await sideEffect("Planning create-task GitHub source log failed", () => store.logEntry?.(task.id, "Imported from GitHub", sourceContext.sourceIssue.url));
+      const images = resolvePlanningIssueImageUrls(session);
+      /* FNXC:GitHubPlanningSourceIssue 2026-08-09-14:09: CLI planning shares post-create best-effort image download and never reads GitHub at creation time. */
+      await sideEffect("Planning create-task GitHub image import failed", async () => {
+        const result = await importIssueImagesFromUrls(store, task.id, images.urls, githubImagePolicy());
+        if (result.attached) await store.logEntry?.(task.id, `Imported ${result.attached} image attachment${result.attached === 1 ? "" : "s"} from GitHub issue`, sourceContext.sourceIssue.url);
+      });
+      if (images.commentsUnavailable || images.droppedBodyCount) diagnostics.warn("Planning GitHub image capture was partial", { taskId: task.id, issueUrl: sourceContext.sourceIssue.url, commentsUnavailable: images.commentsUnavailable, droppedBodyCount: images.droppedBodyCount });
     }
     if (trackingDecision?.suppressedByTaskId) await sideEffect("Planning create-task duplicate source issue log failed", () => store.logEntry?.(task.id, `Source issue already tracked by ${trackingDecision.suppressedByTaskId}`));
     await sideEffect("Planning create-task log entry failed", () => store.logEntry?.(task.id, "Created via Planning Mode", `Initial plan: ${(session?.initialPlan ?? "").slice(0, 200)}`));

@@ -148,6 +148,7 @@ function createStore() {
     }),
     createTask,
     updateTask: vi.fn().mockResolvedValue(undefined),
+    addAttachment: vi.fn().mockResolvedValue(undefined),
     logEntry: vi.fn().mockResolvedValue(undefined),
     upsertTaskDocument: vi.fn().mockResolvedValue(undefined),
     getGlobalSettingsStore: vi.fn(() => ({ getSettings: vi.fn().mockResolvedValue({}) })),
@@ -226,6 +227,7 @@ describe("Planning Mode plan creation E2E", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     __resetPlanningState();
     __setCreateFnAgent(undefined as never);
   });
@@ -265,6 +267,38 @@ describe("Planning Mode plan creation E2E", () => {
     const replay = await createTaskFromPlanSession(started.body.sessionId, store);
     expect(replay).toMatchObject({ alreadyCreated: true, task: { id: created.task.id } });
     expect(store.createTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("attaches persisted GitHub image URLs through the production CLI planning twin", async () => {
+    const initialPlan = [
+      "Plan work for GitHub issue: Screenshot report",
+      "",
+      "Issue description:",
+      "Captured body.",
+      "",
+      "Source: https://github.com/owner/repo/issues/42",
+    ].join("\n");
+    const started = await post(app, "/api/planning/start", { initialPlan });
+    expect(started.status).toBe(201);
+    const planningSession = await getSession(started.body.sessionId);
+    expect(planningSession).toBeDefined();
+    planningSession!.sourceIssue = {
+      provider: "github",
+      repository: "owner/repo",
+      externalIssueId: "42",
+      issueNumber: 42,
+      url: "https://github.com/owner/repo/issues/42",
+      imageUrls: ["https://github.com/user-attachments/assets/body", "https://github.com/user-attachments/assets/comment"],
+    };
+    const fetchMock = vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "image/png" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const created = await createTaskFromPlanSession(started.body.sessionId, store);
+
+    expect(created.alreadyCreated).toBe(false);
+    expect(store.addAttachment).toHaveBeenCalledTimes(2);
+    expect(store.logEntry).toHaveBeenCalledWith(created.task.id, "Imported 2 image attachments from GitHub issue", "https://github.com/owner/repo/issues/42");
+    expect(fetchMock.mock.calls.every(([url]) => String(url).startsWith("https://github.com/user-attachments/assets/"))).toBe(true);
   });
 
   it("converts the lean running plan into a task without a separate validation step", async () => {

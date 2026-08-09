@@ -241,6 +241,8 @@ describe("planning routes github tracking background dispatch", () => {
       issueNumber: 42,
       url: "https://github.com/owner/repo/issues/42",
       title: "Imported issue",
+      // An image-bearing body with no policy-allowed URL must still mark this as a post-capture session with an explicit empty list.
+      imageBodies: ["![foreign](https://example.com/not-ours.png)"],
     };
 
     const valid = await performRequest(app, "POST", "/planning/start-streaming", JSON.stringify({
@@ -256,6 +258,7 @@ describe("planning routes github tracking background dispatch", () => {
         externalIssueId: "42",
         issueNumber: 42,
         url: sourceIssue.url,
+        imageUrls: [],
       }),
     }));
 
