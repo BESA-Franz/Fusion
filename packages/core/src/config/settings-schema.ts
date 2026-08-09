@@ -608,6 +608,7 @@ export const DEFAULT_PROJECT_SETTINGS = {
   mergeDiffVolumeMinLines: undefined,
   mergeDiffVolumeThreshold: undefined,
   mergeDiffVolumeAllowlist: undefined,
+  requiredChecks: undefined,
   mergeStrategyOverlapBehavior: "flip-to-prefer-branch",
   postMergeAuditMode: "warn",
   mergeAuditAutoRecovery: "ai-assisted",

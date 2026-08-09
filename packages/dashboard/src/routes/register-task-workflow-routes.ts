@@ -1,4 +1,4 @@
-import { createLogger } from "@fusion/core";
+import { createLogger, resolveRequiredCheckNames } from "@fusion/core";
 import type { Request, Response } from "express";
 
 const severityAuditLog = createLogger("dashboard-register-task-workflow-routes");
@@ -6484,7 +6484,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         if (!owner || !repo) {
           throw badRequest("Could not determine GitHub repository for PR review fetch");
         }
-        reviewData = await new GitHubClient(options?.githubToken ?? process.env.GITHUB_TOKEN).getPrReviewDetails(owner, repo, task.prInfo.number);
+        reviewData = await new GitHubClient(options?.githubToken ?? process.env.GITHUB_TOKEN).getPrReviewDetails(owner, repo, task.prInfo.number, { requiredCheckNames: resolveRequiredCheckNames(await scopedStore.getSettings()) });
       } else {
         reviewData = await buildDirectTaskReviewData(task, scopedStore);
       }
@@ -6512,7 +6512,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         if (!owner || !repo) {
           throw badRequest("Could not determine GitHub repository for PR review refresh");
         }
-        reviewData = await new GitHubClient(options?.githubToken ?? process.env.GITHUB_TOKEN).getPrReviewDetails(owner, repo, task.prInfo.number);
+        reviewData = await new GitHubClient(options?.githubToken ?? process.env.GITHUB_TOKEN).getPrReviewDetails(owner, repo, task.prInfo.number, { requiredCheckNames: resolveRequiredCheckNames(await scopedStore.getSettings()) });
       } else {
         reviewData = await buildDirectTaskReviewData(task, scopedStore);
       }
@@ -6561,7 +6561,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         if (!owner || !repo) {
           throw badRequest("Could not determine GitHub repository for PR review fetch");
         }
-        canonicalReviewData = await new GitHubClient(options?.githubToken ?? process.env.GITHUB_TOKEN).getPrReviewDetails(owner, repo, task.prInfo.number);
+        canonicalReviewData = await new GitHubClient(options?.githubToken ?? process.env.GITHUB_TOKEN).getPrReviewDetails(owner, repo, task.prInfo.number, { requiredCheckNames: resolveRequiredCheckNames(await scopedStore.getSettings()) });
       } else {
         canonicalReviewData = await buildDirectTaskReviewData(task, scopedStore);
       }

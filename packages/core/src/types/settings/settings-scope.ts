@@ -1661,6 +1661,12 @@ export interface ProjectSettings {
   mergeDiffVolumeThreshold?: number;
   /** Additional file globs allowlisted by the pre-commit diff-volume gate on top of generated/lockfile patterns. Default applied at read site: []. */
   mergeDiffVolumeAllowlist?: string[];
+  /**
+   * FNXC:PrMergeRequiredChecks 2026-08-09-06:39:
+   * Fusion honors these names independently of GitHub's isRequired flag. Empty preserves
+   * legacy GitHub-delegated behavior; an absent named check blocks zero-suite PR merges.
+   */
+  requiredChecks?: string[];
   /** Controls overlap protection when `mergeConflictStrategy="smart-prefer-main"`
    *  reaches its Attempt 3 fallback. Default: "flip-to-prefer-branch". */
   mergeStrategyOverlapBehavior?: MergeStrategyOverlapBehavior;

@@ -77,6 +77,7 @@ export {
   mergeSupplementalOpenAiCodexModels,
 } from "./ai/openai-models.js";
 export type { OpenAiCodexProviderRegistration } from "./ai/openai-models.js";
+export { resolveRequiredCheckNames } from "./config/required-checks.js";
 export { detectImageMimeFromBytes } from "./i18n/image-mime.js";
 export type { DetectedImageMime } from "./i18n/image-mime.js";
 export {

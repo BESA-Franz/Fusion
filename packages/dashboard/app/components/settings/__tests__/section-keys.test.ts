@@ -143,6 +143,7 @@ describe("settings section-keys registry", () => {
         "mergeConflictStrategy",
         "mergeIntegrationWorktree",
         "mergeStrategy",
+        "requiredChecks",
         "mergeStrategyOverlapBehavior",
         "merger",
         "planApprovalMode",

@@ -273,7 +273,7 @@ describe("processPullRequestMergeTask", () => {
         column: "in-review",
         branchContext: { groupId: "planning:g4", source: "planning", assignmentMode: "shared" },
       };
-      const store = makeStore(task, { baseBranch: "main" });
+      const store = makeStore(task, { baseBranch: "main", requiredChecks: [" build ", "build", ""] });
       (store.getBranchGroup as ReturnType<typeof vi.fn>).mockReturnValue({
         id: "BG-4",
         sourceType: "planning",
@@ -332,6 +332,9 @@ describe("processPullRequestMergeTask", () => {
       );
       expect(github.mergePr).toHaveBeenCalledWith(
         expect.objectContaining({ owner: "central-owner", repo: "central-repo", number: 88, method: "squash" }),
+      );
+      expect(github.getPrMergeStatus).toHaveBeenCalledWith(
+        "central-owner", "central-repo", 88, { requiredCheckNames: ["build"] },
       );
     });
   });
@@ -1684,6 +1687,31 @@ describe("processPullRequestMergeTask", () => {
       expect(result).toBe("merged");
       expect(github.mergePr).toHaveBeenCalled();
     });
+  it("waits for a configured Fusion check, forwards normalized names, and does not merge", async () => {
+    const task: MockTask = {
+      id: "FN-9103", title: "test", description: "desc", column: "in-review",
+      prInfo: { number: 100, url: "https://github.com/x/y/pull/100", status: "open", headBranch: "fusion/fn-9103", baseBranch: "main" },
+    };
+    const store = makeStore(task, { requiredChecks: ["  build ", "build", ""] });
+    const github = {
+      findPrForBranch: vi.fn(), createPr: vi.fn(),
+      getPrMergeStatus: vi.fn(async () => ({
+        prInfo: { ...task.prInfo!, mergeable: "clean" as const }, reviewDecision: null, checks: [],
+        mergeReady: false, blockingReasons: ["required check not reported: build"],
+      })),
+      mergePr: vi.fn(),
+    };
+
+    const result = await processPullRequestMergeTask(store as never, "/repo", task.id, github as never, () => undefined);
+
+    expect(result).toBe("waiting");
+    expect(github.getPrMergeStatus).toHaveBeenCalledWith("owner", "repo", 100, { requiredCheckNames: ["build"] });
+    expect(github.mergePr).not.toHaveBeenCalled();
+    expect((store as { _updates: Array<{ patch: Record<string, unknown> }> })._updates.at(-1)?.patch).toEqual({ status: "awaiting-pr-checks" });
+    expect((store as { _updates: Array<{ patch: Record<string, unknown> }> })._updates.some(
+      (update) => "mergeRetries" in update.patch,
+    )).toBe(false);
+  });
   });
 });
 

@@ -1,4 +1,4 @@
-import { createLogger, resolveWorkflowIrForTask, resolveReviewColumns, resolveReboundTarget } from "@fusion/core";
+import { createLogger, resolveRequiredCheckNames, resolveWorkflowIrForTask, resolveReviewColumns, resolveReboundTarget } from "@fusion/core";
 
 const severityAuditLog = createLogger("dashboard-register-git-github");
 import { type NextFunction, type Request, type Response } from "express";
@@ -2375,9 +2375,29 @@ async function mergeTaskPr(
   const settings = await scopedStore.getSettings();
   const method = resolvePrMergeMethod(settings, task.prInfo, explicitMethod);
   const client = new GitHubClient(token);
+  const requiredCheckNames = resolveRequiredCheckNames(settings);
+  const mergeStatus = await client.getPrMergeStatus(repo.owner, repo.repo, task.prInfo.number, { requiredCheckNames });
+  if (!mergeStatus.mergeReady) {
+    throw conflict(`PR cannot merge: ${mergeStatus.blockingReasons.join("; ")}`);
+  }
+  if (!mergeStatus.prInfo.headOid) {
+    throw conflict("PR cannot merge: GitHub did not provide a head commit ID for the checked PR");
+  }
 
+  /*
+  FNXC:DashboardPrMergeGate 2026-08-09-08:26:
+  A dashboard-requested merge must apply the same configured check policy as automatic
+  merging, then bind GitHub's merge operation to the checked head SHA. This prevents a
+  push after readiness evaluation from merging an unchecked revision without branch protection.
+  */
   try {
-    const mergedPrInfo = await client.mergePr({ owner: repo.owner, repo: repo.repo, number: task.prInfo.number, method });
+    const mergedPrInfo = await client.mergePr({
+      owner: repo.owner,
+      repo: repo.repo,
+      number: task.prInfo.number,
+      method,
+      expectedHeadOid: mergeStatus.prInfo.headOid,
+    });
     const updated = {
       ...task.prInfo,
       ...mergedPrInfo,
@@ -2397,7 +2417,7 @@ async function mergeTaskPr(
   } catch (error) {
     let mergeStatus: Awaited<ReturnType<GitHubClient["getPrMergeStatus"]>> | undefined;
     try {
-      mergeStatus = await client.getPrMergeStatus(repo.owner, repo.repo, task.prInfo.number);
+      mergeStatus = await client.getPrMergeStatus(repo.owner, repo.repo, task.prInfo.number, { requiredCheckNames });
     } catch {
       // A refresh failure cannot invent GitHub state; retain the original command diagnosis.
     }
@@ -2498,8 +2518,8 @@ export async function refreshPrInBackground(
     const taskPrs = task ? getTaskPrList(task) : currentPrInfos;
 
     for (const currentPrInfo of taskPrs) {
-      const reviewSnapshot = await client.getPrReviewSnapshot(owner, repo, currentPrInfo.number);
-      const mergeStatus = await client.getPrMergeStatus(owner, repo, currentPrInfo.number);
+      const reviewSnapshot = await client.getPrReviewSnapshot(owner, repo, currentPrInfo.number, { requiredCheckNames: resolveRequiredCheckNames(await store.getSettings()) });
+      const mergeStatus = await client.getPrMergeStatus(owner, repo, currentPrInfo.number, { requiredCheckNames: resolveRequiredCheckNames(await store.getSettings()) });
       const prior = getTaskPrList(task).find((entry) => entry.number === currentPrInfo.number) ?? currentPrInfo;
       let conflictDiagnostics = mergeStatus.prInfo.conflictDiagnostics;
       if (mergeStatus.prInfo.mergeable === "conflicting" && mergeStatus.prInfo.headBranch && mergeStatus.prInfo.baseBranch) {
@@ -5978,8 +5998,8 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       for (let i = 0; i < prList.length; i += batchSize) {
         const batch = prList.slice(i, i + batchSize);
         const results = await Promise.all(batch.map(async (priorPr) => {
-          const reviewSnapshot = await client.getPrReviewSnapshot(owner, repo, priorPr.number);
-          const mergeStatus = await client.getPrMergeStatus(owner, repo, priorPr.number);
+          const reviewSnapshot = await client.getPrReviewSnapshot(owner, repo, priorPr.number, { requiredCheckNames: resolveRequiredCheckNames(settings) });
+          const mergeStatus = await client.getPrMergeStatus(owner, repo, priorPr.number, { requiredCheckNames: resolveRequiredCheckNames(settings) });
           let conflictDiagnostics = mergeStatus.prInfo.conflictDiagnostics;
           if (mergeStatus.prInfo.mergeable === "conflicting" && mergeStatus.prInfo.headBranch && mergeStatus.prInfo.baseBranch) {
             try {
@@ -6248,7 +6268,7 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       }
 
       const client = new GitHubClient();
-      const snapshot = await client.getPrReviewSnapshot(owner, repo, primaryPr.number);
+      const snapshot = await client.getPrReviewSnapshot(owner, repo, primaryPr.number, { requiredCheckNames: resolveRequiredCheckNames(await scopedStore.getSettings()) });
       const fusionThread = (task.comments ?? []).filter((comment) =>
         comment.source === "github-review" || comment.source === "github-review-comment"
       );
@@ -6322,7 +6342,7 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       }
 
       const client = new GitHubClient();
-      const checksResult = await client.getAllPrChecks(owner, repo, primaryPr.number);
+      const checksResult = await client.getAllPrChecks(owner, repo, primaryPr.number, { requiredCheckNames: resolveRequiredCheckNames(await scopedStore.getSettings()) });
 
       res.json({
         checks: checksResult.checks,

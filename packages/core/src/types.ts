@@ -41,6 +41,12 @@ export type { GitlabConfigSettingsSource, ResolvedGitlabConfig, ResolveGitlabCon
 export { validateMcpServerDefinitionDetailed, validateMcpServerDefinitionsDetailed } from "./config/settings-validation.js";
 
 /*
+FNXC:PrMergeRequiredChecks 2026-08-09-07:48:
+The dashboard aliases @fusion/core to this browser-safe barrel. Re-export the pure shared normalizer here so Settings cannot fork name-trimming semantics from the CLI and server merge gates.
+*/
+export { resolveRequiredCheckNames } from "./config/required-checks.js";
+
+/*
  * FNXC:WorkflowDeprecation 2026-07-15-16:35:
  * Keep deprecated IDs browser-safe because Settings loads the management list
  * (including disabled built-ins) but must not re-offer retired workflows for new

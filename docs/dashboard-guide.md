@@ -2415,3 +2415,8 @@ The Review tab shows a custom workflow result only when its selected workflow de
 ### Workflow agent routing
 
 Agent creation and detail settings support a primary role plus additional role tags. Workflow review prompts expose a node-local reviewer override and retain a missing configured ID visibly rather than clearing it. Task workflow-stage identity is distinct from assigned ownership: a stage badge identifies the currently fenced principal while active, then clears when its work item terminates.
+
+
+### Pull-request required checks
+
+In **Settings → Merge**, pull-request mode offers **Required pull-request checks**. Enter comma-separated GitHub check names to make Fusion wait for those names independently of repository rulesets. The PR review surfaces show the same missing, pending, failed, or truncated-check-list reasons used by the merge gate. **Reset this menu** clears the setting.

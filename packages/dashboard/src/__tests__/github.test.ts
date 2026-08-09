@@ -1823,6 +1823,94 @@ describe("GitHubClient", () => {
     });
   });
 
+  describe("requiredChecks transport enforcement", () => {
+    const ghPr = {
+      number: 42, url: "https://github.com/owner/repo/pull/42", title: "Ready PR", state: "OPEN",
+      reviewDecision: null, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",
+      baseRefName: "main", headRefName: "fusion/fn-8855",
+    };
+    const apiPayload = (nodes: unknown[], hasNextPage = false) => ({
+      data: { repository: { pullRequest: {
+        ...ghPr,
+        comments: { totalCount: 0 },
+        commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes, pageInfo: { hasNextPage } } } } }] },
+      } } },
+    });
+
+    it("fails closed for an absent configured check through the gh transport", async () => {
+      mockRunGhJsonAsync.mockResolvedValueOnce(ghPr).mockResolvedValueOnce([]);
+      const ghClient = new GitHubClient({ forceMode: "gh-cli" });
+
+      const result = await ghClient.getPrMergeStatus("owner", "repo", 42, { requiredCheckNames: ["build"] });
+
+      expect(result.mergeReady).toBe(false);
+      expect(result.blockingReasons).toContain("required check not reported: build");
+      expect(mockRunGhJsonAsync).toHaveBeenLastCalledWith(expect.not.arrayContaining(["--required"]));
+    });
+
+    it("fails closed when the gh unfiltered check read is swallowed", async () => {
+      mockRunGhJsonAsync.mockResolvedValueOnce(ghPr).mockRejectedValueOnce(new Error("checks pending"));
+      const ghClient = new GitHubClient({ forceMode: "gh-cli" });
+
+      const result = await ghClient.getPrMergeStatus("owner", "repo", 42, { requiredCheckNames: ["build"] });
+
+      expect(result.mergeReady).toBe(false);
+      expect(result.blockingReasons).toContain("required check not reported: build");
+    });
+
+    it("preserves the required-only gh request when no Fusion names are configured", async () => {
+      mockRunGhJsonAsync.mockResolvedValueOnce(ghPr).mockResolvedValueOnce([]);
+      const ghClient = new GitHubClient({ forceMode: "gh-cli" });
+
+      const result = await ghClient.getPrMergeStatus("owner", "repo", 42);
+
+      expect(result.mergeReady).toBe(true);
+      expect(mockRunGhJsonAsync).toHaveBeenLastCalledWith(expect.arrayContaining(["--required"]));
+    });
+
+    it("fails closed for an absent configured check through token while default token filtering remains unchanged", async () => {
+      const fetchMock = vi.spyOn(global, "fetch" as any).mockResolvedValueOnce({
+        ok: true, json: async () => apiPayload([]),
+      } as any).mockResolvedValueOnce({
+        ok: true,
+        json: async () => apiPayload([{ __typename: "CheckRun", name: "optional", status: "COMPLETED", conclusion: "CANCELLED", isRequired: false }]),
+      } as any);
+      const tokenClient = new GitHubClient({ token: "ghp_token", forceMode: "token" });
+
+      const blocked = await tokenClient.getPrMergeStatus("owner", "repo", 42, { requiredCheckNames: ["build"] });
+      const legacy = await tokenClient.getPrMergeStatus("owner", "repo", 42);
+
+      expect(blocked.mergeReady).toBe(false);
+      expect(blocked.blockingReasons).toContain("required check not reported: build");
+      expect(legacy.mergeReady).toBe(true);
+      expect(legacy.checks).toEqual([]);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("fails closed for a truncated token check list and preserves names through gh fallback", async () => {
+      const fetchMock = vi.spyOn(global, "fetch" as any).mockResolvedValue({
+        ok: true,
+        json: async () => apiPayload([], true),
+      } as any);
+      mockRunGhJsonAsync.mockRejectedValueOnce(new Error("gh unavailable"));
+      const fallbackClient = new GitHubClient({ token: "ghp_token", forceMode: undefined });
+
+      const fallback = await fallbackClient.getPrMergeStatus("owner", "repo", 42, { requiredCheckNames: ["build"] });
+      expect(fallback.mergeReady).toBe(false);
+      expect(fallback.blockingReasons).toContain("required check list truncated; cannot confirm: build");
+
+      mockRunGhJsonAsync.mockReset();
+      const tokenClient = new GitHubClient({ token: "ghp_token", forceMode: "token" });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => apiPayload([{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS", isRequired: false }]),
+      } as any);
+      const ready = await tokenClient.getPrMergeStatus("owner", "repo", 42, { requiredCheckNames: ["build"] });
+      expect(ready.mergeReady).toBe(true);
+      expect(ready.checks).toEqual([expect.objectContaining({ name: "build", required: true, state: "success" })]);
+    });
+  });
+
   describe("getAllPrChecks", () => {
     it("returns required and non-required checks in gh mode and computes rollup from required checks", async () => {
       mockRunGhJsonAsync.mockResolvedValueOnce([
@@ -2118,6 +2206,22 @@ describe("GitHubClient", () => {
       expect(result.status).toBe("merged");
     });
 
+    it("passes the checked head SHA to GitHub merge", async () => {
+      mockRunGh.mockReturnValue("Merged pull request");
+      mockRunGhJsonAsync.mockResolvedValue({
+        number: 42,
+        url: "https://github.com/owner/repo/pull/42",
+        title: "Merged PR",
+        state: "MERGED",
+        baseRefName: "main",
+        headRefName: "fusion/fn-093",
+      });
+
+      await client.mergePr({ owner: "owner", repo: "repo", number: 42, expectedHeadOid: "checked-sha" });
+
+      expect(mockRunGh).toHaveBeenCalledWith(expect.arrayContaining(["--match-head-commit", "checked-sha"]));
+    });
+
     it("falls back to REST API merge when gh CLI fails and token is available", async () => {
       mockRunGh.mockImplementation(() => {
         throw new Error("gh failed");
@@ -2178,6 +2282,25 @@ describe("GitHubClient", () => {
         ready: false,
         blockingReasons: ["required checks not successful: ci (pending)"],
       });
+    });
+
+    it.each([
+      [[], ["build"], false, "required check not reported: build"],
+      [[{ name: "build", required: false, state: "cancelled" }], ["build"], false, "required check not successful: build (cancelled)"],
+      [[{ name: "build", required: false, state: "pending" }], ["build"], false, "required check not successful: build (pending)"],
+      [[{ name: "build", required: false, state: "success" }], ["build"], true, undefined],
+      [[{ name: "build", required: true, state: "skipped" }], ["build"], true, undefined],
+      [[{ name: "build", required: true, state: "neutral" }], ["build"], true, undefined],
+      [[{ name: "build", required: false, state: "success" }, { name: "build", required: false, state: "pending" }], ["build"], false, "required check not successful: build (pending)"],
+    ] as const)("applies Fusion required checks", (checks, requiredCheckNames, ready, reason) => {
+      const result = isPrMergeReady({ status: "open", reviewDecision: null, checks: checks as any, mergeable: "clean", requiredCheckNames: requiredCheckNames as string[] });
+      expect(result.ready).toBe(ready);
+      if (reason) expect(result.blockingReasons).toContain(reason);
+    });
+
+    it("fails closed with a distinct reason for truncated named check lists", () => {
+      expect(isPrMergeReady({ status: "open", reviewDecision: null, checks: [], mergeable: "clean", requiredCheckNames: ["build"], checkListTruncated: true }).blockingReasons)
+        .toContain("required check list truncated; cannot confirm: build");
     });
 
     it("ignores optional checks when determining readiness", () => {
