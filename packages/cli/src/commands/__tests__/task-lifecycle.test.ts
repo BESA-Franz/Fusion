@@ -517,7 +517,7 @@ describe("processPullRequestMergeTask", () => {
     expect(github.createPr).toHaveBeenCalledWith(expect.objectContaining({ head: getTaskBranchName(task.id) }));
   });
 
-  it("does not create duplicate group PR when branch-group PR already exists", async () => {
+  it("holds a branch-protected shared-group PR without calling mergePr", async () => {
     const task: MockTask = {
       id: "FN-9012",
       title: "group member",
@@ -553,11 +553,11 @@ describe("processPullRequestMergeTask", () => {
       findPrForBranch: vi.fn(async () => null),
       createPr: vi.fn(),
       getPrMergeStatus: vi.fn(async () => ({
-        prInfo: { number: 22, status: "open" as const, url: "https://github.com/x/y/pull/22" },
-        reviewDecision: null,
+        prInfo: { number: 22, status: "open" as const, url: "https://github.com/x/y/pull/22", mergeable: "blocked" as const },
+        reviewDecision: "REVIEW_REQUIRED",
         checks: [],
         mergeReady: false,
-        blockingReasons: [],
+        blockingReasons: ["PR mergeability is blocked"],
       })),
       mergePr: vi.fn(),
     };
@@ -566,6 +566,8 @@ describe("processPullRequestMergeTask", () => {
 
     expect(github.createPr).not.toHaveBeenCalled();
     expect(github.getPrMergeStatus).toHaveBeenCalledWith("owner", "repo", 22);
+    expect(github.mergePr).not.toHaveBeenCalled();
+    expect(store.updateTask).toHaveBeenCalledWith(task.id, { status: "awaiting-pr-checks" });
     expect(store.updateBranchGroup).toHaveBeenCalledWith("BG-2", expect.objectContaining({
       prNumber: 22,
       prUrl: "https://github.com/x/y/pull/22",
@@ -845,7 +847,7 @@ describe("processPullRequestMergeTask", () => {
     });
   });
 
-  it("does not bump mergeRetries for a non-conflicting not-ready PR", async () => {
+  it("holds a branch-protected review-required PR without a merge attempt or conflict retry", async () => {
     const task: MockTask = {
       id: "FN-9021",
       title: "test",
@@ -862,11 +864,11 @@ describe("processPullRequestMergeTask", () => {
       findPrForBranch: vi.fn(async () => existingPr),
       createPr: vi.fn(),
       getPrMergeStatus: vi.fn(async () => ({
-        prInfo: { ...existingPr, mergeable: "unknown" as const },
-        reviewDecision: null,
+        prInfo: { ...existingPr, mergeable: "blocked" as const },
+        reviewDecision: "REVIEW_REQUIRED",
         checks: [],
         mergeReady: false,
-        blockingReasons: [],
+        blockingReasons: ["PR mergeability is blocked"],
       })),
       mergePr: vi.fn(),
     };
@@ -875,6 +877,7 @@ describe("processPullRequestMergeTask", () => {
 
     expect(result).toBe("waiting");
     expect(store.updateTask).toHaveBeenCalledWith(task.id, { status: "awaiting-pr-checks" });
+    expect(github.mergePr).not.toHaveBeenCalled();
   });
 
   it("skips the push when an existing PR already covers the branch", async () => {
@@ -1456,7 +1459,7 @@ describe("processPullRequestMergeTask", () => {
       // checks and no blocking review state, so isPrMergeReady returns
       // mergeReady: true. Without the gate this would auto-merge.
       return {
-        prInfo,
+        prInfo: { ...prInfo, mergeable: "clean" as const },
         reviewDecision,
         checks: [],
         mergeReady: true,
