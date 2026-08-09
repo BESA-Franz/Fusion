@@ -165,6 +165,7 @@ import {
   type AgentSemaphore,
 } from "./concurrency/concurrency.js";
 import { AgentLogger } from "./agents/agent-logger.js";
+import { attachAgentUsageTelemetry, emitAgentSessionStart } from "./agents/agent-usage-telemetry.js";
 import { emitApprovalMail } from "./agents/approval-mail.js";
 import { acquireActiveSessionPath, activeSessionRegistry } from "./agents/active-session-registry.js";
 import {
@@ -2617,6 +2618,8 @@ export class TriageProcessor {
             // for fn task logs and agent log history — no stdout spam
           },
         });
+    { attachAgentUsageTelemetry(agentLogger, { store: this.store, agentId: task.assignedAgentId ?? "triage", taskId: task.id, nodeId: task.effectiveNodeId ?? task.nodeId ?? null, lane: "triage" }); }
+
 
         // Track subtasks created during triage when breakIntoSubtasks was requested.
         const createdSubtasksRef: { current: string[] } = { current: [] };
@@ -2985,6 +2988,7 @@ export class TriageProcessor {
           task.planningCredentialInstanceId,
         );
         activePlanningProvider = planningModel.provider;
+        attachAgentUsageTelemetry(agentLogger, { store: this.store, agentId: task.assignedAgentId ?? "triage", taskId: task.id, nodeId: task.effectiveNodeId ?? task.nodeId ?? null, model: planningModel.modelId ?? null, provider: planningModel.provider ?? null, lane: "triage" });
 
         const planningSessionModelOptions = {
           defaultProvider: planningModel.provider,
@@ -3169,6 +3173,7 @@ export class TriageProcessor {
           permanentAgentGating: this.buildPermanentAgentGatingContext(task.id, triageRunContext.runId, assignedAgent, settings.defaultAgentPermissionPolicy),
           onFallbackModelUsed,
         });
+        emitAgentSessionStart({ store: this.store, agentId: task.assignedAgentId ?? "triage", taskId: task.id, nodeId: task.effectiveNodeId ?? task.nodeId ?? null, model: planningModel.modelId ?? null, provider: planningModel.provider ?? null, lane: "triage" });
 
         const modelDesc = formatModelMarkerDetails(describeModel(session), resolvePlanningThinkingLevel(settings, task.planningThinkingLevel ?? task.thinkingLevel));
         /*

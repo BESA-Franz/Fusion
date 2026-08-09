@@ -135,6 +135,7 @@ import { resolveMcpServersForStore } from "./mcp/mcp-resolution.js";
 import { classifyTaskWorktree, getRegisteredWorktreeBranches, isRepoRootPath, RemovalReason, removeWorktree, type WorktreePool } from "./worktree/worktree-pool.js";
 import { activeSessionRegistry } from "./agents/active-session-registry.js";
 import { AgentLogger } from "./agents/agent-logger.js";
+import { attachAgentUsageTelemetry, emitAgentSessionStart } from "./agents/agent-usage-telemetry.js";
 import { mergerLog } from "./logger.js";
 
 /*
@@ -1117,6 +1118,8 @@ async function attemptInMergeVerificationFix(
       onAgentText: options.onAgentText,
       onAgentTool: options.onAgentTool,
     });
+    { attachAgentUsageTelemetry(logger, { store, agentId: null, taskId, nodeId: null, lane: "merger" }); }
+
 
     // Build skill selection context
     let skillContext = undefined;
@@ -1148,6 +1151,18 @@ async function attemptInMergeVerificationFix(
     const mergerRuntimeHint = extractRuntimeHint(assignedAgent?.runtimeConfig);
     const mergerTask = await store.getTask(taskId).catch(() => undefined);
     const mergerSessionModel = resolveMergerSessionModel(settings, assignedAgent?.runtimeConfig, mergerTask);
+  // FNXC:CommandCenterActivity 2026-08-09-11:12: Merger ownership and model resolve
+  // after logger construction; refresh before any model callbacks publish usage events.
+  attachAgentUsageTelemetry(logger, {
+    store,
+    agentId: mergerTask?.assignedAgentId ?? null,
+    taskId,
+    nodeId: mergerTask?.effectiveNodeId ?? mergerTask?.nodeId ?? null,
+    model: mergerSessionModel.modelId ?? null,
+    provider: mergerSessionModel.provider ?? null,
+    lane: "merger",
+  });
+
 
     // FNXC:Settings-MergerModel 2026-07-16-00:00: merger retries use the dedicated project fallback lane before the shared global fallback pair.
 
@@ -1212,6 +1227,15 @@ Do not refactor, rename broadly, or make opportunistic improvements.
     // Register so engine.stop() can dispose this session — without this the
     // fix agent keeps streaming past shutdown because it's not the autostash
     // session that the engine tracks.
+  emitAgentSessionStart({
+    store,
+    agentId: mergerTask?.assignedAgentId ?? null,
+    taskId,
+    nodeId: mergerTask?.effectiveNodeId ?? mergerTask?.nodeId ?? null,
+    model: mergerSessionModel.modelId ?? null,
+    provider: mergerSessionModel.provider ?? null,
+    lane: "merger",
+  });
     options.onSession?.(session);
 
     const runId = mergeRunContext?.runId;
@@ -2373,6 +2397,8 @@ async function runAiAgentForAutostashConflict(params: {
       ? (_id: string, name: string) => options.onAgentTool!(name)
       : undefined,
   });
+    { attachAgentUsageTelemetry(agentLogger, { store, agentId: null, taskId, nodeId: null, lane: "merger" }); }
+
 
   // Skill / runtime resolution mirrors runAiAgentForCommit.
   let taskForSkillContext: Awaited<ReturnType<typeof store.getTask>> | null = null;
@@ -2401,6 +2427,18 @@ async function runAiAgentForAutostashConflict(params: {
   const mergerRuntimeHint = extractRuntimeHint(assignedAgent?.runtimeConfig);
   const mergerTask = await store.getTask(taskId).catch(() => undefined);
     const mergerSessionModel = resolveMergerSessionModel(settings, assignedAgent?.runtimeConfig, mergerTask);
+  // FNXC:CommandCenterActivity 2026-08-09-11:12: Merger ownership and model resolve
+  // after logger construction; refresh before any model callbacks publish usage events.
+  attachAgentUsageTelemetry(agentLogger, {
+    store,
+    agentId: mergerTask?.assignedAgentId ?? null,
+    taskId,
+    nodeId: mergerTask?.effectiveNodeId ?? mergerTask?.nodeId ?? null,
+    model: mergerSessionModel.modelId ?? null,
+    provider: mergerSessionModel.provider ?? null,
+    lane: "merger",
+  });
+
 
   // FNXC:Settings-MergerModel 2026-07-16-00:00: merger retries use the dedicated project fallback lane before the shared global fallback pair.
 
@@ -2476,6 +2514,15 @@ ${fileList}
       taskId,
       taskTitle: taskForSkillContext?.title,
     }),
+  });
+  emitAgentSessionStart({
+    store,
+    agentId: mergerTask?.assignedAgentId ?? null,
+    taskId,
+    nodeId: mergerTask?.effectiveNodeId ?? mergerTask?.nodeId ?? null,
+    model: mergerSessionModel.modelId ?? null,
+    provider: mergerSessionModel.provider ?? null,
+    lane: "merger",
   });
   options.onSession?.(session);
 
@@ -2789,6 +2836,8 @@ async function runAiAgentForAutostashHardFail(params: {
       ? (_id: string, name: string) => options.onAgentTool!(name)
       : undefined,
   });
+    { attachAgentUsageTelemetry(agentLogger, { store, agentId: null, taskId, nodeId: null, lane: "merger" }); }
+
 
   let taskForSkillContext: Awaited<ReturnType<typeof store.getTask>> | null = null;
   let skillContext = undefined;
@@ -2816,6 +2865,18 @@ async function runAiAgentForAutostashHardFail(params: {
   const mergerRuntimeHint = extractRuntimeHint(assignedAgent?.runtimeConfig);
   const mergerTask = await store.getTask(taskId).catch(() => undefined);
     const mergerSessionModel = resolveMergerSessionModel(settings, assignedAgent?.runtimeConfig, mergerTask);
+  // FNXC:CommandCenterActivity 2026-08-09-11:12: Merger ownership and model resolve
+  // after logger construction; refresh before any model callbacks publish usage events.
+  attachAgentUsageTelemetry(agentLogger, {
+    store,
+    agentId: mergerTask?.assignedAgentId ?? null,
+    taskId,
+    nodeId: mergerTask?.effectiveNodeId ?? mergerTask?.nodeId ?? null,
+    model: mergerSessionModel.modelId ?? null,
+    provider: mergerSessionModel.provider ?? null,
+    lane: "merger",
+  });
+
 
   // FNXC:Settings-MergerModel 2026-07-16-00:00: merger retries use the dedicated project fallback lane before the shared global fallback pair.
 
@@ -2901,6 +2962,15 @@ ${fileList}
       taskId,
       taskTitle: taskForSkillContext?.title,
     }),
+  });
+  emitAgentSessionStart({
+    store,
+    agentId: mergerTask?.assignedAgentId ?? null,
+    taskId,
+    nodeId: mergerTask?.effectiveNodeId ?? mergerTask?.nodeId ?? null,
+    model: mergerSessionModel.modelId ?? null,
+    provider: mergerSessionModel.provider ?? null,
+    lane: "merger",
   });
   options.onSession?.(session);
 
@@ -5907,10 +5977,24 @@ You are assisting with a paused \`git pull --rebase\`.
       ? (_id, delta) => options.onAgentText?.(delta)
       : undefined,
   });
+    { attachAgentUsageTelemetry(agentLogger, { store, agentId: null, taskId, nodeId: null, lane: "merger" }); }
+
 
   throwIfAborted(options?.signal, taskId);
   const mergerTask = await store.getTask(taskId).catch(() => undefined);
   const mergerSessionModel = resolveMergerSessionModel(settings, options?.assignedAgentRuntimeConfig, mergerTask);
+  // FNXC:CommandCenterActivity 2026-08-09-11:12: Merger ownership and model resolve
+  // after logger construction; refresh before any model callbacks publish usage events.
+  attachAgentUsageTelemetry(agentLogger, {
+    store,
+    agentId: mergerTask?.assignedAgentId ?? null,
+    taskId,
+    nodeId: mergerTask?.effectiveNodeId ?? mergerTask?.nodeId ?? null,
+    model: mergerSessionModel.modelId ?? null,
+    provider: mergerSessionModel.provider ?? null,
+    lane: "merger",
+  });
+
 
   // FNXC:Settings-MergerModel 2026-07-16-00:00: merger retries use the dedicated project fallback lane before the shared global fallback pair.
 
@@ -5953,6 +6037,15 @@ You are assisting with a paused \`git pull --rebase\`.
   // Register so engine.stop() can dispose this session — without this, an
   // in-progress rebase conflict resolution keeps streaming past shutdown
   // (the engine only tracks the autostash session by default).
+  emitAgentSessionStart({
+    store,
+    agentId: mergerTask?.assignedAgentId ?? null,
+    taskId,
+    nodeId: mergerTask?.effectiveNodeId ?? mergerTask?.nodeId ?? null,
+    model: mergerSessionModel.modelId ?? null,
+    provider: mergerSessionModel.provider ?? null,
+    lane: "merger",
+  });
   options?.onSession?.(session);
 
   const prompt = [
@@ -10834,9 +10927,9 @@ async function runAiAgentForCommit(params: AiAgentParams): Promise<{ success: bo
       const { message } = params as { message: string };
       buildFailed = true;
       buildErrorMessage = message;
-      return { 
+      return {
         content: [{ type: "text", text: `Build failure reported: ${message}` }],
-        details: undefined 
+        details: undefined
       };
     },
   };
@@ -10858,6 +10951,8 @@ async function runAiAgentForCommit(params: AiAgentParams): Promise<{ success: bo
       ? (_id, name) => options.onAgentTool!(name)
       : undefined,
   });
+    { attachAgentUsageTelemetry(agentLogger, { store, agentId: null, taskId, nodeId: null, lane: "merger" }); }
+
 
   // Resolve per-agent custom instructions for the merger role
   let mergerInstructions = "";
@@ -10910,6 +11005,18 @@ async function runAiAgentForCommit(params: AiAgentParams): Promise<{ success: bo
   const mergerRuntimeHint = extractRuntimeHint(assignedAgent?.runtimeConfig);
   const mergerTask = await store.getTask(taskId).catch(() => undefined);
     const mergerSessionModel = resolveMergerSessionModel(settings, assignedAgent?.runtimeConfig, mergerTask);
+  // FNXC:CommandCenterActivity 2026-08-09-11:12: Merger ownership and model resolve
+  // after logger construction; refresh before any model callbacks publish usage events.
+  attachAgentUsageTelemetry(agentLogger, {
+    store,
+    agentId: mergerTask?.assignedAgentId ?? null,
+    taskId,
+    nodeId: mergerTask?.effectiveNodeId ?? mergerTask?.nodeId ?? null,
+    model: mergerSessionModel.modelId ?? null,
+    provider: mergerSessionModel.provider ?? null,
+    lane: "merger",
+  });
+
 
   // FNXC:Settings-MergerModel 2026-07-16-00:00: merger retries use the dedicated project fallback lane before the shared global fallback pair.
 
@@ -10961,6 +11068,15 @@ async function runAiAgentForCommit(params: AiAgentParams): Promise<{ success: bo
     }),
   });
 
+  emitAgentSessionStart({
+    store,
+    agentId: mergerTask?.assignedAgentId ?? null,
+    taskId,
+    nodeId: mergerTask?.effectiveNodeId ?? mergerTask?.nodeId ?? null,
+    model: mergerSessionModel.modelId ?? null,
+    provider: mergerSessionModel.provider ?? null,
+    lane: "merger",
+  });
   options.onSession?.(session);
 
   try {
