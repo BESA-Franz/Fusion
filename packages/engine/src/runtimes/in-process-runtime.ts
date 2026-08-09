@@ -1624,6 +1624,7 @@ export class InProcessRuntime
           stuckTaskDetector: this.stuckTaskDetector,
           usageLimitPauser: this.usageLimitPauser,
           agentStore: this.agentStore,
+          messageStore: this.messageStore,
           pluginRunner: this.pluginRunner,
           // FNXC:NodeWorktreeIsolation 2026-07-25-22:10: planning acquires (or reuses) the task's own
           // worktree through the executor's acquisition path, so no lane runs in the shared checkout.

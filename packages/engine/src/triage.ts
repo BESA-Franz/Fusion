@@ -165,6 +165,7 @@ import {
   type AgentSemaphore,
 } from "./concurrency/concurrency.js";
 import { AgentLogger } from "./agents/agent-logger.js";
+import { emitApprovalMail } from "./agents/approval-mail.js";
 import { acquireActiveSessionPath, activeSessionRegistry } from "./agents/active-session-registry.js";
 import {
   resolveAgentInstructions,
@@ -270,6 +271,12 @@ export interface TriageProcessorOptions {
   onAgentText?: (taskId: string, delta: string) => void;
   /** AgentStore for resolving per-agent custom instructions. */
   agentStore?: import("@fusion/core").AgentStore;
+  /*
+  FNXC:StructuralMail 2026-08-09-09:57:
+  The triage approval gate receives this store solely to deliver its mailbox item. It remains optional so
+  existing callers and tests stay compatible; without it, approval mail is a no-op rather than a failure.
+  */
+  messageStore?: import("@fusion/core").MessageStore;
   /** Plugin runner for runtime selection. When provided, enables plugin runtime lookup. */
   pluginRunner?: import("./plugins/plugin-runner.js").PluginRunner;
   /*
@@ -530,6 +537,13 @@ export class TriageProcessor {
           await this.options.agentStore.updateAgentState(agent.id, "paused");
           await this.options.agentStore.updateAgent(agent.id, { pauseReason: "awaiting-approval" });
         }
+        /*
+        FNXC:StructuralMail 2026-08-09-09:57:
+        FN-8870 deliberately left triage out of its approval-mail coverage. The shared helper owns
+        `approval-mail:<approvalRequestId>` idempotency and fail-soft behavior; do not recreate either here.
+        Without a message store it is a silent no-op, preserving the approval-pause path.
+        */
+        void emitApprovalMail({ messageStore: this.options.messageStore, approvalRequestId, toolName: decision.toolName, taskId, agentId: agent?.id ?? actorId, agentName: agent?.name ?? actorName });
         queueMicrotask(() => this.activeSessions.get(taskId)?.dispose());
       },
       markApprovalCompleted: async (approvalRequestId) => {
