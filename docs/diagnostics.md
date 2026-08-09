@@ -241,3 +241,7 @@ git worktree list --porcelain | grep -F "<temp-worktree-path>"
 ```
 
 No output means Git no longer registers that temp path; matching `worktree <temp-worktree-path>` output means the leak is still registered and needs operator cleanup.
+
+## Bounded hold-release and health diagnostics (FN-8856)
+
+Hold-release summaries include prefetch, IR-resolution, and evaluation accumulators; measured sweep-attributable read counts; scanned-task and held-candidate counts; released/held totals; `unevaluatedCount`; and `budgetOverrunMs`. A budget-truncated sweep warns even when it stops in the preamble. Resolver reads are measured by a delegating counting facade (and direct sweep reads at their call sites), not cache-size inference. PostgreSQL health probes return a degraded timeout reason when the pool is saturated. Migration-state probe timeouts remain advisory after database and task-ID integrity checks succeed.

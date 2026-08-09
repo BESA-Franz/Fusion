@@ -607,6 +607,8 @@ export {
   type WorkflowIrPin,
   type WorkflowDriftReason,
   type WorkflowIrResolverStore,
+  type WorkflowSelectionCache,
+  type WorkflowSelection,
 } from "./workflows/workflow-ir-resolver.js";
 export {
   type TransitionColumnFacts,

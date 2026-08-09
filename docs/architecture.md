@@ -2371,3 +2371,9 @@ Consumers replay within the 30-day retention window. A stale cursor or retained 
 Workflow work items fence agent-executed stages with `principalAgentId`, `workflowRole`, `authorityKind`, and `nodeInstanceId`. A fence is persisted before the session handler runs and retry/resume retains it. Task ownership is stable metadata; active identity is derived from live, leased work items rather than stored on the task row.
 
 Workflow session capacity is acquired separately from heartbeat capacity and released idempotently on terminal, cancellation, pause, and recovery paths. Task-assignee and review-node-override authority is a live task/run/work-item/node capability checked for every gated tool call; it does not broaden heartbeat, chat, other tasks, or other review nodes.
+
+### Bounded hold-release sweeps (FN-8856)
+
+A scheduler pass batches missing task workflow selections once and shares a strictly pass-scoped selection cache with hold-release and reservation resolution. The cache is never retained because selections are mutable. Only one sweep per project identity may run: concurrent calls are skipped, not joined, since their clocks, budgets, and slot reservations are caller-owned.
+
+Each sweep has a 10-second default budget. It does not claim to cancel database calls: after the deadline it starts no further sweep-owned await, while an in-flight read or started release can overrun and is reported as `budgetOverrunMs`. Dependency evaluation returns `{ satisfied, truncated }`; truncation is `sweep-budget-exhausted` only for an already-classified dependency hold, never `deps-unsatisfied`, and does not reset its held clock. Cards not reached are represented only by `unevaluatedCount`, never fabricated hold reasons. A truncated sweep never releases on partial evidence and never prunes an unreached card's held clock.
