@@ -14736,8 +14736,10 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
           });
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        log.warn(`[self-healing] orphaned planning segment ${task.id} could not be finalized: ${message}`);
+        // Keep recovery logs bounded and secret-free; the task id and stable
+        // error type are sufficient to correlate the failed row in run audit.
+        const errorType = error instanceof Error && error.name ? error.name : "unknown-error";
+        log.warn(`[self-healing] orphaned planning segment ${task.id} could not be finalized: errorType=${errorType}`);
       }
     }
     if (finalized === 0) {
