@@ -20754,13 +20754,17 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
             );
           });
         }
-        // Mirror the merge-time rebase behavior: when worktreeRebaseBeforeMerge
-        // is enabled, fetch the remote and rebase the just-created task branch
-        // onto the latest <remote>/<defaultBranch>. This makes the worktree
-        // start from origin/main + local main both, so divergence only matters
-        // if the user actively skips this setting. Best-effort: failures here
-        // don't abort task setup.
-        await this.rebaseNewWorktreeOntoRemote(result.path, result.branch, taskId).catch((err: unknown) => {
+        /*
+         * FNXC:WorktreeRebase 2026-08-09-00:48:
+         * A fresh worktree must refresh against the same integration-branch-first
+         * contract that selected its start point. The root checkout may be on a
+         * sibling task branch, so it must never select this rebase target.
+         * Refresh remains best-effort, but enabled skips and failures are logged
+         * durably for operators rather than looking like the setting was disabled.
+         */
+        // Fetch and rebase the just-created task branch only when the setting
+        // is enabled. Failures here never abort task setup.
+        await this.rebaseNewWorktreeOntoRemote(result.path, result.branch, taskId, settings).catch((err: unknown) => {
           executorLog.warn(
             `Post-create worktree rebase failed for ${taskId} (continuing): ${err instanceof Error ? err.message : String(err)}`,
           );
@@ -20987,25 +20991,28 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
 
   /**
    * After creating a fresh task worktree, fetch the configured remote and
-   * rebase the task branch onto `<remote>/<defaultBranch>`. The result is a
-   * branch that contains origin's tip plus any local main commits, so the
-   * eventual merge has fewer surprises and the executor sees the freshest
-   * code its peers/CI may have published.
+   * rebase the task branch onto that remote's resolved integration branch.
+   * The branch resolver is shared with fresh-worktree acquisition, so an
+   * explicit `integrationBranch` wins over a remote default and root HEAD is
+   * never consulted.
    *
-   * No-op when `worktreeRebaseBeforeMerge` is disabled, no remote is
-   * configured/resolvable, or the rebase produces conflicts (we abort and
-   * leave the worktree as-is so the executor can still run).
+   * No-op when `worktreeRebaseBeforeMerge` is disabled. Enabled skips,
+   * fetch failures, and conflicts are visible in the task log; setup remains
+   * best-effort and a conflict leaves the local base usable after abort.
    */
   private async rebaseNewWorktreeOntoRemote(
     worktreePath: string,
     branch: string,
     taskId: string,
+    settingsOverride?: Settings,
   ): Promise<void> {
-    let settings;
-    try {
-      settings = await this.store.getSettings();
-    } catch {
-      return;
+    let settings = settingsOverride;
+    if (!settings) {
+      try {
+        settings = await this.store.getSettings();
+      } catch {
+        return;
+      }
     }
     if (settings.worktreeRebaseBeforeMerge === false) return;
 
@@ -21020,39 +21027,45 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
         // No remote resolvable — nothing to rebase against.
       }
     }
-    if (!remote) return;
-
-    let defaultBranch = "";
-    try {
-      const { stdout } = await execAsync(`git rev-parse --abbrev-ref ${remote}/HEAD`, { cwd: this.rootDir });
-      defaultBranch = stdout.trim().replace(new RegExp(`^${remote}/`), "");
-    } catch {
-      // origin/HEAD not set — fall back to current branch in rootDir.
+    if (!remote) {
+      this.safeLogEntry(
+        taskId,
+        "Skipped new worktree rebase refresh — no remote was resolvable",
+      );
+      return;
     }
-    if (!defaultBranch) {
-      try {
-        const { stdout } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: this.rootDir });
-        defaultBranch = stdout.trim();
-      } catch {
-        return;
-      }
-    }
-    if (!defaultBranch || defaultBranch === "HEAD") return;
 
-    const remoteRef = `${remote}/${defaultBranch}`;
+    let integrationBranch: string;
+    try {
+      integrationBranch = await resolveIntegrationBranch(this.rootDir, settings, { logger: executorLog });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      executorLog.warn(`Worktree rebase: could not resolve integration branch for ${taskId}: ${message}`);
+      this.safeLogEntry(
+        taskId,
+        `Skipped new worktree rebase refresh — integration branch could not be resolved for ${remote}`,
+      );
+      return;
+    }
+
+    const remoteRef = `${remote}/${integrationBranch}`;
 
     try {
-      await execAsync(`git fetch ${this.quoteShellArg(remote)} ${this.quoteShellArg(defaultBranch)}`, { cwd: this.rootDir });
+      await execAsync(`git fetch ${this.quoteShellArg(remote)} ${this.quoteShellArg(integrationBranch)}`, { cwd: this.rootDir });
     } catch (err) {
       executorLog.warn(
-        `Worktree rebase: fetch ${remote} ${defaultBranch} failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`,
+        `Worktree rebase: fetch ${remote} ${integrationBranch} failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      this.safeLogEntry(
+        taskId,
+        `Could not refresh new worktree rebase target ${remoteRef} — fetch failed; kept local base.`,
       );
       return;
     }
 
     try {
       await execAsync(`git rebase ${this.quoteShellArg(remoteRef)}`, { cwd: worktreePath });
-      await this.store.logEntry(
+      this.safeLogEntry(
         taskId,
         `Rebased new worktree branch ${branch} onto ${remoteRef}`,
       );
@@ -21066,7 +21079,7 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
       } catch {
         // best-effort
       }
-      await this.store.logEntry(
+      this.safeLogEntry(
         taskId,
         `Could not rebase new worktree onto ${remoteRef} — kept local base. The merge-time rebase will retry with conflict resolution.`,
       );
