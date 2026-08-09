@@ -26,6 +26,7 @@ import {
 } from "../merge/group-merge-coordinator.js";
 import { ProjectEngine } from "../project-engine.js";
 import { runAiMerge } from "../merge/merger-ai.js";
+import { seedMergeLaneState } from "./_project-engine-merge-lane-fixture.js";
 
 const dirs: string[] = [];
 
@@ -1490,14 +1491,12 @@ describe("resolveBranchGroupMergeRouting", () => {
         getSessionStats: vi.fn(() => ({ tokens: { input: 1, output: 1 } })),
       },
     }));
-    engine.manualMergeResolvers = new Map();
-    engine.mergeActive = new Set();
-    engine.mergeQueue = [];
-    engine.capacityDeferredMergeTaskIds = new Set();
-    engine.capacityDeferredMerges = new Map();
-    engine.coordinatorAdmittedMergeTaskIds = new Set();
-    engine.started = true;
-    engine.shuttingDown = false;
+    /*
+    FNXC:SharedBranchMemberHold 2026-08-09-05:22:
+    FN-8811's release half runs the production drain, so this prototype fake must carry complete
+    merge-lane state rather than only the fields the test happened to seed when it was written.
+    */
+    seedMergeLaneState(engine);
 
     const released = await ProjectEngine.prototype.onMerge.call(engine, "FN-3324");
     createResolvedAgentSessionMock.mockReset();
