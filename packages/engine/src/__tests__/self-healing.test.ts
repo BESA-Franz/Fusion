@@ -8874,6 +8874,35 @@ describe("SelfHealingManager", () => {
 
       recovery.stop();
     });
+
+    it("reports when every eligible orphan attempt fails", async () => {
+      const failedTasks = [
+        { id: "FN-PLAN-ERROR-1", planningStartedAt: "2026-01-01T00:00:00.000Z" },
+        { id: "FN-PLAN-ERROR-2", planningStartedAt: "2026-01-01T00:00:00.000Z" },
+      ] as Task[];
+      const updateTaskAtomic = vi.fn(async () => {
+        throw new Error("reconciliation unavailable");
+      });
+      const recoveryStore = createMockStore({
+        listTasks: vi.fn().mockResolvedValue(failedTasks),
+        updateTaskAtomic,
+      });
+      const recovery = new SelfHealingManager(recoveryStore, {
+        rootDir: "/tmp/test-project",
+        getPlanningTaskIds: () => new Set<string>(),
+        hasActivePlanningWorkflowSession: () => false,
+      });
+      vi.setSystemTime(new Date("2026-01-01T00:00:01.000Z"));
+
+      expect(await recovery.finalizeOrphanedPlanningSegments()).toBe(0);
+      expect(updateTaskAtomic).toHaveBeenCalledTimes(2);
+      expect(recoveryStore.recordRunAuditEvent).toHaveBeenLastCalledWith(expect.objectContaining({
+        mutationType: "task:reconcile-orphaned-planning-segment-no-action",
+        metadata: { finalizedCount: 0, reason: "all-attempts-failed", attemptedCount: 2 },
+      }));
+
+      recovery.stop();
+    });
   });
 
   describe("recoverOrphanedPlanningTasks", () => {
