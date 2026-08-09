@@ -2,8 +2,6 @@ import { vi } from "vitest";
 import type { Mock } from "vitest";
 import { installTaskWorktreeIdentityGuard } from "../worktree/worktree-hooks.js";
 import type * as ReviewerModule from "../execution/reviewer.js";
-import type { ReconcileSecretsEnvFingerprintResult } from "../worktree/secrets-env-writer.js";
-import type { WorktreeBaseRefreshResult } from "../worktree-base-refresh.js";
 
 // Mock external dependencies
 vi.mock("../pi.js", () => ({
@@ -240,6 +238,20 @@ vi.mock("../worktree/worktree-hooks.js", () => ({
   IDENTITY_GUARD_BYPASS_ENV: "FUSION_MERGER_BYPASS_IDENTITY_GUARD",
 }));
 
+/*
+FNXC:EngineTests 2026-08-09-12:02:
+Executor harnesses model already-acquired worktrees, not git reconciliation. Graph-owned execution
+now refreshes a reused worktree before step-execute; keep that external git seam safely up-to-date so
+resume and stale-assistant lifecycle tests reach their implementation session instead of failing before it.
+*/
+vi.mock("../worktree-base-refresh.js", () => ({
+  refreshReusedWorktreeBase: vi.fn().mockResolvedValue({ kind: "up-to-date", executionSafe: true }),
+}));
+vi.mock("../worktree/secrets-env-writer.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../worktree/secrets-env-writer.js")>()),
+  reconcileSecretsEnvFingerprint: vi.fn().mockResolvedValue({ executionSafe: true, outcome: "up-to-date" }),
+}));
+
 vi.mock("../worktree/worktree-stale-lock.js", async () => {
   const actual = await vi.importActual<typeof import("../worktree/worktree-stale-lock.js")>("../worktree/worktree-stale-lock.js");
   return {
@@ -342,31 +354,6 @@ vi.mock("node:fs", () => ({
   realpathSync: vi.fn((path: string) => path),
   lstatSync: vi.fn(() => ({ isSymbolicLink: () => false, isDirectory: () => true })),
   statSync: vi.fn(() => ({ isDirectory: () => true })),
-}));
-
-/*
-FNXC:EngineTests 2026-08-09-07:48:
-Executor worktree reuse always requests stale-base refresh. Existing-worktree fixtures therefore
-must model the production-safe reconciliation unions or acquisition fails closed before the tested
-session lifecycle begins; type-faithful defaults make result-shape drift fail typecheck instead of
-silently accepting a fictional successful outcome.
-*/
-const worktreeBaseRefreshMocks = vi.hoisted(() => ({
-  reconcileSecretsEnvFingerprint: vi.fn(),
-  refreshReusedWorktreeBase: vi.fn(),
-}));
-export const mockedReconcileSecretsEnvFingerprint = worktreeBaseRefreshMocks.reconcileSecretsEnvFingerprint as Mock<() => Promise<ReconcileSecretsEnvFingerprintResult>>;
-export const mockedRefreshReusedWorktreeBase = worktreeBaseRefreshMocks.refreshReusedWorktreeBase as Mock<() => Promise<WorktreeBaseRefreshResult>>;
-mockedReconcileSecretsEnvFingerprint.mockResolvedValue({ executionSafe: true, outcome: "clean" } satisfies ReconcileSecretsEnvFingerprintResult);
-mockedRefreshReusedWorktreeBase.mockResolvedValue({ kind: "up-to-date", executionSafe: true, durableBaseSha: null } satisfies WorktreeBaseRefreshResult);
-
-vi.mock("../worktree/secrets-env-writer.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../worktree/secrets-env-writer.js")>()),
-  reconcileSecretsEnvFingerprint: worktreeBaseRefreshMocks.reconcileSecretsEnvFingerprint,
-}));
-vi.mock("../worktree-base-refresh.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../worktree-base-refresh.js")>()),
-  refreshReusedWorktreeBase: worktreeBaseRefreshMocks.refreshReusedWorktreeBase,
 }));
 
 export const mockExecuteAll: Mock<() => Promise<unknown[]>> = vi.fn().mockResolvedValue([]);
@@ -799,10 +786,10 @@ FNXC:TaskVerificationRequest 2026-07-19-04:30 (merged with U5f 2026-07-19-06:00)
 
 /*
 FNXC:EngineTests 2026-08-09-05:51:
-Graph-owned execution routes every step to an executor principal before opening an implementation
-session. The default fixture remains durable for its existing consumers, while ephemeral-gate
-coverage must opt into a task-executor-managed identity: a durable principal makes the policy gate
-legitimately inert and cannot prove that deny withholds follow-up task tools.
+Graph-owned coding workflows route planning, execution, and review nodes by role before opening an
+implementation session. The durable fixture advertises all three graph lanes so todo/planning tests
+cannot suspend at triage before their executor assertion; ephemeral-gate coverage still opts into a
+task-executor-managed runtime identity for its policy check.
 */
 export function createWorkflowRoutingAgentStore(
   store: Pick<any, "getTask" | "updateTask">,
@@ -813,12 +800,11 @@ export function createWorkflowRoutingAgentStore(
     id: "workflow-test-executor",
     name: "Workflow Test Executor",
     role: "executor",
-    roles: ["executor"],
+    roles: ["triage", "executor", "reviewer"],
     state: "active",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     runtimeConfig: {},
-    maxWorkflowSessions: 2,
     ...(options.ephemeral ? { metadata: { managedBy: "task-executor" } } : {}),
   };
   // Role-pool admission deliberately accepts durable agents only. For an ephemeral session-identity
@@ -898,28 +884,23 @@ export function captureNamedTool<T extends { name: string }>(
 }
 
 /*
-FNXC:ExecutorTests 2026-08-09-11:05:
-Graph ownership can open several sessions per run, while an unrouted principal suspends before
-opening any. Lifecycle harnesses must select the implementation session by its fn_task_done tool
-so zero-session routing regressions cannot pass through a review or summary session vacuously.
+FNXC:EngineTests 2026-08-09-05:51:
+Graph runs can open review and implementation sessions in either order and can retry implementation.
+`fn_task_done` belongs only to implementation sessions, so select the first positive match rather
+than relying on call order or excluding review prompts. Throwing on no match turns an unwired routing
+agent store into an immediate harness failure instead of a vacuous empty tool/prompt capture.
 */
-type CreateFnAgentCall = Parameters<typeof createFnAgent>;
-type CreateFnAgentOptions = CreateFnAgentCall[0];
-
-export function implementationSessionCalls(calls: readonly CreateFnAgentCall[]): CreateFnAgentCall[];
-export function implementationSessionCalls<T extends { customTools?: Array<{ name?: string }> }>(calls: readonly T[]): T[];
-export function implementationSessionCalls(calls: readonly (CreateFnAgentCall | CreateFnAgentOptions)[]) {
-  return calls.filter((call) => {
-    const options = Array.isArray(call) ? call[0] : call;
-    return options.customTools?.some((tool) => tool.name === "fn_task_done");
-  });
+export function implementationSessionCalls<T extends { customTools?: Array<{ name?: string }> }>(calls: T[]): T[] {
+  return calls.filter((call) => call.customTools?.some((tool) => tool.name === "fn_task_done"));
 }
 
-export function selectImplementationSessionCall(calls: readonly CreateFnAgentCall[]): CreateFnAgentCall;
-export function selectImplementationSessionCall<T extends { customTools?: Array<{ name?: string }> }>(calls: readonly T[]): T;
-export function selectImplementationSessionCall(calls: readonly (CreateFnAgentCall | CreateFnAgentOptions)[]) {
+export function selectImplementationSessionCall<T extends { customTools?: Array<{ name?: string }> }>(calls: T[]): T {
   const call = implementationSessionCalls(calls)[0];
-  if (!call) throw new Error("No implementation session was opened (expected custom tool fn_task_done)");
+  if (!call) {
+    throw new Error(
+      "No implementation session was opened (fn_task_done missing); graph routing likely suspended because the TaskExecutor has no agentStore.",
+    );
+  }
   return call;
 }
 
@@ -950,10 +931,6 @@ export function resetExecutorMocks() {
   mockedRecoverStaleRegistration.mockResolvedValue({ recovered: true, actions: ["prune"] });
   mockedInstallTaskWorktreeIdentityGuard.mockResolvedValue(undefined);
   mockedTryRemoveStaleLock.mockResolvedValue({ removed: true });
-  mockedReconcileSecretsEnvFingerprint.mockReset();
-  mockedReconcileSecretsEnvFingerprint.mockResolvedValue({ executionSafe: true, outcome: "clean" } satisfies ReconcileSecretsEnvFingerprintResult);
-  mockedRefreshReusedWorktreeBase.mockReset();
-  mockedRefreshReusedWorktreeBase.mockResolvedValue({ kind: "up-to-date", executionSafe: true, durableBaseSha: null } satisfies WorktreeBaseRefreshResult);
   mockExecuteAll.mockResolvedValue([]);
   mockTerminateAllSessions.mockResolvedValue(undefined);
   mockCleanup.mockResolvedValue(undefined);

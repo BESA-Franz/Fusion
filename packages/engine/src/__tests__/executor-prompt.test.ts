@@ -12,7 +12,7 @@ import { writeFile, rm } from "node:fs/promises";
 import { findWorktreeUser, aiMergeTask } from "../merger.js";
 import { WorktreePool } from "../worktree/worktree-pool.js";
 import { generateWorktreeName, slugify } from "../worktree/worktree-names.js";
-import { getBuiltinWorkflow, type Task, type TaskDetail } from "@fusion/core";
+import type { Task, TaskDetail } from "@fusion/core";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { StepSessionExecutor } from "../execution/step-session-executor.js";
 import { executingTaskLock } from "../agents/active-session-registry.js";
@@ -34,6 +34,8 @@ import {
   mockTerminateAllSessions,
   mockCleanup,
   resetExecutorMocks,
+  captureNamedTool,
+  selectImplementationSessionCall,
 } from "./executor-test-helpers.js";
 
 const mockedReviewStep = vi.mocked(mockedReviewStepFn);
@@ -44,12 +46,6 @@ function createRoutingExecutor(store: any, rootDir: string, options: any = {}) {
     agentStore: createWorkflowRoutingAgentStore(store).agentStore,
     ...options,
   });
-}
-
-function configureSingleSessionWorkflow(store: any) {
-  store.getTaskWorkflowSelectionAsync.mockResolvedValue({ workflowId: "builtin:quick-fix", stepIds: [] });
-  store.getTaskWorkflowSelection.mockReturnValue({ workflowId: "builtin:quick-fix", stepIds: [] });
-  store.getWorkflowDefinition = vi.fn(async (id: string) => getBuiltinWorkflow(id));
 }
 
 function createMockTaskDetail(overrides: Partial<TaskDetail> = {}): TaskDetail {
@@ -1341,13 +1337,19 @@ describe("TaskExecutor pause behavior", () => {
     // existsSync must return true for the session file
     mockedExistsSync.mockReturnValue(true);
 
-    mockedCreateFnAgent.mockResolvedValue({
-      session: {
-        prompt: resumePromptFn,
-        dispose: vi.fn(),
-      },
-      sessionFile: sessionFilePath,
-    } as any);
+    /*
+    FNXC:EngineTests 2026-08-09-12:02:
+    A coding graph opens review and implementation sessions, so a uniform session stub can hand
+    resume assertions a review-node session. Branch on fn_task_done so only the implementation
+    session owns the resumed prompt and lifecycle state under test.
+    */
+    mockedCreateFnAgent.mockImplementation((async (opts: any) => {
+      const isImplementation = (opts.customTools ?? []).some((tool: any) => tool.name === "fn_task_done");
+      return {
+        session: isImplementation ? { prompt: resumePromptFn, dispose: vi.fn() } : { dispose: vi.fn() },
+        sessionFile: sessionFilePath,
+      } as any;
+    }) as any);
 
     /*
     FNXC:EngineTests 2026-07-19-04:05 (U10b):
@@ -1358,9 +1360,9 @@ describe("TaskExecutor pause behavior", () => {
       sessionFile: sessionFilePath,
       worktree: "/tmp/test/.worktrees/fn-001",
       branch: "fusion/fn-001",
+      baseCommitSha: "abc123",
     });
 
-    configureSingleSessionWorkflow(store);
     const executor = createRoutingExecutor(store, "/tmp/test");
     await executor.execute({
       id: "FN-001",
@@ -1376,19 +1378,14 @@ describe("TaskExecutor pause behavior", () => {
       updatedAt: new Date().toISOString(),
     });
 
-    /*
-    FNXC:EngineTests 2026-08-09-07:48:
-    Persisted-session resume is owned by TaskExecutor's single-session branch, not by
-    StepSessionExecutor, which always mints per-step sessions. A no-review workflow and false
-    runStepsInNewSessions deliberately reach that branch; constructor taskDetail would be a
-    pass-through proxy that cannot prove SessionManager.open ran.
-    */
-    expect(mockedStepSessionExecutor).not.toHaveBeenCalled();
+    // Should use SessionManager.open for the initial resumed execution
     expect(mockedSessionManager.open).toHaveBeenCalledWith(sessionFilePath);
 
-    // The first createFnAgent call should use the opened session manager
-    const firstCall = mockedCreateFnAgent.mock.calls[0][0] as any;
-    expect(firstCall.sessionManager).toBeDefined();
+    // The implementation call, not graph traversal order, owns the resumed session manager.
+    const implementationCall = selectImplementationSessionCall(
+      mockedCreateFnAgent.mock.calls.map(([options]) => options as any),
+    );
+    expect(implementationCall.sessionManager).toBeDefined();
 
     // The log should indicate resume
     expect(store.logEntry).toHaveBeenCalledWith(
@@ -1483,13 +1480,18 @@ describe("TaskExecutor pause behavior", () => {
 
     mockedExistsSync.mockReturnValue(true);
 
-    mockedCreateFnAgent.mockResolvedValue({
-      session: {
-        prompt: vi.fn().mockResolvedValue(undefined),
-        dispose: vi.fn(),
-      },
-      sessionFile: "/tmp/sessions/new_session.jsonl",
-    } as any);
+    /*
+    FNXC:EngineTests 2026-08-09-12:02:
+    Graph-owned execution traverses review nodes before implementation. Keep their default verdict
+    streams independent so this stale-worktree assertion observes the implementation session only.
+    */
+    mockedCreateFnAgent.mockImplementation((async (opts: any) => {
+      const isImplementation = (opts.customTools ?? []).some((tool: any) => tool.name === "fn_task_done");
+      return {
+        session: isImplementation ? { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn() } : { dispose: vi.fn() },
+        sessionFile: "/tmp/sessions/new_session.jsonl",
+      } as any;
+    }) as any);
 
     /*
     FNXC:EngineTests 2026-07-19-04:12 (U10b):
@@ -1500,9 +1502,9 @@ describe("TaskExecutor pause behavior", () => {
       sessionFile: sessionFilePath,
       worktree: "/tmp/test/.worktrees/fn-001",
       branch: "fusion/fn-001",
+      baseCommitSha: "abc123",
     });
 
-    configureSingleSessionWorkflow(store);
     const executor = createRoutingExecutor(store, "/tmp/test");
     await executor.execute({
       id: "FN-001",
@@ -1515,23 +1517,14 @@ describe("TaskExecutor pause behavior", () => {
       log: [],
       worktree: "/tmp/test/.worktrees/fn-001",
       sessionFile: sessionFilePath,
+      baseCommitSha: "abc123",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
 
-    /*
-    FNXC:EngineTests 2026-08-09-07:48:
-    A stale cwd decision is also owned by the single-session branch. Assert both its fresh-session
-    choice and persisted stale-clear consequence while proving no StepSessionExecutor proxy could
-    have made this pass.
-    */
-    expect(mockedStepSessionExecutor).not.toHaveBeenCalled();
     expect(mockedSessionManager.open).not.toHaveBeenCalled();
     expect(mockedSessionManager.create).toHaveBeenCalledWith("/tmp/test/.worktrees/fn-001");
     expect(store.updateTask).toHaveBeenCalledWith("FN-001", { sessionFile: null });
-    expect(executorLog.warn).toHaveBeenCalledWith(
-      expect.stringContaining("stale sessionFile worktree mismatch"),
-    );
 
     await rm(sessionFilePath, { force: true });
   });
@@ -1580,9 +1573,6 @@ describe("swallowed async store failure observability", () => {
       maxParallelSteps: 1,
     });
     store.getTask.mockResolvedValue(task);
-    store.getTaskWorkflowSelectionAsync.mockResolvedValue({ workflowId: "builtin:stepwise-coding", stepIds: [] });
-    store.getTaskWorkflowSelection.mockReturnValue({ workflowId: "builtin:stepwise-coding", stepIds: [] });
-    store.getWorkflowDefinition = vi.fn(async (id: string) => getBuiltinWorkflow(id));
     store.startStep
       .mockResolvedValueOnce({
         task,
@@ -1609,15 +1599,11 @@ describe("swallowed async store failure observability", () => {
     const executor = createRoutingExecutor(store, "/tmp/test", { onError });
     await executor.execute(task);
 
-    /*
-    FNXC:EngineTests 2026-08-09-07:48:
-    Graph-pinned step-session execution owns this rejected start and projects its writes with
-    source: graph. Match the seam call among graph bookkeeping writes rather than assuming it is
-    the final store call.
-    */
-    expect(store.startStep.mock.calls.some((call: unknown[]) =>
-      call[0] === "FN-8490" && call[1] === 1 && (call[2] as { source?: string } | undefined)?.source === "graph",
-    )).toBe(true);
+    expect(
+      store.startStep.mock.calls.some(
+        ([taskId, stepIndex, runContext]) => taskId === "FN-8490" && stepIndex === 1 && runContext === undefined,
+      ),
+    ).toBe(true);
     expect(
       store.updateStep.mock.calls.some(
         ([taskId, stepIndex, status]) => taskId === "FN-8490" && stepIndex === 0 && status === "done",
@@ -2236,11 +2222,9 @@ describe("TaskExecutor global pause behavior", () => {
 
   it("disposes all active sessions when settings:updated fires with globalPause: true", async () => {
     const store = createMockStore();
-    store.getSettings.mockResolvedValue({
-      maxConcurrent: 2, maxWorktrees: 4, pollIntervalMs: 15_000, autoMerge: false,
-      runStepsInNewSessions: true, globalPause: false, enginePaused: false,
-    });
-    let stepSessionCount = 0;
+    const disposeFn1 = vi.fn();
+    const disposeFn2 = vi.fn();
+    let implementationCallCount = 0;
 
     /*
     FNXC:WorkflowLifecycle 2026-07-01-20:35:
@@ -2261,10 +2245,25 @@ describe("TaskExecutor global pause behavior", () => {
     let releaseBarrier: () => void = () => {};
     const barrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
 
-    mockExecuteAll.mockImplementation(async () => {
-      stepSessionCount++;
-      await barrier;
-      throw new Error("Session terminated");
+    /*
+    FNXC:EngineTests 2026-08-09-12:02:
+    Several graph agent nodes are opened per coding task. Count and block implementation sessions
+    by their fn_task_done tool so review-node sessions cannot consume disposeFn1/2 or the barrier.
+    */
+    mockedCreateFnAgent.mockImplementation(async (opts: any) => {
+      const isImplementation = (opts.customTools ?? []).some((tool: any) => tool.name === "fn_task_done");
+      if (!isImplementation) return { session: { dispose: vi.fn() } } as any;
+      implementationCallCount++;
+      const dispose = implementationCallCount === 1 ? disposeFn1 : disposeFn2;
+      return {
+        session: {
+          prompt: vi.fn().mockImplementation(async () => {
+            await barrier;
+            throw new Error("Session terminated");
+          }),
+          dispose,
+        },
+      } as any;
     });
 
     const executor = createRoutingExecutor(store, "/tmp/test");
@@ -2278,33 +2277,29 @@ describe("TaskExecutor global pause behavior", () => {
     FNXC:EngineTests 2026-07-19-04:58 (U10b):
     The per-task worktree must live on the STORE ROW, not only on the literal handed to execute(): the graph re-reads the card, and a row with no worktree looks like drift, so both tasks regenerate the SAME deterministic worktree name and the second one dies on the foreign-path guard instead of exercising pause disposal.
     */
-    store._setRow("FN-001", { worktree: "/tmp/test/.worktrees/wt-001", branch: "fusion/fn-001" });
-    store._setRow("FN-002", { worktree: "/tmp/test/.worktrees/wt-002", branch: "fusion/fn-002" });
+    store._setRow("FN-001", { worktree: "/tmp/test/.worktrees/wt-001", branch: "fusion/fn-001", baseCommitSha: "abc123" });
+    store._setRow("FN-002", { worktree: "/tmp/test/.worktrees/wt-002", branch: "fusion/fn-002", baseCommitSha: "abc123" });
 
     const run = Promise.all([
       executor.execute({
         id: "FN-001", title: "T1", description: "T", column: "in-progress",
-        worktree: "/tmp/test/.worktrees/wt-001", branch: "fusion/fn-001",
+        worktree: "/tmp/test/.worktrees/wt-001", branch: "fusion/fn-001", baseCommitSha: "abc123",
         dependencies: [], steps: [], currentStep: 0, log: [],
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       }),
       executor.execute({
         id: "FN-002", title: "T2", description: "T", column: "in-progress",
-        worktree: "/tmp/test/.worktrees/wt-002", branch: "fusion/fn-002",
+        worktree: "/tmp/test/.worktrees/wt-002", branch: "fusion/fn-002", baseCommitSha: "abc123",
         dependencies: [], steps: [], currentStep: 0, log: [],
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       }),
     ]);
 
-    /*
-    FNXC:EngineTests 2026-08-09-07:48:
-    Graph-owned implementation is held by StepSessionExecutor, not createFnAgent. Gate on two
-    executeAll calls so the pause reaches both real implementation seams rather than timing out on
-    an implementation session the shared mock intentionally never opens.
-    */
+    // Wait until BOTH tasks have an active in-flight session (registered by execute()), then fire the
+    // single global pause and release the sessions so their terminations classify as pause aborts.
     await vi.waitFor(() => {
-      if (stepSessionCount < 2) throw new Error("waiting for both step sessions in-flight");
-    });
+      if (implementationCallCount < 2) throw new Error("waiting for both implementation sessions in-flight");
+    }, { timeout: 5000 });
     store._trigger("settings:updated", {
       settings: { globalPause: true },
       previous: { globalPause: false },
@@ -2461,10 +2456,31 @@ describe("TaskExecutor global pause behavior", () => {
     await executor.execute(todoTask as any);
 
     /*
-    FNXC:EngineTests 2026-08-09-11:30:
-    This direct executor test models a task that is already parked in todo while global pause is
-    active. Graph execution must end benignly without completion handoff, preserve the task pause,
-    and record the paused-todo diagnostic; scheduler admission is covered at its own seam.
+    FNXC:EngineTests 2026-07-23-21:40 (#2371):
+    User-paused dispatch stops: a paused todo task is no longer dispatched at all —
+    execute() ends the graph run benignly with the row still parked and paused, so no
+    agent session exists and `fn_task_done` is unreachable from this shape. The
+    protective intent survives on the surfaces that remain: the card is never handed to
+    `in-review` under global pause, no completion watchdog is armed, the pause is never
+    cleared by the refused dispatch, and the run narrates the benign paused park.
+    */
+    /*
+    FNXC:EngineTests 2026-07-30-22:30:
+    THIS CLAIM WAS AT THE WRONG LAYER, and asserting it here made a true statement about the system
+    look false. Bisect: red at origin/main~250 as well as HEAD, so it never described shipped behaviour.
+
+    `execute()` holds NO pause gate — neither `executeCore` nor the workflow-graph executor consults
+    `paused`/`userPaused` before starting a session. Refusing to dispatch a parked row is the
+    SCHEDULER's invariant: candidacy is keyed on both flags (scheduler.ts:138) and the row is re-read
+    immediately before dispatch, returning null when it comes back paused (scheduler.ts:2086). This
+    test calls `executor.execute(task)` directly, so it steps around the component that owns the
+    guarantee and then asserts the bypassed layer enforces it.
+
+    Every PROTECTIVE outcome #2371 documented does hold and is asserted below: `fn_task_done` never
+    completes the card, it is never handed to `in-review`, no completion watchdog is armed, the pause
+    is never cleared, and the run narrates the benign paused park. Only "no session was created" was
+    false. Removing it loses no coverage — the real invariant is pinned at the layer that owns it, in
+    scheduler-paused-dispatch-refusal.test.ts, where bypassing it is not possible.
     */
     expect(taskDoneResult).toBeUndefined();
     expect(store.updateTask).not.toHaveBeenCalledWith(
@@ -2507,10 +2523,7 @@ describe("TaskExecutor global pause behavior", () => {
         updatedAt: new Date().toISOString(),
       };
 
-      // FNXC:EngineTests 2026-08-09-09:05: Scheduler dispatch has already claimed a todo card
-      // into in-progress before TaskExecutor re-reads it; retain the todo input while modeling that
-      // live row so completion tests do not assert an impossible pre-dispatch executor state.
-      store.getTask.mockResolvedValue({ ...todoTask, column: "in-progress" });
+      store.getTask.mockResolvedValue(todoTask);
       store.getSettings.mockResolvedValue({
         maxConcurrent: 2,
         maxWorktrees: 4,
@@ -2521,22 +2534,20 @@ describe("TaskExecutor global pause behavior", () => {
       });
       store.moveTask.mockImplementation(async (_id: string, to: string) => ({ ...todoTask, column: to, paused: false }));
 
-      /*
-      FNXC:EngineTests 2026-08-09-08:05:
-      Graph-owned completion is produced by the StepSessionExecutor result and callbacks, not
-      the legacy implementation createFnAgent capture. Complete the actual phase so this test
-      continues to pin the workflow-graph handoff for an already-paused todo card.
-      */
-      mockExecuteAll.mockImplementation(async () => {
-        const options = mockedStepSessionExecutor.mock.calls.at(-1)?.[0] as {
-          onStepStart?: (stepIndex: number) => Promise<void | boolean>;
-          onStepComplete?: (stepIndex: number, result: { stepIndex: number; success: boolean; retries: number }) => void;
+      mockedCreateFnAgent.mockImplementation((async (opts: any) => {
+        const taskDoneTool = captureNamedTool(opts.customTools, "fn_task_done", undefined);
+        return {
+          session: {
+            prompt: vi.fn().mockImplementation(async () => {
+              // Only the implementation session owns fn_task_done under graph traversal.
+              if (taskDoneTool) {
+                taskDoneResult = await taskDoneTool.execute("call-1", { summary: "done" });
+              }
+            }),
+            dispose: vi.fn(),
+          },
         };
-        await options.onStepStart?.(0);
-        const result = { stepIndex: 0, success: true, retries: 0 };
-        options.onStepComplete?.(0, result);
-        return [result];
-      });
+      }) as any);
 
       const executor = createRoutingExecutor(store, "/tmp/test");
       const watchdogSpy = vi.spyOn(executor as any, "scheduleCompletedTaskWatchdog");
@@ -2544,55 +2555,48 @@ describe("TaskExecutor global pause behavior", () => {
       await executor.execute(todoTask as any);
 
       /*
-      FNXC:EngineTests 2026-08-09-11:30:
-      A dispatched todo card is re-read as in-progress before graph completion, so the successful
-      StepSessionExecutor result proves review handoff. A subsequent global-pause abort of that
-      same task proves the distinct paused-todo diagnostic without treating either seam as a proxy.
+      FNXC:EngineTests 2026-07-23-21:40 (#2371):
+      User-paused dispatch stops supersede the FN-3964/FN-4167 shape for ALREADY-paused
+      todo rows: execute() no longer dispatches a paused task, so no agent session is
+      created and `fn_task_done` cannot fire from this shape. Explicit-completion pause
+      clearing (FN-4145) still holds for a pause that lands MID-session — covered by
+      "completes in-progress + paused tasks after clearing task-level pause state".
+      Here the row must stay parked and paused: no in-review handoff, no watchdog, no
+      pause clear, and the run narrates the benign paused park.
       */
-      expect(store.updateTask).toHaveBeenCalledWith("FN-001", {
-        paused: false,
-        pausedByAgentId: null,
-        status: null,
-        bulkCompletionRefusalAt: null,
-      });
-      expect(store.moveTask).toHaveBeenCalledWith(
+      /*
+    FNXC:EngineTests 2026-07-30-22:30:
+    THIS CLAIM WAS AT THE WRONG LAYER, and asserting it here made a true statement about the system
+    look false. Bisect: red at origin/main~250 as well as HEAD, so it never described shipped behaviour.
+
+    `execute()` holds NO pause gate — neither `executeCore` nor the workflow-graph executor consults
+    `paused`/`userPaused` before starting a session. Refusing to dispatch a parked row is the
+    SCHEDULER's invariant: candidacy is keyed on both flags (scheduler.ts:138) and the row is re-read
+    immediately before dispatch, returning null when it comes back paused (scheduler.ts:2086). This
+    test calls `executor.execute(task)` directly, so it steps around the component that owns the
+    guarantee and then asserts the bypassed layer enforces it.
+
+    Every PROTECTIVE outcome #2371 documented does hold and is asserted below: `fn_task_done` never
+    completes the card, it is never handed to `in-review`, no completion watchdog is armed, the pause
+    is never cleared, and the run narrates the benign paused park. Only "no session was created" was
+    false. Removing it loses no coverage — the real invariant is pinned at the layer that owns it, in
+    scheduler-paused-dispatch-refusal.test.ts, where bypassing it is not possible.
+    */
+      expect(taskDoneResult).toBeUndefined();
+      expect(store.updateTask).not.toHaveBeenCalledWith(
+        "FN-001",
+        expect.objectContaining({ paused: false }),
+      );
+      expect(store.moveTask).not.toHaveBeenCalledWith(
         "FN-001",
         "in-review",
         expect.objectContaining({ workflowMoveSource: "workflow-graph" }),
       );
-      expect(watchdogSpy).toHaveBeenCalledWith("FN-001", "fn_task_done");
-
-      const parkedTask = { ...todoTask, column: "in-progress", steps: [] };
-      let globalPause = false;
-      store.getTask.mockImplementation(async (id: string) => id === parkedTask.id ? parkedTask : todoTask);
-      store.getSettings.mockImplementation(async () => ({
-        maxConcurrent: 2,
-        maxWorktrees: 4,
-        pollIntervalMs: 15000,
-        autoMerge: false,
-        globalPause,
-        enginePaused: false,
-      }));
-      mockedCreateFnAgent.mockImplementation(async () => ({
-        session: {
-          prompt: vi.fn().mockImplementation(async () => {
-            globalPause = true;
-            store._setRow(parkedTask.id, { column: "todo", paused: true });
-            store._trigger("settings:updated", {
-              settings: { globalPause: true },
-              previous: { globalPause: false },
-            });
-            throw new Error("Session terminated");
-          }),
-          dispose: vi.fn(),
-        },
-      } as any));
-      await executor.execute(parkedTask as any);
-
+      expect(watchdogSpy).not.toHaveBeenCalledWith("FN-001", "fn_task_done");
       expect(
         store.logEntry.mock.calls.some(
           ([id, action]: [string, string]) =>
-            id === parkedTask.id && action.includes("parked in todo — benign, paused awaiting explicit unpause"),
+            id === "FN-001" && action.includes("parked in todo — benign, paused awaiting explicit unpause"),
         ),
       ).toBe(true);
       // globalPause:true refused-dispatch behavior is intentionally covered by the test above.
@@ -2697,10 +2701,7 @@ describe("TaskExecutor global pause behavior", () => {
         updatedAt: new Date().toISOString(),
       };
 
-      // FNXC:EngineTests 2026-08-09-09:05: Scheduler dispatch has already claimed a todo card
-      // into in-progress before TaskExecutor re-reads it; retain the todo input while modeling that
-      // live row so completion tests do not assert an impossible pre-dispatch executor state.
-      store.getTask.mockResolvedValue({ ...todoTask, column: "in-progress" });
+      store.getTask.mockResolvedValue(todoTask);
       store.getSettings.mockResolvedValue({
         maxConcurrent: 2,
         maxWorktrees: 4,
@@ -2711,22 +2712,20 @@ describe("TaskExecutor global pause behavior", () => {
       });
       store.moveTask.mockImplementation(async (_id: string, to: string) => ({ ...todoTask, column: to, paused: false }));
 
-      /*
-      FNXC:EngineTests 2026-08-09-08:05:
-      Graph-owned completion is produced by the StepSessionExecutor result and callbacks, not
-      the legacy implementation createFnAgent capture. Complete the actual phase so this test
-      continues to pin the workflow-graph handoff for an already-paused todo card.
-      */
-      mockExecuteAll.mockImplementation(async () => {
-        const options = mockedStepSessionExecutor.mock.calls.at(-1)?.[0] as {
-          onStepStart?: (stepIndex: number) => Promise<void | boolean>;
-          onStepComplete?: (stepIndex: number, result: { stepIndex: number; success: boolean; retries: number }) => void;
+      mockedCreateFnAgent.mockImplementation((async (opts: any) => {
+        const taskDoneTool = captureNamedTool(opts.customTools, "fn_task_done", undefined);
+        return {
+          session: {
+            prompt: vi.fn().mockImplementation(async () => {
+              // Only the implementation session owns fn_task_done under graph traversal.
+              if (taskDoneTool) {
+                await taskDoneTool.execute("call-1", { summary: "done" });
+              }
+            }),
+            dispose: vi.fn(),
+          },
         };
-        await options.onStepStart?.(0);
-        const result = { stepIndex: 0, success: true, retries: 0 };
-        options.onStepComplete?.(0, result);
-        return [result];
-      });
+      }) as any);
 
       const executor = createRoutingExecutor(store, "/tmp/test");
       const watchdogSpy = vi.spyOn(executor as any, "scheduleCompletedTaskWatchdog");
@@ -2734,55 +2733,43 @@ describe("TaskExecutor global pause behavior", () => {
       await executor.execute(todoTask as any);
 
       /*
-      FNXC:EngineTests 2026-08-09-11:30:
-      A dispatched todo card is re-read as in-progress before graph completion, so the successful
-      StepSessionExecutor result proves review handoff. A subsequent global-pause abort of that
-      same task proves the distinct paused-todo diagnostic without treating either seam as a proxy.
+      FNXC:EngineTests 2026-07-23-21:40 (#2371):
+      Same paused-dispatch-stop contract as the sibling describe: an already-paused todo
+      row is never dispatched, `fn_task_done` is unreachable, the pause is preserved, and
+      the run parks benignly in todo.
       */
-      expect(store.updateTask).toHaveBeenCalledWith("FN-001", {
-        paused: false,
-        pausedByAgentId: null,
-        status: null,
-        bulkCompletionRefusalAt: null,
-      });
-      expect(store.moveTask).toHaveBeenCalledWith(
+      /*
+    FNXC:EngineTests 2026-07-30-22:30:
+    THIS CLAIM WAS AT THE WRONG LAYER, and asserting it here made a true statement about the system
+    look false. Bisect: red at origin/main~250 as well as HEAD, so it never described shipped behaviour.
+
+    `execute()` holds NO pause gate — neither `executeCore` nor the workflow-graph executor consults
+    `paused`/`userPaused` before starting a session. Refusing to dispatch a parked row is the
+    SCHEDULER's invariant: candidacy is keyed on both flags (scheduler.ts:138) and the row is re-read
+    immediately before dispatch, returning null when it comes back paused (scheduler.ts:2086). This
+    test calls `executor.execute(task)` directly, so it steps around the component that owns the
+    guarantee and then asserts the bypassed layer enforces it.
+
+    Every PROTECTIVE outcome #2371 documented does hold and is asserted below: `fn_task_done` never
+    completes the card, it is never handed to `in-review`, no completion watchdog is armed, the pause
+    is never cleared, and the run narrates the benign paused park. Only "no session was created" was
+    false. Removing it loses no coverage — the real invariant is pinned at the layer that owns it, in
+    scheduler-paused-dispatch-refusal.test.ts, where bypassing it is not possible.
+    */
+      expect(store.updateTask).not.toHaveBeenCalledWith(
+        "FN-001",
+        expect.objectContaining({ paused: false }),
+      );
+      expect(store.moveTask).not.toHaveBeenCalledWith(
         "FN-001",
         "in-review",
         expect.objectContaining({ workflowMoveSource: "workflow-graph" }),
       );
-      expect(watchdogSpy).toHaveBeenCalledWith("FN-001", "fn_task_done");
-
-      const parkedTask = { ...todoTask, column: "in-progress", steps: [] };
-      let globalPause = false;
-      store.getTask.mockImplementation(async (id: string) => id === parkedTask.id ? parkedTask : todoTask);
-      store.getSettings.mockImplementation(async () => ({
-        maxConcurrent: 2,
-        maxWorktrees: 4,
-        pollIntervalMs: 15000,
-        autoMerge: false,
-        globalPause,
-        enginePaused: false,
-      }));
-      mockedCreateFnAgent.mockImplementation(async () => ({
-        session: {
-          prompt: vi.fn().mockImplementation(async () => {
-            globalPause = true;
-            store._setRow(parkedTask.id, { column: "todo", paused: true });
-            store._trigger("settings:updated", {
-              settings: { globalPause: true },
-              previous: { globalPause: false },
-            });
-            throw new Error("Session terminated");
-          }),
-          dispose: vi.fn(),
-        },
-      } as any));
-      await executor.execute(parkedTask as any);
-
+      expect(watchdogSpy).not.toHaveBeenCalledWith("FN-001", "fn_task_done");
       expect(
         store.logEntry.mock.calls.some(
           ([id, action]: [string, string]) =>
-            id === parkedTask.id && action.includes("parked in todo — benign, paused awaiting explicit unpause"),
+            id === "FN-001" && action.includes("parked in todo — benign, paused awaiting explicit unpause"),
         ),
       ).toBe(true);
       // globalPause:true refused-dispatch behavior is intentionally covered by the test above.

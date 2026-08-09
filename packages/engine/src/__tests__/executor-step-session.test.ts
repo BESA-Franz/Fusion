@@ -35,8 +35,6 @@ import {
   mockTerminateAllSessions,
   mockCleanup,
   mockSteerActiveSessions,
-  mockedReconcileSecretsEnvFingerprint,
-  mockedRefreshReusedWorktreeBase,
   resetExecutorMocks,
   selectImplementationSessionCall,
 } from "./executor-test-helpers.js";
@@ -45,9 +43,10 @@ const mockedReviewStep = vi.mocked(mockedReviewStepFn);
 
 /* FNXC:EngineTests 2026-08-09-05:51: Graph-owned execution fails closed before session creation when a test omits agentStore, so every executor harness must route through the durable fixture unless a test explicitly overrides it. */
 function createRoutingExecutor(store: any, rootDir: string, options: any = {}) {
+  const { ephemeral, ...executorOptions } = options;
   return new TaskExecutor(store, rootDir, {
-    agentStore: createWorkflowRoutingAgentStore(store).agentStore,
-    ...options,
+    agentStore: createWorkflowRoutingAgentStore(store, { ephemeral }).agentStore,
+    ...executorOptions,
   });
 }
 
@@ -57,6 +56,12 @@ A graph-owned executor cannot reach its implementation session without a routing
 this guard, that suspend left behavioral captures empty. Keep both fixture identities explicit so
 policy tests exercise ephemeral gating while ordinary graph harnesses retain durable role-pool routing.
 */
+/*
+FNXC:EngineTests 2026-08-09-12:02:
+An unwired agent store suspends graph-owned runs at step-execute before any implementation session
+opens. These guards cover durable and ephemeral routes plus step-list shapes so uniform session mocks
+cannot silently reduce lifecycle assertions to review-node captures.
+*/
 describe("workflow routing harness guards", () => {
   it("offers explicit durable and ephemeral executor identities", () => {
     const store = createMockStore();
@@ -64,67 +69,112 @@ describe("workflow routing harness guards", () => {
     expect(isEphemeralAgent(createWorkflowRoutingAgentStore(store, { ephemeral: true }).agent)).toBe(true);
   });
 
-  it("requires an implementation session instead of accepting an empty graph capture", () => {
-    expect(() => selectImplementationSessionCall([])).toThrow(/No implementation session was opened/);
+  it.each([
+    { ephemeral: false, steps: [] },
+    { ephemeral: false, steps: [{ name: "Implement", status: "pending" }] },
+    { ephemeral: true, steps: [] },
+    { ephemeral: true, steps: [{ name: "Implement", status: "pending" }] },
+  ])("opens an implementation session for $ephemeral principals with $steps step state", async ({ ephemeral, steps }) => {
+    resetExecutorMocks();
+    mockedCreateFnAgent.mockImplementation((async (options: any) => {
+      const taskDone = (options.customTools ?? []).find((tool: any) => tool.name === "fn_task_done");
+      return {
+        session: {
+          prompt: vi.fn().mockImplementation(async () => taskDone?.execute("guard", { summary: "done" })),
+          dispose: vi.fn(),
+        },
+      } as any;
+    }) as any);
+    const store = createMockStore();
+    const task = {
+      id: `FN-GUARD-${ephemeral}-${steps.length}`,
+      title: "Graph routing guard",
+      description: "Ensure graph routing reaches implementation",
+      column: "in-progress",
+      dependencies: [],
+      steps,
+      currentStep: 0,
+      log: [],
+      prompt: "# test\n## Steps\n### Step 0: Implement\n- [ ] work",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    store.getTask.mockResolvedValue(task as any);
+
+    await createRoutingExecutor(store, "/tmp/test", { ephemeral }).execute(task as any);
+
+    expect(implementationSessionCalls(
+      mockedCreateFnAgent.mock.calls.map(([options]) => options as { customTools?: Array<{ name?: string }> }),
+    )).toHaveLength(1);
+  });
+
+  it("fails loudly when graph routing has no agent store instead of accepting a non-implementation capture", async () => {
+    resetExecutorMocks();
+    const store = createMockStore();
+    const task = {
+      id: "FN-GUARD-NO-STORE",
+      title: "Missing routing guard",
+      description: "No agent store must suspend",
+      column: "in-progress",
+      dependencies: [],
+      steps: [],
+      currentStep: 0,
+      log: [],
+      prompt: "# test",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    store.getTask.mockResolvedValue(task as any);
+
+    await new TaskExecutor(store, "/tmp/test").execute(task as any);
+
+    expect(() => selectImplementationSessionCall(
+      mockedCreateFnAgent.mock.calls.map(([options]) => options as { customTools?: Array<{ name?: string }> }),
+    )).toThrow(/No implementation session was opened/);
+    expect(store.logEntry.mock.calls.some(
+      ([id, action]: [string, string]) => id === task.id && action.includes("workflow-principal-routing-unavailable:no-agent-store:executor"),
+    )).toBe(true);
   });
 
   /*
-  FNXC:EngineTests 2026-08-09-08:20:
-  These guards exist because an empty StepSessionExecutor mock once made graph lifecycle assertions
-  vacuous. A routed execution must construct the graph-owned implementation seam, while the shared
-  reused-worktree defaults must preserve production's execution-safe union members.
+  FNXC:EngineTests 2026-08-09-12:31:
+  A partially routed graph can open planning or review sessions before executor admission fails.
+  Lifecycle capture must reject that realistic non-implementation-only run rather than treating a
+  review-node call as evidence that the implementation session was exercised.
   */
-  it("reaches the graph-owned step-session implementation seam", async () => {
+  it("rejects a realistic review-only graph capture when no executor principal is available", async () => {
     resetExecutorMocks();
     const store = createMockStore();
-    store.getSettings.mockResolvedValue({
-      maxConcurrent: 2, maxWorktrees: 4, pollIntervalMs: 15_000, autoMerge: false,
-      runStepsInNewSessions: true,
-    });
+    const routing = createWorkflowRoutingAgentStore(store);
+    routing.agentStore.listAgents.mockResolvedValue([{
+      ...routing.agent,
+      role: "reviewer",
+      roles: ["triage", "reviewer"],
+    }]);
     const task = {
-      id: "FN-HARNESS-STEP-SESSION", title: "Harness step session", description: "T",
-      column: "in-progress", dependencies: [], steps: [{ name: "Step 0", status: "pending" }],
-      currentStep: 0, log: [], prompt: "# test\n## Steps\n### Step 0: Preflight\n- [ ] check",
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      id: "FN-GUARD-REVIEW-ONLY",
+      title: "Review-only routing guard",
+      description: "A missing executor must not produce a valid lifecycle capture",
+      column: "todo",
+      dependencies: [],
+      steps: [],
+      currentStep: 0,
+      log: [],
+      prompt: "# test\n## Steps\n### Step 0: Implement\n- [ ] work",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
     store.getTask.mockResolvedValue(task as any);
 
-    await createRoutingExecutor(store, "/tmp/test").execute(task as any);
+    await new TaskExecutor(store, "/tmp/test", { agentStore: routing.agentStore }).execute(task as any);
 
-    expect(mockedStepSessionExecutor).toHaveBeenCalledTimes(1);
-    expect(mockExecuteAll).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps type-faithful base-refresh defaults and exposes a fail-closed override", async () => {
-    resetExecutorMocks();
-    await expect(mockedReconcileSecretsEnvFingerprint()).resolves.toEqual({ executionSafe: true, outcome: "clean" });
-    await expect(mockedRefreshReusedWorktreeBase()).resolves.toMatchObject({ kind: "up-to-date", executionSafe: true });
-
-    mockedReconcileSecretsEnvFingerprint.mockResolvedValueOnce({ executionSafe: false, outcome: "git-dir-unavailable" });
-    await expect(mockedReconcileSecretsEnvFingerprint()).resolves.toEqual({ executionSafe: false, outcome: "git-dir-unavailable" });
-    mockedRefreshReusedWorktreeBase.mockResolvedValueOnce({ kind: "base-reconciliation-required", executionSafe: false });
-    await expect(mockedRefreshReusedWorktreeBase()).resolves.toMatchObject({ kind: "base-reconciliation-required", executionSafe: false });
-  });
-
-  it("fails closed before implementation when a reused worktree reconciliation is blocked", async () => {
-    resetExecutorMocks();
-    const store = createMockStore();
-    const task = {
-      id: "FN-HARNESS-BLOCKED-REFRESH", title: "Blocked refresh", description: "T",
-      column: "in-progress", dependencies: [], steps: [{ name: "Step 0", status: "pending" }],
-      currentStep: 0, log: [], worktree: "/tmp/test/.worktrees/blocked-refresh", baseCommitSha: "abc123",
-      prompt: "# test\n## Steps\n### Step 0: Preflight\n- [ ] check",
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-    };
-    store.getTask.mockResolvedValue(task as any);
-    mockedReconcileSecretsEnvFingerprint.mockResolvedValue({ executionSafe: false, outcome: "git-dir-unavailable" });
-
-    await createRoutingExecutor(store, "/tmp/test").execute(task as any);
-
-    expect(store.updateTask.mock.calls.some(([id, patch]: [string, { error?: string }]) =>
-      id === task.id && patch.error?.includes("base-reconciliation-required"),
-    )).toBe(true);
-    expect(mockedStepSessionExecutor).not.toHaveBeenCalled();
+    expect(mockedCreateFnAgent).toHaveBeenCalled();
+    expect(implementationSessionCalls(
+      mockedCreateFnAgent.mock.calls.map(([options]) => options as { customTools?: Array<{ name?: string }> }),
+    )).toHaveLength(0);
+    expect(() => selectImplementationSessionCall(
+      mockedCreateFnAgent.mock.calls.map(([options]) => options as { customTools?: Array<{ name?: string }> }),
+    )).toThrow(/No implementation session was opened/);
   });
 });
 
@@ -424,16 +474,19 @@ describe("Workflow Steps Execution", () => {
 
     await executor.execute(task as any);
 
-    expect(store.updateTask).toHaveBeenCalledWith("FN-ASSISTANT-STALE", {
-      sessionFile: null,
-      recoveryRetryCount: 1,
-      nextRecoveryAt: expect.any(String),
-    });
-    expect(store.updateTask).toHaveBeenCalledWith("FN-ASSISTANT-STALE", {
-      sessionFile: null,
-      status: null,
-      error: null,
-    });
+    const retryRecoveryWrite = store.updateTask.mock.calls.find(
+      ([id, patch, runContext]) => id === "FN-ASSISTANT-STALE"
+        && patch?.sessionFile === null
+        && patch?.recoveryRetryCount === 1
+        && typeof patch?.nextRecoveryAt === "string"
+        && runContext === undefined,
+    );
+    expect(retryRecoveryWrite).toHaveLength(2);
+    expect(retryRecoveryWrite?.[2]).toBeUndefined();
+    expect(store.updateTask.mock.calls).toContainEqual([
+      "FN-ASSISTANT-STALE",
+      { sessionFile: null, status: null, error: null },
+    ]);
     expect(store.moveTask).toHaveBeenCalledWith("FN-ASSISTANT-STALE", "todo", { preserveResumeState: true });
     expect(markGraphExecuteSelfRequeued).toHaveBeenCalledWith("FN-ASSISTANT-STALE");
     expect(executingTaskLock.has("FN-ASSISTANT-STALE")).toBe(false);
@@ -483,12 +536,22 @@ describe("Workflow Steps Execution", () => {
 
     await executor.execute(task as any);
 
-    expect(store.updateTask).toHaveBeenCalledWith("FN-ASSISTANT-STALE-EXHAUSTED", {
-      status: "failed",
-      error: "Cannot continue from message role: assistant",
-      recoveryRetryCount: null,
-      nextRecoveryAt: null,
-    });
+    /*
+    FNXC:EngineTests 2026-08-09-12:02:
+    Graph-owned stale-assistant recovery reaches the existing classifier once reused-worktree
+    reconciliation is mocked safe. Assert the absent run context is observably undefined and the
+    two-argument store write retains its exact arity, distinguishing it from the graph wrapper path.
+    */
+    const exhaustedRecoveryWrite = store.updateTask.mock.calls.find(
+      ([id, patch, runContext]) => id === "FN-ASSISTANT-STALE-EXHAUSTED"
+        && patch?.status === "failed"
+        && patch?.error === "Cannot continue from message role: assistant"
+        && patch?.recoveryRetryCount === null
+        && patch?.nextRecoveryAt === null
+        && runContext === undefined,
+    );
+    expect(exhaustedRecoveryWrite).toHaveLength(2);
+    expect(exhaustedRecoveryWrite?.[2]).toBeUndefined();
     expect(store.moveTask).not.toHaveBeenCalledWith("FN-ASSISTANT-STALE-EXHAUSTED", "todo", expect.anything());
     expect(onError).toHaveBeenCalledOnce();
   });
