@@ -811,6 +811,9 @@ Mailbox view shows inbox/outbox communication threads and unread state. When an 
 
 - Mail composers can attach a native mission, milestone, goal, persisted insight, eval result, or roadmap item by dragging it from its owning view, or through the keyboard/mobile **Attach structure** picker. Roadmap feature-row drag is available on fine pointers; touch and keyboard use the picker. The shared `nativeStructureDrag` payload is copied into the same first-class mail embed metadata as picker attachments, while a dropped payload from another project is rejected.
 - **Draft with AI** opens a compact compose-chat scratch session that uses attached structures as context. **Use draft** replaces an empty message body; replacing typed text requires confirmation, and attached embeds remain in place.
+- Structural mail distinguishes **Reports** (titled markdown sections) and **Approvals** (inline, single-shot approve/deny decisions) from ordinary quick messages. Use **Reports & approvals** in the inbox to filter to those items without changing unread counts or message history.
+- The composer defaults to **Quick message**. **Report** mode adds a title and complete headed sections, opens **Draft with AI** for memo help, and keeps native-structure attachments in context. A recipient is still required before sending.
+- Assistant chat messages offer **Send as report**. It opens Mail in Report mode with a derived title and a body trimmed to 2000 characters; choose the recipient before sending.
 
 - Inbox renders one row per message (no sender-based collapsing)
 - clicking a message in the Mail tab opens the task detail pane with full message content and conversation context

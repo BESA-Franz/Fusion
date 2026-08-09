@@ -126,6 +126,7 @@ import type { GraphWorkflowSelection } from "./components/GraphWorkflowSwitcherS
 // link asynchronously, producing a brief flash of unstyled chat UI on
 // first render.
 import "./components/ChatView.css";
+import { useChatMailReportRouting } from "./components/chatReportHandoff";
 
 const IS_TEST_ENV = import.meta.env.MODE === "test";
 export const TASK_DETAIL_FLOATING_GEOMETRY_KEY = "floating-window:task-detail";
@@ -1622,6 +1623,11 @@ function AppInner() {
     setQuickChatOpen(false);
   };
 
+  const { mailComposerPrefill, onSendAsReport: handleSendChatMessageAsReport } = useChatMailReportRouting(
+    () => handleChangeTaskView("mailbox"),
+    () => setQuickChatOpen(false),
+  );
+
   const mainContentProps: MainContentProps = {
     showBackendConnectionErrorPage,
     projectsError,
@@ -1678,6 +1684,8 @@ function AppInner() {
     experimentalFeatures,
     setQuickChatOpen,
     chatComposerPrefill,
+    mailComposerPrefill,
+    onSendAsReport: handleSendChatMessageAsReport,
     onOpenChatWithPrefill: openChatWithPrefill,
     setMailboxUnreadCount,
     setMissionTargetId,
@@ -2136,6 +2144,7 @@ function AppInner() {
               floating
               initialComposerDraft={chatComposerPrefill?.text}
               initialComposerDraftNonce={chatComposerPrefill?.nonce}
+              onSendAsReport={handleSendChatMessageAsReport}
               onMaximize={() => {
                 handleTaskViewChange("chat");
                 setQuickChatOpen(false);
