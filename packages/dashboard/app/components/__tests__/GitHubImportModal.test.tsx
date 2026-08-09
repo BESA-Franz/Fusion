@@ -2967,15 +2967,68 @@ describe("GitHubImportModal", () => {
     expect(actionRowRule).toContain("gap: var(--space-sm);");
   });
 
+  /*
+  FNXC:GitHubImport 2026-08-09-06:48:
+  FN-8766 gives desktop Task Detail visible overflow, and that selector also matches phones.
+  Its phone sheet therefore reasserts clipping with `!important`; all sheet hosts share geometry,
+  while Chat and GitHub Import inherit clipping from the base FloatingWindow rule rather than
+  requiring identical rule text. Any `overflow: visible` override, including `!important`, breaks
+  that inherited clipping and is forbidden.
+  */
   it("scopes the import detail FloatingWindow as the shared mobile full-screen sheet", () => {
     const source = readFileSync(resolve(__dirname, "../FloatingWindow.css"), "utf8");
-    const chatSheetRule = source.match(/\.floating-window--chat\s*\{([^}]*)\}/)?.[1] ?? "";
-    const importSheetRule = source.match(/\.floating-window--github-import-detail\s*\{([^}]*)\}/)?.[1] ?? "";
-    const taskSheetRule = source.match(/\.floating-window--task-detail\s*\{([^}]*)\}/)?.[1] ?? "";
+    const phoneSheetMedia = source.match(/@media \(max-width: 767\.98px\), \(max-height: 480px\) \{([\s\S]*?)\n\}\n\n@media/)?.[1];
+    expect(phoneSheetMedia, "phone-sheet media query must exist").toBeTruthy();
+    const declarationList = (ruleBody: string) => ruleBody.split(";").map((declaration) => declaration.trim()).filter(Boolean);
+    const ruleDeclarations = (css: string, selector: RegExp, name: string) => {
+      const ruleBody = css.match(selector)?.[1];
+      expect(ruleBody, `${name} rule must exist`).toBeTruthy();
+      return declarationList(ruleBody!);
+    };
+    const sheetRule = (selector: RegExp, name: string) => ruleDeclarations(phoneSheetMedia!, selector, `${name} phone-sheet`);
+    const sharedGeometry = [
+      "inset: 0 !important",
+      "width: 100vw !important",
+      "height: 100dvh !important",
+      "min-width: 0 !important",
+      "min-height: 0 !important",
+      "max-width: 100vw !important",
+      "max-height: 100dvh !important",
+      "border: none",
+      "border-radius: 0",
+      "box-shadow: none",
+    ];
+    const chatSheetDeclarations = sheetRule(/\.floating-window--chat\s*\{([^}]*)\}/, "Quick Chat");
+    const importSheetDeclarations = sheetRule(/\.floating-window--github-import-detail\s*\{([^}]*)\}/, "GitHub Import detail");
+    const taskSheetDeclarations = sheetRule(/\.floating-window--task-detail\s*\{([^}]*)\}/, "Task Detail");
 
-    expect(importSheetRule).toBe(chatSheetRule);
-    expect(importSheetRule).toBe(taskSheetRule);
-    expect(importSheetRule).toContain("inset: 0 !important;");
+    for (const [name, declarations] of [
+      ["Quick Chat", chatSheetDeclarations],
+      ["GitHub Import detail", importSheetDeclarations],
+      ["Task Detail", taskSheetDeclarations],
+    ]) {
+      for (const declaration of sharedGeometry) {
+        expect(declarations, `${name} must retain shared phone-sheet geometry`).toContain(declaration);
+      }
+    }
+
+    const baseDeclarations = ruleDeclarations(source, /(?:^|\n)\s*\.floating-window\s*\{([^}]*)\}/, "base FloatingWindow");
+    expect(baseDeclarations, "base FloatingWindow must provide inherited sheet clipping").toContain("overflow: hidden");
+    expect(taskSheetDeclarations, "Task Detail must override its desktop visible-overflow rule on phones").toContain("overflow: hidden !important");
+
+    const desktopTaskDetailDeclarations = ruleDeclarations(
+      source,
+      /\.floating-window--task-detail:not\(\.floating-window--tablet-viewport\)\s*\{([^}]*)\}/,
+      "desktop Task Detail",
+    );
+    expect(desktopTaskDetailDeclarations, "Task Detail's phone clipping reassertion needs the desktop override").toContain("overflow: visible");
+
+    const visibleOverflowSheetHosts = [...source.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(([, selector, body]) => /overflow\s*:\s*visible(?:\s*!important)?\s*(?:;|$)/.test(body))
+      .map(([, selector]) => selector)
+      .filter((selector) => /\.floating-window--(?:chat|github-import-detail)(?:\b|\s|[.:#\[])/.test(selector));
+    expect(visibleOverflowSheetHosts, "Chat and GitHub Import must inherit base clipping without a visible-overflow override").toEqual([]);
+
     expect(source).toMatch(/@media \(max-width: 767\.98px\), \(max-height: 480px\)[\s\S]*\.floating-window--github-import-detail \.floating-window__resize-handle\s*\{\s*display: none;/);
     expect(source).toContain(".floating-window:not(.floating-window--chat):not(.floating-window--github-import-detail)");
   });
