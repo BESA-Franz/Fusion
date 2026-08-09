@@ -1332,6 +1332,11 @@ export {
   type NodeOverrideBlockReason,
 } from "./mesh/node-override-guard.js";
 export {
+  shouldInvalidateEffectiveRoute,
+  type EffectiveRouteInvalidationDecision,
+  type EffectiveRouteInvalidationInput,
+} from "./mesh/effective-route-invalidation.js";
+export {
   SANDBOX_BACKEND_NAMES,
   SANDBOX_FAILURE_MODES,
   validateDirectMergeCommitStrategy,

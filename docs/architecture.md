@@ -1886,11 +1886,11 @@ Behavior summary:
 
 ### Active-task node-override guard
 
-`packages/core/src/node-override-guard.ts` enforces immutable routing overrides for active tasks:
+`packages/core/src/mesh/node-override-guard.ts` enforces immutable routing overrides for active tasks:
 - `validateNodeOverrideChange()` blocks node override updates while task column is `in-progress`
 - returns reason `task-in-progress`
 
-`TaskStore.updateTask()` applies this guard before persisting `nodeId` changes.
+`TaskStore.updateTask()` applies this guard before persisting `nodeId` changes. For a task that was not checked out when read, changing `nodeId` also invalidates the dispatch-time `effectiveNodeId` / `effectiveNodeSource` snapshot unless that update supplies a replacement. Replacement is honored per field: a partial payload keeps its supplied field and clears its unsupplied companion, so the two-column snapshot cannot be half-stale. Checkout eligibility is captured when the task is read; a combined agent reassignment that clears checkout state later in the update does not make an already checked-out task eligible for invalidation.
 
 ### Task commit-association API (`GET /api/tasks/:id/commit-associations`)
 
@@ -1961,7 +1961,7 @@ Task create/update now preserves both branch fields end-to-end:
 
 ### Routing activity visibility
 
-Routing decisions are visible in task activity/log entries and in task metadata (`effectiveNodeId`, `effectiveNodeSource`), and surfaced in dashboard routing UI + `fn task show` output.
+Routing decisions are visible in task activity/log entries and in task metadata (`effectiveNodeId`, `effectiveNodeSource`), and surfaced in dashboard routing UI + `fn task show` output. A non-checked-out node override change records an effective-route invalidation entry with the prior node and cleared snapshot fields; scheduler dispatch records the refreshed pair.
 
 See also:
 - [Settings Reference → Node Routing settings](./settings-reference.md#node-routing-settings-project-scope)

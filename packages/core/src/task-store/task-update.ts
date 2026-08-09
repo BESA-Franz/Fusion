@@ -23,6 +23,7 @@ import {validateCustomFieldPatch, CustomFieldRejectionError} from "../tasks/task
 import "../builtin-traits.js";
 import {normalizeTaskPriority} from "../tasks/task-priority.js";
 import {validateNodeOverrideChange, resolveNodeOverrideLanes} from "../mesh/node-override-guard.js";
+import {shouldInvalidateEffectiveRoute} from "../mesh/effective-route-invalidation.js";
 import {isTaskTerminalNodeIdAsync} from "../workflows/workflow-ir-resolver.js";
 import {extractTaskIdTokens, normalizeTitleForTaskId} from "../tasks/task-title-id-drift.js";
 import {buildBootstrapPrompt} from "../mesh/mesh-task-replication.js";
@@ -100,6 +101,16 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
 
       const dir = store.taskDir(id);
       const task = await store.readTaskJson(dir);
+      /*
+      FNXC:NodeRouting 2026-08-09-05:08:
+      Capture checkout and route inputs immediately after the task is read. A combined assignedAgentId/nodeId
+      update clears checkedOutBy during reassignment later in this pass; reading the mutated task there would
+      wrongly invalidate the in-flight route of a task that was checked out on read (issue #3365).
+      */
+      const wasCheckedOutOnRead = Boolean(task.checkedOutBy);
+      const preUpdateNodeId = task.nodeId;
+      const preUpdateEffectiveNodeId = task.effectiveNodeId;
+      const preUpdateEffectiveNodeSource = task.effectiveNodeSource;
       const wasFailed = task.status === "failed";
       const preUpdatePlanReviewResults = task.workflowStepResults?.filter(
         (result) => result.workflowStepId === PLAN_REVIEW_GROUP_ID,
@@ -506,6 +517,35 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
         task.effectiveNodeSource = undefined;
       } else if (updates.effectiveNodeSource !== undefined) {
         task.effectiveNodeSource = updates.effectiveNodeSource as Task["effectiveNodeSource"];
+      }
+      /*
+      FNXC:NodeRouting 2026-08-09-05:08:
+      A non-checked-out node override change expires its dispatch-time snapshot after explicit route fields
+      are assigned. Each supplied field wins verbatim, while an unsupplied companion is cleared so a partial
+      replacement cannot retain a half-stale pair; tasks checked out on read remain bound to their lease.
+      */
+      const effectiveRouteInvalidation = shouldInvalidateEffectiveRoute({
+        currentNodeId: preUpdateNodeId,
+        nextNodeId: updates.nodeId,
+        currentEffectiveNodeId: preUpdateEffectiveNodeId,
+        currentEffectiveNodeSource: preUpdateEffectiveNodeSource,
+        checkedOutOnRead: wasCheckedOutOnRead,
+        checkoutBeingSet: updates.checkedOutBy !== undefined && updates.checkedOutBy !== null,
+        explicitEffectiveNodeIdSupplied: updates.effectiveNodeId !== undefined,
+        explicitEffectiveNodeSourceSupplied: updates.effectiveNodeSource !== undefined,
+      });
+      if (effectiveRouteInvalidation.invalidateNodeId) task.effectiveNodeId = undefined;
+      if (effectiveRouteInvalidation.invalidateNodeSource) task.effectiveNodeSource = undefined;
+      if (effectiveRouteInvalidation.reason) {
+        const clearedFields = [
+          ...(effectiveRouteInvalidation.invalidateNodeId ? ["effectiveNodeId"] : []),
+          ...(effectiveRouteInvalidation.invalidateNodeSource ? ["effectiveNodeSource"] : []),
+        ];
+        task.log.push({
+          timestamp: new Date().toISOString(),
+          action: `Effective route invalidated after node override change (prior node: ${preUpdateEffectiveNodeId ?? "none"}; cleared: ${clearedFields.join(", ")})`,
+          ...(runContext ? {runContext} : {}),
+        });
       }
       if (updates.checkedOutBy === null) {
         task.checkedOutBy = undefined;
