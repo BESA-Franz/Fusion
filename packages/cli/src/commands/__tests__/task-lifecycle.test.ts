@@ -1325,6 +1325,61 @@ describe("processPullRequestMergeTask", () => {
     expect(store.moveTask).not.toHaveBeenCalled();
   });
 
+  it("reports a refreshed blocked review as policy rather than a conflict", async () => {
+    const task: MockTask = {
+      id: "FN-9105-policy",
+      title: "test",
+      description: "desc",
+      column: "in-review",
+      prInfo: { number: 125, url: "https://github.com/x/y/pull/125", status: "open", headBranch: "fusion/fn-9105", baseBranch: "main" },
+    };
+    const store = makeStore(task);
+    const openPr = { ...task.prInfo };
+    const github = {
+      findPrForBranch: vi.fn(),
+      createPr: vi.fn(),
+      getPrMergeStatus: vi.fn()
+        .mockResolvedValueOnce({ prInfo: openPr, reviewDecision: "APPROVED", checks: [], mergeReady: true, blockingReasons: [] })
+        .mockResolvedValueOnce({ prInfo: { ...openPr, mergeable: "blocked" }, reviewDecision: "REVIEW_REQUIRED", checks: [], mergeReady: false, blockingReasons: [] }),
+      mergePr: vi.fn(async () => { throw new Error("Pull request is not mergeable"); }),
+    };
+
+    await expect(processPullRequestMergeTask(store as never, "/repo", task.id, github as never, () => undefined))
+      .rejects.toThrow("blocked by branch protection: review approval is required");
+    expect(store.updatePrInfo).toHaveBeenLastCalledWith(task.id, expect.objectContaining({ status: "open" }));
+    expect(store.moveTask).not.toHaveBeenCalled();
+  });
+
+  it("reports refreshed required checks as a policy block", async () => {
+    const task: MockTask = {
+      id: "FN-9105-checks",
+      title: "test",
+      description: "desc",
+      column: "in-review",
+      prInfo: { number: 126, url: "https://github.com/x/y/pull/126", status: "open", headBranch: "fusion/fn-9105", baseBranch: "main" },
+    };
+    const store = makeStore(task);
+    const openPr = { ...task.prInfo };
+    const github = {
+      findPrForBranch: vi.fn(),
+      createPr: vi.fn(),
+      getPrMergeStatus: vi.fn()
+        .mockResolvedValueOnce({ prInfo: openPr, reviewDecision: "APPROVED", checks: [], mergeReady: true, blockingReasons: [] })
+        .mockResolvedValueOnce({
+          prInfo: { ...openPr, mergeable: "blocked" },
+          reviewDecision: null,
+          checks: [],
+          mergeReady: false,
+          blockingReasons: ["required checks not successful: ci (pending)"],
+        }),
+      mergePr: vi.fn(async () => { throw new Error("Pull request is not mergeable"); }),
+    };
+
+    await expect(processPullRequestMergeTask(store as never, "/repo", task.id, github as never, () => undefined))
+      .rejects.toThrow("blocked by branch protection: required checks not successful: ci (pending)");
+    expect(store.moveTask).not.toHaveBeenCalled();
+  });
+
   it("rethrows the original merge error when the post-failure refresh also fails", async () => {
     const task: MockTask = {
       id: "FN-9106",

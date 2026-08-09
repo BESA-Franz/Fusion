@@ -1257,6 +1257,7 @@ export {
   getCurrentRepo,
   getPushRepo,
   type GhError,
+  type GhErrorClassificationContext,
   type GhErrorCode,
   type StructuredGhError,
 } from "./cli/gh-cli.js";
