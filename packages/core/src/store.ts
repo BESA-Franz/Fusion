@@ -142,11 +142,14 @@ import { resolveWorkflowIrForTask } from "./workflows/workflow-ir-resolver.js";
 // the handoff-to-review invariant (VAL-DATA-013), merge-queue lease semantics
 // (VAL-DATA-014), lineage-integrity gate (VAL-DATA-010/012), and archive
 // snapshot atomicity (VAL-CROSS-014/015). Drizzle queries target the PG schema.
+import type { AgentActivityEvent, AgentActivityEventInput } from "./types/agents/agents.js";
+import { appendAgentActivityEvent, pruneAgentActivityEvents } from "./task-store/async/async-agent-activity.js";
 import type { BranchGroupRow, PrEntityRow, TaskDocumentRow, ArtifactRow, TaskDocumentRevisionRow, GoalCitationRow, RunAuditEventRow, MergeQueueRow, MergeRequestRow, CompletionHandoffMarkerRow, WorkflowWorkItemRow } from "./task-store/row-types.js";
 
 /** Database row shape for the tasks table (all columns). */
 
 export interface TaskStoreEvents {
+  "agent:activity": [event: AgentActivityEvent];
   /*
   FNXC:PlanningModeScheduling 2026-08-03-09:44:
   Task creation can select a custom workflow whose planning lanes do not use legacy names.
@@ -3255,6 +3258,20 @@ Issue #2149 requires read-only type filtering to occur in the file-store before 
    */
   async recordActivity(entry: Omit<ActivityLogEntry, "id" | "timestamp">): Promise<ActivityLogEntry> {
     return recordActivityImpl(this, entry);
+  }
+
+  /** FNXC:AgentActivityStream 2026-08-09-09:09: durable append precedes this event; listeners are latency nudges, never the cross-process guarantee. */
+  async recordAgentActivity(input: AgentActivityEventInput): Promise<AgentActivityEvent | null> {
+    const layer = this.getAsyncLayer(); if (!layer) throw new Error("agent activity requires AsyncDataLayer");
+    const event = await appendAgentActivityEvent(layer, input);
+    if (event) { try { this.emit("agent:activity", event); } catch { /* listener failures cannot undo persistence */ } }
+    return event;
+  }
+
+  /** Pruning is deliberately separate from append so an activity observation never delays work. */
+  async pruneAgentActivityEventsAsync(): Promise<void> {
+    const layer = this.getAsyncLayer();
+    if (layer) await pruneAgentActivityEvents(layer);
   }
 
 /** Get activity log entries from SQLite. */

@@ -15,8 +15,8 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { DEFAULT_PROVIDER_INSTANCE_ID, type ProviderInstanceRef, type TaskStore, type Task, type TaskDetail, type TaskRecommendation, type TaskTokenUsage, type StepStatus, type Settings, type WorkflowStep, type MissionStore, type AsyncMissionStore, type Slice, type AgentState, type AgentCapability, type RunMutationContext, type AgentHeartbeatConfig, type Agent, type AgentMemoryInclusionMode, type ProjectSettings, type MergeResult, type WorkflowIrNode, type WorkflowIrNodeKind, type WorkflowStepResult as CoreWorkflowStepResult, type WorkflowReviewFinding, type ThinkingLevel } from "@fusion/core";
 import { getUnmetSchedulingDependencies } from "./scheduler.js";
 import type { ImplementationExit, ImplementationExitReporter } from "./executor/implementation-exit.js";
-import { emitWorkflowLifecycleEvent } from "@fusion/core";
-import { resolveTaskLifecycleColumns, resolveProjectColumnsForRoles, resolveWipTargetForTask, resolveTerminalColumns, RetryStormError, serializeRetryStormError, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, resolveWorkflowIrForTask, columnsWithFlag, evaluateForeachMergeProof, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveReboundTarget, resolveLifecycleColumns, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, hasPreMergeRemediationAutoMergeHold, resolveEffectiveAutoMerge, isLiveSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveMaxConsecutiveToolFailureRetries, resolveConsecutiveToolFailureRetryBackoffMs, resolveConsecutiveToolFailureThreshold, resolveExecutorEscalationTarget, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, DEFAULT_MAX_POST_REVIEW_FIXES, COMPLETION_SUMMARY_NODE_ID, PLAN_REVIEW_GROUP_ID, upsertWorkflowStepResult, normalizeWorkflowReviewFindings, AWAITING_APPROVAL_PAUSE_REASON, THINKING_LEVELS, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AgentStore, classifyWorkflowAgentNode, isWorkflowAgentRole, resolveExecutorFallbackModel, resolveValidatorFallbackModel, resolveExplicitDuplicateMarker, nonExecutableDuplicateRedirectReason } from "@fusion/core";
+import { emitWorkflowLifecycleEvent, resolveAgentActivityAttribution } from "@fusion/core";
+import { resolveTaskLifecycleColumns, resolveProjectColumnsForRoles, resolveWipTargetForTask, resolveTerminalColumns, RetryStormError, serializeRetryStormError, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, resolveWorkflowIrForTask, columnsWithFlag, evaluateForeachMergeProof, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveReboundTarget, resolveLifecycleColumns, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, hasPreMergeRemediationAutoMergeHold, resolveEffectiveAutoMerge, isLiveSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveMaxConsecutiveToolFailureRetries, resolveConsecutiveToolFailureRetryBackoffMs, resolveConsecutiveToolFailureThreshold, resolveExecutorEscalationTarget, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, DEFAULT_MAX_POST_REVIEW_FIXES, COMPLETION_SUMMARY_NODE_ID, PLAN_REVIEW_GROUP_ID, upsertWorkflowStepResult, isTerminalStepResult, normalizeWorkflowReviewFindings, AWAITING_APPROVAL_PAUSE_REASON, THINKING_LEVELS, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AgentStore, classifyWorkflowAgentNode, isWorkflowAgentRole, resolveExecutorFallbackModel, resolveValidatorFallbackModel, resolveExplicitDuplicateMarker, nonExecutableDuplicateRedirectReason } from "@fusion/core";
 import {
   BLOCKED_THRASH_LIMIT,
   buildExternalBlockMetadataPatch,
@@ -99,6 +99,19 @@ import {
   FUSION_RUNTIME_SELF_AWARENESS,
 } from "@fusion/core";
 import { findWorktreeUser, getConflictedFiles } from "./merger.js";
+
+/*
+FNXC:AgentActivityStream 2026-08-09-13:30:
+Workflow-gate activity must credit the routed node principal, because that route carries a
+reviewer override or column binding that task assignment alone cannot express. The outbox
+boundary still roster-proves this claim before it can become an org-map agent attribution.
+*/
+export function resolveWorkflowGateActivityClaim(routedPrincipalAgentId: string | undefined, assignedAgentId: string | undefined) {
+  const agentId = routedPrincipalAgentId ?? assignedAgentId ?? "executor";
+  return resolveAgentActivityAttribution([
+    { id: agentId, provenance: routedPrincipalAgentId || assignedAgentId ? "roster" : "lane" },
+  ], "executor");
+}
 import {
   runVerificationCommand,
   summarizeVerificationOutput,
@@ -2086,6 +2099,14 @@ export class TaskExecutor {
    */
   private readonly activeWorkflowPrincipals = new Map<string, { agentId: string; nodeInstanceId: string }>();
 
+  /*
+   * FNXC:AgentActivityStream 2026-08-09-13:59:
+   * Graph runtimes release the live principal before some terminal step-result sinks run. Retain
+   * the routed principal by task and step until that sink records its activity row, so reviewer
+   * overrides and column routes cannot fall back to the task assignee after normal cleanup.
+   */
+  private readonly workflowGateActivityPrincipals = new Map<string, string>();
+
   /**
    * FNXC:Workspace 2026-06-21-12:00: Register a worktree path under a task's active set, creating the set on first add (KTD2). Single-repo tasks call this once → one-element set.
    */
@@ -2730,6 +2751,7 @@ export class TaskExecutor {
       });
     }
 
+    try { await this.store.recordAgentActivity({ type: "task:handed-off", attributionClaim: resolveAgentActivityAttribution([{ id: agentId ?? task.assignedAgentId ?? "executor", provenance: agentId || task.assignedAgentId ? "roster" : "lane" }], "executor"), taskId: task.id, occurredAt: new Date().toISOString(), discriminator: `${runId ?? ""}:${reason}`, metadata: { runId, reason, source: "executor" } }); } catch { /* monitoring never blocks review handoff */ }
     return handedOff;
   }
 
@@ -7414,6 +7436,13 @@ export class TaskExecutor {
             agentId: routed.route.agent.id,
             nodeInstanceId,
           });
+          /*
+           * FNXC:AgentActivityStream 2026-08-09-13:59:
+           * Keep this node-scoped record past release-principal. The graph can emit its terminal
+           * result after the per-attempt reservation is released, while the activity outbox must
+           * still attribute that gate to this exact routed principal.
+           */
+          this.workflowGateActivityPrincipals.set(`${nodeTask.id}\0${node.id}`, routed.route.agent.id);
           if (durableWorkItemId) context["workflow:work-item-id"] = durableWorkItemId;
           context["workflow:principal-agent-id"] = routed.route.agent.id;
           context["workflow:principal-role"] = routed.route.role;
@@ -7555,14 +7584,79 @@ export class TaskExecutor {
                   ),
                 }
               : result;
-            const existing = upsertWorkflowStepResult(
+            const workflowStepResults = upsertWorkflowStepResult(
               live?.workflowStepResults,
               resultToPersist,
               isPlanReviewResult ? { maxPriorAttempts: PLAN_REVIEW_FEEDBACK_HISTORY_LIMIT } : undefined,
             );
-            await this.store.updateTask(taskId, { workflowStepResults: existing }, this.getRunContextFor(taskId));
-          } catch {
-            // Result recording is additive visibility — never affect the run.
+            const persistedResult = workflowStepResults.find((entry) => entry.workflowStepId === result.workflowStepId) ?? resultToPersist;
+            await this.store.updateTask(taskId, { workflowStepResults }, this.getRunContextFor(taskId));
+            /*
+            FNXC:AgentActivityStream 2026-08-09-09:38:
+            Terminal graph gate results are emitted at this shared persistence sink, not at individual node implementations. Node ids are operator-authored, so metadata sanitation records unknown ids as the closed `custom` enum rather than retaining prose.
+            */
+            if (isTerminalStepResult(result)) {
+              /*
+              FNXC:AgentActivityStream 2026-08-09-11:50:
+              Workflow `skipped` is terminal and non-blocking, so it is a passed gate for activity consumers; advisory failures and failures remain failed. Preserve the exact closed status in metadata rather than deriving a replacement that loses the gate outcome.
+              */
+              const passed = result.status === "passed"
+                || result.status === "skipped"
+                || result.verdict === "APPROVE"
+                || result.verdict === "APPROVE_WITH_NOTES"
+                || result.verdict === "CLOSE_NO_OP";
+              try {
+                await this.store.recordAgentActivity({
+                  type: passed ? "workflow:gate-passed" : "workflow:gate-failed",
+                  /*
+                  FNXC:AgentActivityStream 2026-08-09-13:30:
+                  A workflow gate belongs to the principal that actually ran its node. The active
+                  routing fence preserves reviewer overrides and column bindings; falling back to
+                  the task assignee is only for unclassified nodes that have no routed principal.
+                  */
+                  attributionClaim: resolveWorkflowGateActivityClaim(
+                    this.workflowGateActivityPrincipals.get(`${taskId}\0${result.workflowStepId}`)
+                      ?? this.activeWorkflowPrincipals.get(taskId)?.agentId,
+                    live?.assignedAgentId,
+                  ),
+                  taskId,
+                  occurredAt: result.completedAt ?? result.startedAt ?? new Date().toISOString(),
+                  /*
+                  FNXC:AgentActivityStream 2026-08-09-19:03:
+                  `priorAttempts` is intentionally bounded, so its length cannot identify retries:
+                  after the retention cap it would make later gate attempts collide and disappear.
+                  A graph attempt's persisted startedAt is its natural, replay-stable identity;
+                  pending→terminal updates keep that value while a new dispatch gets a new one.
+                  */
+                  discriminator: `${result.workflowStepId}:${result.startedAt ?? result.completedAt ?? result.status}`,
+                  metadata: {
+                    stepId: result.workflowStepId,
+                    status: result.status,
+                    attempt: persistedResult.priorAttempts?.length ?? 0,
+                  },
+                });
+                /*
+                FNXC:AgentActivityStream 2026-08-09-13:59:
+                Once the terminal event is durable, discard the retained node identity so a later
+                run cannot inherit an earlier gate's routed principal.
+                */
+                this.workflowGateActivityPrincipals.delete(`${taskId}\0${result.workflowStepId}`);
+              } catch (error) {
+                /*
+                FNXC:AgentActivityStream 2026-08-09-13:43:
+                Activity is observability only: warn so a failed append is diagnosable, but never
+                let it change the workflow gate result or interrupt graph execution.
+                */
+                executorLog.warn(`[agent-activity] ${taskId}: failed to record workflow gate activity: ${error instanceof Error ? error.message : String(error)}`);
+              }
+            }
+          } catch (error) {
+            /*
+            FNXC:AgentActivityStream 2026-08-09-13:43:
+            Persisting the underlying step and its activity row is additive visibility. Log a
+            failed persistence attempt without converting an otherwise valid graph run into a failure.
+            */
+            executorLog.warn(`[agent-activity] ${taskId}: failed to persist workflow step result: ${error instanceof Error ? error.message : String(error)}`);
           }
         },
         requestPreMergeOptionalStepFix: (taskId, info) => this.requestPreMergeOptionalStepFix(taskId, task, info),
@@ -7863,6 +7957,9 @@ export class TaskExecutor {
       for (const attemptId of workflowCapacityAttemptIds) void this.workflowAgentCapacity.release(attemptId, this.options.agentStore?.workflowProjectId ?? this.store.getRootDir());
       this.activeWorkflowAuthorities.delete(task.id);
       this.activeWorkflowPrincipals.delete(task.id);
+      for (const key of this.workflowGateActivityPrincipals.keys()) {
+        if (key.startsWith(`${task.id}\0`)) this.workflowGateActivityPrincipals.delete(key);
+      }
       if (graphAbortController && this.activeWorkflowGraphAbortControllers.get(task.id) === graphAbortController) {
         this.activeWorkflowGraphAbortControllers.delete(task.id);
       }
@@ -13960,6 +14057,7 @@ export class TaskExecutor {
       runId: syntheticRunId,
       agentId: task.assignedAgentId ?? "executor",
     });
+    try { await this.store.recordAgentActivity({ type: "task:started", attributionClaim: resolveAgentActivityAttribution([{ id: task.assignedAgentId ?? "executor", provenance: task.assignedAgentId ? "roster" : "lane" }], "executor"), taskId: task.id, occurredAt: new Date().toISOString(), discriminator: syntheticRunId, metadata: { runId: syntheticRunId } }); } catch { /* FNXC:AgentActivityStream 2026-08-09-09:09: monitoring never blocks execution. */ }
 
     // Build engine run context for audit instrumentation (FN-1404)
     const engineRunContext: EngineRunContext = {

@@ -38,6 +38,7 @@ import { type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PR
   REVIEW_ROLES,
   pruneTaskLifecycleEvents,
   pruneGitHubCheckStatesAsync,
+  resolveAgentActivityAttribution,
 } from "@fusion/core";
 import { finalizePlanningSegment } from "@fusion/core";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
@@ -1099,14 +1100,35 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   }
 
   private async handoffTaskToReview(taskId: string, reason: string): Promise<Task> {
+    const runId = generateSyntheticRunId("self-heal-handoff", taskId);
     const handedOff = await this.store.handoffToReview(taskId, {
       ownerAgentId: null,
       evidence: {
         reason,
-        runId: generateSyntheticRunId("self-heal-handoff", taskId),
+        runId,
         agentId: "self-healing",
       },
     });
+
+    /*
+    FNXC:AgentActivityStream 2026-08-09-11:50:
+    Recovery handoffs bypass TaskExecutor.handoffTaskToReview, so they write the same durable event here with a closed self-healing source. Preserve a real assignee as a roster claim; only an unassigned recovery falls back to the executor lane, which must never create an org-map node. `handoffToReview` returns the same `updatedAt` for its same-column retry path, so that transition timestamp plus the reason is the deterministic discriminator. The generated run id is observability metadata only: it is random and must never defeat replay deduplication.
+    */
+    try {
+      await this.store.recordAgentActivity({
+        type: "task:handed-off",
+        attributionClaim: resolveAgentActivityAttribution([{
+          id: handedOff.assignedAgentId ?? "executor",
+          provenance: handedOff.assignedAgentId ? "roster" : "lane",
+        }], "executor"),
+        taskId,
+        occurredAt: handedOff.updatedAt,
+        discriminator: `${handedOff.updatedAt}:${reason}`,
+        metadata: { runId, reason, source: "self-healing" },
+      });
+    } catch {
+      // Monitoring must not prevent recovery from handing work to review.
+    }
 
     const settings = await this.store.getSettings();
     if (isMergeRequestContractShadowEnabled(settings)) {
@@ -2679,6 +2701,17 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             } else {
               log.debug(summary);
             }
+          },
+        },
+        {
+          name: "prune-agent-activity-events",
+          fn: async () => {
+            /*
+            FNXC:AgentActivityStream 2026-08-09-10:04:
+            The durable monitoring outbox has a 30-day and 50k-row bound. Run its project-scoped
+            cleanup only in paused-safe housekeeping; append must remain fast and retry-safe.
+            */
+            await this.store.pruneAgentActivityEventsAsync();
           },
         },
         {
