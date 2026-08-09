@@ -1909,3 +1909,7 @@ Settings → Authentication can hold multiple named credential accounts for each
 ### Workflow principal limits
 
 `runtimeConfig.maxWorkflowSessions` is an optional per-agent cap for durable workflow sessions. It is independent of heartbeat `maxConcurrentRuns`: enabling a built-in agent heartbeat neither consumes nor changes workflow-session capacity. Scheduler release, executor graph admission and re-entry, mission start, and workflow-stage routing are governed by durable workflow principals and their configured capacity.
+
+### Engine liveness heartbeat
+
+`engineLastActiveAt` is engine liveness bookkeeping. It is deliberately non-versioned and is preserved from the live settings object when a project configuration rollback restores a historic snapshot.

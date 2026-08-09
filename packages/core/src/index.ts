@@ -1121,7 +1121,7 @@ export type { EnsureProjectForPathInput, EnsureProjectForPathResult } from "./ce
 export { ArchiveDatabase } from "./db/archive-db.js";
 export { GlobalSettingsStore, resolveGlobalDir, resolveGlobalDirForHome } from "./config/global-settings.js";
 export { ConfigurationRevisionStore, GLOBAL_CONFIGURATION_OWNER_ID } from "./config/configuration-revision-store.js";
-export { configurationTargetKey, createConfigurationRevision, diffConfigurationSnapshots, appendConfigurationRevision, appendGlobalConfigurationRevision, listConfigurationRevisions, listGlobalConfigurationRevisions, getConfigurationRevision, getGlobalConfigurationRevision, rollbackConfiguration } from "./async-stores/async-configuration-revision-store.js";
+export { configurationTargetKey, createConfigurationRevision, diffConfigurationSnapshots, appendConfigurationRevision, appendGlobalConfigurationRevision, listConfigurationRevisions, listConfigurationRevisionsPage, listGlobalConfigurationRevisions, getConfigurationRevision, getGlobalConfigurationRevision, rollbackConfiguration } from "./async-stores/async-configuration-revision-store.js";
 export type { ConfigKind, ConfigChangedBy, ConfigurationOwnerScope, ConfigurationTarget, ConfigurationRevision } from "./types.js";
 export { CONFIG_CHANGED_BY_SYSTEM, CONFIG_CHANGED_BY_API_VERIFIED_TOKEN, CONFIG_CHANGED_BY_API_UNVERIFIED, CONFIG_CHANGED_BY_API_VERIFIED_NODE_KEY } from "./types.js";
 export { isValidSqliteDatabaseFile } from "./db/sqlite-validation.js";

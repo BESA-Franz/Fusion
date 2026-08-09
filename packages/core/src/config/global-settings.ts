@@ -339,7 +339,7 @@ export class GlobalSettingsStore {
   async listConfigurationRevisions(
     configKind: ConfigKind = "global-settings",
     configTarget: ConfigurationTarget = { scope: "user-global" },
-    limit?: number,
+    limit?: number | { limit?: number; offset?: number },
   ): Promise<ConfigurationRevision[]> {
     const layer = await this.getRevisionLayer();
     if (!layer) throw new Error("Configuration history requires the PostgreSQL revision store");

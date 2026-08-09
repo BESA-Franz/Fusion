@@ -82,14 +82,27 @@ describe("register-org-portability-routes", () => {
   });
 
   it("lists project revisions in the core's newest-first order", async () => {
-    const list = vi.fn().mockResolvedValue([{ id: "new" }, { id: "old" }]);
-    core.ConfigurationRevisionStore.mockImplementation(function ConfigurationRevisionStore() { return { list }; });
+    const listPage = vi.fn().mockResolvedValue({ revisions: [{ id: "new" }, { id: "old" }], hasMore: true });
+    core.ConfigurationRevisionStore.mockImplementation(function ConfigurationRevisionStore() { return { listPage }; });
     const { app } = createApp();
     const response = await request(app, "GET", "/api/config/revisions");
 
     expect(response.status).toBe(200);
     expect(response.body.revisions.map((revision: { id: string }) => revision.id)).toEqual(["new", "old"]);
-    expect(list).toHaveBeenCalledWith("project-settings", { projectId: "project-1" });
+    expect(response.body).toMatchObject({ limit: 100, offset: 0, hasMore: true });
+    expect(listPage).toHaveBeenCalledWith("project-settings", { projectId: "project-1" }, { limit: undefined, offset: undefined });
+  });
+
+  it("validates and forwards revision paging", async () => {
+    const listPage = vi.fn().mockResolvedValue({ revisions: [], hasMore: false });
+    core.ConfigurationRevisionStore.mockImplementation(function ConfigurationRevisionStore() { return { listPage }; });
+    const { app } = createApp();
+    const response = await request(app, "GET", "/api/config/revisions?limit=5&offset=10");
+    expect(response.status).toBe(200);
+    expect(listPage).toHaveBeenCalledWith("project-settings", { projectId: "project-1" }, { limit: 5, offset: 10 });
+    for (const query of ["limit=0", "limit=501", "limit=abc", "offset=-1", "offset=x", `offset=${"9".repeat(400)}`]) {
+      expect((await request(app, `GET`, `/api/config/revisions?${query}`)).status).toBe(400);
+    }
   });
 
   it("rolls back through the core store and returns its forward revision", async () => {
