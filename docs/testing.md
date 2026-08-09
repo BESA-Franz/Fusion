@@ -67,6 +67,12 @@ Agents running verification through `fn_run_verification` are bounded by default
 
 Dashboard app tests that inspect CSS or TypeScript source must use `packages/dashboard/app/test/cssFixture.ts` helpers such as `readAppFile()` and `loadComponentCss()`. Never read a bare relative path or construct a source path from `process.cwd()`; root-anchored Vitest launches otherwise fail at import time. `scripts/check-no-cwd-relative-dashboard-test-reads.mjs` enforces this convention in the full-suite pretest hook and merge gate.
 
+<!-- FNXC:DashboardTests 2026-08-09-08:59: FN-8894 requires mutation-response fixtures to model TaskStore's advancing update clock, rather than reusing a frozen task factory timestamp. -->
+
+### Dashboard mutation-response clocks
+
+Mocks that simulate `updateTask` or `moveTask` server responses must return a task with a strictly newer `updatedAt`. In `TaskDetailModal` suites, use `makeUpdatedTask(current, patch)` rather than rebuilding a response with `makeTask({ ...current, ...patch })`. `mergeTaskSnapshot` intentionally permits equal-clock sparse payloads to fill only absent fields; a frozen response can therefore retain populated detail metadata and falsely make a control appear not to repaint.
+
 ## Fresh-worktree dist bootstrap
 
 `pnpm test` auto-runs `scripts/ensure-test-artifacts.mjs` to rebuild missing/stale dist artifacts. Dashboard and `dependency-graph` package lanes auto-bootstrap too. If you hit opaque `Failed to resolve import "./cli-spawn.js"` (or similar), treat it as bootstrap regression against FN-4605 — don't work around with a manual `pnpm build`.

@@ -229,6 +229,21 @@ export function makeTask(overrides: Partial<TaskDetail> = {}): TaskDetail {
   } as TaskDetail;
 }
 
+/**
+ * FNXC:PlannerOversight 2026-08-09-08:59:
+ * Mutation-response fixtures must model TaskStore's advancing update clock.
+ * `mergeTaskSnapshot` intentionally preserves populated fields from an equal-clock sparse response,
+ * so reusing `makeTask`'s fixed clock would simulate a stale payload rather than a server mutation.
+ */
+export function makeUpdatedTask(current: TaskDetail, patch: Partial<TaskDetail>): TaskDetail {
+  const currentUpdatedAt = Date.parse(current.updatedAt);
+  const nextUpdatedAt = new Date(
+    Number.isFinite(currentUpdatedAt) ? currentUpdatedAt + 1_000 : Date.now(),
+  ).toISOString().replace(/\.\d{3}Z$/, "Z");
+
+  return makeTask({ ...current, ...patch, updatedAt: nextUpdatedAt });
+}
+
 /*
 FNXC:DashboardTests 2026-08-05-07:32:
 FN-8803 confirms initial slim-task hydration uses `fetchTaskDetail`, while visible
