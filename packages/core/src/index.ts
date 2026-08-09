@@ -871,7 +871,10 @@ export { getTaskDuplicateLineage } from "./duplicates/duplicate-lineage.js";
 export {
   parseDuplicateMarkerFromSessionText,
   parseExplicitDuplicateMarker,
+  resolveExplicitDuplicateMarker,
   type ExplicitDuplicateMarker,
+  type ExplicitDuplicateMarkerResolution,
+  type ExplicitDuplicateMarkerSource,
   isDuplicateRedirectOnlyPrompt,
   nonExecutableDuplicateRedirectReason,
 } from "./duplicates/explicit-duplicate-marker.js";
