@@ -46,6 +46,7 @@ import {
   resolveWipTargetForTask,
   resolveReboundTargetForTask, REVIEW_ELIGIBLE_SENTINEL_COLUMN,
   clearMergeConfirmedTransientStatus,
+  classifyGhError,
 } from "@fusion/core";
 import { assemblePlannerOverseerRuntimeSnapshot } from "./overseer/planner-overseer-runtime-snapshot.js";
 import { resolveIntegrationBranch } from "./merge/integration-branch.js";
@@ -135,6 +136,32 @@ const execFileAsync = promisify(execFile);
  * FN-2910 for the observed overlap symptom.
  */
 const MERGE_HANDOFF_GRACE_MS = 300;
+
+const PR_MERGE_RETRY_BACKOFF_BASE_MS = 5_000;
+
+/**
+ * Derive the PR retry not-before instant from the atomic task update timestamp.
+ * `customFields` is user/workflow-owned and validates unknown keys, so it cannot
+ * safely carry engine lifecycle metadata.
+ */
+function getPrMergeRetryNotBefore(task: { mergeRetries?: number | null; updatedAt?: string | null }): number | null {
+  const retries = task.mergeRetries ?? 0;
+  const updatedAt = task.updatedAt ? Date.parse(task.updatedAt) : NaN;
+  if (!Number.isInteger(retries) || retries <= 0 || !Number.isFinite(updatedAt)) return null;
+  const delayMs = PR_MERGE_RETRY_BACKOFF_BASE_MS * Math.pow(2, retries - 1);
+  const notBefore = updatedAt + delayMs;
+  return Number.isFinite(notBefore) ? notBefore : null;
+}
+
+/**
+ * FNXC:PullRequestMerge 2026-08-09-05:07:
+ * GitHub's structured network, timeout, and rate-limit outcomes are transport
+ * failures even when their human-readable message has no legacy transient token.
+ * They must use the fenced transient budget, not the PR retry budget.
+ */
+function isStructuredTransientGhOutcome(code: unknown): boolean {
+  return code === "network" || code === "timeout" || code === "rate-limited";
+}
 
 /*
 FNXC:MergerUnification 2026-06-21-19:05:
@@ -489,6 +516,8 @@ export class ProjectEngine {
   private mergeBodyInFlight: Promise<unknown> | null = null;
   private mergeAbortController: AbortController | null = null;
   private mergeRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** One durable PR-retry wake per task; admission can safely re-request it after restart/races. */
+  private readonly prMergeRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private autostashSweepTimer: ReturnType<typeof setTimeout> | null = null;
   private mergeActiveReconcileTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -1341,6 +1370,8 @@ export class ProjectEngine {
       clearTimeout(this.mergeRetryTimer);
       this.mergeRetryTimer = null;
     }
+    for (const timer of this.prMergeRetryTimers.values()) clearTimeout(timer);
+    this.prMergeRetryTimers.clear();
     if (this.autostashSweepTimer) {
       clearTimeout(this.autostashSweepTimer);
       this.autostashSweepTimer = null;
@@ -2342,6 +2373,26 @@ export class ProjectEngine {
       throw new Error(`Merge request for ${taskId} aborted`);
     }
 
+    const store = this.runtime.getTaskStore();
+    // FNXC:PullRequestMerge 2026-08-09-04:18: A manual merge supersedes a pending
+    // PR backoff wakeup. Cancel it before admitting the manual attempt so a later
+    // stale callback cannot repeat a merge that the operator already completed.
+    this.clearPrMergeRetryTimer(taskId);
+    const existing = await store.getTask(taskId);
+    if (existing?.status === "awaiting-approval") {
+      /*
+      FNXC:PullRequestMerge 2026-08-09-02:39:
+      A branch-policy hold is operator-resumable only through this manual merge
+      entry point. Clear its durable wait marker before enqueueing so the normal
+      single-flight pump performs one fresh PR merge without consuming either retry budget.
+      */
+      await store.updateTask(taskId, {
+        status: null,
+        error: null,
+        awaitingApprovalReason: null,
+      });
+    }
+
     return new Promise<MergeResult>((resolve, reject) => {
       let settled = false;
       let abort: () => void = () => undefined;
@@ -2754,7 +2805,7 @@ export class ProjectEngine {
     log?: Array<{ action?: string }>;
     updatedAt?: string | null;
     mergeDetails?: { mergeConfirmed?: boolean } | null;
-  }, maxAutoMergeRetries: number, isReviewColumn?: boolean): boolean {
+  }, maxAutoMergeRetries: number, isReviewColumn?: boolean, enforcePrRetryBackoff = false): boolean {
     // Merge-confirmed tasks use the fast-path finalizer, which applies blocker
     // checks after clearing transient status/error state. Once that path parks
     // a blocked task as failed, skip future auto-merge retries.
@@ -2765,7 +2816,18 @@ export class ProjectEngine {
     // Terminal failure: don't let the cooldown sweep re-attempt a merge that
     // already gave up (verification cap, conflict-bounce cap, or non-conflict
     // error). The task is parked for human/follow-up intervention.
-    if (task.status === "failed") return false;
+    if (task.status === "failed" || task.status === "awaiting-approval" || task.status === "awaiting-user-review") return false;
+    /*
+    FNXC:AutoMergeRetries 2026-08-09-03:02:
+    Retry backoff must be enforced at this shared admission point, not only by
+    its timer: periodic sweeps, duplicate enqueue calls, and a restarted engine
+    all reach canMergeTask. The retry update's timestamp is the durable anchor;
+    absent, invalid, or elapsed timestamps fail open for legacy rows.
+    */
+    if (enforcePrRetryBackoff) {
+      const notBefore = getPrMergeRetryNotBefore(task);
+      if (notBefore !== null && notBefore > Date.now()) return false;
+    }
     return (
       (task.mergeRetries ?? 0) < maxAutoMergeRetries ||
       this.hasAutoHealableVerificationBufferFailure(task, maxAutoMergeRetries, isReviewColumn) ||
@@ -2871,6 +2933,31 @@ export class ProjectEngine {
         agree,
       },
     });
+  }
+
+  /*
+  FNXC:PullRequestMerge 2026-08-09-04:05:
+  PR retry backoff is persisted through the retry update timestamp, but its wakeup
+  is process-local. Keep one shutdown-safe timer per task and allow an admission
+  rejection to restore that wakeup, so a restart or duplicate enqueue cannot drop
+  a real retry until the cooldown sweep happens to notice it.
+  */
+  private clearPrMergeRetryTimer(taskId: string): void {
+    const timer = this.prMergeRetryTimers.get(taskId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.prMergeRetryTimers.delete(taskId);
+  }
+
+  private schedulePrMergeRetry(taskId: string, notBefore: number): void {
+    if (this.shuttingDown || this.prMergeRetryTimers.has(taskId)) return;
+    const delayMs = Math.max(0, notBefore - Date.now());
+    const timer = setTimeout(() => {
+      this.prMergeRetryTimers.delete(taskId);
+      if (!this.shuttingDown) this.internalEnqueueMerge(taskId);
+    }, delayMs);
+    timer.unref?.();
+    this.prMergeRetryTimers.set(taskId, timer);
   }
 
   private internalEnqueueMerge(taskId: string): boolean {
@@ -3004,6 +3091,7 @@ export class ProjectEngine {
 
   private async enqueueEligibleInReviewTasks(tasks: readonly Task[], settings: Pick<Settings, "autoMerge" | "maxAutoMergeRetries">): Promise<number> {
     const maxAutoMergeRetries = resolveMaxAutoMergeRetries(settings);
+    const enforcePrRetryBackoff = (this.options.getMergeStrategy?.(settings as Settings) ?? "direct") === "pull-request";
     // FNXC:PostgresCutover 2026-07-10: allowInReviewMergeProcessing awaits the
     // async getBranchGroup read on the PG branch, so eligibility resolves per
     // task before the sync priority sort.
@@ -3031,6 +3119,7 @@ export class ProjectEngine {
         t as any,
         maxAutoMergeRetries,
         reviewLane === undefined ? undefined : t.column === reviewLane,
+        enforcePrRetryBackoff,
       );
     }) as Task[];
     const allowFlags = await Promise.all(candidates.map((t) => this.allowInReviewMergeProcessing(t, settings, this.runtime.getTaskStore())));
@@ -3470,11 +3559,21 @@ export class ProjectEngine {
             "not in review", which would disable auto-heal outright.
             */
             const mergeLoopReviewLane = (await resolveTaskLifecycleColumns(store, taskId).catch(() => undefined))?.review;
+            const pullRequestMerge = (this.options.getMergeStrategy?.(settings) ?? "direct") === "pull-request";
             if (!this.canMergeTask(
               task as any,
               maxAutoMergeRetries,
               mergeLoopReviewLane === undefined ? undefined : task.column === mergeLoopReviewLane,
+              pullRequestMerge,
             )) {
+              // A queued retry can be rejected after an engine restart or a racing
+              // task update. Reinstall the single-flight wake instead of dropping it.
+              if (pullRequestMerge) {
+                const notBefore = getPrMergeRetryNotBefore(task);
+                if (notBefore !== null && notBefore > Date.now()) {
+                  this.schedulePrMergeRetry(taskId, notBefore);
+                }
+              }
               continue;
             }
 
@@ -4133,6 +4232,19 @@ export class ProjectEngine {
                   mergeTargetBranch: mergedTask.mergeDetails?.mergeTargetBranch,
                 } as MergeResult);
               }
+              /*
+              FNXC:PullRequestMerge 2026-08-09-03:32:
+              A successful PR merge ends the retry episode. Reset both independent
+              counters so persisted completed work never carries stale retry exhaustion
+              or a derived backoff anchor into a later recovery/finalization read.
+              */
+              this.clearPrMergeRetryTimer(taskId);
+              if (mergedTask && ((mergedTask.mergeRetries ?? 0) > 0 || (mergedTask.mergeTransientRetryCount ?? 0) > 0)) {
+                await store.updateTask(taskId, {
+                  mergeRetries: 0,
+                  mergeTransientRetryCount: 0,
+                });
+              }
               await attemptBranchGroupPromotion(mergedTask, this.mergeAbortController?.signal);
             } else if (result === "waiting") {
               runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge PR waiting: ${taskId}`);
@@ -4294,7 +4406,7 @@ export class ProjectEngine {
 
             // Reset retries on success
             const latestTask = await store.getTask(taskId).catch(() => null);
-            if (latestTask?.mergeRetries && latestTask.mergeRetries > 0) {
+            if (latestTask && (latestTask.mergeRetries ?? 0) > 0) {
               await store.updateTask(taskId, { mergeRetries: 0 });
             }
             // FNXC:Workspace 2026-06-22-05:10 (Phase C review B4): clear the in-memory busy
@@ -4527,8 +4639,10 @@ export class ProjectEngine {
               );
             });
 
-          // If this was a manual merge, reject the promise and skip auto-retry logic
-          if (hasManualResolver) {
+          // A manual policy-resume attempt must re-park through the same durable
+          // handoff path; other manual merge failures still reject their caller.
+          const isPolicyBlock = (err as { code?: unknown })?.code === "merge-blocked-by-policy";
+          if (hasManualResolver && !isPolicyBlock) {
             this.rejectMergeResolvers(taskId, err instanceof Error ? err : new Error(errorMsg));
             continue;
           }
@@ -4942,16 +5056,55 @@ export class ProjectEngine {
               }
             }
           } else {
-            // Non-direct merge strategy (e.g. pull-request) errored — park as
-            // failed so the cooldown sweep stops re-attempting silently.
+            /*
+            FNXC:AutoMergeRetries 2026-08-09-03:02:
+            PR failures have four mutually-exclusive dispositions: policy holds wait for
+            an operator, transient ownership uses its separate counter, non-retryable gh
+            outcomes park honestly, and only retryable failures consume mergeRetries.
+            The atomic retry update timestamp is the durable backoff anchor because sweeps
+            and restarts can outrun a timer; workflow custom fields reject engine metadata.
+            */
             try {
-              if (await this.maybeRetryTransientMerge(store, taskId, taskOnErr, errorMsg)) {
+              const classified = classifyGhError(err);
+              const structuredCode = (err as { code?: unknown })?.code;
+              const isStructuredNonRetryable = structuredCode === "merge-conflict"
+                || structuredCode === "validation"
+                || structuredCode === "permission"
+                || structuredCode === "not-found"
+                || structuredCode === "not-installed";
+              const diagnosis = isPolicyBlock
+                ? { ...classified, code: "merge-blocked-by-policy" as const, retryable: false }
+                : isStructuredNonRetryable
+                  ? { ...classified, code: structuredCode, retryable: false }
+                  : classified;
+              if (diagnosis.code === "merge-blocked-by-policy") {
+                this.clearPrMergeRetryTimer(taskId);
+                await store.updateTask(taskId, {
+                  status: "awaiting-approval",
+                  error: diagnosis.message,
+                  awaitingApprovalReason: "merge-blocked-by-policy",
+                });
+                await store.logEntry(taskId, `Pull-request merge blocked by policy; awaiting operator resume: ${diagnosis.message}`, "MergePolicyBlocked");
                 continue;
               }
-              if (this.isTransientMergeRetryExhausted(taskOnErr, errorMsg)) {
+              const structuredTransient = isStructuredTransientGhOutcome(diagnosis.code);
+              if (await this.maybeRetryTransientMerge(store, taskId, taskOnErr, errorMsg, structuredTransient)) {
+                continue;
+              }
+              /*
+              FNXC:PullRequestMerge 2026-08-09-05:07:
+              A transient failure has a separately owned retry budget. Structured
+              GitHub transport results join the legacy text classifier here, so
+              neither form can fall through and consume mergeRetries.
+              */
+              if (this.isTransientMergeRetryExhausted(taskOnErr, errorMsg, structuredTransient)) {
+                this.clearPrMergeRetryTimer(taskId);
+                // FNXC:PullRequestMerge 2026-08-09-04:18: The shadow merge-request
+                // contract owns transient exhaustion independently of task status.
+                // Keep its retrying -> exhausted transition intact; only non-shadow
+                // tasks park failed, and neither path spends mergeRetries.
                 const settings = await store.getSettings().catch(() => null);
-                const useMergeRequestContract = settings?.mergeRequestContractShadowEnabled === true;
-                if (useMergeRequestContract) {
+                if (settings?.mergeRequestContractShadowEnabled === true) {
                   const record = await store.getMergeRequestRecordAsync(taskId);
                   if (record && record.state !== "exhausted" && record.state !== "cancelled" && record.state !== "succeeded") {
                     if (record.state === "running") {
@@ -4968,24 +5121,52 @@ export class ProjectEngine {
                       });
                     }
                   }
-                  await store.logEntry(
-                    taskId,
-                    `Auto-merge transient retries exhausted (${ProjectEngine.MAX_AUTO_MERGE_TRANSIENT_RETRIES}/${ProjectEngine.MAX_AUTO_MERGE_TRANSIENT_RETRIES}); marked merge request exhausted without column rebound: ${errorMsg}`,
-                    "MergeTransientRetryExhausted",
-                  );
+                  await store.logEntry(taskId, `Pull-request transient retries exhausted (${ProjectEngine.MAX_AUTO_MERGE_TRANSIENT_RETRIES}/${ProjectEngine.MAX_AUTO_MERGE_TRANSIENT_RETRIES}); marked merge request exhausted without consuming merge retries: ${errorMsg}`, "MergeTransientRetryExhausted");
                   continue;
                 }
-                await store.logEntry(
-                  taskId,
-                  `Auto-merge transient retries exhausted (${ProjectEngine.MAX_AUTO_MERGE_TRANSIENT_RETRIES}/${ProjectEngine.MAX_AUTO_MERGE_TRANSIENT_RETRIES}); parking task as failed: ${errorMsg}`,
-                  "MergeTransientRetryExhausted",
-                );
+                await store.updateTask(taskId, {
+                  status: "failed",
+                  error: errorMsg,
+                });
+                await store.logEntry(taskId, `Pull-request transient retries exhausted (${ProjectEngine.MAX_AUTO_MERGE_TRANSIENT_RETRIES}/${ProjectEngine.MAX_AUTO_MERGE_TRANSIENT_RETRIES}); task parked without consuming merge retries: ${errorMsg}`, "MergeTransientRetryExhausted");
+                continue;
               }
+              if (!diagnosis.retryable) {
+                this.clearPrMergeRetryTimer(taskId);
+                await store.updateTask(taskId, {
+                  status: "failed",
+                  error: diagnosis.message,
+                });
+                await store.logEntry(taskId, `Pull-request merge failed without retry (${diagnosis.code}): ${diagnosis.message}`, "MergeNonRetryableFailure");
+                continue;
+              }
+              const currentRetries = taskOnErr?.mergeRetries ?? 0;
+              const nextRetries = currentRetries + 1;
+              if (nextRetries >= maxAutoMergeRetriesOnErr) {
+                this.clearPrMergeRetryTimer(taskId);
+                await store.updateTask(taskId, {
+                  status: "failed",
+                  mergeRetries: nextRetries,
+                  error: errorMsg,
+                });
+                await store.logEntry(taskId, `Pull-request merge retries exhausted after ${nextRetries}/${maxAutoMergeRetriesOnErr} actual failures: ${errorMsg}`, "MergeRetriesExhausted");
+                continue;
+              }
+              const delayMs = PR_MERGE_RETRY_BACKOFF_BASE_MS * Math.pow(2, currentRetries);
+              /*
+              FNXC:AutoMergeRetries 2026-08-09-03:11:
+              The retry log must precede the atomic retry patch. `updatedAt` on
+              that patch is the durable not-before anchor; logging afterwards can
+              advance it past the timer deadline and make the queue reject its own
+              scheduled retry as still early.
+              */
+              await store.logEntry(taskId, `Pull-request merge retry ${nextRetries}/${maxAutoMergeRetriesOnErr} scheduled in ${delayMs / 1000}s: ${errorMsg}`, "MergeRetry");
               await store.updateTask(taskId, {
-                status: "failed",
-                mergeRetries: maxAutoMergeRetriesOnErr,
-                error: errorMsg,
+                mergeRetries: nextRetries,
+                status: null,
+                error: null,
               });
+              this.schedulePrMergeRetry(taskId, Date.now() + delayMs);
             } catch (recoveryErr) {
               runtimeLog.error(
                 `Auto-merge: failed to update ${taskId} after merge strategy error: ${recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr)}`,
@@ -5032,8 +5213,12 @@ export class ProjectEngine {
     }
   }
 
-  private isTransientMergeRetryExhausted(task: Task | null, errorMsg: string): boolean {
-    if (!task || (!isTransientError(errorMsg) && classifyTransientMergeError(errorMsg) === null)) {
+  private isTransientMergeRetryExhausted(
+    task: Task | null,
+    errorMsg: string,
+    structuredTransient = false,
+  ): boolean {
+    if (!task || (!structuredTransient && !isTransientError(errorMsg) && classifyTransientMergeError(errorMsg) === null)) {
       return false;
     }
     const current = task.mergeTransientRetryCount ?? 0;
@@ -5045,8 +5230,9 @@ export class ProjectEngine {
     taskId: string,
     taskOnErr: Task | null,
     errorMsg: string,
+    structuredTransient = false,
   ): Promise<boolean> {
-    if (!taskOnErr || (!isTransientError(errorMsg) && classifyTransientMergeError(errorMsg) === null)) {
+    if (!taskOnErr || (!structuredTransient && !isTransientError(errorMsg) && classifyTransientMergeError(errorMsg) === null)) {
       return false;
     }
 

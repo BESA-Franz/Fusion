@@ -482,17 +482,26 @@ export class NotificationService {
       }
       const identifier = formatTaskIdentifier(task);
       const reason = task.awaitingApprovalReason ?? "manual";
+      /*
+      FNXC:PullRequestMerge 2026-08-09-05:07:
+      A policy-blocked PR uses the durable awaiting-approval mailbox transport,
+      but it is not a plan gate. Keep its operator instruction explicit and use a
+      distinct once-key so an earlier plan-approval notice cannot hide the block.
+      */
+      const isMergePolicyBlock = reason === "merge-blocked-by-policy";
       const reasonLine =
         reason === "plan-review-replan-cap"
           ? "Plan Review exhausted its automatic revision attempts and escalated this plan for a human decision."
-          : "The generated plan is ready and needs your approval before execution begins.";
+          : isMergePolicyBlock
+            ? "The pull request is blocked by repository policy. Resolve the policy requirement, then retry the merge."
+            : "The generated plan is ready and needs your approval before execution begins.";
       const link = buildNtfyClickUrl({
         dashboardHost: this.dashboardHost,
         projectId: this.options.projectId,
         taskId: task.id,
       });
       const content = [
-        `**${identifier} needs plan approval**`,
+        isMergePolicyBlock ? `**${identifier} pull-request merge is blocked**` : `**${identifier} needs plan approval**`,
         "",
         reasonLine,
         ...(link ? ["", `[Open ${task.id}](${link})`] : []),
@@ -506,7 +515,7 @@ export class NotificationService {
         content,
         metadata: { taskId: task.id, awaitingApprovalReason: reason },
       };
-      await messageStore.sendMessageOnce(input, `plan-approval:${task.id}`);
+      await messageStore.sendMessageOnce(input, `${isMergePolicyBlock ? "merge-policy-block" : "plan-approval"}:${task.id}`);
     } catch (error) {
       schedulerLog.log(
         `[notify] ${task.id} awaiting-approval mailbox message failed: ${error instanceof Error ? error.message : String(error)}`,

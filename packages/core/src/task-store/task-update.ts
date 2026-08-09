@@ -333,7 +333,11 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       but never applied by this field-by-field merge, so EVERY writer silently lost it — the
       executor's Plan Review replan-cap park (`plan-review-replan-cap`) and the triage manual
       gate's explicit null-clear both no-oped, and FN-8647's non-converging Plan Review loop
-      surfaced on the board as a generic "needs approval" with no explanation. Merge it like the
+      surfaced on the board as a generic "needs approval" with no explanation.
+
+      FNXC:PullRequestMerge 2026-08-09-05:07:
+      The PR merge queue also writes `merge-blocked-by-policy`; persist it through this same
+      nullable contract so its notification and manual-resume lifecycle are durable. Merge it like the
       other nullable fields (null clears), and auto-clear the stored reason whenever a status
       write moves the task OFF `awaiting-approval` without the caller addressing the reason, so
       an approved/replanned card can never carry a stale escalation reason into its next park.
