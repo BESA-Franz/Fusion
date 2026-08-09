@@ -411,6 +411,9 @@ export interface MergePrParams {
    * PrStaleHeadError so the pr-merge node can re-evaluate against the new head.
    */
   expectedHeadOid?: string;
+  /** When true, enable GitHub auto-merge rather than merge immediately. The returned
+   * PR is normally still open; a deferred merge cannot honor expectedHeadOid. */
+  auto?: boolean;
 }
 
 /** Thrown when a merge is rejected because the PR head moved (expectedHeadOid mismatch). */
@@ -419,6 +422,15 @@ export class PrStaleHeadError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "PrStaleHeadError";
+  }
+}
+
+/** GitHub rejected enabling native auto-merge for this repository. */
+export class PrAutoMergeUnavailableError extends Error {
+  readonly code = "auto-merge-unavailable" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "PrAutoMergeUnavailableError";
   }
 }
 
@@ -2230,13 +2242,14 @@ export class GitHubClient {
   }
 
   async mergePr(params: MergePrParams): Promise<PrInfo> {
+    if (this.forceMode === "token") return this.mergePrWithApi(params);
     if (this.hasGhAuth()) {
       try {
         return await this.mergePrWithGh(params);
       } catch (err) {
         // A stale-head rejection is a real outcome, not a gh-vs-API fallback
         // trigger — re-running on the API path would merge the wrong head.
-        if (err instanceof PrStaleHeadError) throw err;
+        if (err instanceof PrStaleHeadError || err instanceof PrAutoMergeUnavailableError) throw err;
         if (this.token) {
           return this.mergePrWithApi(params);
         }
@@ -2256,15 +2269,21 @@ export class GitHubClient {
       "pr", "merge", String(params.number),
       "--repo", `${resolved.owner}/${resolved.repo}`,
       `--${params.method ?? "squash"}`,
-      "--delete-branch",
     ];
-    if (params.expectedHeadOid) {
+    if (params.auto) {
+      args.push("--auto");
+    }
+    args.push("--delete-branch");
+    if (!params.auto && params.expectedHeadOid) {
       args.push("--match-head-commit", params.expectedHeadOid);
     }
     try {
       runGh(args);
     } catch (err) {
       const message = getGhErrorMessage(err);
+      if (params.auto && /auto.?merge.*(not allowed|not enabled|disabled)|auto.?merge is not/i.test(message)) {
+        throw new PrAutoMergeUnavailableError(`GitHub native auto-merge is unavailable for PR #${params.number}: ${message}`);
+      }
       if (
         params.expectedHeadOid &&
         /head.*(changed|modified|match|stale)|not the most recent|base branch was modified/i.test(message)
@@ -2278,27 +2297,73 @@ export class GitHubClient {
 
   private async mergePrWithApi(params: MergePrParams): Promise<PrInfo> {
     const resolved = this.resolveRepo(params.owner, params.repo);
+    if (params.auto) {
+      const pullRequestId = await this.getPrNodeId(resolved.owner, resolved.repo, params.number);
+      const mergeMethod = (() => {
+        switch (params.method ?? "squash") {
+          case "merge": return "MERGE";
+          case "rebase": return "REBASE";
+          case "squash": return "SQUASH";
+        }
+      })();
+      try {
+        await this.runGraphqlOverToken(
+          `mutation($pullRequestId: ID!) { enablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId, mergeMethod: ${mergeMethod} }) { pullRequest { id } } }`,
+          { pullRequestId },
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/auto.?merge.*(not allowed|not enabled|disabled)|auto.?merge is not/i.test(message)) {
+          throw new PrAutoMergeUnavailableError(`GitHub native auto-merge is unavailable for PR #${params.number}: ${message}`);
+        }
+        throw error;
+      }
+      return this.getPrStatus(resolved.owner, resolved.repo, params.number);
+    }
+
     const body: Record<string, string> = { merge_method: params.method ?? "squash" };
     if (params.expectedHeadOid) body.sha = params.expectedHeadOid;
     const response = await fetch(
       `${this.baseUrl}/repos/${encodeURIComponent(resolved.owner)}/${encodeURIComponent(resolved.repo)}/pulls/${params.number}/merge`,
-      {
-        method: "PUT",
-        headers: this.buildHeaders(),
-        body: JSON.stringify(body),
-      },
+      { method: "PUT", headers: this.buildHeaders(), body: JSON.stringify(body) },
     );
-
     if (!response.ok) {
       const error = await response.json().catch(() => ({ message: response.statusText }));
-      // 409 Conflict with a `sha` set means the head moved (stale-head race).
       if (params.expectedHeadOid && response.status === 409) {
         throw new PrStaleHeadError(`PR #${params.number} head moved since ${params.expectedHeadOid}; merge aborted`);
       }
       throw new Error(`GitHub API error: ${response.status} ${error.message || response.statusText}`);
     }
-
     return this.getPrStatus(resolved.owner, resolved.repo, params.number);
+  }
+
+  /*
+  FNXC:PrMergeAutoMerge 2026-08-09-09:28:
+  The API fallback is entered after gh failed, so native auto-merge GraphQL must remain
+  token-pinned rather than using helpers that opportunistically select gh again.
+  */
+  private async runGraphqlOverToken<T>(query: string, variables: Record<string, string | number>): Promise<T> {
+    this.requireToken();
+    const response = await fetch(`${this.baseUrl}/graphql`, {
+      method: "POST",
+      headers: { ...this.buildHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ query, variables }),
+    });
+    const payload = await response.json() as { data?: T; errors?: Array<{ message: string }> };
+    if (!response.ok || payload.errors?.length) {
+      throw new Error(`GitHub API error: ${response.status} ${payload.errors?.[0]?.message || response.statusText}`);
+    }
+    return payload.data as T;
+  }
+
+  private async getPrNodeId(owner: string, repo: string, number: number): Promise<string> {
+    const data = await this.runGraphqlOverToken<{ repository?: { pullRequest?: { id?: string } | null } | null }>(
+      `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id } } }`,
+      { owner, repo, number },
+    );
+    const id = data.repository?.pullRequest?.id;
+    if (!id) throw new Error(`GitHub did not return a node id for PR #${number}`);
+    return id;
   }
 
   /**
@@ -2594,6 +2659,7 @@ export class GitHubClient {
    * Fetch current PR status using gh CLI if available, otherwise REST API.
    */
   async getPrStatus(owner: string, repo: string, number: number): Promise<PrInfo> {
+    if (this.forceMode === "token") return this.getPrStatusWithApi(owner, repo, number);
     if (this.hasGhAuth()) {
       try {
         return await this.getPrStatusWithGh(owner, repo, number);

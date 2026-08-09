@@ -1255,6 +1255,14 @@ export interface ProjectSettings {
    *  be enforced server-side. Only applies when `mergeStrategy === "pull-request"`.
    *  Default: false. */
   requirePrApproval?: boolean;
+  /*
+  FNXC:PrMergeAutoMerge 2026-08-09-09:28:
+  Issue #3359(c) requires this opt-in to hand final policy evaluation and wait-for-green
+  to GitHub native auto-merge. It only applies to pull-request merging and fails closed
+  when the repository does not permit auto-merge rather than immediately merging.
+  */
+  /** Enable GitHub native PR auto-merge in pull-request mode. Default: false. */
+  githubNativeAutoMerge?: boolean;
   /** When true (default), the Review-response loop automatically acts on PR review
    *  threads (human + bot): it dispatches an agent that fixes + pushes + replies, or
    *  disagrees with reasoning. When false, the loop is inert — review threads are left

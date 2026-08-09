@@ -2352,7 +2352,7 @@ export function resolvePrMergeMethod(
   }
 }
 
-async function mergeTaskPr(
+export async function mergeTaskPr(
   scopedStore: TaskStore,
   task: Task,
   token: string | undefined,
@@ -2377,10 +2377,11 @@ async function mergeTaskPr(
   const client = new GitHubClient(token);
   const requiredCheckNames = resolveRequiredCheckNames(settings);
   const mergeStatus = await client.getPrMergeStatus(repo.owner, repo.repo, task.prInfo.number, { requiredCheckNames });
-  if (!mergeStatus.mergeReady) {
+  const nativeAutoMerge = settings.githubNativeAutoMerge === true;
+  if (!nativeAutoMerge && !mergeStatus.mergeReady) {
     throw conflict(`PR cannot merge: ${mergeStatus.blockingReasons.join("; ")}`);
   }
-  if (!mergeStatus.prInfo.headOid) {
+  if (!nativeAutoMerge && !mergeStatus.prInfo.headOid) {
     throw conflict("PR cannot merge: GitHub did not provide a head commit ID for the checked PR");
   }
 
@@ -2396,7 +2397,7 @@ async function mergeTaskPr(
       repo: repo.repo,
       number: task.prInfo.number,
       method,
-      expectedHeadOid: mergeStatus.prInfo.headOid,
+      ...(nativeAutoMerge ? { auto: true } : { expectedHeadOid: mergeStatus.prInfo.headOid }),
     });
     const updated = {
       ...task.prInfo,
@@ -2409,10 +2410,13 @@ async function mergeTaskPr(
       draft: mergedPrInfo.draft ?? mergedPrInfo.isDraft,
     } satisfies PrInfo;
     await scopedStore.updatePrInfo(task.id, updated);
-    await scopedStore.applyPrMergedTransition(task.id, {
-      agentId: "dashboard",
-      runId: `${runIdPrefix}-${task.id}-${Date.now()}`,
-    });
+    // GitHub-native auto-merge is deferred; only a later refresh that observes merged may transition the task.
+    if (updated.status === "merged") {
+      await scopedStore.applyPrMergedTransition(task.id, {
+        agentId: "dashboard",
+        runId: `${runIdPrefix}-${task.id}-${Date.now()}`,
+      });
+    }
     return updated;
   } catch (error) {
     let mergeStatus: Awaited<ReturnType<GitHubClient["getPrMergeStatus"]>> | undefined;
@@ -2516,10 +2520,12 @@ export async function refreshPrInBackground(
     const client = new GitHubClient(token);
     const task = await store.getTask(taskId);
     const taskPrs = task ? getTaskPrList(task) : currentPrInfos;
+    const settings = await store.getSettings();
+    const requiredCheckNames = resolveRequiredCheckNames(settings);
 
     for (const currentPrInfo of taskPrs) {
-      const reviewSnapshot = await client.getPrReviewSnapshot(owner, repo, currentPrInfo.number, { requiredCheckNames: resolveRequiredCheckNames(await store.getSettings()) });
-      const mergeStatus = await client.getPrMergeStatus(owner, repo, currentPrInfo.number, { requiredCheckNames: resolveRequiredCheckNames(await store.getSettings()) });
+      const reviewSnapshot = await client.getPrReviewSnapshot(owner, repo, currentPrInfo.number, { requiredCheckNames });
+      const mergeStatus = await client.getPrMergeStatus(owner, repo, currentPrInfo.number, { requiredCheckNames });
       const prior = getTaskPrList(task).find((entry) => entry.number === currentPrInfo.number) ?? currentPrInfo;
       let conflictDiagnostics = mergeStatus.prInfo.conflictDiagnostics;
       if (mergeStatus.prInfo.mergeable === "conflicting" && mergeStatus.prInfo.headBranch && mergeStatus.prInfo.baseBranch) {
@@ -2570,7 +2576,12 @@ export async function refreshPrInBackground(
 
       const lastMergeErrorAt = prior?.lastMergeErrorAt ? Date.parse(prior.lastMergeErrorAt) : Number.NaN;
       const recentlyFailed = Number.isFinite(lastMergeErrorAt) && Date.now() - lastMergeErrorAt < 5 * 60 * 1000;
-      if (prior?.autoMergeOnGreen && mergeStatus.mergeReady && !recentlyFailed) {
+      if (prior?.autoMergeOnGreen && (settings.githubNativeAutoMerge === true || mergeStatus.mergeReady) && !recentlyFailed) {
+        /*
+        FNXC:PrMergeAutoMerge 2026-08-09-11:47:
+        Native auto-merge must be armed while checks are pending so GitHub, rather
+        than Fusion polling, owns the wait-for-green transition and retries remain safe.
+        */
         await mergeTaskPr(store, task, token, undefined, "pr-refresh");
       }
     }

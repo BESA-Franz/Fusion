@@ -95,7 +95,7 @@ interface GitHubOperations {
     mergeReady: boolean;
     blockingReasons: string[];
   }>;
-  mergePr(params: { owner?: string; repo?: string; number: number; method?: "merge" | "squash" | "rebase"; expectedHeadOid?: string }): Promise<PrInfo>;
+  mergePr(params: { owner?: string; repo?: string; number: number; method?: "merge" | "squash" | "rebase"; expectedHeadOid?: string; auto?: boolean }): Promise<PrInfo>;
   getPrStatus(owner: string, repo: string, number: number): Promise<PrInfo>;
   /** Reply to a specific review thread (U2). */
   replyToReviewThread(threadId: string, body: string): Promise<void>;
@@ -873,6 +873,12 @@ export function createPrNodeGithubOps(
      * single-project daemon/serve case).
      */
     getTaskWorktree?: (taskId: string) => string | undefined;
+    /**
+     * Resolves the opt-in from the store that owns this task. The task parameter
+     * keeps one CLI process from applying its primary project's setting to every
+     * managed project's workflow callback.
+     */
+    isNativeAutoMergeEnabled?: (task: TaskDetail) => boolean | Promise<boolean>;
   } = {},
 ): PrNodeGithubOps {
   const getCwd = (entity: { sourceId: string }): string =>
@@ -961,12 +967,13 @@ export function createPrNodeGithubOps(
       await persistRefreshedHead?.(refreshed.headOid);
       try {
         throwIfRefreshAborted(signal);
+        const auto = await options.isNativeAutoMergeEnabled?.(task) ?? false;
         await github.mergePr({
           owner,
           repo: name,
           number: entity.prNumber,
           method: "squash",
-          expectedHeadOid: refreshed.headOid,
+          ...(auto ? { auto: true } : { expectedHeadOid: refreshed.headOid }),
         });
         return { status: "merged-requested", headOid: refreshed.headOid };
       } catch (err) {
@@ -1419,12 +1426,13 @@ export async function processPullRequestMergeTask(
       return "merged";
     }
 
+    const nativeAutoMerge = settings.githubNativeAutoMerge === true;
     if (settings.requirePrApproval && mergeStatus.reviewDecision !== "APPROVED") {
       await store.updateTask(task.id, { status: "awaiting-pr-checks" });
       return "waiting";
     }
 
-    if (!mergeStatus.mergeReady) {
+    if (!nativeAutoMerge && !mergeStatus.mergeReady) {
       await store.updateTask(task.id, { status: mergeStatus.prInfo.status === "open" ? "awaiting-pr-checks" : null });
       return "waiting";
     }
@@ -1459,18 +1467,30 @@ export async function processPullRequestMergeTask(
       await store.updateTask(task.id, { status: "awaiting-pr-checks" });
       return "waiting";
     }
-    if (!latestMergeStatus.mergeReady) {
+    if (!nativeAutoMerge && !latestMergeStatus.mergeReady) {
       await store.updateTask(task.id, { status: "awaiting-pr-checks" });
       return "waiting";
     }
     await store.updateTask(task.id, { status: "merging-pr" });
     throwIfRefreshAborted(signal);
-    const mergedPr = await github.mergePr({ owner: prRepo.owner, repo: prRepo.repo, number: refreshedPrInfo.number, method: "squash", expectedHeadOid: refreshedHead.headOid });
+    const mergedPr = await github.mergePr({
+      owner: prRepo.owner, repo: prRepo.repo, number: refreshedPrInfo.number, method: "squash",
+      ...(nativeAutoMerge ? { auto: true } : { expectedHeadOid: refreshedHead.headOid }),
+    });
     await store.updateBranchGroup(branchGroup.id, {
       prNumber: mergedPr.number,
       prUrl: mergedPr.url,
       prState: toBranchGroupPrState(mergedPr),
     });
+    /*
+    FNXC:PrMergeAutoMerge 2026-08-09-09:28:
+    Native auto-merge intentionally leaves an open PR; the existing poll owns finalization
+    only after GitHub reports merged.
+    */
+    if (mergedPr.status !== "merged") {
+      await store.updateTask(task.id, { status: "awaiting-pr-checks" });
+      return "waiting";
+    }
     for (const member of members) {
       const memberDetail = await store.getTask(member.id);
       await finalizePullRequestMerge(store, cwd, memberDetail, mergedPr, "Group pull request merged", pool);
@@ -1567,12 +1587,13 @@ export async function processPullRequestMergeTask(
   // immediately. `requirePrApproval` lets users keep PR mode as "open the
   // PR, wait for me to approve and merge it" by holding the merge until
   // reviewDecision === "APPROVED".
+  const nativeAutoMerge = settings.githubNativeAutoMerge === true;
   if (settings.requirePrApproval && mergeStatus.reviewDecision !== "APPROVED") {
     await store.updateTask(task.id, { status: "awaiting-pr-checks" });
     return "waiting";
   }
 
-  if (!mergeStatus.mergeReady) {
+  if (!nativeAutoMerge && !mergeStatus.mergeReady) {
     if (mergeStatus.prInfo.status === "open") {
       // A stale-base PR that GitHub reports as CONFLICTING never becomes
       // mergeable on its own — nothing in the PR path rebases the head branch —
@@ -1634,7 +1655,7 @@ export async function processPullRequestMergeTask(
     await store.updateTask(task.id, { status: "awaiting-pr-checks" });
     return "waiting";
   }
-  if (!latestMergeStatus.mergeReady) {
+  if (!nativeAutoMerge && !latestMergeStatus.mergeReady) {
     await store.updateTask(task.id, { status: "awaiting-pr-checks" });
     return "waiting";
   }
@@ -1642,7 +1663,10 @@ export async function processPullRequestMergeTask(
   let mergedPr: PrInfo;
   try {
     throwIfRefreshAborted(signal);
-    mergedPr = await github.mergePr({ owner: prRepo.owner, repo: prRepo.repo, number: prInfo.number, method: "squash", expectedHeadOid: refreshedHead.headOid });
+    mergedPr = await github.mergePr({
+      owner: prRepo.owner, repo: prRepo.repo, number: prInfo.number, method: "squash",
+      ...(nativeAutoMerge ? { auto: true } : { expectedHeadOid: refreshedHead.headOid }),
+    });
   } catch (err: unknown) {
     let refreshedStatus: Awaited<ReturnType<GitHubOperations["getPrMergeStatus"]>>;
     try {
@@ -1683,6 +1707,11 @@ export async function processPullRequestMergeTask(
     throw Object.assign(new Error(diagnosis.message), { code: diagnosis.code, cause: diagnosis.cause });
   }
   await store.updatePrInfo(task.id, { ...mergedPr, lastCheckedAt: new Date().toISOString() });
+  /* FNXC:PrMergeAutoMerge 2026-08-09-09:28: Leave native auto-merge requests open until polling confirms GitHub merged them. */
+  if (mergedPr.status !== "merged") {
+    await store.updateTask(task.id, { status: "awaiting-pr-checks" });
+    return "waiting";
+  }
   await finalizePullRequestMerge(store, cwd, task, mergedPr, "Pull request merged", pool);
   return "merged";
 }
