@@ -44,6 +44,7 @@ import { Type, type Static } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
 import { createTaskCreateTool, createTaskLogToolWithContext, createTaskLogsReadTool, createTaskDocumentWriteTool, createTaskDocumentReadTool, createTaskReadTools, createArtifactRegisterTool, createArtifactListTool, createArtifactViewTool, createListAgentsTool, createDelegateTaskTool, createTaskAssignTool, createGetAgentConfigTool, createUpdateAgentConfigTool, createAgentCreateTool, createAgentDeleteTool, createSendMessageTool, createReadMessagesTool, createPostRoomMessageTool, createMemoryTools, createGoalRetrievalTools, createMissionTools, createIdeationTools, createReadEvaluationsTool, createUpdateIdentityTool, createReflectOnPerformanceTool, createWebFetchTool, createWorkflowListTool, createWorkflowGetTool, createWorkflowValidateTool, createWorkflowSelectTool, createTaskPromoteTool, createWorkflowCreateTool, createWorkflowUpdateTool, createWorkflowDeleteTool, createWorkflowSettingsTool, createTraitListTool, createAskQuestionTool, createResearchTools, readAgentMemoryWorkspaceLongTerm, taskCreateParams } from "./agent-tools.js";
 import { AgentLogger } from "./agents/agent-logger.js";
+import { emitApprovalMail } from "./agents/approval-mail.js";
 import {
   resolveAgentInstructionsWithRatings,
   buildPluginPromptSection,
@@ -1099,6 +1100,7 @@ export class HeartbeatMonitor {
             `Approval required for ${decision.toolName}. Request ${approvalRequestId} created; task and agent paused awaiting decision.`,
           );
         }
+        void emitApprovalMail({ messageStore: this.messageStore, approvalRequestId, toolName: decision.toolName, taskId, agentId: agent.id, agentName: agent.name });
         await this.store.updateAgentState(agent.id, "paused");
         await this.store.updateAgent(agent.id, { pauseReason: "awaiting-approval" });
       },
@@ -1171,6 +1173,7 @@ export class HeartbeatMonitor {
         }
         await this.store.updateAgentState(agent.id, "paused");
         await this.store.updateAgent(agent.id, { pauseReason: "awaiting-approval" });
+        void emitApprovalMail({ messageStore: this.messageStore, approvalRequestId, toolName, taskId, agentId: agent.id, agentName: agent.name });
       },
     };
   }

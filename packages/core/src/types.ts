@@ -1404,6 +1404,9 @@ import type {
   EphemeralTaskCreationPolicy,
   ProposedTaskMetadata,
   NativeStructureEmbed,
+  MailKind,
+  MailReportSection,
+  MailReport,
   MessageMetadata,
   Message,
   MessageCreateInput,
@@ -1416,6 +1419,9 @@ export type {
   EphemeralTaskCreationPolicy,
   ProposedTaskMetadata,
   NativeStructureEmbed,
+  MailKind,
+  MailReportSection,
+  MailReport,
   MessageMetadata,
   Message,
   MessageCreateInput,
@@ -1448,6 +1454,30 @@ export function validateMessageMetadata(metadata: MessageMetadata | undefined): 
   plugin-owned read adapter at render time, so attachment metadata remains a ref rather than a
   duplicated persistence snapshot; labels are optional attach-time fallbacks.
   */
+  /*
+  FNXC:StructuralMail 2026-08-09-07:16:
+  Report sections are required: an empty report is a quick message wearing a report label and
+  would render as an empty shell for the structural-mail consumer.
+  */
+  if (metadata.mailKind !== undefined && !["message", "report", "approval"].includes(metadata.mailKind)) {
+    throw new Error("metadata.mailKind is invalid");
+  }
+  if (metadata.report !== undefined) {
+    const report = metadata.report;
+    if (typeof report !== "object" || report === null || Array.isArray(report)) throw new Error("metadata.report must be an object");
+    if (typeof report.title !== "string" || !report.title.trim()) throw new Error("metadata.report.title must be a non-empty string");
+    if (!Array.isArray(report.sections)) throw new Error("metadata.report.sections must be an array");
+    if (report.sections.length === 0) throw new Error("metadata.report.sections must not be empty");
+    for (const section of report.sections) {
+      if (typeof section !== "object" || section === null || Array.isArray(section)) throw new Error("metadata.report.sections entries must be objects");
+      if (typeof section.heading !== "string" || !section.heading.trim()) throw new Error("metadata.report.sections[].heading must be a non-empty string");
+      if (typeof section.body !== "string" || !section.body.trim()) throw new Error("metadata.report.sections[].body must be a non-empty string");
+    }
+  }
+  if (metadata.approvalRequestId !== undefined && (typeof metadata.approvalRequestId !== "string" || !metadata.approvalRequestId.trim())) {
+    throw new Error("metadata.approvalRequestId must be a non-empty string");
+  }
+
   if (metadata.nativeStructures !== undefined) {
     if (!Array.isArray(metadata.nativeStructures)) {
       throw new Error("metadata.nativeStructures must be an array");

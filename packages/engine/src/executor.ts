@@ -204,6 +204,7 @@ import {
 import { BranchAttributionError, filterFilesToOwnTaskCommits } from "./execution/branch-attribution.js";
 import { resolveIntegrationBranch } from "./merge/integration-branch.js";
 import { AgentLogger } from "./agents/agent-logger.js";
+import { emitApprovalMail } from "./agents/approval-mail.js";
 import { createLogger, executorLog, reviewerLog, formatError } from "./logger.js";
 import { TokenCapDetector } from "./errors/token-cap-detector.js";
 import { isUsageLimitError, checkSessionError, type UsageLimitPauser } from "./errors/usage-limit-detector.js";
@@ -2937,6 +2938,7 @@ export class TaskExecutor {
             executorLog.warn(`${taskId}: failed to suspend in-flight session while awaiting approval: ${error instanceof Error ? error.message : String(error)}`);
           });
         }
+        void emitApprovalMail({ messageStore: this.options.messageStore, approvalRequestId, toolName: decision.toolName, taskId, agentId: actorId, agentName: actorName });
         if (agent && this.options.agentStore) {
           await this.options.agentStore.updateAgentState(agent.id, "paused");
           await this.options.agentStore.updateAgent(agent.id, { pauseReason: "awaiting-approval" });
@@ -3028,6 +3030,7 @@ export class TaskExecutor {
           this.approvalSuspended.delete(taskId);
           throw error;
         }
+        void emitApprovalMail({ messageStore: this.options.messageStore, approvalRequestId, toolName, taskId, agentId: actorId, agentName: actorName });
       },
     };
   }

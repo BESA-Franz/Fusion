@@ -6,6 +6,10 @@ This document describes the actual architecture of Fusion as implemented in this
 
 ---
 
+## Structural approval mail
+
+Action gates emit a best-effort, idempotent system-mail item for each pending approval request. The item uses `mailKind: "approval"` and references its live `approvalRequestId`; `sendMessageOnce` keys it as `approval-mail:<approvalRequestId>`, so repeated deduped gate attempts do not spam the inbox and a mailbox failure cannot interrupt the safety pause.
+
 ## Terminal task wedge notifications
 
 Actionable terminal task updates are classified into bounded reasons such as a named merge gate, retry exhaustion, or a completion blocker. The PostgreSQL-backed task row persists an active/resolved episode with an opaque identity, so `NotificationService` sends one `task-wedged` provider event and one dashboard system-mailbox message per active reason even across restarts. Repeated observations remain quiet until an authoritative non-wedge task update resolves the episode; changed and resolved-then-reentered reasons notify again.
