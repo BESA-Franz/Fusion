@@ -230,7 +230,7 @@ describe("NotificationService deferred failure notifications", () => {
     await service.stop();
   });
 
-  it("delivers a new wedge episode when an opaque terminal failure gains a specific cause", async () => {
+  it("delivers only the live wedge cause when a snapshot is superseded", async () => {
     const { store, service, sendNotification } = await setup();
     const genericFailure = task({ id: "FN-wedge", status: "failed", error: "unexpected failure" });
     store.setTask(genericFailure);
@@ -246,11 +246,8 @@ describe("NotificationService deferred failure notifications", () => {
     store.emit("task:updated", wedge);
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(sendNotification).toHaveBeenCalledTimes(2);
-    expect(sendNotification).toHaveBeenCalledWith("task-wedged", expect.objectContaining({
-      taskId: "FN-wedge",
-      metadata: expect.objectContaining({ wedgeReason: "terminal-failed" }),
-    }));
+    // FNXC:TaskWedgeNotifications 2026-08-09-06:30: A superseded snapshot must not claim an obsolete episode.
+    expect(sendNotification).toHaveBeenCalledTimes(1);
     expect(sendNotification).toHaveBeenCalledWith("task-wedged", expect.objectContaining({
       taskId: "FN-wedge",
       metadata: expect.objectContaining({ wedgeReason: "merge-blocked:changeset-format" }),
