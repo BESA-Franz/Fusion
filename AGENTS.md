@@ -267,7 +267,7 @@ Per-task opt-out exists: `task.scopeOverride = true` (log the reason).
 
 When `settings.autoMerge: false`, `in-review` is terminal-until-merged by a human. Lifecycle-mutating self-healing must not move these tasks backward, pause/fail them, or re-enqueue them for execution.
 
-Scoped exception (FN-5819): shared-branch-group members (`branchContext.assignmentMode === "shared"`) still run the member→shared-branch local integration step while auto-merge is off. This exception is only for assembling `branch_groups.branchName`; shared-branch → default-branch promotion remains gated by group/global auto-merge.
+Scoped exception (FN-5819/FN-8823): while project auto-merge is On, shared-branch-group members (`branchContext.assignmentMode === "shared"`) still run the member→shared-branch local integration step subject to the user-Off hold. Under project auto-merge Off, every member is held unless its task explicitly sets `autoMerge: true`; shared-branch → default-branch promotion remains separately gated by group/global auto-merge.
 
 ### Mock provider (test mode)
 

@@ -5113,12 +5113,12 @@ describe("SelfHealingManager", () => {
     });
 
     /*
-    FNXC:SharedBranchMemberHold 2026-08-05-23:14:
-    A self-healing sweep is a production merge requester. It must preserve the
-    intentional mission member fast path under global Off, but never bypass an
-    operator-authored task Off hold while doing recovery admission.
+    FNXC:SharedBranchMemberHold 2026-08-09-09:09:
+    FN-8823 supersedes the mission-policy fast path under project Off. A
+    self-healing merge requester must treat project Off as withheld consent for
+    every non-opted-in shared member, preserving the FN-8811 user hold as a subset.
     */
-    it("re-enqueues a mission-policy shared member under global auto-merge off but preserves a user hold", async () => {
+    it("holds every non-opted-in shared member under global auto-merge off, including mission policy", async () => {
       const enqueueMerge = vi.fn().mockReturnValue(true);
       const managerWithRecovery = new SelfHealingManager(store, {
         rootDir: "/tmp/test-project",
@@ -5165,10 +5165,47 @@ describe("SelfHealingManager", () => {
         },
       ]);
 
+      expect(await managerWithRecovery.recoverMergeableReviewTasks()).toBe(0);
+      expect(enqueueMerge).not.toHaveBeenCalledWith("FN-8811-MISSION");
+      expect(enqueueMerge).not.toHaveBeenCalledWith("FN-8811-USER");
+      expect(store.mergeTask).not.toHaveBeenCalled();
+
+      managerWithRecovery.stop();
+    });
+
+    it("recovers an explicitly opted-in shared member under global auto-merge off", async () => {
+      const enqueueMerge = vi.fn().mockReturnValue(true);
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        enqueueMerge,
+      });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+        autoMerge: false,
+        integrationBranch: "main",
+        globalPause: false,
+        enginePaused: false,
+      });
+      (store.getBranchGroup as ReturnType<typeof vi.fn>).mockResolvedValue({
+        status: "open",
+        branchName: "mission/M-8811",
+      });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([{
+        id: "FN-8811-OPTED-IN",
+        column: "in-review",
+        paused: false,
+        status: null,
+        error: null,
+        worktree: "/tmp/test-project/.worktrees/fn-8811-opted-in",
+        steps: [{ name: "Ship it", status: "done" }],
+        workflowStepResults: [{ id: "ws-opted-in", status: "passed", phase: "pre-merge" }],
+        autoMerge: true,
+        branchContext: { assignmentMode: "shared", groupId: "BG-8811", source: "mission" },
+        log: [],
+      }]);
+
       expect(await managerWithRecovery.recoverMergeableReviewTasks()).toBe(1);
       expect(enqueueMerge).toHaveBeenCalledTimes(1);
-      expect(enqueueMerge).toHaveBeenCalledWith("FN-8811-MISSION");
-      expect(enqueueMerge).not.toHaveBeenCalledWith("FN-8811-USER");
+      expect(enqueueMerge).toHaveBeenCalledWith("FN-8811-OPTED-IN");
 
       managerWithRecovery.stop();
     });
