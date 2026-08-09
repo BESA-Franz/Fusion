@@ -11,7 +11,7 @@ import { execSync } from "node:child_process";
 import { findWorktreeUser, aiMergeTask } from "../merger.js";
 import { WorktreePool } from "../worktree/worktree-pool.js";
 import { generateWorktreeName, slugify } from "../worktree/worktree-names.js";
-import type { Task, TaskDetail } from "@fusion/core";
+import { isEphemeralAgent, type Task, type TaskDetail } from "@fusion/core";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { StepSessionExecutor } from "../execution/step-session-executor.js";
 import { executorLog } from "../logger.js";
@@ -21,6 +21,8 @@ import { executingTaskLock } from "../agents/active-session-registry.js";
 import { runVerificationCommand as mockedRunVerificationCommand } from "../execution/verification-utils.js";
 import {
   createMockStore,
+  createWorkflowRoutingAgentStore,
+  implementationSessionCalls,
   mockedCreateFnAgent,
   mockedSessionManager,
   mockedGenerateWorktreeName,
@@ -33,10 +35,98 @@ import {
   mockTerminateAllSessions,
   mockCleanup,
   mockSteerActiveSessions,
+  mockedReconcileSecretsEnvFingerprint,
+  mockedRefreshReusedWorktreeBase,
   resetExecutorMocks,
+  selectImplementationSessionCall,
 } from "./executor-test-helpers.js";
 
 const mockedReviewStep = vi.mocked(mockedReviewStepFn);
+
+/* FNXC:EngineTests 2026-08-09-05:51: Graph-owned execution fails closed before session creation when a test omits agentStore, so every executor harness must route through the durable fixture unless a test explicitly overrides it. */
+function createRoutingExecutor(store: any, rootDir: string, options: any = {}) {
+  return new TaskExecutor(store, rootDir, {
+    agentStore: createWorkflowRoutingAgentStore(store).agentStore,
+    ...options,
+  });
+}
+
+/*
+FNXC:EngineTests 2026-08-09-05:51:
+A graph-owned executor cannot reach its implementation session without a routing agent store; before
+this guard, that suspend left behavioral captures empty. Keep both fixture identities explicit so
+policy tests exercise ephemeral gating while ordinary graph harnesses retain durable role-pool routing.
+*/
+describe("workflow routing harness guards", () => {
+  it("offers explicit durable and ephemeral executor identities", () => {
+    const store = createMockStore();
+    expect(isEphemeralAgent(createWorkflowRoutingAgentStore(store).agent)).toBe(false);
+    expect(isEphemeralAgent(createWorkflowRoutingAgentStore(store, { ephemeral: true }).agent)).toBe(true);
+  });
+
+  it("requires an implementation session instead of accepting an empty graph capture", () => {
+    expect(() => selectImplementationSessionCall([])).toThrow(/No implementation session was opened/);
+  });
+
+  /*
+  FNXC:EngineTests 2026-08-09-08:20:
+  These guards exist because an empty StepSessionExecutor mock once made graph lifecycle assertions
+  vacuous. A routed execution must construct the graph-owned implementation seam, while the shared
+  reused-worktree defaults must preserve production's execution-safe union members.
+  */
+  it("reaches the graph-owned step-session implementation seam", async () => {
+    resetExecutorMocks();
+    const store = createMockStore();
+    store.getSettings.mockResolvedValue({
+      maxConcurrent: 2, maxWorktrees: 4, pollIntervalMs: 15_000, autoMerge: false,
+      runStepsInNewSessions: true,
+    });
+    const task = {
+      id: "FN-HARNESS-STEP-SESSION", title: "Harness step session", description: "T",
+      column: "in-progress", dependencies: [], steps: [{ name: "Step 0", status: "pending" }],
+      currentStep: 0, log: [], prompt: "# test\n## Steps\n### Step 0: Preflight\n- [ ] check",
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    store.getTask.mockResolvedValue(task as any);
+
+    await createRoutingExecutor(store, "/tmp/test").execute(task as any);
+
+    expect(mockedStepSessionExecutor).toHaveBeenCalledTimes(1);
+    expect(mockExecuteAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps type-faithful base-refresh defaults and exposes a fail-closed override", async () => {
+    resetExecutorMocks();
+    await expect(mockedReconcileSecretsEnvFingerprint()).resolves.toEqual({ executionSafe: true, outcome: "clean" });
+    await expect(mockedRefreshReusedWorktreeBase()).resolves.toMatchObject({ kind: "up-to-date", executionSafe: true });
+
+    mockedReconcileSecretsEnvFingerprint.mockResolvedValueOnce({ executionSafe: false, outcome: "git-dir-unavailable" });
+    await expect(mockedReconcileSecretsEnvFingerprint()).resolves.toEqual({ executionSafe: false, outcome: "git-dir-unavailable" });
+    mockedRefreshReusedWorktreeBase.mockResolvedValueOnce({ kind: "base-reconciliation-required", executionSafe: false });
+    await expect(mockedRefreshReusedWorktreeBase()).resolves.toMatchObject({ kind: "base-reconciliation-required", executionSafe: false });
+  });
+
+  it("fails closed before implementation when a reused worktree reconciliation is blocked", async () => {
+    resetExecutorMocks();
+    const store = createMockStore();
+    const task = {
+      id: "FN-HARNESS-BLOCKED-REFRESH", title: "Blocked refresh", description: "T",
+      column: "in-progress", dependencies: [], steps: [{ name: "Step 0", status: "pending" }],
+      currentStep: 0, log: [], worktree: "/tmp/test/.worktrees/blocked-refresh", baseCommitSha: "abc123",
+      prompt: "# test\n## Steps\n### Step 0: Preflight\n- [ ] check",
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    store.getTask.mockResolvedValue(task as any);
+    mockedReconcileSecretsEnvFingerprint.mockResolvedValue({ executionSafe: false, outcome: "git-dir-unavailable" });
+
+    await createRoutingExecutor(store, "/tmp/test").execute(task as any);
+
+    expect(store.updateTask.mock.calls.some(([id, patch]: [string, { error?: string }]) =>
+      id === task.id && patch.error?.includes("base-reconciliation-required"),
+    )).toBe(true);
+    expect(mockedStepSessionExecutor).not.toHaveBeenCalled();
+  });
+});
 
 describe("Workflow Steps Execution", () => {
   beforeEach(() => {
@@ -53,8 +143,8 @@ describe("Workflow Steps Execution", () => {
    * assertions measuring the retry contract instead of the graph's node count.
    */
   function implementationSessionCount(): number {
-    return mockedCreateFnAgent.mock.calls.filter((call: any[]) =>
-      ((call[0]?.customTools as any[]) || []).some((tool: any) => tool.name === "fn_task_done"),
+    return implementationSessionCalls(
+      mockedCreateFnAgent.mock.calls.map(([options]) => options as { customTools?: Array<{ name?: string }> }),
     ).length;
   }
 
@@ -136,7 +226,7 @@ describe("Workflow Steps Execution", () => {
       };
     }) as any);
 
-    const executor = new TaskExecutor(store, "/tmp/test", {});
+    const executor = createRoutingExecutor(store, "/tmp/test", {});
     await executor.execute(task as any);
 
     /*
@@ -179,7 +269,7 @@ describe("Workflow Steps Execution", () => {
 
     const onComplete = vi.fn();
     const onError = vi.fn();
-    const executor = new TaskExecutor(store, "/tmp/test", { onComplete, onError });
+    const executor = createRoutingExecutor(store, "/tmp/test", { onComplete, onError });
 
     await executor.execute({
       id: "FN-001",
@@ -250,7 +340,7 @@ describe("Workflow Steps Execution", () => {
     } as any);
 
     const onError = vi.fn();
-    const executor = new TaskExecutor(store, "/tmp/test", { onError });
+    const executor = createRoutingExecutor(store, "/tmp/test", { onError });
 
     await executor.execute({
       id: "FN-001",
@@ -328,7 +418,7 @@ describe("Workflow Steps Execution", () => {
     }) as any);
 
     const onError = vi.fn();
-    const executor = new TaskExecutor(store, "/tmp/test", { onError });
+    const executor = createRoutingExecutor(store, "/tmp/test", { onError });
     const markGraphExecuteSelfRequeued = vi.spyOn(executor as any, "markGraphExecuteSelfRequeued");
     (executor as any).activeWorktrees.set("FN-ASSISTANT-STALE", new Set([task.worktree]));
 
@@ -389,7 +479,7 @@ describe("Workflow Steps Execution", () => {
       };
     }) as any);
     const onError = vi.fn();
-    const executor = new TaskExecutor(store, "/tmp/test", { onError });
+    const executor = createRoutingExecutor(store, "/tmp/test", { onError });
 
     await executor.execute(task as any);
 
@@ -454,7 +544,7 @@ describe("Workflow Steps Execution", () => {
         },
       }) as any);
 
-      const executor = new TaskExecutor(store, "/tmp/test", {});
+      const executor = createRoutingExecutor(store, "/tmp/test", {});
       await executor.execute(baseTask as any);
 
       // FNXC:EngineTests 2026-07-19-10:55 (U10b): the pending-review block must skip the retry
@@ -518,7 +608,7 @@ describe("Workflow Steps Execution", () => {
         },
       } as any);
 
-      const executor = new TaskExecutor(store, "/tmp/test", {});
+      const executor = createRoutingExecutor(store, "/tmp/test", {});
       await executor.execute(baseTask as any);
 
       // FNXC:EngineTests 2026-07-19-10:55 (U10b): no pending-review block means the full retry
@@ -577,7 +667,7 @@ describe("Workflow Steps Execution", () => {
 
       const onComplete = vi.fn();
       const onError = vi.fn();
-      const executor = new TaskExecutor(store, "/tmp/test", { onComplete, onError });
+      const executor = createRoutingExecutor(store, "/tmp/test", { onComplete, onError });
       await executor.execute(baseTask as any);
 
       // FNXC:EngineTests 2026-07-19-10:55 (U10b): implicit done is accepted without a retry, so the
@@ -634,7 +724,7 @@ describe("Workflow Steps Execution", () => {
     createAgentWithTaskDone();
 
     const onComplete = vi.fn();
-    const executor = new TaskExecutor(store, "/tmp/test", { onComplete });
+    const executor = createRoutingExecutor(store, "/tmp/test", { onComplete });
 
     await executor.execute({
       id: "FN-001",
@@ -725,7 +815,7 @@ describe("Workflow Steps Execution", () => {
     });
 
     const onError = vi.fn();
-    const executor = new TaskExecutor(store, "/tmp/test", { onError });
+    const executor = createRoutingExecutor(store, "/tmp/test", { onError });
 
     // Stub injectWorkflowStepFailureInstructions: PROMPT.md write is verified
     // by separate tests; here we just need sendTaskBackForFix to proceed past
@@ -867,7 +957,7 @@ describe("Workflow Steps Execution", () => {
         return {};
       });
 
-      const executor = new TaskExecutor(store, "/tmp/test");
+      const executor = createRoutingExecutor(store, "/tmp/test");
       const reopened = await (executor as unknown as {
         reopenLastStepForRevision: (
           taskId: string,
@@ -906,7 +996,7 @@ describe("Workflow Steps Execution", () => {
       return {};
     });
 
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = createRoutingExecutor(store, "/tmp/test");
     const reopened = await (executor as unknown as {
       reopenLastStepForRevision: (
         taskId: string,
@@ -958,7 +1048,7 @@ describe("Workflow Steps Execution", () => {
     store.getTask.mockImplementation(async () => mutableTask);
 
     const onError = vi.fn();
-    const executor = new TaskExecutor(store, "/tmp/test", { onError });
+    const executor = createRoutingExecutor(store, "/tmp/test", { onError });
 
     const outcome = await (executor as unknown as {
       performWorkflowRerunBounce: (
@@ -1013,7 +1103,7 @@ describe("Real-time steering injection", () => {
   it("initializes seenSteeringIds with existing comments at session start", async () => {
     const store = createMockStore();
     const steerFn = vi.fn().mockResolvedValue(undefined);
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = createRoutingExecutor(store, "/tmp/test");
     const existingComment = {
       id: "1234567890-abc123",
       text: "Existing comment",
@@ -1030,7 +1120,7 @@ describe("Real-time steering injection", () => {
   it("injects new steering comments via session.steer() on task:updated", async () => {
     const store = createMockStore();
     const steerFn = vi.fn().mockResolvedValue(undefined);
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = createRoutingExecutor(store, "/tmp/test");
     setLegacyActiveSession(executor, steerFn);
     const newComment = {
       id: "9876543210-def456",
@@ -1053,7 +1143,7 @@ describe("Real-time steering injection", () => {
 
   it("injects new steering comments via active StepSessionExecutor on task:updated", async () => {
     const store = createMockStore();
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = createRoutingExecutor(store, "/tmp/test");
     const seenIds = new Set<string>();
     const updateSteeringComments = vi.fn();
     const steerActiveSessions = vi.fn().mockImplementation(async () => {
@@ -1104,7 +1194,7 @@ describe("Real-time steering injection", () => {
 
   it("queues step-session steering comments for the next prompt when no step session is active", async () => {
     const store = createMockStore();
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = createRoutingExecutor(store, "/tmp/test");
     const newComment = {
       id: "step-session-queued-comment",
       text: "Please apply this in the next step prompt",
@@ -1140,7 +1230,7 @@ describe("Real-time steering injection", () => {
 
   it("injects new steering comments via active workflow step session on task:updated", async () => {
     const store = createMockStore();
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = createRoutingExecutor(store, "/tmp/test");
     const steer = vi.fn().mockResolvedValue(undefined);
     const newComment = {
       id: "workflow-step-comment",
@@ -1178,7 +1268,7 @@ describe("Real-time steering injection", () => {
 
   it("marks new comments seen before injecting and logs once across simultaneous surfaces", async () => {
     const store = createMockStore();
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = createRoutingExecutor(store, "/tmp/test");
     const newComment = {
       id: "shared-surface-comment",
       text: "Please reach every live surface once",
@@ -1224,7 +1314,7 @@ describe("Real-time steering injection", () => {
 
   it("does not re-inject an already seen active StepSessionExecutor steering comment", async () => {
     const store = createMockStore();
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = createRoutingExecutor(store, "/tmp/test");
     const steerActiveSessions = vi.fn().mockResolvedValue(undefined);
     const comment = {
       id: "step-session-seen-comment",
@@ -1256,7 +1346,7 @@ describe("Real-time steering injection", () => {
   it("does not re-inject already seen steering comments", async () => {
     const store = createMockStore();
     const steerFn = vi.fn().mockResolvedValue(undefined);
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = createRoutingExecutor(store, "/tmp/test");
     const comment = {
       id: "1111111111-aaa111",
       text: "Original comment",
@@ -1273,7 +1363,7 @@ describe("Real-time steering injection", () => {
   it("marks comment as seen even if steer() throws", async () => {
     const store = createMockStore();
     const steerFn = vi.fn().mockRejectedValue(new Error("Session disconnected"));
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = createRoutingExecutor(store, "/tmp/test");
     const comment = {
       id: "2222222222-bbb222",
       text: "Comment that fails",
@@ -1290,7 +1380,7 @@ describe("Real-time steering injection", () => {
 
   it("does not inject or log when active surfaces receive empty or undefined steering comments", async () => {
     const store = createMockStore();
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = createRoutingExecutor(store, "/tmp/test");
     const legacySteer = vi.fn().mockResolvedValue(undefined);
     const stepSteerActiveSessions = vi.fn().mockResolvedValue(1);
     const workflowSteer = vi.fn().mockResolvedValue(undefined);
@@ -1319,7 +1409,7 @@ describe("Real-time steering injection", () => {
 
   it("does not inject steering comments for tasks without an active injection target", async () => {
     const store = createMockStore();
-    new TaskExecutor(store, "/tmp/test");
+    createRoutingExecutor(store, "/tmp/test");
 
     await (store as any)._triggerAsync("task:updated", {
       ...makeSteeringTask([{
@@ -1341,7 +1431,7 @@ describe("Real-time steering injection", () => {
   it("handles multiple new steering comments in a single task:updated", async () => {
     const store = createMockStore();
     const steerFn = vi.fn().mockResolvedValue(undefined);
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = createRoutingExecutor(store, "/tmp/test");
     setLegacyActiveSession(executor, steerFn, new Set(["existing-comment"]));
 
     await (store as any)._triggerAsync("task:updated", makeSteeringTask([
@@ -1372,7 +1462,7 @@ describe("Real-time steering injection", () => {
     const store = createMockStore();
     store.getSettings.mockResolvedValue({ reviewHandoffPolicy: "comment-triggered" } as any);
     const steerFn = vi.fn().mockResolvedValue(undefined);
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = createRoutingExecutor(store, "/tmp/test");
     const { session, state } = setLegacyActiveSession(executor, steerFn);
     const executeReviewHandoff = vi.fn().mockResolvedValue(undefined);
     (executor as any).executeReviewHandoff = executeReviewHandoff;
@@ -1436,7 +1526,7 @@ describe("TaskExecutor loop recovery", () => {
       autoMerge: false,
     });
 
-    const executor = new TaskExecutor(store, "/tmp/test-root");
+    const executor = createRoutingExecutor(store, "/tmp/test-root");
 
     // Directly inject an active session (avoids full execute() chain)
     (executor as any).activeSessions.set("FN-001", {
@@ -1472,7 +1562,7 @@ describe("TaskExecutor loop recovery", () => {
 
   it("handleLoopDetected returns false when no active session", async () => {
     const store = createMockStore();
-    const executor = new TaskExecutor(store, "/tmp/test-root");
+    const executor = createRoutingExecutor(store, "/tmp/test-root");
 
     // No session active (activeSessions is empty)
     const result = await executor.handleLoopDetected({

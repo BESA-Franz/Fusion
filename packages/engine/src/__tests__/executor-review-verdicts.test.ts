@@ -19,6 +19,7 @@ import { withRateLimitRetry } from "../errors/rate-limit-retry.js";
 import { runVerificationCommand as mockedRunVerificationCommand } from "../execution/verification-utils.js";
 import {
   createMockStore,
+  createWorkflowRoutingAgentStore,
   mockedCreateFnAgent,
   mockedSessionManager,
   mockedGenerateWorktreeName,
@@ -32,7 +33,6 @@ import {
   mockTerminateAllSessions,
   mockCleanup,
   resetExecutorMocks,
-  createWorkflowRoutingAgentStore,
 } from "./executor-test-helpers.js";
 
 const mockedReviewStep = vi.mocked(mockedReviewStepFn);

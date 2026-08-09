@@ -2,6 +2,8 @@ import { vi } from "vitest";
 import type { Mock } from "vitest";
 import { installTaskWorktreeIdentityGuard } from "../worktree/worktree-hooks.js";
 import type * as ReviewerModule from "../execution/reviewer.js";
+import type { ReconcileSecretsEnvFingerprintResult } from "../worktree/secrets-env-writer.js";
+import type { WorktreeBaseRefreshResult } from "../worktree-base-refresh.js";
 
 // Mock external dependencies
 vi.mock("../pi.js", () => ({
@@ -340,6 +342,31 @@ vi.mock("node:fs", () => ({
   realpathSync: vi.fn((path: string) => path),
   lstatSync: vi.fn(() => ({ isSymbolicLink: () => false, isDirectory: () => true })),
   statSync: vi.fn(() => ({ isDirectory: () => true })),
+}));
+
+/*
+FNXC:EngineTests 2026-08-09-07:48:
+Executor worktree reuse always requests stale-base refresh. Existing-worktree fixtures therefore
+must model the production-safe reconciliation unions or acquisition fails closed before the tested
+session lifecycle begins; type-faithful defaults make result-shape drift fail typecheck instead of
+silently accepting a fictional successful outcome.
+*/
+const worktreeBaseRefreshMocks = vi.hoisted(() => ({
+  reconcileSecretsEnvFingerprint: vi.fn(),
+  refreshReusedWorktreeBase: vi.fn(),
+}));
+export const mockedReconcileSecretsEnvFingerprint = worktreeBaseRefreshMocks.reconcileSecretsEnvFingerprint as Mock<() => Promise<ReconcileSecretsEnvFingerprintResult>>;
+export const mockedRefreshReusedWorktreeBase = worktreeBaseRefreshMocks.refreshReusedWorktreeBase as Mock<() => Promise<WorktreeBaseRefreshResult>>;
+mockedReconcileSecretsEnvFingerprint.mockResolvedValue({ executionSafe: true, outcome: "clean" } satisfies ReconcileSecretsEnvFingerprintResult);
+mockedRefreshReusedWorktreeBase.mockResolvedValue({ kind: "up-to-date", executionSafe: true, durableBaseSha: null } satisfies WorktreeBaseRefreshResult);
+
+vi.mock("../worktree/secrets-env-writer.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../worktree/secrets-env-writer.js")>()),
+  reconcileSecretsEnvFingerprint: worktreeBaseRefreshMocks.reconcileSecretsEnvFingerprint,
+}));
+vi.mock("../worktree-base-refresh.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../worktree-base-refresh.js")>()),
+  refreshReusedWorktreeBase: worktreeBaseRefreshMocks.refreshReusedWorktreeBase,
 }));
 
 export const mockExecuteAll: Mock<() => Promise<unknown[]>> = vi.fn().mockResolvedValue([]);
@@ -770,8 +797,17 @@ FNXC:TaskVerificationRequest 2026-07-19-04:30 (merged with U5f 2026-07-19-06:00)
   return store as any;
 }
 
-/** Minimal durable routing seam for production-path executor fixture tests. */
-export function createWorkflowRoutingAgentStore(store: Pick<any, "getTask" | "updateTask">) {
+/*
+FNXC:EngineTests 2026-08-09-05:51:
+Graph-owned execution routes every step to an executor principal before opening an implementation
+session. The default fixture remains durable for its existing consumers, while ephemeral-gate
+coverage must opt into a task-executor-managed identity: a durable principal makes the policy gate
+legitimately inert and cannot prove that deny withholds follow-up task tools.
+*/
+export function createWorkflowRoutingAgentStore(
+  store: Pick<any, "getTask" | "updateTask">,
+  options: { ephemeral?: boolean } = {},
+) {
   const leases = new Map<string, string>();
   const agent = {
     id: "workflow-test-executor",
@@ -782,11 +818,16 @@ export function createWorkflowRoutingAgentStore(store: Pick<any, "getTask" | "up
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     runtimeConfig: {},
+    maxWorkflowSessions: 2,
+    ...(options.ephemeral ? { metadata: { managedBy: "task-executor" } } : {}),
   };
+  // Role-pool admission deliberately accepts durable agents only. For an ephemeral session-identity
+  // test, advertise a durable routing record and resolve its same-ID runtime identity as ephemeral.
+  const routingAgent = options.ephemeral ? { ...agent, metadata: undefined } : agent;
   const countAgentLeases = (agentId: string) => [...leases.values()].filter((holder) => holder === agentId).length;
   const agentStore = {
     workflowProjectId: "executor-worktree-test-project",
-    listAgents: vi.fn(async () => [agent]),
+    listAgents: vi.fn(async () => [routingAgent]),
     getAgent: vi.fn(async (agentId: string) => agentId === agent.id ? agent : null),
     acquireWorkflowSessionCapacity: vi.fn(async (input: {
       agentId: string;
@@ -863,12 +904,20 @@ opening any. Lifecycle harnesses must select the implementation session by its f
 so zero-session routing regressions cannot pass through a review or summary session vacuously.
 */
 type CreateFnAgentCall = Parameters<typeof createFnAgent>;
+type CreateFnAgentOptions = CreateFnAgentCall[0];
 
-export function implementationSessionCalls(calls: readonly CreateFnAgentCall[]): CreateFnAgentCall[] {
-  return calls.filter(([options]) => options.customTools?.some((tool) => tool.name === "fn_task_done"));
+export function implementationSessionCalls(calls: readonly CreateFnAgentCall[]): CreateFnAgentCall[];
+export function implementationSessionCalls<T extends { customTools?: Array<{ name?: string }> }>(calls: readonly T[]): T[];
+export function implementationSessionCalls(calls: readonly (CreateFnAgentCall | CreateFnAgentOptions)[]) {
+  return calls.filter((call) => {
+    const options = Array.isArray(call) ? call[0] : call;
+    return options.customTools?.some((tool) => tool.name === "fn_task_done");
+  });
 }
 
-export function selectImplementationSessionCall(calls: readonly CreateFnAgentCall[]): CreateFnAgentCall {
+export function selectImplementationSessionCall(calls: readonly CreateFnAgentCall[]): CreateFnAgentCall;
+export function selectImplementationSessionCall<T extends { customTools?: Array<{ name?: string }> }>(calls: readonly T[]): T;
+export function selectImplementationSessionCall(calls: readonly (CreateFnAgentCall | CreateFnAgentOptions)[]) {
   const call = implementationSessionCalls(calls)[0];
   if (!call) throw new Error("No implementation session was opened (expected custom tool fn_task_done)");
   return call;
@@ -901,6 +950,10 @@ export function resetExecutorMocks() {
   mockedRecoverStaleRegistration.mockResolvedValue({ recovered: true, actions: ["prune"] });
   mockedInstallTaskWorktreeIdentityGuard.mockResolvedValue(undefined);
   mockedTryRemoveStaleLock.mockResolvedValue({ removed: true });
+  mockedReconcileSecretsEnvFingerprint.mockReset();
+  mockedReconcileSecretsEnvFingerprint.mockResolvedValue({ executionSafe: true, outcome: "clean" } satisfies ReconcileSecretsEnvFingerprintResult);
+  mockedRefreshReusedWorktreeBase.mockReset();
+  mockedRefreshReusedWorktreeBase.mockResolvedValue({ kind: "up-to-date", executionSafe: true, durableBaseSha: null } satisfies WorktreeBaseRefreshResult);
   mockExecuteAll.mockResolvedValue([]);
   mockTerminateAllSessions.mockResolvedValue(undefined);
   mockCleanup.mockResolvedValue(undefined);

@@ -617,6 +617,9 @@ the cache useful across a normal work week.
 
 `packages/engine/src/__tests__/executor-test-helpers.ts` defaults both `isUsableTaskWorktree` to `true` and `classifyTaskWorktree` to `{ ok: true }` via a helper-level `worktree-pool` mock. To test failure paths, override with `vi.spyOn(worktreePool, "classifyTaskWorktree").mockResolvedValueOnce({ ok: false, classification: "unregistered", reason: "..." })` (or `isUsableTaskWorktree` for legacy call sites). Production liveness assertions in `executor.ts` are unchanged.
 
+<!-- FNXC:EngineTests 2026-08-09-11:30: Graph-owned executor tests must explicitly provide their routed durable principal, and reused-worktree fixtures must pass the production-shaped fail-closed preflight before testing downstream behavior. -->
+**Graph-owned executor fixtures:** Construct `TaskExecutor` with `createWorkflowRoutingAgentStore(store).agentStore`; graph routing otherwise fails closed before any implementation or review seam is reached. The shared helper defaults reused-worktree preflight to `reconcileSecretsEnvFingerprint → { executionSafe: true, outcome: "clean" }` and `refreshReusedWorktreeBase → { kind: "up-to-date", executionSafe: true, durableBaseSha: null }`. Override either mock with its documented blocked result when testing `WorktreeBaseRefreshError`; do not invent result-union members. `StepSessionExecutor` owns forced/new-session execution, but resume-vs-fresh `SessionManager` assertions must use an unpinned, single-session workflow because step sessions never resume `task.sessionFile`.
+
 ## Before reporting done
 
 - Code changes: affected package tests + any directly relevant browser/build lane.
