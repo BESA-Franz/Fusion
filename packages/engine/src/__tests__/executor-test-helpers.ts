@@ -856,6 +856,24 @@ export function captureNamedTool<T extends { name: string }>(
   return customTools?.find((tool) => tool.name === name) ?? previous;
 }
 
+/*
+FNXC:ExecutorTests 2026-08-09-11:05:
+Graph ownership can open several sessions per run, while an unrouted principal suspends before
+opening any. Lifecycle harnesses must select the implementation session by its fn_task_done tool
+so zero-session routing regressions cannot pass through a review or summary session vacuously.
+*/
+type CreateFnAgentCall = Parameters<typeof createFnAgent>;
+
+export function implementationSessionCalls(calls: readonly CreateFnAgentCall[]): CreateFnAgentCall[] {
+  return calls.filter(([options]) => options.customTools?.some((tool) => tool.name === "fn_task_done"));
+}
+
+export function selectImplementationSessionCall(calls: readonly CreateFnAgentCall[]): CreateFnAgentCall {
+  const call = implementationSessionCalls(calls)[0];
+  if (!call) throw new Error("No implementation session was opened (expected custom tool fn_task_done)");
+  return call;
+}
+
 export function resetExecutorMocks() {
   vi.clearAllMocks();
   mockedExec.mockReset();

@@ -27,6 +27,7 @@ import {
   mockedWithRateLimitRetry,
   mockedExecSync,
   mockedExistsSync,
+  selectImplementationSessionCall,
   mockExecuteAll,
   mockTerminateAllSessions,
   mockCleanup,
@@ -306,11 +307,27 @@ describe("workflow routing fixture", () => {
     mockedExistsSync.mockReturnValue(true);
   });
 
-  it("routes a principal before opening an executor session", async () => {
+  /*
+  FNXC:WorkflowPrincipalRouting 2026-08-09-11:05:
+  FN-8883 observed 34 vacuous failures when an unrouted graph run opened zero createFnAgent
+  sessions and never exposed fn_task_done. These paired guards prove the accept path opens the
+  implementation session and the missing-agent-store path stays suspended rather than tolerated.
+  */
+  it("opens an implementation session and hands routed work to graph review", async () => {
     const store = createMockStore();
-    mockedCreateFnAgent.mockResolvedValue({
-      session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn() },
-    } as any);
+    mockedCreateFnAgent.mockImplementation(async (opts: any) => ({
+      session: {
+        prompt: vi.fn().mockImplementation(async () => {
+          const taskDoneTool = opts.customTools?.find((tool: any) => tool.name === "fn_task_done");
+          if (taskDoneTool) await taskDoneTool.execute("call-routing", { summary: "done" });
+        }),
+        dispose: vi.fn(),
+        subscribe: vi.fn(),
+        on: vi.fn(),
+        sessionManager: { getLeafId: vi.fn().mockReturnValue("leaf-routing") },
+        state: {},
+      },
+    }) as any);
     const { executor, routing } = createRoutingExecutor(store);
 
     await executor.execute({
@@ -320,7 +337,26 @@ describe("workflow routing fixture", () => {
     } as any);
 
     expect(routing.agentStore.listAgents).toHaveBeenCalledWith({ includeEphemeral: true });
-    expect(mockedCreateFnAgent).toHaveBeenCalled();
+    expect(selectImplementationSessionCall(mockedCreateFnAgent.mock.calls)).toBeDefined();
+    expect(store.moveTask).toHaveBeenCalledWith(
+      "FN-routing",
+      "in-review",
+      expect.objectContaining({ workflowMoveSource: "workflow-graph" }),
+    );
+  });
+
+  it("suspends an unrouted graph run before opening an implementation session", async () => {
+    const store = createMockStore();
+    const executor = new TaskExecutor(store, "/tmp/test", {});
+
+    await executor.execute({
+      id: "FN-routing", title: "Routing fixture", description: "", column: "in-progress",
+      dependencies: [], steps: [], currentStep: 0, log: [],
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    } as any);
+
+    expect(mockedCreateFnAgent).not.toHaveBeenCalled();
+    expect(moveTaskCallsTo(store, "FN-routing", "in-review")).toHaveLength(0);
   });
 });
 
