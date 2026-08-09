@@ -20,7 +20,11 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 export type SignalSeverity = "critical" | "error" | "warning" | "info";
 
 /** Supported external signal providers. */
-export type SignalProvider = "sentry" | "datadog" | "pagerduty" | "webhook" | "gitlab";
+/*
+FNXC:CommandCenterSignals 2026-08-09-13:23:
+GitHub CI needs a dedicated inbound provider so completed check outcomes can reach Signals without adding polling or outbound GitHub API calls.
+*/
+export type SignalProvider = "sentry" | "datadog" | "pagerduty" | "webhook" | "gitlab" | "github";
 
 /** Normalized lifecycle intent for an ingested signal. */
 export type SignalResolution = "open" | "resolved";
@@ -73,6 +77,17 @@ export interface Signal {
    * Connector events must distinguish fire from recovery so incident-backed Signals metrics can preserve status. Omitted means "open" for backward-compatible task creation; "resolved" routes the grouped incident to resolveIncident instead of opening another occurrence.
    */
   resolution?: SignalResolution;
+  /**
+   * FNXC:CommandCenterSignals 2026-08-09-13:23:
+   * GitHub green CI runs must not create one triage task per run. A recovery-only
+   * adapter opts into taskless recovery: it only atomically resolves the newest
+   * open incident for its grouping key and never records/opens an incident.
+   * Taskless signals have no durable delivery marker, so persisted open-gated
+   * resolution makes redelivery and concurrent delivery no-ops. This differs
+   * from `resolution: "resolved"` alone, which retains record-then-resolve
+   * behavior for every existing adapter.
+   */
+  recoveryOnly?: boolean;
   /**
    * Optional canonical URL back to the source. Treated as SSRF-untrusted: it is
    * stored as data and only rendered as an external link, never fetched server

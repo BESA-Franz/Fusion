@@ -39,6 +39,7 @@ Command Center signal connectors are configured with process environment variabl
 | `FUSION_SIGNAL_DATADOG_SECRET` | Datadog | `POST /api/signals/datadog` | Verifies the custom `X-Datadog-Signature` HMAC header; optional `X-Datadog-Timestamp` bounds replay. |
 | `FUSION_SIGNAL_PAGERDUTY_SECRET` | PagerDuty | `POST /api/signals/pagerduty` | Verifies `X-PagerDuty-Signature` (`v1=<hex>`). |
 | `FUSION_SIGNAL_GITLAB_SECRET` | GitLab | `POST /api/signals/gitlab` | Verifies GitLab's `X-Gitlab-Token` secret-token header for GitLab.com or self-managed project/group issue and merge-request webhooks. |
+| `FUSION_SIGNAL_GITHUB_SECRET` | GitHub | `POST /api/signals/github` | Verifies `X-Hub-Signature-256` for `check_suite`, `workflow_run`, and `status` events; successful CI is taskless recovery-only. |
 | `FUSION_MONITOR_INGEST_SECRET` | Monitor incidents API | `POST /api/monitor/incidents` | Separate bearer-token path for direct monitor ingestion; it is not used by `/api/signals/:provider`. |
 
 See [Signals Connectors](./signals-connectors.md) for setup, signing, payload, and open/resolved mapping details.

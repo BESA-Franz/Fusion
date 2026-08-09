@@ -17,6 +17,7 @@ import { sentrySource } from "../signal-sources/sentry.js";
 import { datadogSource } from "../signal-sources/datadog.js";
 import { pagerdutySource } from "../signal-sources/pagerduty.js";
 import { gitlabSource } from "../signal-sources/gitlab.js";
+import { GITHUB_OUTCOME_MAP, githubSource } from "../signal-sources/github.js";
 
 function sign(body: string, secret: string): string {
   return createHmac("sha256", secret).update(Buffer.from(body)).digest("hex");
@@ -64,12 +65,13 @@ async function makeDbStore() {
 async function incidents(layer: AsyncDataLayer) {
   // FNXC:PostgresCutover 2026-07-16-06:30: inspect seeded connector rows via
   // the project schema instead of the removed synchronous SQLite Database API.
-  return await layer.db.execute(sql`SELECT grouping_key AS "groupingKey", source, severity, status, meta::text AS meta FROM project.incidents WHERE project_id = ${layer.projectId} ORDER BY id ASC`) as Array<{
+  return await layer.db.execute(sql`SELECT grouping_key AS "groupingKey", source, severity, status, resolved_at AS "resolvedAt", meta::text AS meta FROM project.incidents WHERE project_id = ${layer.projectId} ORDER BY id ASC`) as Array<{
     groupingKey: string;
     source: string | null;
     severity: string | null;
     status: string;
     meta: string | null;
+    resolvedAt: string | null;
   }>;
 }
 
@@ -79,6 +81,7 @@ const SECRETS: Record<string, string> = {
   FUSION_SIGNAL_DATADOG_SECRET: "datadog-secret",
   FUSION_SIGNAL_PAGERDUTY_SECRET: "pd-secret",
   FUSION_SIGNAL_GITLAB_SECRET: "gitlab-secret",
+  FUSION_SIGNAL_GITHUB_SECRET: "github-secret",
 };
 
 const savedEnv: Record<string, string | undefined> = {};
@@ -106,6 +109,24 @@ function ctxFor(source: SignalSource, payload: object, headers: Record<string, s
   return { rawBody, headers: lower, body: payload };
 }
 
+function githubPayload(kind: "check_suite" | "workflow_run" | "status", outcome: string) {
+  const repository = { full_name: "org/repo", html_url: "https://github.com/org/repo" };
+  if (kind === "status") {
+    return { repository, state: outcome, context: "build", sha: "abc123", target_url: "https://github.com/org/repo/actions/1", created_at: "2026-08-09T12:00:00.000Z" };
+  }
+  const run = { status: "completed", conclusion: outcome, head_sha: "abc123", head_branch: "main", updated_at: "2026-08-09T12:00:00.000Z", app: { slug: "checks" } };
+  return kind === "check_suite" ? { repository, check_suite: run } : { repository, workflow: { name: "build" }, workflow_run: run };
+}
+
+function githubContext(payload: object, event: "check_suite" | "workflow_run" | "status" | "ping", delivery: string) {
+  const raw = JSON.stringify(payload);
+  return ctxFor(githubSource, payload, {
+    "x-hub-signature-256": `sha256=${sign(raw, SECRETS.FUSION_SIGNAL_GITHUB_SECRET)}`,
+    "x-github-event": event,
+    "x-github-delivery": delivery,
+  });
+}
+
 function signedSignalContext(source: SignalSource, payload: object) {
   const raw = JSON.stringify(payload);
   switch (source.provider) {
@@ -122,16 +143,22 @@ function signedSignalContext(source: SignalSource, payload: object) {
       return ctxFor(source, payload, { "x-pagerduty-signature": `v1=${sign(raw, SECRETS.FUSION_SIGNAL_PAGERDUTY_SECRET)}` });
     case "gitlab":
       return ctxFor(source, payload, { "x-gitlab-token": SECRETS.FUSION_SIGNAL_GITLAB_SECRET });
+    case "github":
+      return ctxFor(source, payload, {
+        "x-hub-signature-256": `sha256=${sign(raw, SECRETS.FUSION_SIGNAL_GITHUB_SECRET)}`,
+        "x-github-delivery": "github-delivery",
+      });
   }
 }
 
 pgDescribe("getSignalSource registry", () => {
-  it("resolves all five providers and rejects unknown", () => {
+  it("resolves all six providers and rejects unknown", () => {
     expect(getSignalSource("webhook")).toBe(webhookSource);
     expect(getSignalSource("sentry")).toBe(sentrySource);
     expect(getSignalSource("datadog")).toBe(datadogSource);
     expect(getSignalSource("pagerduty")).toBe(pagerdutySource);
     expect(getSignalSource("gitlab")).toBe(gitlabSource);
+    expect(getSignalSource("github")).toBe(githubSource);
     expect(getSignalSource("bogus")).toBeUndefined();
   });
 });
@@ -576,6 +603,106 @@ pgDescribe("ingestSignal — GitLab adapter", () => {
   });
 });
 
+pgDescribe("ingestSignal — GitHub CI recovery", () => {
+  it("opens failures and resolves green runs without tasks or durable duplicate incidents", async () => {
+    const { layer, store } = await makeDbStore();
+    const failure = githubPayload("check_suite", "failure");
+    const open = await ingestSignal({
+      source: githubSource,
+      store,
+      ...githubContext(failure, "check_suite", "github-failure"),
+      nonceCache: new DeliveryNonceCache(),
+    });
+    expect(open.status).toBe(201);
+    expect(store._tasks).toHaveLength(1);
+    expect(await incidents(layer)).toMatchObject([{
+      groupingKey: "github:org/repo:check_suite:checks:abc123",
+      source: "github",
+      severity: "error",
+      status: "open",
+    }]);
+
+    const success = githubPayload("check_suite", "success");
+    const resolved = await ingestSignal({
+      source: githubSource,
+      store,
+      ...githubContext(success, "check_suite", "github-success"),
+      nonceCache: new DeliveryNonceCache(),
+    });
+    expect(resolved).toMatchObject({ status: 200, recoveryResolved: true });
+    expect(resolved.taskId).toBeUndefined();
+    expect(store._tasks).toHaveLength(1);
+    const afterResolution = await incidents(layer);
+    expect(afterResolution).toHaveLength(1);
+    expect(afterResolution[0]).toMatchObject({ status: "resolved" });
+    const resolvedAt = afterResolution[0].resolvedAt;
+
+    const redelivery = await ingestSignal({
+      source: githubSource,
+      store,
+      ...githubContext(success, "check_suite", "github-success-redelivery"),
+      nonceCache: new DeliveryNonceCache(),
+    });
+    expect(redelivery).toMatchObject({ status: 200, recoveryResolved: false });
+    expect(store._tasks).toHaveLength(1);
+    expect(await incidents(layer)).toEqual(expect.arrayContaining([expect.objectContaining({ status: "resolved", resolvedAt })]));
+    expect(await incidents(layer)).toHaveLength(1);
+
+    const cold = await ingestSignal({
+      source: githubSource,
+      store,
+      ...githubContext(githubPayload("workflow_run", "success"), "workflow_run", "github-cold-green"),
+      nonceCache: new DeliveryNonceCache(),
+    });
+    expect(cold).toMatchObject({ status: 200, recoveryResolved: false });
+    expect(store._tasks).toHaveLength(1);
+    expect(await incidents(layer)).toHaveLength(1);
+
+    const reopened = await ingestSignal({
+      source: githubSource,
+      store,
+      ...githubContext(failure, "check_suite", "github-failure-reopen"),
+      nonceCache: new DeliveryNonceCache(),
+    });
+    expect(reopened.status).toBe(201);
+    expect(store._tasks).toHaveLength(2);
+    expect(await incidents(layer)).toHaveLength(2);
+  });
+
+  it("routes all supported GitHub event kinds through the production ingestion seam", async () => {
+    for (const kind of ["check_suite", "workflow_run", "status"] as const) {
+      const { layer, store } = await makeDbStore();
+      const result = await ingestSignal({
+        source: githubSource,
+        store,
+        ...githubContext(githubPayload(kind, "failure"), kind, `github-${kind}-failure`),
+        nonceCache: new DeliveryNonceCache(),
+      });
+      expect(result.status).toBe(201);
+      expect(store._tasks).toHaveLength(1);
+      expect(await incidents(layer)).toMatchObject([expect.objectContaining({ source: "github", severity: "error", status: "open" })]);
+    }
+  });
+
+  it("rejects GitHub auth failures and accepts pending or ping as non-actionable", async () => {
+    const payload = githubPayload("check_suite", "failure");
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const missingSignature = await ingestSignal({ source: githubSource, store: makeStore(), rawBody, headers: { "x-github-event": "check_suite" }, body: payload, nonceCache: new DeliveryNonceCache() });
+    expect(missingSignature.status).toBe(401);
+    delete process.env.FUSION_SIGNAL_GITHUB_SECRET;
+    const missingSecret = await ingestSignal({ source: githubSource, store: makeStore(), ...githubContext(payload, "check_suite", "missing-secret"), nonceCache: new DeliveryNonceCache() });
+    expect(missingSecret.status).toBe(401);
+    process.env.FUSION_SIGNAL_GITHUB_SECRET = SECRETS.FUSION_SIGNAL_GITHUB_SECRET;
+
+    const store = makeStore();
+    const pending = { repository: { full_name: "org/repo" }, state: "pending", context: "build", sha: "abc123" };
+    expect((await ingestSignal({ source: githubSource, store, ...githubContext(pending, "status", "github-pending"), nonceCache: new DeliveryNonceCache() })).status).toBe(200);
+    const ping = { repository: { full_name: "org/repo" }, state: "failure", context: "build", sha: "abc123" };
+    expect((await ingestSignal({ source: githubSource, store, ...githubContext(ping, "ping", "github-ping"), nonceCache: new DeliveryNonceCache() })).status).toBe(200);
+    expect(store._tasks).toHaveLength(0);
+  });
+});
+
 pgDescribe("ingestSignal — incident capture", () => {
   it("writes source and normalized severity for all configured providers", async () => {
     const cases = [
@@ -923,6 +1050,7 @@ pgDescribe("helpers", () => {
       FUSION_SIGNAL_PAGERDUTY_SECRET: "pd",
       FUSION_SIGNAL_GITLAB_SECRET: "gl",
     })).toEqual(["webhook", "pagerduty", "gitlab"]);
+    expect(resolveConfiguredSignalProviders({ FUSION_SIGNAL_GITHUB_SECRET: "gh" })).toEqual(["github"]);
   });
 
   it("signalToTaskInput omits column so the store resolves the default-workflow intake (triage)", () => {
