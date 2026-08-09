@@ -1633,20 +1633,28 @@ export interface ProjectSettings {
    *  re-introduce code that an earlier sibling task already deleted.
    *  Default: true. */
   worktreeRebaseLocalBase?: boolean;
-  /** Master switch for pre-merge auto-prerebase policy. When false, merger
-   *  bypasses hot-file and divergence-threshold prerebase triggers.
-   *  Default: true. */
+  /*
+   * FNXC:MergerUnification 2026-08-09-12:04:
+   * Master-plan U0 made runAiMerge the sole production merge path. These fields
+   * remain published surface to avoid a breaking @runfusion/fusion type change.
+   */
+  /**
+   * @deprecated Inert under master-plan U0; consumed only by soft-deprecated
+   * aiMergeTask. Retained as published surface. Legacy full opt-out switch.
+   * Default: true.
+   */
   prerebaseAutoEnabled?: boolean;
-  /** Shared-infrastructure file paths that trigger pre-merge auto-prerebase
-   *  when they changed between `<task.baseCommitSha>` and local main HEAD.
-   *  Empty array disables hot-file triggering.
-   *  Default: curated project hot-file list. */
+  /**
+   * @deprecated Inert under master-plan U0; consumed only by soft-deprecated
+   * aiMergeTask. Retained as published surface. Legacy hot-file trigger list.
+   * Default: curated project hot-file list.
+   */
   prerebaseHotFiles?: string[];
-  /** Commit-count threshold for pre-merge auto-prerebase. When the commit
-   *  count of `<task.baseCommitSha>..localMainHead` exceeds this value, the
-   *  merger auto-prerebases regardless of hot-file overlap.
-   *  Set to 0 or undefined to disable count-based triggering.
-   *  Default: 50. */
+  /**
+   * @deprecated Inert under master-plan U0; consumed only by soft-deprecated
+   * aiMergeTask. Retained as published surface. Legacy divergence trigger.
+   * Default: 50.
+   */
   prerebaseDivergenceThreshold?: number;
   /** Strategy used when a merge conflict can't be resolved by AI. See
    *  {@link MergeConflictStrategy}. Default: "smart". */

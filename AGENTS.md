@@ -251,7 +251,7 @@ Use `superviseSpawn(...)` from `@fusion/core` for managed child processes; do no
 7. **Enforce pre-commit diff-volume gate.** Block suspicious shrinkage before squash commit.
 8. **Smart-prefer-main overlap guard.** Recent overlapping main commits can flip to prefer-branch.
 9. **Layer-3 scope partition.** Out-of-scope conflicts resolve to main before AI arbitration unless `task.scopeOverride=true`.
-10. **Auto-prerebase on divergence/hot files.** Fail-soft and continue normal conflict stack.
+10. **Legacy auto-prerebase is inert.** It belonged to the soft-deprecated `aiMergeTask` pipeline; unified `runAiMerge` does not use it.
 
 ### Gitignored-path guard on squash merges
 
