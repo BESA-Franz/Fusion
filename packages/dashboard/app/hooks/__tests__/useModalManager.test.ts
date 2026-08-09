@@ -469,6 +469,48 @@ describe("useModalManager", () => {
     expect(result.current.detailTask?.title).toBe("renamed");
   });
 
+  it("applies equal-clock derived and clock-less lifecycle detail patches", () => {
+    const task = createTaskDetail("FN-LOCAL");
+    const { result } = renderHook(() => useModalManager({ projectId: "proj_1", planningSessions: [] }));
+    act(() => { result.current.openDetailTask(task); });
+
+    act(() => {
+      result.current.updateDetailTask({ ...task, prInfo: { number: 42 } } as Partial<TaskDetail>);
+      result.current.updateDetailTask({ column: "done", status: "completed" });
+    });
+
+    expect(result.current.detailTask).toMatchObject({ column: "done", status: "completed", prInfo: { number: 42 } });
+  });
+
+  it("keeps lifecycle state for a present strictly older local patch", () => {
+    const task = { ...createTaskDetail("FN-STALE"), updatedAt: "2026-08-09T10:00:00.000Z", columnMovedAt: "2026-08-09T10:00:00.000Z", status: "executing" };
+    const { result } = renderHook(() => useModalManager({ projectId: "proj_1", planningSessions: [] }));
+    act(() => { result.current.openDetailTask(task); });
+    act(() => {
+      result.current.updateDetailTask({
+        title: "Fresh local metadata",
+        column: "done",
+        columnMovedAt: "2026-08-09T09:00:00.000Z",
+        status: "completed",
+        updatedAt: "2026-08-09T09:00:00.000Z",
+      });
+    });
+
+    expect(result.current.detailTask).toMatchObject({
+      title: "Fresh local metadata",
+      column: "todo",
+      columnMovedAt: task.columnMovedAt,
+      status: "executing",
+      updatedAt: task.updatedAt,
+    });
+  });
+
+  it("ignores a detail patch safely before a task is open", () => {
+    const { result } = renderHook(() => useModalManager({ projectId: "proj_1", planningSessions: [] }));
+    act(() => { result.current.updateDetailTask({ title: "No detail" }); });
+    expect(result.current.detailTask).toBeNull();
+  });
+
   it("tracks a target workflow id for normal workflow editor opens and resets it on close", () => {
     const { result } = renderHook(() =>
       useModalManager({ projectId: "proj_1", planningSessions: [] }),

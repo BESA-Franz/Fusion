@@ -4,7 +4,7 @@ import type { Task, TaskDetail } from "@fusion/core";
 import type { SectionId } from "../components/SettingsModal";
 import type { ToastType } from "./useToast";
 import { removeScopedItem } from "../utils/projectStorage";
-import { mergeTaskSnapshot } from "./useTasks";
+import { applyLocalTaskPatch } from "./useTasks";
 
 /*
 FNXC:TaskDetailActivity 2026-06-30-22:15:
@@ -390,13 +390,16 @@ export function useModalManager(options: UseModalManagerOptions): ModalManager {
     setDetailTaskInitialAction(null);
     setDetailTaskOrigin(null);
   }, []);
+  /*
+  FNXC:TaskDetailStateStability 2026-08-09-07:13:
+  This callback receives locally-authored patches from the open detail view, not competing server
+  snapshots. FN-5148 pins the id rule: reject an explicit foreign id but accept an absent id; FN-8796
+  must not turn absent/equal local clocks into stale evidence. AppModals owns live board/SSE arbitration.
+  */
   const updateDetailTask = useCallback((updated: Partial<TaskDetail>) => {
     setDetailTask((prev) => {
-      if (!prev) return prev;
-      if (updated.id !== undefined && updated.id !== prev.id) {
-        return prev;
-      }
-      return mergeTaskSnapshot(prev, updated as Task);
+      if (!prev || (updated.id !== undefined && updated.id !== prev.id)) return prev;
+      return applyLocalTaskPatch(prev, { ...updated, id: prev.id });
     });
   }, []);
   const closeDetailTask = useCallback(() => {

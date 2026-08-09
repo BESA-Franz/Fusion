@@ -8,7 +8,7 @@ import { Board } from "../Board";
 import { TaskCard } from "../TaskCard";
 import { ListView } from "../ListView";
 import { TaskDetailContent } from "../TaskDetailModal";
-import { mergeTaskSnapshot } from "../../hooks/useTasks";
+import { applyLocalTaskPatch, mergeTaskSnapshot } from "../../hooks/useTasks";
 import { ProjectOverview } from "../ProjectOverview";
 import { MissionManager } from "../MissionManager";
 import { MailboxView } from "../MailboxView";
@@ -937,8 +937,8 @@ export function MainContent({
               onRequestClose={closeTaskDetailMainPanel}
               onTaskUpdated={(updatedTask) => {
                 setMainPanelDetailTask((previous) => {
-                  if (!previous || previous.id !== updatedTask.id) return previous;
-                  return mergeTaskSnapshot(previous, updatedTask);
+                  if (!previous || (updatedTask.id !== undefined && updatedTask.id !== previous.id)) return previous;
+                  return applyLocalTaskPatch(previous, { ...updatedTask, id: previous.id });
                 });
               }}
               addToast={addToast}
