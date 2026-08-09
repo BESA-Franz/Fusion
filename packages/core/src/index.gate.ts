@@ -1020,6 +1020,7 @@ export {
   isTaskReadyForMerge,
   allowsAutoMergeProcessing,
   hasSharedBranchMemberAutoMergeHold,
+  hasPreMergeRemediationAutoMergeHold,
   hasUserAutoMergeHold,
   isSharedBranchGroupMemberIntegration,
   isLiveSharedBranchGroupMemberIntegration,

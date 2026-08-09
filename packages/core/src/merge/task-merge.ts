@@ -126,6 +126,24 @@ export function hasUserAutoMergeHold(
 }
 
 /**
+ * FNXC:SharedBranchMemberHold 2026-08-09-06:11:
+ * FN-8863 narrows FN-8823's project-Off consent rule to shared members at
+ * pre-merge remediation seams. Applying it to standalone tasks disabled Plan
+ * Review replans, required-artifact recovery, provider-failure diagnostics,
+ * and Code Review fix handoffs in every auto-merge-Off project. Remediation
+ * reopens implementation rather than merging, so standalone tasks are fenced
+ * only by an operator-authored task-level Off.
+ */
+export function hasPreMergeRemediationAutoMergeHold(
+  task: Pick<Task, "autoMerge" | "autoMergeProvenance" | "branchContext">,
+  settings: Pick<Settings, "autoMerge">,
+): boolean {
+  return isSharedBranchGroupMemberIntegration(task)
+    ? hasSharedBranchMemberAutoMergeHold(task, settings)
+    : hasUserAutoMergeHold(task);
+}
+
+/**
  * Gate for auto-merge *processing* (engine enqueue + self-healing sweeps).
  * Additive relative to the global setting: when `settings.autoMerge` is on,
  * every task flows through — tasks with an explicit `autoMerge: false` are

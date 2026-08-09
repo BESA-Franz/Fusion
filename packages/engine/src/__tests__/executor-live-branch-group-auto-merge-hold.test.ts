@@ -135,6 +135,33 @@ describe("executor shared-branch autoMerge:false liveness gates", () => {
     )).resolves.toBe(true);
   });
 
+  it("holds an unset shared member at both pre-merge remediation seams when project auto-merge is Off", async () => {
+    const { executor, store } = makeExecutor({ status: "open", branchName: "mission/M-1980" });
+    const task = makeInReviewTask({
+      workflowStepResults: [{
+        workflowStepId: "code-review",
+        workflowStepName: "Code Review",
+        phase: "pre-merge",
+        status: "failed",
+        output: "Please revise",
+      }],
+    });
+    store.getTask.mockResolvedValue(task);
+    const sendBack = vi.spyOn(executor as any, "sendTaskBackForFix");
+
+    await expect((executor as any).requestPreMergeOptionalStepFix(task.id, task, {
+      stepName: "Code Review",
+      feedback: "Please revise",
+      phase: "pre-merge",
+      status: "failed",
+      verdict: "REVISE",
+      nodeId: "code-review",
+    })).resolves.toBe(false);
+    await expect(executor.recoverFailedPreMergeWorkflowStep(task)).resolves.toBe(false);
+
+    expect(sendBack).not.toHaveBeenCalled();
+  });
+
   it("does not let live pre-merge remediation reopen an operator-held member", async () => {
     const { executor, store } = makeExecutor({ status: "open", branchName: "mission/M-1980" });
     const task = makeInReviewTask({ autoMerge: false, autoMergeProvenance: "user" });

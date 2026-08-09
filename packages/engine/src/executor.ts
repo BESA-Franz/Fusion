@@ -16,7 +16,7 @@ import { DEFAULT_PROVIDER_INSTANCE_ID, type ProviderInstanceRef, type TaskStore,
 import { getUnmetSchedulingDependencies } from "./scheduler.js";
 import type { ImplementationExit, ImplementationExitReporter } from "./executor/implementation-exit.js";
 import { emitWorkflowLifecycleEvent } from "@fusion/core";
-import { resolveTaskLifecycleColumns, resolveProjectColumnsForRoles, resolveWipTargetForTask, resolveTerminalColumns, RetryStormError, serializeRetryStormError, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, resolveWorkflowIrForTask, columnsWithFlag, evaluateForeachMergeProof, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveReboundTarget, resolveLifecycleColumns, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, isLiveSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveMaxConsecutiveToolFailureRetries, resolveConsecutiveToolFailureRetryBackoffMs, resolveConsecutiveToolFailureThreshold, resolveExecutorEscalationTarget, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, DEFAULT_MAX_POST_REVIEW_FIXES, COMPLETION_SUMMARY_NODE_ID, PLAN_REVIEW_GROUP_ID, upsertWorkflowStepResult, normalizeWorkflowReviewFindings, AWAITING_APPROVAL_PAUSE_REASON, THINKING_LEVELS, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AgentStore, classifyWorkflowAgentNode, isWorkflowAgentRole, resolveExecutorFallbackModel, resolveValidatorFallbackModel, resolveExplicitDuplicateMarker, nonExecutableDuplicateRedirectReason } from "@fusion/core";
+import { resolveTaskLifecycleColumns, resolveProjectColumnsForRoles, resolveWipTargetForTask, resolveTerminalColumns, RetryStormError, serializeRetryStormError, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, resolveWorkflowIrForTask, columnsWithFlag, evaluateForeachMergeProof, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveReboundTarget, resolveLifecycleColumns, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, hasPreMergeRemediationAutoMergeHold, resolveEffectiveAutoMerge, isLiveSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveMaxConsecutiveToolFailureRetries, resolveConsecutiveToolFailureRetryBackoffMs, resolveConsecutiveToolFailureThreshold, resolveExecutorEscalationTarget, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, DEFAULT_MAX_POST_REVIEW_FIXES, COMPLETION_SUMMARY_NODE_ID, PLAN_REVIEW_GROUP_ID, upsertWorkflowStepResult, normalizeWorkflowReviewFindings, AWAITING_APPROVAL_PAUSE_REASON, THINKING_LEVELS, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AgentStore, classifyWorkflowAgentNode, isWorkflowAgentRole, resolveExecutorFallbackModel, resolveValidatorFallbackModel, resolveExplicitDuplicateMarker, nonExecutableDuplicateRedirectReason } from "@fusion/core";
 import {
   BLOCKED_THRASH_LIMIT,
   buildExternalBlockMetadataPatch,
@@ -5993,8 +5993,13 @@ export class TaskExecutor {
      * an auto-merge admission preference. Pre-merge remediation must not reopen
      * implementation and thereby bypass that checkpoint before the operator
      * releases or revises the held member.
+     *
+     * FNXC:SharedBranchMemberHold 2026-08-09-06:11:
+     * FN-8863 confines FN-8823's project-Off consent arm to shared members at
+     * this remediation seam. Standalone remediation reopens implementation,
+     * not a merge, so only an operator-authored task Off holds it.
      */
-    if (hasSharedBranchMemberAutoMergeHold(liveTask, await this.store.getSettings())) return false;
+    if (hasPreMergeRemediationAutoMergeHold(liveTask, await this.store.getSettings())) return false;
     const missingArtifactKeys = parseRequiredArtifactMissingValue(info.failureValue);
     if (missingArtifactKeys) {
       await this.recoverMissingRequiredArtifacts(liveTask, missingArtifactKeys, {
@@ -6319,8 +6324,13 @@ export class TaskExecutor {
        * Startup/self-healing recovery is another pre-merge remediation requester.
        * Do not let it send a user-held member back to execution: only an explicit
        * operator release or revision may advance that manual checkpoint.
+       *
+       * FNXC:SharedBranchMemberHold 2026-08-09-06:11:
+       * FN-8863 keeps the project-Off consent hold for shared members while
+       * allowing standalone failed-step recovery unless the operator authored a
+       * task-level Off; recovery reopens implementation and never merges.
        */
-      if (hasSharedBranchMemberAutoMergeHold(task, await this.store.getSettings())) return false;
+      if (hasPreMergeRemediationAutoMergeHold(task, await this.store.getSettings())) return false;
       /*
       FNXC:WorkflowPostMerge 2026-06-26-14:00:
       U7c: gate-ness is now sourced from the recorded `WorkflowStepResult.status`, NOT a
