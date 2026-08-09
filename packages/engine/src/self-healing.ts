@@ -14740,56 +14740,81 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
    * A planning anchor is safe because triage ownership and graph Plan Review are
    * exclusive. Recovery finalizes only when neither in-process owner is live;
    * the atomic null-check makes restart and repeated maintenance idempotent.
+   *
+   * FNXC:TaskTiming 2026-08-09-20:34:
+   * listTasks merges archive cold-storage snapshots by default. Those snapshots
+   * retain planningStartedAt but carry no deletedAt, while their tombstoned live
+   * rows are refused by updateTaskAtomic and getTask. Enumerate live rows only;
+   * a deletedAt filter alone could not contain this archive path. Per-task and
+   * sweep guards ensure one race or poisoned row cannot disable finalization
+   * store-wide during startup or maintenance (Runfusion/Fusion#3386).
    */
   async finalizeOrphanedPlanningSegments(): Promise<number> {
-    const planningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
-    const tasks = await this.store.listTasks({});
     let finalized = 0;
-    for (const task of tasks) {
-      if (!task.planningStartedAt || planningIds.has(task.id) || this.options.hasActivePlanningWorkflowSession?.(task.id)) continue;
-      let applied = false;
-      const endMs = Date.now();
-      if (typeof this.store.updateTaskAtomic === "function") {
-        await this.store.updateTaskAtomic(task.id, (live) => {
-          if (!live.planningStartedAt || planningIds.has(live.id) || this.options.hasActivePlanningWorkflowSession?.(live.id)) return null;
-          const patch = finalizePlanningSegment(live, endMs);
-          applied = patch.planningStartedAt === null;
-          return patch;
-        });
-      } else {
-        const live = await this.store.getTask(task.id);
-        if (live?.planningStartedAt && !planningIds.has(live.id) && !this.options.hasActivePlanningWorkflowSession?.(live.id)) {
-          const patch = finalizePlanningSegment(live, endMs);
-          if (patch.planningStartedAt === null) { await this.store.updateTask(task.id, patch); applied = true; }
+    try {
+      const planningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
+      const tasks = await this.store.listTasks({ slim: true, includeArchived: false });
+      for (const task of tasks) {
+        try {
+          // Defense-in-depth for legacy/custom stores; archive snapshots require
+          // includeArchived: false above because they deliberately omit deletedAt.
+          if (
+            task.deletedAt ||
+            !task.planningStartedAt ||
+            planningIds.has(task.id) ||
+            this.options.hasActivePlanningWorkflowSession?.(task.id)
+          ) continue;
+          let applied = false;
+          const endMs = Date.now();
+          if (typeof this.store.updateTaskAtomic === "function") {
+            await this.store.updateTaskAtomic(task.id, (live) => {
+              if (!live.planningStartedAt || planningIds.has(live.id) || this.options.hasActivePlanningWorkflowSession?.(live.id)) return null;
+              const patch = finalizePlanningSegment(live, endMs);
+              applied = patch.planningStartedAt === null;
+              return patch;
+            });
+          } else {
+            const live = await this.store.getTask(task.id);
+            if (live?.planningStartedAt && !planningIds.has(live.id) && !this.options.hasActivePlanningWorkflowSession?.(live.id)) {
+              const patch = finalizePlanningSegment(live, endMs);
+              if (patch.planningStartedAt === null) { await this.store.updateTask(task.id, patch); applied = true; }
+            }
+          }
+          if (!applied) continue;
+          finalized++;
+          // FNXC:TaskTiming 2026-07-30-21:40: this recovery is operator-auditable
+          // without persisting duration prose; the atomically finalized task id
+          // and fixed no-live-owner reason are sufficient forensic evidence.
+          await this.store.recordRunAuditEvent?.({
+            taskId: task.id,
+            agentId: "self-healing",
+            runId: generateSyntheticRunId("orphaned-planning-segment", task.id),
+            domain: "database",
+            mutationType: "task:reconcile-orphaned-planning-segment",
+            target: task.id,
+            metadata: { taskId: task.id, finalizedCount: 1, reason: "no-live-planning-owner" },
+          });
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          log.warn(`Failed to finalize orphaned planning segment for ${task.id}: ${errorMessage}`);
         }
       }
-      if (applied) {
-        finalized++;
-        // FNXC:TaskTiming 2026-07-30-21:40: this recovery is operator-auditable
-        // without persisting duration prose; the atomically finalized task id
-        // and fixed no-live-owner reason are sufficient forensic evidence.
+      if (finalized === 0) {
         await this.store.recordRunAuditEvent?.({
-          taskId: task.id,
           agentId: "self-healing",
-          runId: generateSyntheticRunId("orphaned-planning-segment", task.id),
+          runId: generateSyntheticRunId("orphaned-planning-segment", "global"),
           domain: "database",
-          mutationType: "task:reconcile-orphaned-planning-segment",
-          target: task.id,
-          metadata: { taskId: task.id, finalizedCount: 1, reason: "no-live-planning-owner" },
+          mutationType: "task:reconcile-orphaned-planning-segment-no-action",
+          target: "planning-segments",
+          metadata: { finalizedCount: 0, reason: "no-eligible-orphan" },
         });
       }
+      return finalized;
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      log.error(`Orphaned planning segment finalization failed: ${errorMessage}`);
+      return finalized;
     }
-    if (finalized === 0) {
-      await this.store.recordRunAuditEvent?.({
-        agentId: "self-healing",
-        runId: generateSyntheticRunId("orphaned-planning-segment", "global"),
-        domain: "database",
-        mutationType: "task:reconcile-orphaned-planning-segment-no-action",
-        target: "planning-segments",
-        metadata: { finalizedCount: 0, reason: "no-eligible-orphan" },
-      });
-    }
-    return finalized;
   }
 
   async recoverOrphanedPlanningTasks(): Promise<number> {
