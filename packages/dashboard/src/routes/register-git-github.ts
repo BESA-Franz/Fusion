@@ -2349,6 +2349,10 @@ export async function mergeTaskPr(
   const method = resolvePrMergeMethod(settings, task.prInfo, explicitMethod);
   const client = new GitHubClient(token);
   const requiredCheckNames = resolveRequiredCheckNames(settings);
+  /*
+  FNXC:DashboardPrMergeGate 2026-08-09-15:43:
+  The pre-flight getPrMergeStatus call runs before mergePr and fails closed with an unstructured 409 when readiness or the checked head SHA is absent. After mergePr fails, the catch block performs a distinct second refresh whose classifyGhError diagnosis owns the structured 422/502 and merged-reconciliation contract. Tests must sequence mockResolvedValueOnce calls for both stages: a blanket mock is consumed by pre-flight and hides post-failure diagnosis, the FN-8855 regression that left this suite red.
+  */
   const mergeStatus = await client.getPrMergeStatus(repo.owner, repo.repo, task.prInfo.number, { requiredCheckNames });
   const nativeAutoMerge = settings.githubNativeAutoMerge === true;
   if (!nativeAutoMerge && !mergeStatus.mergeReady) {
@@ -2358,12 +2362,6 @@ export async function mergeTaskPr(
     throw conflict("PR cannot merge: GitHub did not provide a head commit ID for the checked PR");
   }
 
-  /*
-  FNXC:DashboardPrMergeGate 2026-08-09-08:26:
-  A dashboard-requested merge must apply the same configured check policy as automatic
-  merging, then bind GitHub's merge operation to the checked head SHA. This prevents a
-  push after readiness evaluation from merging an unchecked revision without branch protection.
-  */
   try {
     const mergedPrInfo = await client.mergePr({
       owner: repo.owner,
