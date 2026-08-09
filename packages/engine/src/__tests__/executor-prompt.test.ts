@@ -3011,3 +3011,70 @@ describe("executor base prompt runtime self-awareness", () => {
     expect(layers.dynamic).not.toContain(FUSION_RUNTIME_SELF_AWARENESS);
   });
 });
+
+describe("completion recommendation prompt contract", () => {
+  it.each([
+    ["built-in default", { agentPrompts: undefined }],
+    ["custom executor prompt", {
+      agentPrompts: {
+        templates: [{ id: "custom-executor", name: "Custom", role: "executor", prompt: "Operator custom executor prompt.", builtIn: false }],
+        roleAssignments: { executor: "custom-executor" },
+      },
+    }],
+  ])("appends populated and empty completion guidance for %s", async (_label, settings) => {
+    const { getExecutorSystemPrompt } = await import("../executor.js");
+    const prompt = getExecutorSystemPrompt({ ...settings, maxRecommendationsPerTask: 2 } as any);
+
+    expect(prompt).toContain("at most 2 task-ready recommendations");
+    expect(prompt).toContain("recommendations: []");
+    expect(prompt).toContain('id: "follow-up-export"');
+    expect(prompt).toContain('outcome="blocked"');
+    expect(prompt).not.toContain("Out-of-scope work found during execution");
+  });
+
+  it("uses the default cap when unset and disables every recommendation request at cap zero", async () => {
+    const { getExecutorSystemPrompt } = await import("../executor.js");
+    const defaultPrompt = getExecutorSystemPrompt({ agentPrompts: undefined } as any);
+    expect(defaultPrompt).toContain("at most 3 task-ready recommendations");
+
+    const disabledPrompt = getExecutorSystemPrompt({ agentPrompts: undefined, maxRecommendationsPerTask: 0 } as any);
+    expect(disabledPrompt).toContain("Recommendation capture is disabled");
+    expect(disabledPrompt).toContain("Ignore any earlier generic recommendation guidance");
+    expect(disabledPrompt).not.toContain("at most 0 task-ready recommendations");
+    expect(disabledPrompt).toContain("When recommendation capture is enabled, at the final accepted");
+
+    const customDisabledPrompt = getExecutorSystemPrompt({
+      maxRecommendationsPerTask: 0,
+      agentPrompts: {
+        templates: [{ id: "stale-custom-executor", name: "Custom", role: "executor", prompt: "Always send recommendations.", builtIn: false }],
+        roleAssignments: { executor: "stale-custom-executor" },
+      },
+    } as any);
+    expect(customDisabledPrompt).toContain("Always send recommendations.");
+    expect(customDisabledPrompt).toMatch(/Always send recommendations\.[\s\S]*Ignore any earlier generic recommendation guidance/);
+  });
+
+  it.each([
+    ["only task creation is withheld", { taskCreateWithheld: true }],
+    ["only delegation is withheld", { delegateWithheld: true }],
+    ["task creation and delegation are withheld", { taskCreateWithheld: true, delegateWithheld: true }],
+  ])("keeps enabled recommendation guidance available when %s", async (_label, availability) => {
+    const { getExecutorSystemPrompt } = await import("../executor.js");
+    const prompt = getExecutorSystemPrompt({ agentPrompts: undefined, maxRecommendationsPerTask: 3 } as any, availability);
+
+    expect(prompt).toContain("Follow-up task creation is disabled for this session");
+    expect(prompt).toContain("completion recommendation route");
+    expect(prompt).toContain("at most 3 task-ready recommendations");
+  });
+
+  it("does not present recommendations as an available fallback when capture is disabled and creation is withheld", async () => {
+    const { getExecutorSystemPrompt } = await import("../executor.js");
+    const prompt = getExecutorSystemPrompt(
+      { agentPrompts: undefined, maxRecommendationsPerTask: 0 } as any,
+      { taskCreateWithheld: true, delegateWithheld: true },
+    );
+
+    expect(prompt).toContain("Recommendation capture is disabled, so retain non-blocking context");
+    expect(prompt).not.toContain("use the available completion recommendation route");
+  });
+});

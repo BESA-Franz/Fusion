@@ -1559,8 +1559,15 @@ This path exists specifically to prevent the executor from looping when PROMPT.m
 
 **Logging important actions:** \`fn_task_log(message="what happened")\`
 
-**Out-of-scope work found during execution:** \`fn_task_create(description="what needs doing")\`
-When creating multiple related tasks, declare dependencies between them:
+/*
+FNXC:TaskRecommendations 2026-08-09-04:06:
+FN-8850 requires optional, non-blocking discoveries to be captured only at the explicit accepted
+completion boundary. Immediate task creation remains for required dependency coordination or an
+operator-directed filing, while workflow step sessions remain unable to write recommendations.
+*/
+**Out-of-scope findings at completion:** Do not automatically create a task for optional, non-blocking work discovered outside this task. When recommendation capture is enabled, at the final accepted \`fn_task_done(outcome="completed")\` checkpoint evaluate genuine task-ready follow-ups and send \`recommendations\` (or \`recommendations: []\` when none qualify). Each recommendation needs a stable unique \`id\`, \`title\`, \`description\`, and \`category\`; never use it for a required current-task fix, blocker, secret, executable command, reasoning transcript, or filler.
+
+Use \`fn_task_create\` or \`fn_delegate_task\` only when the task explicitly requires immediate filing, necessary dependency coordination, or the operator directs it. When creating multiple related tasks, declare dependencies between them:
 \`fn_task_create(description="load door sounds", dependencies=[])\` → returns KB-050
 \`fn_task_create(description="play sound on door open/close", dependencies=["KB-050"])\`
 
@@ -1734,12 +1741,31 @@ policy rather than malfunction. It is appended last so it wins over the base tex
 applies to a custom operator prompt too (an operator who overrode the prompt still gets a
 truthful statement of what this session may do).
 */
-function getWithheldTaskCreationGuidance(taskCreateWithheld: boolean, delegateWithheld: boolean): string {
+function getCompletionRecommendationGuidance(maximum: number): string {
+  /*
+  FNXC:TaskRecommendations 2026-08-09-04:06:
+  Engine-appended guidance preserves the accepted-completion recommendation contract even when an
+  operator customizes the executor prompt. A disabled cap must not invite unavailable writes.
+  */
+  if (maximum === 0) {
+    return `## Completion recommendations
+
+Recommendation capture is disabled for this project (maxRecommendationsPerTask is 0). Ignore any earlier generic recommendation guidance: do not send recommendations, including \`recommendations: []\`; use an honest summary or task log for non-blocking context, and do not fabricate a finding.`;
+  }
+  return `## Completion recommendations
+
+At the final accepted \`fn_task_done(outcome="completed")\` checkpoint, evaluate optional, non-blocking work discovered outside this task. Send at most ${maximum} task-ready recommendations, each with a stable unique \`id\`, \`title\`, \`description\`, and \`category\`, or explicitly send \`recommendations: []\` when none genuinely qualify. Example populated payload: \`recommendations: [{ id: "follow-up-export", title: "Add task export", description: "Provide a CSV export for completed tasks.", category: "feature" }]\`. Do not fabricate filler or include required current-task work, blockers, secrets, executable commands, reasoning, or duplicate ids. Recommendations are only for completed outcomes; never send them with \`outcome="blocked"\`. Use immediate task creation/delegation only for an explicit task requirement, necessary dependency coordination, or operator direction.`;
+}
+
+function getWithheldTaskCreationGuidance(taskCreateWithheld: boolean, delegateWithheld: boolean, maximum: number): string {
   if (!taskCreateWithheld && !delegateWithheld) return "";
   const withheld = [
     ...(taskCreateWithheld ? ["`fn_task_create`"] : []),
     ...(delegateWithheld ? ["`fn_delegate_task`"] : []),
   ].join(" and ");
+  const recommendationRoute = maximum > 0
+    ? `For optional, non-blocking discoveries, use the available completion recommendation route at accepted completion (or \`recommendations: []\` if none qualify).`
+    : "Recommendation capture is disabled, so retain non-blocking context in an honest task log or completion summary without inventing a follow-up.";
   return `## Follow-up task creation is disabled for this session
 
 This project's "Ephemeral agent follow-up tasks" policy withholds ${withheld}. ${
@@ -1748,7 +1774,7 @@ This project's "Ephemeral agent follow-up tasks" policy withholds ${withheld}. $
     taskCreateWithheld && delegateWithheld ? "them" : "it"
   }, and do not retry.
 
-Ignore any instruction above that tells you to file follow-up work with ${withheld}. When you find out-of-scope work, record it instead with \`fn_task_log(message="follow-up: ...")\` and include it in your \`fn_task_done\` summary so the operator sees it. If the work genuinely blocks this task, use \`fn_task_done(outcome="blocked", reason="...")\` rather than trying to create a task for it.`;
+Ignore any instruction above that tells you to file follow-up work with ${withheld}. ${recommendationRoute} If the work genuinely blocks this task, use \`fn_task_done(outcome="blocked", reason="...")\` rather than trying to create a task for it.`;
 }
 
 /** Resolve the executor system prompt from settings, falling back to the hardcoded constant. */
@@ -1758,12 +1784,15 @@ export function getExecutorSystemPrompt(
 ): string {
   const customPrompt = resolveAgentPrompt("executor", settings.agentPrompts);
   const basePrompt = customPrompt || EXECUTOR_SYSTEM_PROMPT;
+  const maximumRecommendations = settings.maxRecommendationsPerTask ?? 3;
   const sections = [
     basePrompt,
     isResearchToolSurfaceEnabled(settings) ? getResearchGuidanceForSurface("executor") : "",
+    getCompletionRecommendationGuidance(maximumRecommendations),
     getWithheldTaskCreationGuidance(
       toolAvailability?.taskCreateWithheld === true,
       toolAvailability?.delegateWithheld === true,
+      maximumRecommendations,
     ),
   ].filter((section) => section.trim());
   return sections.join("\n\n");
@@ -18397,7 +18426,10 @@ export class TaskExecutor {
       description:
         "End the task. With outcome=\"completed\" (default): signal that all steps are complete, tests pass, and " +
         "documentation is updated — call as the final action after finishing all work; automatically marks all " +
-        "remaining steps as done; optionally provide a summary of what was changed/fixed. " +
+        "remaining steps as done. At this accepted final checkpoint, when recommendation capture is enabled, submit up to " +
+        "the project cap of genuine, task-ready out-of-scope recommendations with stable unique ids, or explicitly send " +
+        "recommendations: [] when none qualify; at cap 0, omit recommendations (an empty list is accepted for compatibility). " +
+        "Do not use recommendations for required fixes, blockers, secrets, commands, or reasoning. " +
         "With outcome=\"blocked\": honestly park the task when the work genuinely cannot proceed (upstream API break, " +
         "missing dependency task, unresolvable external blocker). Blocked is NOT a completion claim — it does not " +
         "trip the review/completion gates, does not auto-complete or auto-skip steps, and preserves your worktree/" +
@@ -18412,7 +18444,7 @@ export class TaskExecutor {
           title: Type.String(),
           description: Type.String(),
           category: Type.Union([Type.Literal("improvement"), Type.Literal("feature"), Type.Literal("bug"), Type.Literal("other")]),
-        }), { description: "Optional bounded out-of-scope, task-ready follow-up suggestions. Do not include mandatory fixes, secrets, commands, or execution reasoning." })),
+        }), { description: "For accepted completed outcomes when capture is enabled: submit at most the project cap of task-ready out-of-scope suggestions with unique stable ids, or [] when none qualify. At cap 0, omit this field; an empty list is accepted for compatibility but populated input is rejected. Never send for blocked/refused outcomes or include mandatory fixes, secrets, executable commands, or reasoning." })),
         /*
         FNXC:Lifecycle 2026-07-16-10:20:
         FN-8141 laundered a genuinely-impossible task into `done`: fn_task_done only expressed success, the bulk-completion

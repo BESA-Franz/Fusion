@@ -205,7 +205,8 @@ describe("executor session tool list (behavioral)", () => {
   it("tells the agent the tool is withheld by policy and what to do instead", async () => {
     const { systemPrompt } = await captureExecutorSession("deny");
     expect(systemPrompt).toContain("Follow-up task creation is disabled for this session");
-    expect(systemPrompt).toContain("fn_task_log");
+    expect(systemPrompt).toContain("completion recommendation route");
+    expect(systemPrompt).toContain("recommendations: []");
   });
 
   it("adds no withheld-tool guidance when creation is allowed", async () => {
