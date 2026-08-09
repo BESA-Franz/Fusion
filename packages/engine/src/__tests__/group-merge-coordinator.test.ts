@@ -566,6 +566,45 @@ describe("promoteBranchGroup PR creation (U5)", () => {
     baseBranch: "main",
   };
 
+  it("fails closed before PR-mode promotion mutates the project checkout when cancelled", async () => {
+    const rootDir = makePrRepo();
+    const controller = new AbortController();
+    controller.abort(new Error("promotion cancelled"));
+    let group = makeGroup();
+    const createGroupPr = vi.fn();
+
+    await expect(promoteBranchGroup({
+      rootDir,
+      groupId: group.id,
+      settings: prSettings,
+      signal: controller.signal,
+      store: makeStore(() => group, (g) => { group = g; }, [landedMember("FN-A", group.branchName)]),
+      createGroupPr,
+    })).rejects.toThrow("promotion cancelled");
+
+    expect(createGroupPr).not.toHaveBeenCalled();
+    expect(execSync("git branch --show-current", { cwd: rootDir, encoding: "utf8" }).trim()).toBe("main");
+    expect(execSync("git log --format=%s -1", { cwd: rootDir, encoding: "utf8" }).trim()).not.toBe("Merge branch 'fusion/groups/planning-x'");
+  });
+
+  it("forwards the configured integration remote to automated group PR creation", async () => {
+    const rootDir = makePrRepo();
+    let group = makeGroup();
+    let receivedRemote: string | undefined;
+    await promoteBranchGroup({
+      rootDir,
+      groupId: group.id,
+      settings: { ...prSettings, worktreeRebaseRemote: "upstream" },
+      store: makeStore(() => group, (g) => { group = g; }, [landedMember("FN-A", group.branchName)]),
+      createGroupPr: async ({ integrationRemote }) => {
+        receivedRemote = integrationRemote;
+        return { prNumber: 42, prUrl: "https://github.com/x/y/pull/42", prState: "open" };
+      },
+    });
+
+    expect(receivedRemote).toBe("upstream");
+  });
+
   it("creates exactly one PR for a complete PR-mode group and persists prNumber/prUrl/prState=open", async () => {
     const rootDir = makePrRepo();
     let group = makeGroup();
@@ -1286,6 +1325,10 @@ function createInterpreterMergeEngine(repo: string, store: any): any {
   const engine = Object.create(ProjectEngine.prototype) as any;
   engine.config = { workingDirectory: repo };
   engine.options = {};
+  // FNXC:PullRequestFreshness 2026-08-09-04:26:
+  // The production merge admission clears its deduplicated capacity reason on a
+  // successful release, so this prototype-backed engine must provide that state.
+  engine.capacityDeferredMergeReasons = new Map();
   engine.runtime = { getTaskStore: () => store, getPluginRunner: () => undefined };
   return engine;
 }

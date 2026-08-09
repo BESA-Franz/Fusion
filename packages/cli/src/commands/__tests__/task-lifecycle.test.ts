@@ -10,11 +10,32 @@ const execMock = vi.hoisted(() => vi.fn());
 const execFileCalls = vi.hoisted(
   () => [] as Array<{ file: string; args: string[]; cwd: string | undefined }>,
 );
+const refreshFixture = vi.hoisted(() => ({ next: 0, branch: "fusion/fn-9601" }));
+vi.mock("node:fs/promises", async () => {
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  return {
+    ...actual,
+    realpath: vi.fn(async (path: string) => path),
+    mkdir: vi.fn(async () => undefined),
+    mkdtemp: vi.fn(async (prefix: string) => `${prefix}${++refreshFixture.next}`),
+  };
+});
+function defaultGitOutput(command: string, cwd?: string): string {
+  if (command.includes("worktree list --porcelain")) return "";
+  if (command.includes(" config --get branch.")) return "origin\n";
+  if (command.endsWith(" remote")) return "origin\n";
+  if (command.includes("rev-parse --show-toplevel")) return cwd ?? "";
+  if (command.includes("symbolic-ref -q HEAD")) return "refs/heads/fusion/fn-9601\n";
+  if (command.includes("rev-parse HEAD")) return "1111111111111111111111111111111111111111\n";
+  if (command.includes("rev-parse --verify refs/heads/")) return "0000000000000000000000000000000000000000\n";
+  if (command.includes("ls-remote origin refs/heads/")) return "1111111111111111111111111111111111111111\trefs/heads/test\n";
+  return "";
+}
 vi.mock("node:child_process", () => ({
   exec: (cmd: string, opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
     try {
       const result = execMock(cmd, opts);
-      cb(null, typeof result === "string" ? result : "", "");
+      cb(null, typeof result === "string" && result ? result : defaultGitOutput(cmd, (opts as { cwd?: string } | undefined)?.cwd), "");
     } catch (err) {
       cb(err as Error, "", (err as Error).message);
     }
@@ -22,8 +43,17 @@ vi.mock("node:child_process", () => ({
   execFile: (file: string, args: string[] | undefined, opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
     try {
       execFileCalls.push({ file, args: args ?? [], cwd: (opts as { cwd?: string } | undefined)?.cwd });
-      const result = execMock(`${file} ${(args ?? []).join(" ")}`.trim(), opts);
-      cb(null, typeof result === "string" ? result : "", "");
+      if (file === "git" && args?.[0] === "worktree" && args[1] === "add") {
+        const ref = args.at(-1);
+        if (ref?.startsWith("refs/heads/")) refreshFixture.branch = ref.slice("refs/heads/".length);
+        else if (ref?.startsWith("fusion/")) refreshFixture.branch = ref;
+      }
+      const command = `${file} ${(args ?? []).join(" ")}`.trim();
+      const result = execMock(command, opts);
+      const output = file === "git" && args?.[0] === "symbolic-ref"
+        ? `refs/heads/${refreshFixture.branch}\n`
+        : typeof result === "string" && result ? result : defaultGitOutput(command, (opts as { cwd?: string } | undefined)?.cwd);
+      cb(null, output, "");
     } catch (err) {
       cb(err as Error, "", (err as Error).message);
     }
@@ -36,16 +66,23 @@ vi.mock("@fusion/core", async () => {
     ...actual,
     getCurrentRepo: vi.fn(() => ({ owner: "owner", repo: "repo" })),
     getPushRepo: vi.fn(() => ({ owner: "owner", repo: "repo" })),
+    acquireWorktreePathReservation: vi.fn(async (input: { canonicalPath: string }) => ({
+      canonicalPath: input.canonicalPath,
+      state: "held" as const,
+      release: vi.fn(async () => undefined),
+      quarantine: vi.fn(async () => undefined),
+    })),
   };
 });
 
-import { getCurrentRepo, getPushRepo } from "@fusion/core";
+import { acquireWorktreePathReservation, getCurrentRepo, getPushRepo } from "@fusion/core";
 import { activeSessionRegistry } from "@fusion/engine";
 import {
   cleanupMergedTaskArtifacts,
   createGroupPrCallback,
   createPrNodeGithubOps,
   processPullRequestMergeTask,
+  refreshAutomatedPrHead,
   getTaskBranchName,
   syncGroupPrCallback,
 } from "../task-lifecycle.js";
@@ -1193,6 +1230,7 @@ describe("processPullRequestMergeTask", () => {
       description: "desc",
       column: "in-review",
       worktree: "/tmp/worktree-fn-9104",
+      mergeRetries: 2,
       prInfo: {
         number: 124,
         url: "https://github.com/x/y/pull/124",
@@ -1248,11 +1286,12 @@ describe("processPullRequestMergeTask", () => {
     );
 
     expect(result).toBe("merged");
-    expect(github.mergePr).toHaveBeenCalledWith({ owner: "owner", repo: "repo", number: 124, method: "squash" });
+    expect(github.mergePr).toHaveBeenCalledWith({ owner: "owner", repo: "repo", number: 124, method: "squash", expectedHeadOid: "1111111111111111111111111111111111111111" });
     expect(github.getPrMergeStatus).toHaveBeenCalledTimes(2);
     expect(github.getPrMergeStatus).toHaveBeenNthCalledWith(1, "owner", "repo", 124);
     expect(github.getPrMergeStatus).toHaveBeenNthCalledWith(2, "owner", "repo", 124);
     expect(store.updatePrInfo).toHaveBeenLastCalledWith("FN-9104", expect.objectContaining({ status: "merged" }));
+    expect(store.updateTask).toHaveBeenCalledWith("FN-9104", { mergeRetries: 0 });
     expect(store.updateTask).toHaveBeenCalledWith("FN-9104", { status: null, mergeRetries: 0 });
     expect(store.moveTask).toHaveBeenCalledWith("FN-9104", "done");
     expect(store.logEntry).toHaveBeenCalledWith(
@@ -1319,7 +1358,7 @@ describe("processPullRequestMergeTask", () => {
       ),
     ).rejects.toThrow(mergeError.message);
 
-    expect(github.mergePr).toHaveBeenCalledWith({ owner: "owner", repo: "repo", number: 125, method: "squash" });
+    expect(github.mergePr).toHaveBeenCalledWith({ owner: "owner", repo: "repo", number: 125, method: "squash", expectedHeadOid: "1111111111111111111111111111111111111111" });
     expect(github.getPrMergeStatus).toHaveBeenCalledTimes(2);
     expect(store.updatePrInfo).not.toHaveBeenCalledWith("FN-9105", expect.objectContaining({ status: "merged" }));
     expect(store.moveTask).not.toHaveBeenCalled();
@@ -1431,7 +1470,7 @@ describe("processPullRequestMergeTask", () => {
       ),
     ).rejects.toThrow(mergeError.message);
 
-    expect(github.mergePr).toHaveBeenCalledWith({ owner: "owner", repo: "repo", number: 126, method: "squash" });
+    expect(github.mergePr).toHaveBeenCalledWith({ owner: "owner", repo: "repo", number: 126, method: "squash", expectedHeadOid: "1111111111111111111111111111111111111111" });
     expect(github.getPrMergeStatus).toHaveBeenCalledTimes(2);
     expect(store.moveTask).not.toHaveBeenCalled();
   });
@@ -1598,7 +1637,7 @@ describe("processPullRequestMergeTask", () => {
       );
 
       expect(result).toBe("merged");
-      expect(github.mergePr).toHaveBeenCalledWith({ owner: "owner", repo: "repo", number: 100, method: "squash" });
+      expect(github.mergePr).toHaveBeenCalledWith({ owner: "owner", repo: "repo", number: 100, method: "squash", expectedHeadOid: "1111111111111111111111111111111111111111" });
     });
 
     it("preserves existing behavior when requirePrApproval is false", async () => {
@@ -1862,6 +1901,46 @@ describe("createGroupPrCallback", () => {
     });
   });
 
+  it("passes the configured integration remote to the group-head refresh", async () => {
+    const github = {
+      findPrForBranch: vi.fn(async () => null),
+      createPr: vi.fn(async () => ({ number: 98, url: "https://github.com/owner/repo/pull/98", status: "open" as const })),
+    };
+
+    await createGroupPrCallback(github as never)({
+      cwd: "/repo",
+      group: group as never,
+      members,
+      headBranch: group.branchName,
+      baseBranch: "main",
+      integrationRemote: "upstream",
+    });
+
+    expect(execFileCalls).toContainEqual(expect.objectContaining({
+      file: "git",
+      args: ["fetch", "upstream", "main"],
+    }));
+  });
+
+  it("fails closed when promotion is cancelled before its refresh boundary", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("promotion cancelled"));
+    const github = {
+      findPrForBranch: vi.fn(async () => null),
+      createPr: vi.fn(),
+    };
+
+    await expect(createGroupPrCallback(github as never)({
+      cwd: "/repo",
+      group: group as never,
+      members,
+      headBranch: group.branchName,
+      baseBranch: "main",
+      signal: controller.signal,
+    })).rejects.toThrow("promotion cancelled");
+    expect(github.createPr).not.toHaveBeenCalled();
+  });
+
   it("does not reuse a closed PR from a prior group — creates a fresh one", async () => {
     // With state:"open", findPrForBranch returns null for a head whose only PR
     // is closed/merged, so the create path runs instead of resurrecting the
@@ -1967,6 +2046,160 @@ describe("createGroupPrCallback", () => {
   });
 });
 
+describe("refreshAutomatedPrHead", () => {
+  beforeEach(() => {
+    execMock.mockReset();
+    execFileCalls.length = 0;
+    vi.mocked(acquireWorktreePathReservation).mockImplementation(async (input: { canonicalPath: string }) => ({
+      canonicalPath: input.canonicalPath,
+      state: "held" as const,
+      release: vi.fn(async () => undefined),
+      quarantine: vi.fn(async () => undefined),
+    }) as never);
+  });
+
+  it("refuses a cancelled refresh before any git mutation", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("execution cancelled"));
+
+    await expect(refreshAutomatedPrHead({
+      projectRoot: "/projects/repo-a",
+      headBranch: "fusion/fn-cancelled",
+      targetBranch: "main",
+      signal: controller.signal,
+    })).rejects.toThrow("execution cancelled");
+
+    expect(execFileCalls).toEqual([]);
+  });
+
+  it("cleans a worktree created during cancellation before returning the failure", async () => {
+    refreshFixture.next = 0;
+    let addAttempted = false;
+    execMock.mockImplementation((command: string) => {
+      if (command.startsWith("git worktree add")) {
+        addAttempted = true;
+        throw new Error("The operation was aborted");
+      }
+      if (addAttempted && command === "git worktree list --porcelain") {
+        return "worktree /projects/repo-a/.worktrees/pr-refresh-49e2094e7f117641\nbranch refs/heads/fusion/fn-cancel-cleanup\n";
+      }
+      return "";
+    });
+
+    await expect(refreshAutomatedPrHead({
+      projectRoot: "/projects/repo-a",
+      headBranch: "fusion/fn-cancel-cleanup",
+      targetBranch: "main",
+    })).rejects.toThrow("no verified checkout");
+
+    expect(execFileCalls).toContainEqual(expect.objectContaining({
+      file: "git",
+      args: ["worktree", "remove", "--force", expect.stringMatching(/\/projects\/repo-a\/\.worktrees\/pr-refresh-/)],
+    }));
+  });
+
+  it("quarantines a retained temporary checkout when cleanup fails", async () => {
+    const reservation = {
+      canonicalPath: "/projects/repo-a/.worktrees/pr-refresh-test",
+      state: "held" as const,
+      release: vi.fn(async () => undefined),
+      quarantine: vi.fn(async () => undefined),
+    };
+    vi.mocked(acquireWorktreePathReservation).mockResolvedValue(reservation as never);
+    let worktreeAdded = false;
+    execMock.mockImplementation((command: string) => {
+      if (command.startsWith("git worktree add")) worktreeAdded = true;
+      if (worktreeAdded && command === "git worktree list --porcelain") {
+        return "worktree /projects/repo-a/.worktrees/pr-refresh-f7ab243dfb531960\nbranch refs/heads/fusion/fn-cleanup-failure\n";
+      }
+      if (command.startsWith("git worktree remove --force")) throw new Error("device busy");
+      return "";
+    });
+
+    await expect(refreshAutomatedPrHead({
+      projectRoot: "/projects/repo-a",
+      headBranch: "fusion/fn-cleanup-failure",
+      targetBranch: "main",
+    })).rejects.toThrow("cleanup failed");
+
+    expect(reservation.quarantine).toHaveBeenCalledWith("device busy");
+    expect(reservation.release).not.toHaveBeenCalled();
+  });
+
+  it("does not roll back a completed push when cancellation arrives after publication", async () => {
+    const controller = new AbortController();
+    let headReads = 0;
+    execMock.mockImplementation((command: string) => {
+      if (command === "git rev-parse HEAD") {
+        headReads += 1;
+        return headReads === 1
+          ? "1111111111111111111111111111111111111111\n"
+          : "2222222222222222222222222222222222222222\n";
+      }
+      if (command.startsWith("git push --force-with-lease=")) controller.abort(new Error("cancelled after push"));
+      return "";
+    });
+
+    await expect(refreshAutomatedPrHead({
+      projectRoot: "/projects/repo-a",
+      headBranch: "fusion/fn-cancel-after-push",
+      targetBranch: "main",
+      signal: controller.signal,
+    })).resolves.toEqual(expect.objectContaining({
+      headOid: "2222222222222222222222222222222222222222",
+      refreshed: true,
+    }));
+    expect(execFileCalls.some((call) => call.args[0] === "update-ref")).toBe(false);
+  });
+
+  it("uses the configured integration remote rather than falling back to origin", async () => {
+    await refreshAutomatedPrHead({
+      projectRoot: "/projects/repo-a",
+      headBranch: "fusion/fn-8838",
+      targetBranch: "main",
+      integrationRemote: "upstream",
+    });
+
+    expect(execFileCalls).toContainEqual(expect.objectContaining({
+      file: "git",
+      args: ["fetch", "upstream", "main"],
+    }));
+  });
+
+  it("materializes a remote-only head before attaching an isolated worktree", async () => {
+    let remoteHeadLookups = 0;
+    execMock.mockImplementation((command: string) => {
+      if (command === "git rev-parse HEAD") return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n";
+      if (command === "git rev-parse --verify refs/heads/fusion/fn-remote") {
+        if (remoteHeadLookups++ === 0) {
+          const missing = Object.assign(new Error("missing ref"), { code: 128 });
+          throw missing;
+        }
+        return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n";
+      }
+      if (command === "git ls-remote origin refs/heads/fusion/fn-remote") return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/fusion/fn-remote\n";
+      if (command === "git rev-parse --verify refs/heads/main") return "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n";
+      return "";
+    });
+
+    await refreshAutomatedPrHead({
+      projectRoot: "/projects/repo-a",
+      headBranch: "fusion/fn-remote",
+      targetBranch: "main",
+    });
+
+    expect(execFileCalls).toContainEqual(expect.objectContaining({
+      file: "git",
+      args: ["fetch", "origin", "refs/heads/fusion/fn-remote:refs/heads/fusion/fn-remote"],
+      cwd: "/projects/repo-a",
+    }));
+    expect(execFileCalls).toContainEqual(expect.objectContaining({
+      file: "git",
+      args: ["worktree", "add", expect.any(String), "fusion/fn-remote"],
+    }));
+  });
+});
+
 describe("createPrNodeGithubOps repo resolution (gh-4)", () => {
   beforeEach(() => {
     execMock.mockReset();
@@ -2055,15 +2288,71 @@ describe("createPrNodeGithubOps repo resolution (gh-4)", () => {
     );
   });
 
+  it("createPr uses the engine-provided configured integration remote", async () => {
+    const github = githubStub();
+    const ops = createPrNodeGithubOps(github as never);
+    await ops.createPr({
+      task: { id: "FN-9601", title: "t", description: "d", worktree: "/projects/repo-a/.worktrees/fn-9601" },
+      entity: { id: "e1", sourceId: "FN-9601", repo: "central-owner/central-repo", headBranch: "fusion/fn-9601", baseBranch: "main" },
+      integrationRemote: "upstream",
+    } as never);
+
+    expect(execFileCalls).toContainEqual(expect.objectContaining({
+      file: "git",
+      args: ["fetch", "upstream", "main"],
+    }));
+  });
+
+  it("fails closed when workflow PR creation is cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("workflow cancelled"));
+    const github = githubStub();
+
+    await expect(createPrNodeGithubOps(github as never).createPr({
+      task: { id: "FN-9601", title: "t", description: "d", worktree: "/projects/repo-a/.worktrees/fn-9601" },
+      entity: { id: "e1", sourceId: "FN-9601", repo: "central-owner/central-repo", headBranch: "fusion/fn-9601", baseBranch: "main" },
+      signal: controller.signal,
+    } as never)).rejects.toThrow("workflow cancelled");
+    expect(github.createPr).not.toHaveBeenCalled();
+  });
+
   it("mergePr passes owner/repo parsed from entity.repo", async () => {
     const github = githubStub();
     const ops = createPrNodeGithubOps(github as never);
     const result = await ops.mergePr({
       entity: { id: "e1", sourceId: "FN-9601", repo: "central-owner/central-repo", prNumber: 9, headOid: "abc123" },
     } as never);
-    expect(result).toEqual({ status: "merged-requested" });
+    expect(result).toEqual({ status: "merged-requested", headOid: "1111111111111111111111111111111111111111" });
     expect(github.mergePr).toHaveBeenCalledWith(
-      expect.objectContaining({ owner: "central-owner", repo: "central-repo", number: 9, method: "squash", expectedHeadOid: "abc123" }),
+      expect.objectContaining({ owner: "central-owner", repo: "central-repo", number: 9, method: "squash", expectedHeadOid: "1111111111111111111111111111111111111111" }),
     );
+  });
+
+  it("fails closed when workflow PR merge is cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("workflow merge cancelled"));
+    const github = githubStub();
+
+    await expect(createPrNodeGithubOps(github as never).mergePr({
+      entity: { id: "e1", sourceId: "FN-9601", repo: "central-owner/central-repo", prNumber: 9, headOid: "abc123" },
+      signal: controller.signal,
+    } as never)).rejects.toThrow("workflow merge cancelled");
+    expect(github.mergePr).not.toHaveBeenCalled();
+  });
+
+  it("persists the refreshed workflow head before requesting GitHub merge", async () => {
+    const calls: string[] = [];
+    const github = githubStub();
+    github.mergePr.mockImplementation(async () => {
+      calls.push("merge");
+      return { number: 9, url: "https://github.com/central-owner/central-repo/pull/9", status: "merged" };
+    });
+    const ops = createPrNodeGithubOps(github as never);
+    await ops.mergePr({
+      entity: { id: "e1", sourceId: "FN-9601", repo: "central-owner/central-repo", prNumber: 9, headOid: "old" },
+      persistRefreshedHead: async () => { calls.push("persist"); },
+    } as never);
+
+    expect(calls).toEqual(["persist", "merge"]);
   });
 });

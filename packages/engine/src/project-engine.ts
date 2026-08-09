@@ -121,6 +121,8 @@ export type ProcessPullRequestMergeFn = (
   cwd: string,
   taskId: string,
   pool?: WorktreePool,
+  /** Propagates merge-queue cancellation into refresh git mutations. */
+  signal?: AbortSignal,
 ) => Promise<"merged" | "waiting" | "skipped">;
 
 const execFileAsync = promisify(execFile);
@@ -2308,6 +2310,7 @@ export class ProjectEngine {
       mergeStrategy: settings.mergeStrategy,
       integrationBranch: settings.integrationBranch,
       baseBranch: settings.baseBranch,
+      worktreeRebaseRemote: settings.worktreeRebaseRemote,
     };
     return await promoteBranchGroup({
       store,
@@ -3858,8 +3861,15 @@ export class ProjectEngine {
             mergeStrategy: settings.mergeStrategy,
             integrationBranch: settings.integrationBranch,
             baseBranch: settings.baseBranch,
+            worktreeRebaseRemote: settings.worktreeRebaseRemote,
           };
-          const attemptBranchGroupPromotion = async (taskForPromotion: Task | null): Promise<void> => {
+          /*
+          FNXC:PullRequestFreshness 2026-08-09-03:02:
+          Branch-group promotion is an automated PR producer after a member merge.
+          Preserve the merge claim's cancellation signal through the coordinator so
+          a cancelled refresh cannot proceed to GitHub PR creation.
+          */
+          const attemptBranchGroupPromotion = async (taskForPromotion: Task | null, signal?: AbortSignal): Promise<void> => {
             // groupId is optional on TaskBranchContext (non-shared members carry none);
             // isSharedBranchGroupMemberIntegration guarantees it semantically, but capture
             // it explicitly so TypeScript narrows.
@@ -3874,6 +3884,7 @@ export class ProjectEngine {
                 groupId: promotionGroupId,
                 settings: promotionSettings,
                 createGroupPr: this.options.createGroupPr,
+                signal,
                 recordAudit: async (event) => {
                   await store.recordRunAuditEvent({
                     domain: event.domain as any,
@@ -4093,6 +4104,7 @@ export class ProjectEngine {
                     cwd,
                     taskId,
                     (this.runtime as any).worktreePool,
+                    abortSignal,
                   ),
                 abortSignal,
                 taskId,
@@ -4121,7 +4133,7 @@ export class ProjectEngine {
                   mergeTargetBranch: mergedTask.mergeDetails?.mergeTargetBranch,
                 } as MergeResult);
               }
-              await attemptBranchGroupPromotion(mergedTask);
+              await attemptBranchGroupPromotion(mergedTask, this.mergeAbortController?.signal);
             } else if (result === "waiting") {
               runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge PR waiting: ${taskId}`);
             }

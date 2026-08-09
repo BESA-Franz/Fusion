@@ -2135,8 +2135,8 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
     const engineManager = new ProjectEngineManager(centralCoreForEngine, {
       cliPackageVersion,
       getMergeStrategy,
-      processPullRequestMerge: (s, wd, taskId, pool) =>
-        processPullRequestMergeTask(s, wd, taskId, githubClient, getTaskMergeBlocker, pool),
+      processPullRequestMerge: (s, wd, taskId, pool, signal) =>
+        processPullRequestMergeTask(s, wd, taskId, githubClient, getTaskMergeBlocker, pool, signal),
       createGroupPr: createGroupPrCallback(githubClient),
       syncGroupPr: syncGroupPrCallback(githubClient),
       prNodeGithubOps: createPrNodeGithubOps(githubClient),

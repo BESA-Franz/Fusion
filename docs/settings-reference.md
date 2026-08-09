@@ -512,6 +512,12 @@ Security-sensitive file-browser escape hatches are project-only. `allowAbsoluteF
 | `autoRecovery.maxRetries` | `number` | `3` | Retry budget for dispatcher decisions. When `retryCount >= maxRetries`, dispatcher forces `pause` with rationale `retry-budget-exhausted`. |
 | `reliabilityStatsResetAt` | `string` (ISO-8601) | `undefined` | Optional reliability baseline cursor used by `/api/health/reliability`; events older than this timestamp are excluded from reliability aggregates but retained in storage. |
 
+### Automated pull-request freshness
+
+With `mergeStrategy: "pull-request"`, Fusion refreshes an automated task, managed-group, promotion-group, or workflow PR head immediately before it creates a PR and immediately before it requests a merge. It resolves the task's effective integration target and configured/tracked integration remote, fetches that target, then rebases the exact head checkout onto the remote target and distinct local target when needed.
+
+Fusion never performs this refresh in an arbitrary project-root checkout. It first proves an existing worktree owns `refs/heads/<head>`; otherwise it materializes a remote-only head at an explicit local ref after verifying the observed remote OID, then creates a short-lived managed worktree attached to that exact ref. A head checked out at the project root is refused, so user checkout state is never changed. Temporary refresh paths have durable reservations: a cleanup failure quarantines the exact managed path, prevents GitHub mutation, and requires a later bounded inactive-worktree reconciliation to remove it before that path can be reused. Rewritten published heads use `--force-with-lease` against the observed remote OID; a rejected lease restores the locally rebased head through a compare-and-swap ref update. Lease loss, fetch/rebase conflicts, missing heads, or a failed temporary-worktree cleanup fail closed before the GitHub create/merge call. After a successful rewrite, the merge path re-reads PR state and fences the request with the refreshed head OID. Manual `fn pr`, dashboard operator actions, and revert PRs remain user-directed and are not changed by this automated lifecycle behavior.
+
 ### Per-task direct-merge override
 
 When a project uses `mergeStrategy: "direct"`, an individual task can override the project-level `directMergeCommitStrategy` by adding this line anywhere in `PROMPT.md`:
