@@ -975,7 +975,19 @@ export type ConfigChangedBy =
   | { kind: "human"; id: string }
   | { kind: "agent"; id: string }
   | { kind: "system"; id: string }
+  | { kind: "api"; id: string }
   | { kind: "rollback"; id: string };
+
+/*
+FNXC:ConfigVersioning 2026-08-09-04:06:
+HTTP settings writes have no person identity: the daemon credential is shared.
+Only server-side verification determines whether an API request records verified,
+unverified, or node-key provenance; omitted internal callers record system.
+*/
+export const CONFIG_CHANGED_BY_SYSTEM: ConfigChangedBy = { kind: "system", id: "fusion-system" };
+export const CONFIG_CHANGED_BY_API_VERIFIED_TOKEN: ConfigChangedBy = { kind: "api", id: "http:verified-token" };
+export const CONFIG_CHANGED_BY_API_UNVERIFIED: ConfigChangedBy = { kind: "api", id: "http:unverified" };
+export const CONFIG_CHANGED_BY_API_VERIFIED_NODE_KEY: ConfigChangedBy = { kind: "api", id: "http:verified-node-key" };
 export type ConfigurationOwnerScope = "project" | "global";
 export type ConfigurationTarget = Readonly<Record<string, string>>;
 export interface ConfigurationRevision {

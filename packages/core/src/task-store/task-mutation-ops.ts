@@ -20,6 +20,7 @@ import {mkdir, readFile, writeFile, rename, unlink} from "node:fs/promises";
 import {join} from "node:path";
 import {existsSync} from "node:fs";
 import type {Task, TaskCreateInput, TaskAttachment, BoardConfig, ActivityLogEntry, ActivityEventType, Artifact, ArtifactCreateInput, RunMutationContext, MergeQueueEntry, BranchGroup, BranchGroupUpdate, CompletionHandoffMarker, WorkflowWorkItem, WorkflowWorkItemKind, PrEntity, PrEntityUpdate, TaskRecommendation} from "../types.js";
+import { CONFIG_CHANGED_BY_SYSTEM } from "../types.js";
 import {validateSettingValuePatch, WorkflowSettingRejectionError} from "../workflows/workflow-settings.js";
 import "../builtin-traits.js";
 import {toJson} from "../db/db.js";
@@ -523,7 +524,7 @@ export function getWorkflowPromptOverridesImpl(_store: TaskStore, _workflowId: s
         return {};
 }
 
-export async function updateWorkflowSettingValuesImpl(store: TaskStore, workflowId: string, projectId: string, patch: Record<string, unknown>, changedBy: ConfigChangedBy = { kind: "human", id: "local-user" },): Promise<Record<string, unknown>> {
+export async function updateWorkflowSettingValuesImpl(store: TaskStore, workflowId: string, projectId: string, patch: Record<string, unknown>, changedBy: ConfigChangedBy = CONFIG_CHANGED_BY_SYSTEM,): Promise<Record<string, unknown>> {
     /*
     FNXC:ConfigVersioning 2026-07-18-19:10:
     Workflow values are rollbackable only with the PostgreSQL target mutation
@@ -617,7 +618,7 @@ export async function updateWorkflowSettingValuesImpl(store: TaskStore, workflow
     return committed.next;
 }
 
-export async function rollbackConfigurationImpl(store: TaskStore, revisionId: string, changedBy: ConfigChangedBy = {kind: "human", id: "local-user"}): Promise<ConfigurationRevision> {
+export async function rollbackConfigurationImpl(store: TaskStore, revisionId: string, changedBy: ConfigChangedBy = CONFIG_CHANGED_BY_SYSTEM): Promise<ConfigurationRevision> {
   if (!store.backendMode) throw new Error("Configuration rollback requires the PostgreSQL revision store");
   const layer = store.asyncLayer!;
   // First resolve project ownership without a bypass. The selected snapshot and

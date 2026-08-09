@@ -2,6 +2,7 @@
 
 import express from "express";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createAuthMiddleware } from "../../auth-middleware.js";
 import { request } from "../../test-request.js";
 import { registerOrgPortabilityRoutes } from "../register-org-portability-routes.js";
 
@@ -12,11 +13,13 @@ const core = vi.hoisted(() => ({
   assembleOrgBundle: vi.fn(),
   materializeOrgBundle: vi.fn(),
   ConfigurationRevisionStore: vi.fn(),
+  CONFIG_CHANGED_BY_API_UNVERIFIED: { kind: "api", id: "http:unverified" },
+  CONFIG_CHANGED_BY_API_VERIFIED_TOKEN: { kind: "api", id: "http:verified-token" },
 }));
 
 vi.mock("@fusion/core", () => core);
 
-function createApp() {
+function createApp(token?: string) {
   const store = {
     getAsyncLayer: vi.fn(() => ({ projectId: "project-1" })),
     getFusionDir: vi.fn(() => "/project/.fusion"),
@@ -37,6 +40,7 @@ function createApp() {
   });
   const app = express();
   app.use(express.json());
+  if (token) app.use(createAuthMiddleware(token));
   app.use("/api", router);
   app.use((error: { statusCode?: number; message?: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(error.statusCode ?? 500).json({ error: error.message });
@@ -95,7 +99,16 @@ describe("register-org-portability-routes", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.revision).toMatchObject({ id: "forward-revision", source: "rollback" });
-    expect(store.rollbackConfiguration).toHaveBeenCalledWith("prior", { kind: "human", id: "dashboard-operator" });
+    expect(store.rollbackConfiguration).toHaveBeenCalledWith("prior", { kind: "api", id: "http:unverified" });
+  });
+
+  it("uses verified API provenance when daemon auth accepted the rollback request", async () => {
+    const { app, store } = createApp("shared-token");
+    store.rollbackConfiguration.mockResolvedValue({ id: "forward-revision", source: "rollback" });
+    const response = await request(app, "POST", "/api/config/revisions/prior/rollback", "{}", { authorization: "Bearer shared-token", "Content-Type": "application/json" });
+
+    expect(response.status).toBe(200);
+    expect(store.rollbackConfiguration).toHaveBeenCalledWith("prior", { kind: "api", id: "http:verified-token" });
   });
 
   it("rejects malformed imports and unsupported revision filters", async () => {

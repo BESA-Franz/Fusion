@@ -1,4 +1,5 @@
 import { ApiError, badRequest } from "../api-error.js";
+import { resolveRequestActor } from "../request-actor.js";
 import type { ApiRoutesContext } from "./types.js";
 
 /**
@@ -119,7 +120,7 @@ export function registerOrgPortabilityRoutes(ctx: ApiRoutesContext): void {
       const revisionId = req.params.revisionId?.trim();
       if (!revisionId) throw badRequest("revisionId is required");
       const { store: scopedStore } = await getProjectContext(req);
-      const revision = await (scopedStore as unknown as { rollbackConfiguration(id: string, changedBy: { kind: "human"; id: string }): Promise<unknown> }).rollbackConfiguration(revisionId, { kind: "human", id: "dashboard-operator" });
+      const revision = await scopedStore.rollbackConfiguration(revisionId, resolveRequestActor(req));
       res.json({ revision });
     } catch (error: unknown) {
       if (error instanceof ApiError) throw error;

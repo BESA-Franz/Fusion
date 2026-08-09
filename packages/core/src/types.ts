@@ -1539,3 +1539,5 @@ The sorter and its transitive role/merge/priority helpers are browser-safe.
 */
 export { sortTasksForDisplayColumn } from "./tasks/task-priority.js";
 export type { DoneColumnSortMode, DisplayColumnSortOptions } from "./tasks/task-priority.js";
+
+export { CONFIG_CHANGED_BY_SYSTEM, CONFIG_CHANGED_BY_API_VERIFIED_TOKEN, CONFIG_CHANGED_BY_API_UNVERIFIED, CONFIG_CHANGED_BY_API_VERIFIED_NODE_KEY } from "./types/agents/agents.js";
