@@ -8130,6 +8130,7 @@
     },
     "recommendations": {
       "title": "",
+      "empty": "No se generaron recomendaciones para esta tarea.",
       "created": "",
       "creating": "",
       "retry": "",

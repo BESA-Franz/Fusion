@@ -8025,6 +8025,7 @@ export default interface Resources {
       "recommendations": {
         "create": "Create task",
         "created": "Created {{taskId}}",
+        "empty": "No recommendations were produced for this task.",
         "creating": "Creating…",
         "error": "Could not create task. Try again.",
         "retry": "Retry creating task",

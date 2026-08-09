@@ -8130,6 +8130,7 @@
     },
     "recommendations": {
       "title": "",
+      "empty": "此任務未產生建議。",
       "created": "",
       "creating": "",
       "retry": "",

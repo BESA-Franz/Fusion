@@ -8130,6 +8130,7 @@
     },
     "recommendations": {
       "title": "",
+      "empty": "Aucune recommandation n’a été produite pour cette tâche.",
       "created": "",
       "creating": "",
       "retry": "",

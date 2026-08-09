@@ -8130,6 +8130,7 @@
     },
     "recommendations": {
       "title": "",
+      "empty": "이 작업에 대해 생성된 추천이 없습니다.",
       "created": "",
       "creating": "",
       "retry": "",

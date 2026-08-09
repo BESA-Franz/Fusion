@@ -8140,6 +8140,7 @@
     },
     "recommendations": {
       "title": "Recommendations",
+      "empty": "No recommendations were produced for this task.",
       "created": "Created {{taskId}}",
       "creating": "Creating…",
       "retry": "Retry creating task",
