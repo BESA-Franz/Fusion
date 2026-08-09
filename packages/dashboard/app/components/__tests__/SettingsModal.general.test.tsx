@@ -1402,41 +1402,20 @@ describe("SettingsModal", () => {
       expect(screen.getByRole("option", { name: "Require changelog update (existing changelog)" })).toBeInTheDocument();
     });
 
-    it("renders the enabled default in routing-inert ephemeral agent compatibility help", async () => {
+    it("omits the retired ephemeral compatibility controls while preserving follow-up policy", async () => {
       renderModal({ initialSection: "general" });
       await waitForSettingsModalReady();
 
-      const helpTrigger = screen.getByTestId("settings-help-ephemeralAgentsEnabled");
-      const helpId = helpTrigger.getAttribute("aria-describedby");
-      expect(helpId).toBeTruthy();
+      expect(screen.queryByLabelText("Use ephemeral task-worker agents")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("settings-help-ephemeralAgentsEnabled")).not.toBeInTheDocument();
+      expect(document.getElementById("ephemeralAgentsEnabled")).toBeNull();
 
-      const helpNote = document.getElementById(helpId!);
-      expect(helpNote).toHaveAttribute("role", "note");
-      expect(helpNote).toHaveTextContent(/default: enabled/i);
-      expect(helpNote).toHaveTextContent(/does not affect scheduler assignment or admission, executor workflow dispatch or re-entry, mission start, or workflow-stage principal routing/i);
-    });
-
-    it("persists the routing-inert ephemeral agent compatibility input", async () => {
-      renderModal({ initialSection: "general" });
-      await waitForSettingsModalReady();
-
-      const toggle = screen.getByLabelText("Use ephemeral task-worker agents") as HTMLInputElement;
-      expect(toggle.checked).toBe(true);
-      await settingsModalUser.click(toggle);
-
-      await waitFor(() => expect(mockUpdateSettings).toHaveBeenCalled());
-      expect(mockUpdateSettings.mock.calls[0]?.[0]).toMatchObject({ ephemeralAgentsEnabled: false });
-    });
-
-    it("defaults the ephemeral agent compatibility input when an upgraded record omits it", async () => {
-      const { ephemeralAgentsEnabled: _omitted, ...upgradeSettings } = defaultSettings;
-      mockFetchSettings.mockResolvedValueOnce(upgradeSettings);
-      mockFetchSettingsByScope.mockResolvedValueOnce({ global: defaultSettings, project: {} });
-
-      renderModal({ initialSection: "general" });
-      await waitForSettingsModalReady();
-
-      expect((screen.getByLabelText("Use ephemeral task-worker agents") as HTMLInputElement).checked).toBe(true);
+      const policy = screen.getByLabelText("Ephemeral agent follow-up tasks");
+      expect(policy).toBeInTheDocument();
+      await settingsModalUser.selectOptions(policy, "deny");
+      await waitFor(() => expect(mockUpdateSettings.mock.calls[0]?.[0]).toMatchObject({
+        ephemeralAgentTaskCreationPolicy: "deny",
+      }));
     });
 
     it("reports Quick Chat launcher changes immediately before save", async () => {

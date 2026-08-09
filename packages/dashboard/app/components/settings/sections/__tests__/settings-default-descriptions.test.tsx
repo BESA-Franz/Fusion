@@ -252,12 +252,6 @@ const SETTING_DESCRIPTION_KEYS: Record<string, string> = {
   worktreeRebaseLocalBase: "worktrees.inAdditionToTheRemoteRebaseAboveAlso",
   worktrunk: "worktrees.disabledByDefaultOptInWhenEnabledFusion",
   // GeneralSection (project)
-  /*
-   * FNXC:EphemeralAgentCompatibility 2026-08-08-06:12:
-   * FN-8831 keeps the visible compatibility checkbox in the surfaced-description inventory.
-   * Its English help must state the enabled schema default while preserving that it is routing-inert.
-   */
-  ephemeralAgentsEnabled: "general.ephemeralAgentsCompatibilityHint",
   allowAbsoluteFileBrowserPaths: "general.allowAbsoluteFileBrowserPathsHint",
   capacityRiskBannerEnabled: "general.warnOnTheBoardWhenTodoWorkExceeds",
   capacityRiskTodoThreshold: "general.bannerFiresWhenTodoCountIsStrictlyGreater",

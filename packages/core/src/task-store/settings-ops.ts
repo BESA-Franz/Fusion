@@ -104,14 +104,15 @@ export async function updateSettingsImpl(store: TaskStore, patch: Partial<Settin
           })()
         : patch;
     /*
-    FNXC:WorkflowAgentRouting 2026-08-07-08:45:
-    Preserve ephemeralAgentsEnabled in project updates for configuration compatibility. Its
-    routing-inert behavior is enforced exclusively by scheduler, executor, and mission consumers.
+    FNXC:WorkflowAgentRouting 2026-08-09-01:04:
+    FN-8847 rejects the retired ephemeralAgentsEnabled client patch before the configuration
+    revision transaction. Canonicalization also removes stale stored copies, while active
+    ephemeral task-creation policy fields keep their normal project-setting behavior.
     */
-    // Filter out global-only fields — they should go through updateGlobalSettings().
+    // Filter out global-only and retired project fields before writing a configuration revision.
     const projectPatch: Partial<Settings> = {};
     for (const [key, value] of Object.entries(guardedPatch)) {
-      if (!isGlobalOnlySettingsKey(key)) {
+      if (!isGlobalOnlySettingsKey(key) && key !== "ephemeralAgentsEnabled") {
         (projectPatch as Record<string, unknown>)[key] = value;
       }
     }

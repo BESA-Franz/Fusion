@@ -5930,7 +5930,6 @@
       "updating": "",
       "upperBoundOnMessagesFetchedFromTheRoom": "",
       "upToDate": "Vous êtes à jour ✓",
-      "useEphemeralTaskWorkerAgents": "",
       "warnOnTheBoardWhenTodoWorkExceeds": "",
       "whenEnabledDefaultFusionSpawnsShortLived": "",
       "whenEnabledFusionChecksOpenAndClosedIssues": "",
@@ -6002,7 +6001,6 @@
       "taskCreateWorkflowHelp": "",
       "refinementTaskWorkflow": "",
       "refinementTaskWorkflowHelp": "",
-      "ephemeralAgentsCompatibilityHint": "",
       "maxRecommendationsPerTask": "",
       "maxRecommendationsPerTaskHelp": ""
     },

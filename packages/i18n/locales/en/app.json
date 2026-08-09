@@ -5967,8 +5967,6 @@
       "updating": "Updating…",
       "upperBoundOnMessagesFetchedFromTheRoom": "Upper bound on messages fetched from the room store for compaction consideration. Default: 200.",
       "upToDate": "You're up to date ✓",
-      "useEphemeralTaskWorkerAgents": " Use ephemeral task-worker agents ",
-      "ephemeralAgentsCompatibilityHint": "Retained for configuration compatibility. Default: enabled. This setting does not affect scheduler assignment or admission, executor workflow dispatch or re-entry, mission start, or workflow-stage principal routing.",
       "warnOnTheBoardWhenTodoWorkExceeds": "Warn on the board when todo work exceeds the threshold and no idle agents are available. Default: disabled.",
       "whenEnabledDefaultFusionSpawnsShortLived": " When enabled (default), Fusion spawns short-lived ",
       "whenEnabledFusionChecksOpenAndClosedIssues": " When enabled, Fusion checks open and closed issues in the target repo for likely duplicates (using File Scope paths and key symptoms) before creating a new tracking issue. Uncheck to always create a new issue. Default: enabled. ",
