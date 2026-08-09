@@ -14694,6 +14694,10 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
    * A planning anchor is safe because triage ownership and graph Plan Review are
    * exclusive. Recovery finalizes only when neither in-process owner is live;
    * the atomic null-check makes restart and repeated maintenance idempotent.
+   * Archived snapshots can retain the planning marker, but their soft-deleted
+   * live rows must never be mutated. Candidate failures are isolated per task;
+   * audit emission is best-effort so it cannot turn a successful recovery into
+   * a failed sweep.
    */
   async finalizeOrphanedPlanningSegments(): Promise<number> {
     const planningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
@@ -14702,8 +14706,6 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
     let attempted = 0;
     let failedAttempts = 0;
     for (const task of tasks) {
-      // Archived snapshots can still contain the planning marker, but their
-      // corresponding live row is soft-deleted and must never be mutated.
       if (task.deletedAt || !task.planningStartedAt || planningIds.has(task.id) || this.options.hasActivePlanningWorkflowSession?.(task.id)) continue;
       attempted++;
       try {
@@ -14757,14 +14759,19 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
         : failedAttempts === attempted
           ? { finalizedCount: 0, reason: "all-attempts-failed", attemptedCount: attempted }
           : { finalizedCount: 0, reason: "no-finalization", attemptedCount: attempted, failedAttemptCount: failedAttempts };
-      await this.store.recordRunAuditEvent?.({
-        agentId: "self-healing",
-        runId: generateSyntheticRunId("orphaned-planning-segment", "global"),
-        domain: "database",
-        mutationType: "task:reconcile-orphaned-planning-segment-no-action",
-        target: "planning-segments",
-        metadata: noActionMetadata,
-      });
+      try {
+        await this.store.recordRunAuditEvent?.({
+          agentId: "self-healing",
+          runId: generateSyntheticRunId("orphaned-planning-segment", "global"),
+          domain: "database",
+          mutationType: "task:reconcile-orphaned-planning-segment-no-action",
+          target: "planning-segments",
+          metadata: noActionMetadata,
+        });
+      } catch (auditError) {
+        const errorType = auditError instanceof Error && auditError.name ? auditError.name : "unknown-error";
+        log.warn(`[self-healing] orphaned planning segment no-action audit could not be recorded: errorType=${errorType}`);
+      }
     }
     return finalized;
   }

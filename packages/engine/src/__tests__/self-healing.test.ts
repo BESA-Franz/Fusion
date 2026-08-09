@@ -8903,6 +8903,27 @@ describe("SelfHealingManager", () => {
 
       recovery.stop();
     });
+
+    it("keeps a no-action sweep successful when audit recording fails", async () => {
+      const task = { id: "FN-PLAN-AUDIT-ERROR", planningStartedAt: "2026-01-01T00:00:00.000Z" } as Task;
+      const recordRunAuditEvent = vi.fn().mockRejectedValue(new Error("audit unavailable"));
+      const recoveryStore = createMockStore({
+        listTasks: vi.fn().mockResolvedValue([task]),
+        recordRunAuditEvent,
+      });
+      const recovery = new SelfHealingManager(recoveryStore, {
+        rootDir: "/tmp/test-project",
+        getPlanningTaskIds: () => new Set([task.id]),
+        hasActivePlanningWorkflowSession: () => false,
+      });
+
+      await expect(recovery.finalizeOrphanedPlanningSegments()).resolves.toBe(0);
+      expect(recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+        mutationType: "task:reconcile-orphaned-planning-segment-no-action",
+      }));
+
+      recovery.stop();
+    });
   });
 
   describe("recoverOrphanedPlanningTasks", () => {
