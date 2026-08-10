@@ -620,6 +620,14 @@ export const agentActivityEvents = projectSchema.table("agent_activity_events", 
   index("idxAgentActivityEventsSeq").on(t.projectId, t.seq), index("idxAgentActivityEventsAgentSeq").on(t.projectId, t.agentId, t.seq),
   index("idxAgentActivityEventsTaskSeq").on(t.projectId, t.taskId, t.seq), index("idxAgentActivityEventsTypeSeq").on(t.projectId, t.type, t.seq),
 ]);
+/* FNXC:MemoryRecall 2026-08-10-11:03: Project-scoped recall keeps structured durable context isolated by the same composite key and RLS contract as other project rows. */
+export const memoryRecallRecords = projectSchema.table("memory_recall_records", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(), kind: text("kind").notNull(), content: text("content").notNull(), contentHash: text("content_hash").notNull(),
+  source: jsonb("source").notNull(), tags: jsonb("tags").notNull().default(sql`'[]'::jsonb`), graphNodeIds: jsonb("graph_node_ids").notNull().default(sql`'[]'::jsonb`),
+  createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+}, (t) => [primaryKey({ columns: [t.projectId, t.id] }), unique("memory_recall_records_project_kind_hash_key").on(t.projectId, t.kind, t.contentHash), index("idxMemoryRecallRecordsKindCreated").on(t.projectId, t.kind, t.createdAt), index("idxMemoryRecallRecordsCreated").on(t.projectId, t.createdAt)]);
+
 export const agentActivityEventSeq = projectSchema.table("agent_activity_event_seq", {
   projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`), lastSeq: bigint("last_seq", { mode: "bigint" }).notNull().default(sql`0`),
 }, (t) => [primaryKey({ columns: [t.projectId] })]);
@@ -2461,6 +2469,6 @@ export const projectTableNames = [
   "mission_validator_runs", "mission_validator_failures",
   "mission_fix_feature_lineage", "verification_cache", "import_translation_cache",
   "approval_requests",
-  "approval_request_audit_events", "agent_activity_events", "agent_activity_event_seq", "chat_rooms", "chat_room_members",
+  "approval_request_audit_events", "agent_activity_events", "agent_activity_event_seq", "memory_recall_records", "chat_rooms", "chat_room_members",
   "chat_room_messages", "chat_token_usage",
 ] as const;
