@@ -1,3 +1,5 @@
+[← Docs index](./README.md)
+
 # Knowledge graph
 
 `fn knowledge-graph build` creates a deterministic, committable structure graph for the FN-8920 memory epic. It is the embedding-free first layer: no LLM, vector recall, MCP API, inferred relationships, or capability bundle is included.
