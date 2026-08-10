@@ -171,6 +171,8 @@ export {
   extractTaskIdFromTempMergeDir,
   getErrorMessage,
   isTaskNotFoundError,
+  isMissingTaskLookupError,
+  readLinkedTaskOrUndefined,
   buildResumeLimboStepSignature,
   formatRecoveryTimestamp,
   matchGlob,
@@ -180,6 +182,7 @@ import {
   extractTaskIdFromTempMergeDir,
   getErrorMessage,
   isTaskNotFoundError,
+  readLinkedTaskOrUndefined,
   buildResumeLimboStepSignature,
   formatRecoveryTimestamp,
   matchesScope,
@@ -13527,7 +13530,17 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
         continue;
       }
 
-      const linkedTask = await this.store.getTask(agent.taskId);
+      const linkedTaskId = agent.taskId;
+      try {
+        /*
+        FNXC:SelfHealing 2026-08-10-09:52:
+        Runfusion/Fusion#3397 makes a thrown task-miss ordinary stale-link input:
+        PostgreSQL `getTask` throws instead of returning null. Archive snapshots
+        still resolve to terminal-column tasks and are skipped below; non-miss
+        failures rethrow into this per-agent boundary so they never clear a link
+        and one poisoned row cannot disable the remaining recovery sweep.
+        */
+        const linkedTask = await readLinkedTaskOrUndefined(this.store, linkedTaskId);
       /* FNXC:WorkflowResolvedColumns 2026-07-31-16:50 (fleet, round 2): WIP u REVIEW u TERMINAL. Keyed on
          ids none matched on a renamed board, so this sweep evaluated agents whose task was still executing. */
       if (linkedTask && (agentLinkLiveColumns.has(linkedTask.column) || agentLinkTerminalColumns.has(linkedTask.column))) {
@@ -13584,14 +13597,18 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
       await agentStore.syncExecutionTaskLink(agent.id, undefined);
       await this.emitStaleAgentAssignmentAudit({
         agent: { id: agent.id, state: staleAgentState },
-        taskId: agent.taskId,
-        linkedTask,
-        hadFreshRun: proof.hasFreshRun,
-        hadActiveExecution: proof.hasActiveExecution,
-        reason,
-      });
-      recoveredAgentIds.add(agent.id);
-      log.log(`Recovered running durable agent ${agent.id} on inactive task ${agent.taskId}; file-scope lease preserved when present`);
+          taskId: linkedTaskId,
+          linkedTask,
+          hadFreshRun: proof.hasFreshRun,
+          hadActiveExecution: proof.hasActiveExecution,
+          reason,
+        });
+        recoveredAgentIds.add(agent.id);
+        log.log(`Recovered running durable agent ${agent.id} on inactive task ${linkedTaskId}; file-scope lease preserved when present`);
+      } catch (err) {
+        log.warn(`Failed to recover running durable agent ${agent.id} on ${linkedTaskId}: ${getErrorMessage(err)}`);
+        continue;
+      }
     }
 
     return recoveredAgentIds.size;
@@ -13615,8 +13632,18 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
       }
 
       const linkedTaskId = agent.taskId;
-      const linkedTask = await this.store.getTask(linkedTaskId);
-      let shouldClear = false;
+      try {
+        /*
+        FNXC:SelfHealing 2026-08-10-09:53:
+        Runfusion/Fusion#3397 applies the same fail-open-per-candidate principle
+        as `finalizeOrphanedPlanningSegments` (#3386): missing-task throws are
+        stale-link input, but non-miss failures leave this agent linked. An
+        archive snapshot resolves to its terminal column and deliberately keeps
+        this sweep's existing terminal-column clearing behavior; one bad row
+        must not abort later durable-agent reconciliation.
+        */
+        const linkedTask = await readLinkedTaskOrUndefined(this.store, linkedTaskId);
+        let shouldClear = false;
       let reason = "";
       let hadFreshRun = false;
       let hadActiveExecution = false;
@@ -13678,8 +13705,12 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
         hadActiveExecution,
         reason,
       });
-      clearedAgentIds.add(agent.id);
-      log.log(`Cleared drifted durable agent task link for ${agent.id} (${linkedTaskId}): ${reason}; file-scope lease preserved when present`);
+        clearedAgentIds.add(agent.id);
+        log.log(`Cleared drifted durable agent task link for ${agent.id} (${linkedTaskId}): ${reason}; file-scope lease preserved when present`);
+      } catch (err) {
+        log.warn(`Failed to reconcile drifted durable agent task link for ${agent.id} (${linkedTaskId}): ${getErrorMessage(err)}`);
+        continue;
+      }
     }
 
     /*

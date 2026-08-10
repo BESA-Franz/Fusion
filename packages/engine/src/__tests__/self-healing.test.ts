@@ -143,7 +143,7 @@ vi.mock("../merger.js", () => ({
 
 import { SelfHealingManager, isBranchAheadOfBase, MAX_AUTO_MERGE_RETRIES } from "../self-healing.js";
 import { HEARTBEAT_ERROR_RECOVERY_METADATA_KEY, HEARTBEAT_ERROR_RETRY_EXHAUSTED_PAUSE_REASON, HEARTBEAT_ERROR_UNRECOVERABLE_PAUSE_REASON, readHeartbeatErrorRetryCount } from "../agent-heartbeat.js";
-import type { TaskStore, Settings, Task, AgentStore, Agent, NotificationProvider } from "@fusion/core";
+import { TaskDeletedError, TaskNotFoundError, type TaskStore, type Settings, type Task, type AgentStore, type Agent, type NotificationProvider } from "@fusion/core";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -1998,6 +1998,88 @@ describe("SelfHealingManager", () => {
 
       /* The unlink is the action this guard prevents; asserting it is what discriminates. */
       expect(agentStore.syncExecutionTaskLink).not.toHaveBeenCalled();
+      managerWithAgents.stop();
+    });
+
+    it("FN-8919: thrown task misses recover later stale running agents without aborting", async () => {
+      const agents = [
+        { id: "agent-poison", state: "running", taskId: "ERR-024", updatedAt: new Date().toISOString() } as Agent,
+        { id: "agent-stale", state: "running", taskId: "FN-stale", updatedAt: new Date().toISOString() } as Agent,
+      ];
+      const agentStore = {
+        listAgents: vi.fn(async () => agents),
+        getActiveHeartbeatRun: vi.fn(async () => null),
+        updateAgentState: vi.fn(async (id: string, state: Agent["state"]) => { agents.find((agent) => agent.id === id)!.state = state; }),
+        syncExecutionTaskLink: vi.fn(async (id: string, taskId?: string) => { agents.find((agent) => agent.id === id)!.taskId = taskId; }),
+      } as unknown as AgentStore;
+      const getTask = vi.fn(async (taskId: string) => {
+        if (taskId === "ERR-024") throw new TaskNotFoundError("ERR-024");
+        return null;
+      });
+      const recoveryStore = createMockStore({ getTask });
+      const managerWithAgents = new SelfHealingManager(recoveryStore, { rootDir: "/tmp/test-project", agentStore });
+
+      await expect(managerWithAgents.recoverAgentsRunningOnInactiveTasks()).resolves.toBe(2);
+
+      expect(agentStore.syncExecutionTaskLink).toHaveBeenCalledWith("agent-poison", undefined);
+      expect(agentStore.syncExecutionTaskLink).toHaveBeenCalledWith("agent-stale", undefined);
+      expect(recoveryStore.recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+        target: "agent-poison",
+        metadata: expect.objectContaining({
+          reason: "running durable agent linked to missing task without live execution proof",
+        }),
+      }));
+      managerWithAgents.stop();
+    });
+
+    it("FN-8919: transient lookup errors preserve one running link while later links recover", async () => {
+      const agents = [
+        { id: "agent-transient", state: "running", taskId: "FN-connection", updatedAt: new Date().toISOString() } as Agent,
+        { id: "agent-deleted", state: "running", taskId: "KB-1", updatedAt: new Date().toISOString() } as Agent,
+        { id: "agent-stale", state: "running", taskId: "FN-stale", updatedAt: new Date().toISOString() } as Agent,
+      ];
+      const agentStore = {
+        listAgents: vi.fn(async () => agents),
+        getActiveHeartbeatRun: vi.fn(async () => null),
+        updateAgentState: vi.fn(async (id: string, state: Agent["state"]) => { agents.find((agent) => agent.id === id)!.state = state; }),
+        syncExecutionTaskLink: vi.fn(async (id: string, taskId?: string) => { agents.find((agent) => agent.id === id)!.taskId = taskId; }),
+      } as unknown as AgentStore;
+      const getTask = vi.fn(async (taskId: string) => {
+        if (taskId === "FN-connection") throw new Error("connection terminated unexpectedly");
+        if (taskId === "KB-1") throw new TaskDeletedError("KB-1", "2026-08-10T00:00:00.000Z");
+        return null;
+      });
+      const managerWithAgents = new SelfHealingManager(createMockStore({ getTask }), { rootDir: "/tmp/test-project", agentStore });
+
+      await expect(managerWithAgents.recoverAgentsRunningOnInactiveTasks()).resolves.toBe(2);
+
+      expect(agents[0].taskId).toBe("FN-connection");
+      expect(agentStore.syncExecutionTaskLink).not.toHaveBeenCalledWith("agent-transient", undefined);
+      expect(agentStore.syncExecutionTaskLink).toHaveBeenCalledWith("agent-deleted", undefined);
+      expect(agentStore.syncExecutionTaskLink).toHaveBeenCalledWith("agent-stale", undefined);
+      managerWithAgents.stop();
+    });
+
+    it("FN-8919: archived, live, ephemeral, and unlinked agents keep existing running-sweep behavior", async () => {
+      const agents = [
+        { id: "agent-archive", state: "running", taskId: "FN-archive", updatedAt: new Date().toISOString() } as Agent,
+        { id: "agent-live", state: "running", taskId: "FN-live", updatedAt: new Date().toISOString() } as Agent,
+        { id: "agent-ephemeral", state: "running", taskId: "FN-stale", metadata: { type: "spawned" }, updatedAt: new Date().toISOString() } as Agent,
+        { id: "agent-unlinked", state: "running", updatedAt: new Date().toISOString() } as Agent,
+      ];
+      const agentStore = {
+        listAgents: vi.fn(async () => agents),
+        getActiveHeartbeatRun: vi.fn(async () => null),
+        updateAgentState: vi.fn(),
+        syncExecutionTaskLink: vi.fn(),
+      } as unknown as AgentStore;
+      const getTask = vi.fn(async (taskId: string) => ({ id: taskId, column: taskId === "FN-archive" ? "archived" : "in-progress" } as Task));
+      const managerWithAgents = new SelfHealingManager(createMockStore({ getTask }), { rootDir: "/tmp/test-project", agentStore });
+
+      await expect(managerWithAgents.recoverAgentsRunningOnInactiveTasks()).resolves.toBe(0);
+
+      expect(agentStore.syncExecutionTaskLink).not.toHaveBeenCalled();
+      expect(getTask).toHaveBeenCalledTimes(2);
       managerWithAgents.stop();
     });
   });
