@@ -1490,6 +1490,7 @@ export {
   resolveSelectedWorkflowModelLane,
   resolveMergerFallbackModel,
   resolveMergerSettingsModel,
+  resolveMergerPhaseThinkingLevel,
   resolvePlanningSettingsModel,
   resolveProjectDefaultModel,
   resolveTaskExecutionModel,
@@ -1505,6 +1506,12 @@ export {
   routeTaskValidatorModel,
 } from "./ai/model-resolution.js";
 export type { ResolvedModelSelection, RouterLaneOptions } from "./ai/model-resolution.js";
+export {
+  getPrimaryWorkflowRole,
+  resolvePermanentAgentEffectiveModel,
+  resolvePermanentAgentEffectiveThinkingLevel,
+} from "./ai/agent-effective-model.js";
+export type { PermanentAgentModelLike, PrimaryWorkflowRole } from "./ai/agent-effective-model.js";
 export {
   routeModel,
   routeModelAndEmit,

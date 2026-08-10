@@ -354,7 +354,9 @@ project workflow-lane baseline stored on the active default workflow → global 
 → selected-workflow lane → project default override → global default. The
 task-detail Workflow, Chat, and Agent Log displays use this same effective model
 resolution, so their Plan/Triage, Executor, Reviewer, and fallback lanes match the
-sessions that actually run.
+sessions that actually run. Permanent role-agent identity surfaces (Agents and Chat)
+also inherit their matching role lane; when it is unset, the project default override
+feeds that inheritance before the global default.
 
 **Built-in prompt overrides.** Built-in workflow prompt/gate node text has a similar project-scoped persistence model, but it is separate from workflow settings: prompt overrides are stored per `(workflowId, nodeId, projectId)` and resolve as `stored prompt ?? shipped prompt`. Resetting a prompt deletes the stored node override and restores the built-in IR text; graph structure and setting declarations remain read-only for built-ins. See [Workflow Steps → Overriding built-in workflow prompts](./workflow-steps.md#overriding-built-in-workflow-prompts).
 

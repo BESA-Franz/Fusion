@@ -26,7 +26,7 @@ import {
   MIN_HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_INTERVAL_PRESETS,
 } from "../utils/heartbeatIntervals";
-import { isEphemeralAgent, getErrorMessage } from "@fusion/core";
+import { isEphemeralAgent, getErrorMessage, resolvePermanentAgentEffectiveModel, type Settings } from "@fusion/core";
 import { formatAgentSkillBadgeLabel } from "../utils/agentSkills";
 import {
   ORG_CHART_LAYOUT_STORAGE_KEY,
@@ -139,7 +139,7 @@ FNXC:AgentsView 2026-06-23-04:00:
 Agent list cards must expose the configured model or plugin runtime without requiring a detail-view open.
 Use the same runtimeHint/modelProvider+modelId/legacy model fallback order as the detail view and leave no-override agents as Auto at render time.
 */
-function getAgentModelLabel(agent: Agent): AgentModelLabel {
+function getAgentModelLabel(agent: Agent, settings?: Partial<Settings>): AgentModelLabel {
   const runtimeConfig = agent.runtimeConfig ?? {};
   const runtimeHint = typeof runtimeConfig.runtimeHint === "string" ? runtimeConfig.runtimeHint : "";
   if (runtimeHint) {
@@ -158,7 +158,8 @@ function getAgentModelLabel(agent: Agent): AgentModelLabel {
     return { label: legacyModel.slice(slashIdx + 1), isRuntime: false };
   }
 
-  return { label: null, isRuntime: false };
+  const effective = resolvePermanentAgentEffectiveModel(agent, settings);
+  return { label: effective.provider && effective.modelId ? `${effective.provider}/${effective.modelId}` : null, isRuntime: false };
 }
 
 function getOrgChartLeafCount(node: OrgTreeNode): number {
@@ -640,6 +641,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
   const [customHeartbeatMinutes, setCustomHeartbeatMinutes] = useState<Record<string, string>>({});
   /** Global heartbeat multiplier loaded from project settings */
   const [heartbeatMultiplier, setHeartbeatMultiplier] = useState<number>(1);
+  const [agentModelSettings, setAgentModelSettings] = useState<Partial<Settings>>({});
   /** Whether the heartbeat multiplier is currently being saved */
   const [isSavingMultiplier, setIsSavingMultiplier] = useState(false);
   /** Agent IDs with an in-flight state transition (for optimistic update guard) */
@@ -661,6 +663,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
       .then((settings) => {
         if (!isMountedRef.current) return;
         setHeartbeatMultiplier(settings.heartbeatMultiplier ?? 1);
+        setAgentModelSettings(settings);
       })
       .catch(() => {
         // Use default on error
@@ -2049,7 +2052,7 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
               const isHeartbeatDisabled = !isAgentHeartbeatEnabled(agent);
               const heartbeatSelectValue = isHeartbeatDisabled ? HEARTBEAT_DISABLED_OPTION_VALUE : String(configuredIntervalMs);
               const isUpdatingHeartbeat = isBulkHeartbeatMutationRunning || updatingHeartbeatAgentId === agent.id || heartbeatMutationAgentIds.has(agent.id);
-              const modelLabel = getAgentModelLabel(agent);
+              const modelLabel = getAgentModelLabel(agent, agentModelSettings);
               return (
                 <div
                   key={agent.id}

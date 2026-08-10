@@ -366,14 +366,13 @@ Executor precedence for task runs:
 
 If the assigned agent runtime model is missing or incomplete, Fusion continues to automatic provider/model resolution without mixing partial runtime fields into the selected pair.
 
-### Durable-agent heartbeat model precedence and unavailable-provider behavior
+### Permanent role-agent identity, chat, and heartbeat model inheritance
 
-Heartbeat sessions for durable agents resolve models with the same fresh-settings-first rule:
+For permanent role agents, the Agents page, Agent Detail, Chat session creation, direct chat, room responders, and model-less heartbeats share one identity resolution chain. Explicit session or room thinking wins, then an agent's explicit thinking, then its role lane, project default override, and global default. A complete per-agent runtime model (`runtimeConfig.model` or `modelProvider` + `modelId`) wins for agent-bound interactive sessions and heartbeats; incomplete pairs are ignored.
 
-1. Execution-lane settings fallback (`executionProvider`/`executionModelId` → `executionGlobalProvider`/`executionGlobalModelId` → project/global defaults)
-2. Agent runtime model (`runtimeConfig.model` or `runtimeConfig.modelProvider` + `runtimeConfig.modelId`) only when both provider and model ID are present and no execution/default pair is configured
+Built-in workflow roles select their own lanes: Planner uses planning, Reviewer uses validator, Merger uses merger, and Executor/other permanent agents use execution. Thus an unset role lane inherits `defaultProviderOverride`/`defaultModelIdOverride` before global defaults. The Agent Detail picker labels an empty stored model as **Inherit project/role default**; saving inherit leaves the agent row empty rather than materialising the selected project model.
 
-Heartbeat no longer passes a stale runtime model ahead of a saved execution lane or project default override.
+Model-less durable-agent heartbeats use the same role-lane chain. Calling the low-level heartbeat resolver without role context deliberately retains its historical execution-lane behavior for compatibility. Task execution remains settings-first as described above and is not changed by identity inheritance.
 
 Task-scoped heartbeat runs for durable agents execute inside the task's git worktree (same as ephemeral task execution), while no-task heartbeat runs continue to execute from the project root.
 Heartbeat and executor system prompts share the same active-goal context injector (`buildGoalContextSection`), so both lanes receive identical goal preambles when active goals exist.
