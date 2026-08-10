@@ -103,11 +103,43 @@ export type ExecuteWorkflowGraphDeps = {
   terminateAllChildren: AnyFn;
 };
 
+/*
+FNXC:WorkflowAgentRouting 2026-08-10-01:15:
+Backoff ladder for a workflow-principal hold. A hold had NO cooldown, so the scheduler re-dispatched instantly
+and the run re-entered only to re-fence and re-park: observed at ~3.5 re-dispatches/second across every task,
+pinning a core and writing ~19k `workflowWorkItem` audit rows/hour while nothing executed. The hold never
+increments the work item's `attempt`, so no retry budget is consumed and no existing guard can ever fire.
+
+Module-scoped and in-memory on purpose, matching the session-contention hold: it needs no schema change, and a
+restart clearing it is CORRECT — a restart is exactly when agent configuration may have changed. The ceiling is
+generous because an unroutable role clears on OPERATOR action (enable or add an agent), never on its own, so
+polling it every few seconds only burns CPU.
+*/
+const PRINCIPAL_HOLD_BACKOFF_MS = process.env.VITEST || process.env.NODE_ENV === "test" ? 0 : 15_000;
+const PRINCIPAL_HOLD_MAX_BACKOFF_MS = 300_000;
+const principalHoldBackoff = new Map<string, { reason: string; attempt: number; until: number }>();
+
+/** Clears the ladder for a task; exported so tests and recovery paths can reset it deterministically. */
+export function clearPrincipalHoldBackoff(taskId: string): void {
+  principalHoldBackoff.delete(taskId);
+}
+
 export async function executeWorkflowGraph(
   deps: ExecuteWorkflowGraphDeps,
   task: Task,
   opts?: { alreadyClaimed?: boolean },
 ): Promise<void> {
+    /*
+    FNXC:WorkflowAgentRouting 2026-08-10-01:15:
+    Honor an active principal-hold cooldown BEFORE the graph is entered — re-entering only to re-fence and
+    re-park is the hot loop itself, and it costs a graph run plus two work-item writes and two audit rows per
+    pass for a condition that cannot change without operator action.
+    */
+    const cooling = principalHoldBackoff.get(task.id);
+    if (cooling && Date.now() < cooling.until && !opts?.alreadyClaimed) {
+      executorLog.debug(`[workflow-graph] ${task.id} deferred — principal hold cooling down (${cooling.reason})`);
+      return;
+    }
     // Claim synchronously before any await so concurrent execute() calls for
     // the same task cannot both enter graph routing (mirrors executingTaskLock).
     // executeCore may already have claimed before its pre-graph awaits (FN-8471).
@@ -546,13 +578,29 @@ export async function executeWorkflowGraph(
          * never-clears composition fault (missing agent-store / IR).
          */
         const neverClears = principalHoldReason.startsWith("workflow-principal-routing-unavailable:");
+        /*
+         * FNXC:WorkflowAgentRouting 2026-08-10-01:15:
+         * Record the backoff keyed on the hold REASON. A changed reason resets the ladder (genuinely new
+         * information); repeats extend it. The first occurrence of a reason still logs immediately so the
+         * hold stays greppable, while repeats stay silent so neither the engine log nor the task log floods.
+         */
+        const priorHold = principalHoldBackoff.get(task.id);
+        const repeated = priorHold?.reason === principalHoldReason;
+        const attempt = repeated ? priorHold!.attempt + 1 : 1;
+        principalHoldBackoff.set(task.id, {
+          reason: principalHoldReason,
+          attempt,
+          until: Date.now() + Math.min(PRINCIPAL_HOLD_MAX_BACKOFF_MS, PRINCIPAL_HOLD_BACKOFF_MS * 2 ** (attempt - 1)),
+        });
         const holdMessage = `[workflow-graph] ${task.id} held at graph node — ${principalHoldReason}`;
-        if (neverClears) {
-          executorLog.error(`${holdMessage} (workflow principal routing is unavailable; this hold cannot self-clear)`);
-        } else {
-          executorLog.warn(holdMessage);
+        if (!repeated) {
+          if (neverClears) {
+            executorLog.error(`${holdMessage} (workflow principal routing is unavailable; this hold cannot self-clear)`);
+          } else {
+            executorLog.warn(holdMessage);
+          }
+          await deps.store.logEntry(task.id, `Workflow stage held — ${principalHoldReason}`).catch(() => undefined);
         }
-        await deps.store.logEntry(task.id, `Workflow stage held — ${principalHoldReason}`).catch(() => undefined);
         if (
           continuation
           && typeof deps.store.transitionWorkflowWorkItem === "function"
@@ -567,6 +615,9 @@ export async function executeWorkflowGraph(
         }
         return;
       }
+      // FNXC:WorkflowAgentRouting 2026-08-10-01:15: this run cleared the principal fence, so any prior hold is
+      // resolved — drop the ladder so a later hold starts from the short delay rather than a stale long one.
+      clearPrincipalHoldBackoff(task.id);
       /* Direct graph node fences are terminalized only after the interpreter
        * returns, preserving their historical principal through all handler and
        * tool-gate calls while ensuring completed work cannot render as active.

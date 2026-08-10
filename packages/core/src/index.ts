@@ -798,7 +798,6 @@ export {
   canAgentReceiveImplementationTasks,
   isWorkflowPrincipalEligible,
   isBuiltinWorkflowRoleAgent,
-  enforceBuiltinWorkflowRoleRoutability,
   evaluateImplementationTaskBind,
   assertImplementationTaskBindAllowed,
   AgentTaskRoutingPolicyError,
