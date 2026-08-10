@@ -1,4 +1,14 @@
 import { THINKING_LEVELS, type Settings } from "../types.js";
+
+/*
+FNXC:TriagePlanningTimeout 2026-08-10-18:32:
+Single source for the planning-turn ceiling, mirroring DEFAULT_MAX_POST_REVIEW_FIXES: the declaration
+default and the engine's `settings.planningTimeoutMs ?? N` read site must not drift into two separate
+literals. 90 minutes is deliberately generous — successful planning work items measured over 7 days
+ran p50 12.7 / p90 39.5 / p99 105.7 minutes, so a tighter bound would abort legitimate plans and pay
+for the restart, which is the churn this bound exists to remove.
+*/
+export const DEFAULT_PLANNING_TIMEOUT_MS = 5_400_000;
 import {
   DEFAULT_CODE_REVIEW_BLOCKING_SEVERITY,
   DEFAULT_PLAN_REVIEW_BLOCKING_SEVERITY,
@@ -508,6 +518,25 @@ export const BUILTIN_TRIAGE_POLICY_SETTINGS: WorkflowSettingDefinition[] = [
     type: "boolean",
     default: false,
     description: "Auto-approve the generated PROMPT.md and skip the independent spec reviewer.",
+  },
+  {
+    id: "planningTimeoutMs",
+    name: "Planning timeout (ms)",
+    type: "number",
+    minimum: 60_000,
+    integer: true,
+    /*
+     * FNXC:TriagePlanningTimeout 2026-08-10-18:32:
+     * Workflow-native triage policy — it never lived in project/global settings, so it belongs here
+     * and must never be added to MOVED_SETTINGS_KEYS. The planning turn previously had NO
+     * Fusion-side ceiling: `workflowStepTimeoutMs` covers pre-merge workflow STEPS only, and the
+     * provider SDK's 300s cap is time-to-first-byte (cleared once headers arrive), so a hung stream
+     * ran unbounded — observed at 126 minutes, with failed-attempt durations showing a smooth
+     * 1-126 min spread and no clustering, the signature of nothing enforcing a bound.
+     */
+    default: DEFAULT_PLANNING_TIMEOUT_MS,
+    description:
+      "Maximum time a single planning/specification turn may run before the session is aborted. A timeout consumes one attempt of the bounded planning retry budget. Generous by design — it bounds hung turns, not slow ones.",
   },
 ];
 
