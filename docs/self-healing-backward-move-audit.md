@@ -13,7 +13,7 @@ Stages that cannot satisfy all three must either (a) tighten predicate to requir
 |---|---:|---|---|---|---|---|---|---|---|
 | recoverCompletedTasks | 1455 | in-progress + all steps terminal | n/a | step completion | move to in-review | FORWARD | keep | n/a | n/a |
 | recoverStrandedCompletedTodoTasks | 1507 | todo + all steps terminal | n/a | step completion | move to in-progress (resume) | FORWARD | keep | n/a | n/a |
-| recoverStaleMergingStatus | 1557 | in-review stale merging status | `staleMergingStatusMinAgeMs` | stale status + no active merge | clear status | RECONCILE-ONLY | keep | n/a | n/a |
+| recoverStaleMergingStatus | 3521 | in-review stale merging status | `staleMergingStatusMinAgeMs` | stale status + no active merge | clear status; re-enqueue eligible unpaused non-workspace task | RECONCILE + FORWARD RE-ENQUEUE | keep | paused cards never enqueue; only `merge-deadlock-detected` may clear its orphaned stamp | n/a |
 | reclaimPrConflicts | 1606 | PR mergeable=conflicting | path-dependent | conflict inspect result | delegates to reclaimPrConflictForTask | RECONCILE/BACKWARD mix | keep | n/a | n/a |
 | reclaimPrConflictForTask | 1622 | reclaimable conflicting PR branch | inspectConflict + usable worktree checks | active-session/usable-worktree checks only | may move in-review→todo | BACKWARD | tighten | triple proof on in-review→todo path | gate move; emit `task:reclaim-pr-conflict-no-action` |
 | reclaimSelfOwnedBranchConflicts | 1772 | branch conflict self-owned | conflict inspector local checks | conflict classifier only | may move in-review→todo | BACKWARD | tighten | triple proof before backward move | gate move; emit `task:reclaim-self-owned-branch-conflict-no-action` |

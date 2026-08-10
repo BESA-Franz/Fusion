@@ -4956,6 +4956,7 @@ describe("SelfHealingManager", () => {
       const managerWithRecovery = new SelfHealingManager(store, {
         rootDir: "/tmp/test-project",
         enqueueMerge,
+        getActiveMergeTaskId: () => null,
       });
       (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
         autoMerge: true,
@@ -5002,6 +5003,7 @@ describe("SelfHealingManager", () => {
       const managerWithRecovery = new SelfHealingManager(store, {
         rootDir: "/tmp/test-project",
         enqueueMerge,
+        getActiveMergeTaskId: () => null,
       });
       const staleTask = {
         id: "FN-8912-enqueue-throws",
@@ -5035,6 +5037,7 @@ describe("SelfHealingManager", () => {
       const managerWithRecovery = new SelfHealingManager(store, {
         rootDir: "/tmp/test-project",
         enqueueMerge,
+        getActiveMergeTaskId: () => null,
       });
       (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
         autoMerge: false,
@@ -5098,6 +5101,7 @@ describe("SelfHealingManager", () => {
       const managerWithRecovery = new SelfHealingManager(store, {
         rootDir: "/tmp/test-project",
         enqueueMerge,
+        getActiveMergeTaskId: () => null,
       });
       const workspaceTask = {
         id: "FN-8912-workspace-auto-on",
@@ -5132,6 +5136,7 @@ describe("SelfHealingManager", () => {
       const managerWithRecovery = new SelfHealingManager(store, {
         rootDir: "/tmp/test-project",
         clearMergeActive,
+        getActiveMergeTaskId: () => null,
       });
       (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
         globalPause: false,
@@ -5183,25 +5188,162 @@ describe("SelfHealingManager", () => {
       managerWithRecovery.stop();
     });
 
-    it("keeps paused stale merge statuses untouched", async () => {
-      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
-      const pausedTask = {
-        id: "FN-8912-paused",
-        column: "in-review",
-        paused: true,
-        status: "merging",
-        updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
-        steps: [], workflowStepResults: [], log: [],
-      };
-      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
-        autoMerge: true,
-        globalPause: false,
-        enginePaused: false,
+    /*
+    FNXC:MergeReliability 2026-08-10-05:32:
+    `merge-deadlock-detected` is the sole automation pause allowed to clear an orphaned stamp; the
+    clear must not unpause or enqueue it. REVERT CHECK (measured): restore `|| task.paused` and this
+    test returns 0; remove the live `current.paused !== true` enqueue gate and its enqueue assertion fails.
+    */
+    it("clears an unowned stale merge stamp on a merge-deadlock pause without resuming it", async () => {
+      const clearMergeActive = vi.fn();
+      const enqueueMerge = vi.fn();
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project", clearMergeActive, enqueueMerge,
+        getActiveMergeTaskId: () => null,
       });
+      const pausedTask = {
+        id: "FN-8925-merge-deadlock", column: "in-review", paused: true,
+        pausedReason: "merge-deadlock-detected", status: "merging",
+        updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(), steps: [], workflowStepResults: [], log: [],
+      };
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([pausedTask]);
+      (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(pausedTask);
+      const patches: Partial<Task>[] = [];
+      store.updateTaskAtomic = vi.fn(async (_id: string, updater: (live: Task) => Partial<Task> | null) => {
+        const patch = updater(pausedTask as Task);
+        if (patch) { patches.push(patch); Object.assign(pausedTask, patch); }
+        return pausedTask as Task;
+      });
+
+      expect(await managerWithRecovery.recoverStaleMergingStatus()).toBe(1);
+      expect(pausedTask.status).toBeNull();
+      expect(clearMergeActive).toHaveBeenCalledWith(pausedTask.id);
+      expect(enqueueMerge).not.toHaveBeenCalled();
+      expect(patches).toEqual([{ status: null }]);
+      expect(pausedTask).toMatchObject({ paused: true, pausedReason: "merge-deadlock-detected", column: "in-review" });
+      managerWithRecovery.stop();
+    });
+
+    /*
+    FNXC:MergeReliability 2026-08-10-05:49:
+    An unwired ownership probe cannot prove an unowned stamp. REVERT CHECK (measured): restore the
+    null fallback and this fixture clears, recreating the false no-owner assumption that code review found.
+    */
+    it("fails closed when the active-merge ownership probe is unwired", async () => {
+      const clearMergeActive = vi.fn();
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project", clearMergeActive, enqueueMerge: vi.fn(),
+      });
+      const pausedTask = {
+        id: "FN-8925-unwired-owner", column: "in-review", paused: true,
+        pausedReason: "merge-deadlock-detected", status: "merging",
+        updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(), steps: [], workflowStepResults: [], log: [],
+      };
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false });
       (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([pausedTask]);
 
       expect(await managerWithRecovery.recoverStaleMergingStatus()).toBe(0);
-      expect(store.updateTask).not.toHaveBeenCalledWith(pausedTask.id, { status: null });
+      expect(store.listTasks).not.toHaveBeenCalled();
+      expect(store.updateTask).not.toHaveBeenCalled();
+      expect(clearMergeActive).not.toHaveBeenCalled();
+      managerWithRecovery.stop();
+    });
+
+    it.each([
+      ["human pause", { userPaused: true }],
+      ["approval pause", { pausedReason: "awaiting-approval" }],
+      ["unknown pause", { pausedReason: "future-engine-pause" }],
+    ])("keeps %s stale merge stamps fully suppressed", async (_name, extra) => {
+      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project", enqueueMerge: vi.fn(), getActiveMergeTaskId: () => null });
+      const pausedTask = {
+        id: `FN-8925-suppressed-${_name}`, column: "in-review", paused: true, status: "merging",
+        updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(), steps: [], workflowStepResults: [], log: [], ...extra,
+      };
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([pausedTask]);
+
+      expect(await managerWithRecovery.recoverStaleMergingStatus()).toBe(0);
+      expect(store.updateTask).not.toHaveBeenCalled();
+      managerWithRecovery.stop();
+    });
+
+    it("suppresses enqueue when a live row is paused after an eligible snapshot", async () => {
+      const enqueueMerge = vi.fn();
+      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project", enqueueMerge, getActiveMergeTaskId: () => null });
+      const snapshot = {
+        id: "FN-8925-pause-race", column: "in-review", paused: false, status: "merging",
+        updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(), steps: [], workflowStepResults: [], log: [],
+      };
+      const live = { ...snapshot, paused: true, pausedReason: "merge-deadlock-detected" };
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([snapshot]);
+      store.updateTaskAtomic = vi.fn(async (_id: string, updater: (task: Task) => Partial<Task> | null) => {
+        const patch = updater(live as Task);
+        if (patch) Object.assign(live, patch);
+        return live as Task;
+      });
+
+      expect(await managerWithRecovery.recoverStaleMergingStatus()).toBe(1);
+      expect(live.status).toBeNull();
+      expect(enqueueMerge).not.toHaveBeenCalled();
+      managerWithRecovery.stop();
+    });
+
+    it("does not clear when a merge-deadlock snapshot is unpaused into a newly claimed live task", async () => {
+      const snapshot = {
+        id: "FN-8925-unpause-race", column: "in-review", paused: true, pausedReason: "merge-deadlock-detected", status: "merging",
+        updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(), steps: [], workflowStepResults: [], log: [],
+      };
+      const live = { ...snapshot, paused: false, pausedReason: undefined };
+      let reads = 0;
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project", getActiveMergeTaskId: () => (++reads === 1 ? null : snapshot.id), enqueueMerge: vi.fn(),
+      });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([snapshot]);
+      store.updateTaskAtomic = vi.fn(async (_id: string, updater: (task: Task) => Partial<Task> | null) => {
+        expect(updater(live as Task)).toBeNull();
+        return live as Task;
+      });
+
+      expect(await managerWithRecovery.recoverStaleMergingStatus()).toBe(0);
+      managerWithRecovery.stop();
+    });
+
+    it("does not clear when merge confirmation appears on the live atomic row", async () => {
+      const snapshot = {
+        id: "FN-8925-confirm-race", column: "in-review", paused: false, status: "merging",
+        updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(), steps: [], workflowStepResults: [], log: [],
+      };
+      const live = { ...snapshot, mergeDetails: { mergeConfirmed: true } };
+      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project", enqueueMerge: vi.fn(), getActiveMergeTaskId: () => null });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([snapshot]);
+      store.updateTaskAtomic = vi.fn(async (_id: string, updater: (task: Task) => Partial<Task> | null) => {
+        expect(updater(live as Task)).toBeNull();
+        return live as Task;
+      });
+
+      expect(await managerWithRecovery.recoverStaleMergingStatus()).toBe(0);
+      managerWithRecovery.stop();
+    });
+
+    it("applies the merge-deadlock allowlist in the non-atomic compatibility fallback", async () => {
+      const task = {
+        id: "FN-8925-fallback", column: "in-review", paused: true, pausedReason: "merge-deadlock-detected", status: "landing",
+        updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(), steps: [], workflowStepResults: [], log: [],
+      };
+      const enqueueMerge = vi.fn();
+      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project", enqueueMerge, getActiveMergeTaskId: () => null });
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([task]);
+      (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(task);
+      store.updateTaskAtomic = undefined;
+
+      expect(await managerWithRecovery.recoverStaleMergingStatus()).toBe(1);
+      expect(store.updateTask).toHaveBeenCalledWith(task.id, { status: null });
+      expect(enqueueMerge).not.toHaveBeenCalled();
       managerWithRecovery.stop();
     });
 
@@ -6723,8 +6865,19 @@ describe("SelfHealingManager", () => {
       managerWithRecovery.stop();
     });
 
-    it("pauses genuine failures and leaves blockedBy untouched", async () => {
-      const managerWithRecovery = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+    /*
+    FNXC:MergeReliability 2026-08-10-05:42:
+    The deadlock producer must persist provenance so the stale-stamp fixture above represents a real
+    engine park rather than a no-reason human pause. REVERT CHECK (measured): omit pausedReason here
+    and the producer no longer reaches the clear-only merge-deadlock policy.
+    */
+    it("pauses genuine failures with deadlock provenance and leaves blockedBy untouched", async () => {
+      const clearMergeActive = vi.fn();
+      const enqueueMerge = vi.fn();
+      const managerWithRecovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project", clearMergeActive, enqueueMerge,
+        getActiveMergeTaskId: () => null,
+      });
       (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue(baseSettings);
       (store.listTasks as ReturnType<typeof vi.fn>)
         .mockResolvedValueOnce([{ id: "FN-stuck", column: "in-review", paused: false, status: "failed", mergeRetries: 3, mergeDetails: undefined, worktree: "/tmp/wt", log: [] }])
@@ -6736,10 +6889,28 @@ describe("SelfHealingManager", () => {
       const result = await managerWithRecovery.recoverStuckMergeDeadlocks();
 
       expect(result).toBe(1);
-      expect(store.updateTask).toHaveBeenCalledWith("FN-stuck", { paused: true });
+      expect(store.updateTask).toHaveBeenCalledWith("FN-stuck", {
+        paused: true,
+        pausedReason: "merge-deadlock-detected",
+      });
       expect(store.moveTask).not.toHaveBeenCalled();
       expect(store.updateTask).not.toHaveBeenCalledWith("FN-dep", { blockedBy: null });
       expect(getSelfHealingLogger().warn).toHaveBeenCalledWith(expect.stringContaining("paused-for-manual"));
+
+      // Model a late superseded merge-body stamp after this exact producer park.
+      const parkedThenStamped = {
+        id: "FN-stuck", column: "in-review", paused: true, pausedReason: "merge-deadlock-detected",
+        status: "merging", updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(), steps: [], workflowStepResults: [], log: [],
+      };
+      (store.getSettings as ReturnType<typeof vi.fn>).mockResolvedValue({ ...baseSettings, autoMerge: true });
+      (store.listTasks as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue([parkedThenStamped]);
+      (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(parkedThenStamped);
+      (store.updateTask as ReturnType<typeof vi.fn>).mockClear();
+
+      expect(await managerWithRecovery.recoverStaleMergingStatus()).toBe(1);
+      expect(store.updateTask).toHaveBeenCalledWith("FN-stuck", { status: null });
+      expect(clearMergeActive).toHaveBeenCalledWith("FN-stuck");
+      expect(enqueueMerge).not.toHaveBeenCalled();
 
       managerWithRecovery.stop();
     });

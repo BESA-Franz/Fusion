@@ -3526,8 +3526,16 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const minAgeMs = this.getStaleMergingStatusMinAgeMs();
       if (!Number.isFinite(minAgeMs) || minAgeMs <= 0) return 0;
 
+      /*
+      FNXC:MergeReliability 2026-08-10-05:49:
+      Stale-stamp recovery needs a positive ownership probe before it can clear any status. An unwired
+      probe is unknown ownership, not proof that no merger exists; fail closed rather than allowing the
+      merge-deadlock pause exception to erase a live merge stamp in a structural integration.
+      */
+      const getActiveMergeTaskId = this.options.getActiveMergeTaskId;
+      if (typeof getActiveMergeTaskId !== "function") return 0;
       const now = Date.now();
-      const activeMergeTaskId = this.options.getActiveMergeTaskId?.() ?? null;
+      const activeMergeTaskId = getActiveMergeTaskId();
       /*
       FNXC:WorkflowResolvedColumns 2026-07-30-21:40 (the query-filter class, twenty-first sweep):
       Clears a `merging`/`merging-pr` stamp left on a review card with no live merger behind it. The
@@ -3559,8 +3567,20 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           staleMergeLanes.set(entry.id, new Set(staleMergeReviewColumns));
         }
       }
+      /*
+      FNXC:MergeReliability 2026-08-10-05:32:
+      A bare `merge-deadlock-detected` engine pause can retain an unowned merge stamp forever because,
+      unlike `pauseTaskImpl`, its writer does not replace `status` with `paused`. Admit only that
+      automation-owned shape for a clear-only repair. Every human, approval, known operator-attention,
+      and unknown pause remains default-denied so a future pause writer cannot silently become eligible.
+      */
+      const canClearPausedMergeDeadlockStamp = (candidate: Pick<Task, "paused" | "userPaused" | "pausedReason">): boolean =>
+        candidate.paused === true
+        && candidate.userPaused !== true
+        && candidate.pausedReason === "merge-deadlock-detected";
       const stale = tasks.filter((task) => {
-        if (!(staleMergeLanes.get(task.id) ?? staleMergeReviewColumns).has(task.column) || task.paused) return false;
+        if (!(staleMergeLanes.get(task.id) ?? staleMergeReviewColumns).has(task.column)) return false;
+        if (task.paused && !canClearPausedMergeDeadlockStamp(task)) return false;
         /*
         FNXC:MergeReliability 2026-07-15-21:45 (FN-8004 follow-up):
         Staleness now comes from the shared `isStaleMergeActiveStatus` leaf, which the dashboard's
@@ -3598,9 +3618,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           */
           let previousStatus: string | null | undefined;
           const clearIfStillStale = (live: Task): boolean => {
-            const currentActiveMergeTaskId = this.options.getActiveMergeTaskId?.() ?? null;
+            const currentActiveMergeTaskId = getActiveMergeTaskId();
             if (
-              !shouldClearOrphanedMergeStamp(live)
+              (live.paused === true && !canClearPausedMergeDeadlockStamp(live))
+              || !shouldClearOrphanedMergeStamp(live)
               || !isStaleMergeActiveStatus(live, {
                 activeMergeTaskId: currentActiveMergeTaskId,
                 nowMs: Date.now(),
@@ -3636,8 +3657,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             task.id,
             `Auto-recovered: cleared stale '${previousStatus}' status (no active merger)`,
           );
+          /*
+          FNXC:MergeReliability 2026-08-10-05:32:
+          Clearing the false badge is not permission to restart parked work. Check the live row returned
+          by the locked updater so a pause that races this sweep suppresses enqueue without weakening it.
+          */
           if (
-            allowsAutoMergeProcessing(current, settings)
+            current.paused !== true
+            && allowsAutoMergeProcessing(current, settings)
             && current.mergeDetails?.mergeConfirmed !== true
             && !isWorkspaceTask(current)
           ) {
@@ -10939,7 +10966,13 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             if (!proof.ok) {
               await this.emitBackwardMoveNoAction(task, "stuck-merge-deadlock", "task:stuck-merge-deadlock-no-action", proof);
             } else {
-              await this.store.updateTask(task.id, { paused: true });
+              /*
+              FNXC:MergeReliability 2026-08-10-05:42:
+              A deadlock park preserves its merge-active status so operators can see the failed merge,
+              but it must carry durable automation provenance. That lets stale-stamp recovery repair only
+              this engine-owned false badge without treating a no-reason human pause as eligible.
+              */
+              await this.store.updateTask(task.id, { paused: true, pausedReason: "merge-deadlock-detected" });
               await this.store.logEntry(task.id, "merge-deadlock-detected: requires manual intervention — verified content not on main");
               log.warn(`self-heal:deadlock-recovered ${JSON.stringify({ stuckTaskId: task.id, blockedTaskIds, attributedSha: null, action: "paused-for-manual" })}`);
               recovered++;

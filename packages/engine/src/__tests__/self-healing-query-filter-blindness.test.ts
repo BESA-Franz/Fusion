@@ -851,7 +851,10 @@ describe("self-healing sweeps are bounded by a hardcoded column QUERY, not by th
     } as unknown as Task;
     const { store, updateTask } = productionFaithfulStore([stuck]);
 
-    await new SelfHealingManager(store, { rootDir: "/repo" }).recoverStaleMergingStatus();
+    await new SelfHealingManager(store, {
+      rootDir: "/repo",
+      getActiveMergeTaskId: () => null,
+    }).recoverStaleMergingStatus();
 
     expect(updateTask).toHaveBeenCalledWith("FN-STALESTAMP", expect.objectContaining({ status: null }));
   });
