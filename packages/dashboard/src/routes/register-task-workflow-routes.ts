@@ -2363,6 +2363,10 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         A prior link is reusable only while its child remains in a live task lane. Archived and
         soft-deleted children are historical records, not an actionable Created result; conflict
         rather than silently resurrecting or linking a second child.
+
+        FNXC:TaskRecommendations 2026-08-09-03:30:
+        Archive unavailability uses archivedColumnsForTask (workflow archived trait), not a
+        legacy `"archived"` column literal — custom archive-lane boards keep the same rule.
         */
         if (!linked || linked.deletedAt || linkedArchiveColumns.has(linked.column)) {
           throw conflict("Recommendation link points to an unavailable task");
