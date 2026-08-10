@@ -250,7 +250,7 @@ import {
   type RunTaskStepResult,
 } from "./execution/step-runner.js";
 // FNXC:MergerUnification 2026-06-21-19:05: the foundation branch imported `acquireWorkspaceRepoWorktree` here but never used it in executor.ts (the agent tool wraps it via agent-tools.ts), which fails lint on the inherited base. Removed until master-plan U1 re-adds it together with its per-repo acquisition usage.
-import { acquireTaskWorktree, type AcquireTaskWorktreeResult } from "./worktree/worktree-acquisition.js";
+import { acquireTaskWorktree, type AcquireTaskWorktreeResult, WorktreeBaseRefreshError } from "./worktree/worktree-acquisition.js";
 import { resolveCapturedBaseCommitSha } from "./execution/base-commit-capture.js";
 import { installTaskWorktreeIdentityGuard } from "./worktree/worktree-hooks.js";
 import {
@@ -11401,6 +11401,52 @@ export class TaskExecutor {
   }
 
   /*
+  FNXC:WorktreeBaseRefresh 2026-08-09-23:49:
+  The single bounded, NON-PARKING lane for every base-refresh refusal, whichever way it arrives — as a typed
+  graph failure value or as a `WorktreeBaseRefreshError` thrown by acquisition inside `execute()`. Previously
+  only the graph path had a lane and the thrown path fell to the terminal sink, so the recovery that existed on
+  paper never ran. A refusal is a pre-session checkout state that a later acquisition can clear once git state
+  changes; it must never consume a provider retry budget, mislabel itself as a plan defect, or park the task.
+  Exhaustion deliberately leaves the task held and cleanly dispatchable rather than failed.
+  */
+  private async holdForWorktreeBaseRefresh(task: Task, refusal: WorktreeBaseRefreshError | string): Promise<void> {
+    const refreshKind = typeof refusal === "string" ? refusal : refusal.refresh.kind;
+    const live = await this.store.getTask(task.id).catch(() => null);
+    const priorRetries = live?.graphResumeRetryCount ?? 0;
+    if (priorRetries >= MAX_TRANSIENT_GRAPH_RESUME_RETRIES) {
+      await this.store.logEntry(
+        task.id,
+        `Worktree base refresh remains blocked (${refreshKind}) — retry budget exhausted; task remains held`,
+        undefined,
+        this.getRunContextFor(task.id),
+      );
+      return;
+    }
+    const nextRetries = priorRetries + 1;
+    await this.store.logEntry(
+      task.id,
+      `Worktree base refresh blocked execution (${refreshKind}) — retrying in place (${nextRetries}/${MAX_TRANSIENT_GRAPH_RESUME_RETRIES})`,
+      undefined,
+      this.getRunContextFor(task.id),
+    );
+    await this.store.updateTask(task.id, { graphResumeRetryCount: nextRetries }, this.getRunContextFor(task.id));
+    /*
+    A refusal is not a failure state: clear any stale park so the card never shows `failed` while it is simply
+    waiting for a clean checkout — that badge is what paged the operator 99 times.
+    */
+    if (live && (live.status != null || live.error != null)) {
+      await this.store.updateTask(task.id, { status: null, error: null }, this.getRunContextFor(task.id));
+    }
+    const resume = live ?? task;
+    const handle = setTimeout(() => {
+      this.execute(resume).catch((err) =>
+        executorLog.error(`Failed worktree base refresh retry for ${task.id}:`, err),
+      );
+    }, TRANSIENT_GRAPH_RESUME_RETRY_BACKOFF_MS);
+    handle.unref?.();
+  }
+
+  /*
   FNXC:SessionContention 2026-07-25-21:30 (self-recovering wait — the task is never parked):
   Retry the graph in place on an exponential backoff while the holder finishes. The counter is
   IN-MEMORY on purpose: it needs no schema change, and an engine restart resetting it is the desired
@@ -12614,28 +12660,9 @@ export class TaskExecutor {
       in the task log. Exhaustion deliberately leaves the task held for a later clean acquisition.
       */
       if (this.isWorktreeBaseRefreshGraphFailure(result)) {
-        const refreshKind = this.graphFailureValue(result)!;
-        const priorRetries = live.graphResumeRetryCount ?? 0;
-        if (priorRetries < MAX_TRANSIENT_GRAPH_RESUME_RETRIES) {
-          const nextRetries = priorRetries + 1;
-          const message = `Worktree base refresh blocked execution (${refreshKind}) — retrying in place (${nextRetries}/${MAX_TRANSIENT_GRAPH_RESUME_RETRIES})`;
-          await this.store.logEntry(task.id, message, undefined, this.getRunContextFor(task.id));
-          await this.store.updateTask(task.id, { graphResumeRetryCount: nextRetries }, this.getRunContextFor(task.id));
-          const scheduleRetry = () => {
-            this.execute(live).catch((err) =>
-              executorLog.error(`Failed worktree base refresh retry for ${task.id}:`, err),
-            );
-          };
-          const handle = setTimeout(scheduleRetry, TRANSIENT_GRAPH_RESUME_RETRY_BACKOFF_MS);
-          handle.unref?.();
-        } else {
-          await this.store.logEntry(
-            task.id,
-            `Worktree base refresh remains blocked (${refreshKind}) — retry budget exhausted; task remains held`,
-            undefined,
-            this.getRunContextFor(task.id),
-          );
-        }
+        // FNXC:WorktreeBaseRefresh 2026-08-09-23:49: one shared lane with the thrown-error path, so the two
+        // entry points cannot drift in retry budget, park-clearing, or log wording.
+        await this.holdForWorktreeBaseRefresh(live, this.graphFailureValue(result)!);
         await this.persistTokenUsage(task.id);
         return;
       }
@@ -16609,6 +16636,20 @@ export class TaskExecutor {
         // Dependency added mid-execution — discard worktree and move to triage
         this.depAborted.delete(task.id);
         await this.handleDepAbortCleanup(task.id, worktreePath);
+      } else if (err instanceof WorktreeBaseRefreshError) {
+        /*
+        FNXC:WorktreeBaseRefresh 2026-08-09-23:49:
+        Classified FIRST among error types, because acquisition throws this BEFORE any session starts and the
+        generic sink below would park the task `failed` and page the operator for a pre-session checkout state.
+        The graph lane at `isWorktreeBaseRefreshGraphFailure` only sees refusals published as typed node values,
+        and no code node enables `refreshStaleBase` — so between 2026-08-01 and 2026-08-09 it fired 0 times while
+        99 refusals reached the terminal sink. Route the throw into the same bounded, non-parking retry instead.
+        Post-fix this is reachable only for an UNPROVEN tree (compensation failed), which a later acquisition can
+        still repair once git state changes, so it must stay a retry rather than a terminal failure.
+        */
+        await this.holdForWorktreeBaseRefresh(task, err);
+        await this.persistTokenUsage(task.id);
+        return;
       } else if (isInvalidAssistantContinuationErrorMessage(errorMessage)) {
         /*
         FNXC:PostDoneContinuation 2026-07-16-11:57:

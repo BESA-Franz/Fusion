@@ -533,11 +533,21 @@ describe("acquireTaskWorktree", () => {
     expect(git(worktreePath, "git rev-parse HEAD")).toBe(staleBase);
   });
 
+  /*
+  FNXC:WorktreeBaseRefresh 2026-08-09-23:49:
+  The invariant here is the RESOURCE-HYGIENE ordering — the task binding is cleared before the worktree goes
+  back to the pool — not the refusal policy that used to trigger it. A dirty checkout no longer fails base
+  refresh (it declines and executes on the existing base), and in production a pooled worktree never reaches
+  the refresh dirty anyway: `prepareForTask` runs `git checkout -- .` + `git clean -fd` first, so the old
+  fixture's dirt only survived because the pool is mocked here. Drive the ordering through the secrets-record
+  reconciliation refusal instead, which is a secrets-safety gate and remains unconditionally blocking.
+  */
   it("clears a pooled task binding before releasing a worktree that fails base refresh", async () => {
     const rootDir = makeRepo();
     const pooledPath = join(rootDir, ".worktrees", "pooled-fn-4-dirty");
     git(rootDir, `git worktree add -b fusion/fn-4-dirty ${JSON.stringify(pooledPath)}`);
-    writeFileSync(join(pooledPath, "uncommitted.ts"), "dirty\n", "utf-8");
+    // A malformed root secrets-env record: reconciliation cannot prove the checkout is safe to hand an agent.
+    writeFileSync(join(pooledPath, ".fusion-secrets-env.fingerprint"), "not-a-valid-record\n", "utf-8");
     const pool = {
       acquire: vi.fn().mockReturnValue(pooledPath),
       prepareForTask: vi.fn().mockResolvedValue({

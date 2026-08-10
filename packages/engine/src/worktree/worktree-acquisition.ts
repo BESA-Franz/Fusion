@@ -269,8 +269,22 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
       ? { ...settings, worktrunk: { ...settings.worktrunk, enabled: false } }
       : settings;
     const refresh = await refreshReusedWorktreeBase({ task, rootDir, worktreePath: path, store, settings: refreshSettings, audit, logger });
+    /*
+    FNXC:WorktreeBaseRefresh 2026-08-09-23:49:
+    A declined refresh is an unremarkable outcome, not an execution failure: the checkout is intact and the
+    merge lane still rebases with conflict resolution before landing. Record it as a skip so the base staleness
+    stays observable without parking the task or paging the operator.
+
+    This matters more since the refresh was extended to freshly reacquired and pooled worktrees: that widened
+    where a fail-closed refusal could fire, and every one of them reached the executor's terminal sink.
+    */
+    if (refresh.skipped) {
+      await audit?.git({ type: refresh.kind === "stale-base-conflict" ? "worktree:base-refresh-conflict" : "worktree:base-refresh-skipped", target: path, metadata: { taskId: task.id, outcome: refresh.kind } });
+      await store.logEntry(task.id, `Worktree base refresh skipped (${refresh.kind}) — kept local base; the merge-time rebase will retry with conflict resolution`, refresh.detail, runContext);
+      return refresh;
+    }
     if (!refresh.executionSafe) {
-      await audit?.git({ type: refresh.kind === "stale-base-conflict" ? "worktree:base-refresh-conflict" : "worktree:base-refresh-blocked", target: path, metadata: { taskId: task.id, outcome: refresh.kind } });
+      await audit?.git({ type: "worktree:base-refresh-blocked", target: path, metadata: { taskId: task.id, outcome: refresh.kind } });
       await store.logEntry(task.id, `Worktree base refresh blocked execution (${refresh.kind})`, refresh.detail, runContext);
       throw new WorktreeBaseRefreshError(refresh);
     }
