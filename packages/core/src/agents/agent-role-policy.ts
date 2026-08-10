@@ -141,6 +141,56 @@ export function isEngineerRoleAgent(agent: RoleTaggedAgent): boolean {
   return agentRoles(agent).includes("engineer");
 }
 
+/*
+FNXC:WorkflowAgentRouting 2026-08-10-07:50:
+STRUCTURAL capability for a workflow stage, kept separate from AVAILABILITY. The distinction decides
+whether an unroutable named principal is a WAIT or a DEAD END, and conflating the two wedged the board:
+
+FN-8869/FN-8928/FN-8845 were each explicitly assigned to a permanent ENGINEER-role agent, which
+`canAgentTakeImplementationTaskForExplicitRouting` allows by design. The workflow `step-execute` node then
+took that owner as `task-assignee` named authority, found no `executor` tag, and held closed — and a NAMED
+principal never falls through to the role pool. Two idle `Workflow Executor` pool agents sat unused while the
+cards re-dispatched and re-held every ~15 minutes for hours. The only thing still touching them was the owner
+agent's own hourly heartbeat, which logged "progressing, no blockers" and exited: heartbeat observation had
+silently replaced execution.
+
+An agent that lacks the role can NEVER satisfy the node, so waiting on it is unbounded by construction. It was
+never authority for this node in the first place — routing must skip it and continue precedence. Only an agent
+that HAS the role but is momentarily unusable (paused/errored/disabled runtime/at session capacity) earns a
+hold, because that hold ends on its own.
+*/
+export interface WorkflowRoleCapabilityOptions {
+  /*
+  FNXC:WorkflowAgentRouting 2026-08-10-07:50:
+  Accept an ENGINEER-role owner as capable of an executor node. Set ONLY for named task-assignee authority,
+  never for the role pool.
+
+  A durable engineer explicitly assigned to a task is already allowed to take implementation work
+  (`canAgentTakeImplementationTaskForExplicitRouting`), so the executor node it owns must run — and run
+  CONTINUOUSLY under graph dispatch. The alternative, which is what actually shipped, is that the owner's
+  hourly heartbeat becomes the only thing that ever touches the card: it wakes, logs "progressing, no
+  blockers", calls fn_heartbeat_done, and the work never advances. An agent holding a task executes it; a
+  heartbeat is a liveness tick, not a work loop.
+
+  The POOL stays strict, because automatic backlog pickup by engineers is a separate opt-in
+  (`canAgentTakeImplementationTaskForBacklogPickup`) and unassigned work must not silently land on engineers.
+  */
+  readonly allowEngineerAsExecutor?: boolean;
+}
+
+export function hasWorkflowRoleCapability(
+  agent: RoleTaggedAgent,
+  role: AgentCapability,
+  options: WorkflowRoleCapabilityOptions = {},
+): boolean {
+  const roles = agentRoles(agent);
+  const tagged = roles.includes(role)
+    || (role === "executor" && options.allowEngineerAsExecutor === true && roles.includes("engineer"));
+  if (!tagged) return false;
+  // Assignment policy "none" is a hard floor on implementation work; such an agent can never run an executor node.
+  return role !== "executor" || canAgentReceiveImplementationTasks(agent);
+}
+
 export function canAgentTakeImplementationTaskForExplicitRouting(
   agent: AgentAssignmentPolicyInput,
   task: Pick<Task, "column">,
