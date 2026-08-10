@@ -2,6 +2,6 @@
 "@runfusion/fusion": patch
 ---
 
-summary: Stop the engine log from repeating "executor dispatch blocked" every poll for a stuck task.
+summary: Stop the engine log repeating dispatch-blocked and symbol-lock-loss lines every poll for a stuck task.
 category: fix
-dev: The unmet-dependency and ephemeral-disabled pre-dispatch gates now route through `logDispatchBlockedOnce` (packages/engine/src/executor/dispatch-block-log.ts): first block per task/reason logs at `log()`, identical repeats drop to `debug()` (`FUSION_DEBUG=executor`), a changed reason logs again, and the marker clears when the gate passes.
+dev: Shared `createRepeatSuppressedLog` (packages/engine/src/util/repeat-suppressed-log.ts) backs the executor's unmet-dependency/ephemeral-disabled pre-dispatch gates and the scheduler's symbol-lock renewal: first occurrence per task/signature logs at full level, identical repeats drop to `debug()` (`FUSION_DEBUG=executor,scheduler`), a changed signature logs again, and the memo clears when the condition resolves. Symbol-lock loss also gated its per-poll `store.logEntry` append on the same decision.

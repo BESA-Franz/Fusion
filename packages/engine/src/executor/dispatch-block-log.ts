@@ -10,30 +10,30 @@
  * (opt in with `FUSION_DEBUG=executor`). A changed reason — e.g. a different unmet dependency — is a new signature and
  * logs again, so operators still see the transition. Callers clear the marker when the gate passes so the next block of
  * the same task is reported afresh; the map is keyed by task id and is bounded by the set of currently-blocked tasks.
+ *
+ * FNXC:EngineDiagnostics 2026-08-10-17:13:
+ * The suppression itself is now the shared `createRepeatSuppressedLog` primitive — the scheduler's symbol-lock renewal
+ * needed the identical behaviour, so the mechanism lives in one place while this module stays the executor's instance.
  */
 import type { Logger } from "../logger.js";
+import { createRepeatSuppressedLog } from "../util/repeat-suppressed-log.js";
 
-const lastLoggedBlockSignatureByTaskId = new Map<string, string>();
+const dispatchBlockLog = createRepeatSuppressedLog();
 
 /**
  * Log a dispatch-block message at `log()` level only when `signature` differs from the last one logged for `taskId`;
  * otherwise emit it at `debug()` level.
  */
 export function logDispatchBlockedOnce(logger: Logger, taskId: string, signature: string, message: string): void {
-  if (lastLoggedBlockSignatureByTaskId.get(taskId) === signature) {
-    logger.debug(message);
-    return;
-  }
-  lastLoggedBlockSignatureByTaskId.set(taskId, signature);
-  logger.log(message);
+  dispatchBlockLog.logOnce(logger, taskId, signature, message);
 }
 
 /** Forget a task's last-logged block signature so its next block is reported at `log()` level again. */
 export function clearDispatchBlockedLogState(taskId: string): void {
-  lastLoggedBlockSignatureByTaskId.delete(taskId);
+  dispatchBlockLog.clear(taskId);
 }
 
 /** Test-only: drop all remembered signatures. */
 export function resetDispatchBlockedLogState(): void {
-  lastLoggedBlockSignatureByTaskId.clear();
+  dispatchBlockLog.reset();
 }

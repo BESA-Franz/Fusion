@@ -28,6 +28,7 @@ import {
 } from "./concurrency/concurrency.js";
 import { planTaskWorktreePath, resolveTaskWorkingBranch } from "./worktree/worktree-names.js";
 import { schedulerLog } from "./logger.js";
+import { createRepeatSuppressedLog } from "./util/repeat-suppressed-log.js";
 import { type PrMonitor, type PrComment } from "./merge/pr-monitor.js";
 import { reconcileMissionFeatureState } from "./missions/mission-feature-sync.js";
 import { resolveDedicatedPlannerColumnsForTask, resolvePlannerLanesForTask } from "./planner-lane-resolution.js";
@@ -953,6 +954,8 @@ export class Scheduler {
   private wasPermanentAgentUnavailable = new Set<string>();
   /** Tracks dispatch-queued reason signatures to avoid per-tick log spam. */
   private wasDispatchQueuedReasonLogged = new Set<string>();
+  /** Tracks per-task symbol-lock renewal outcomes so a persistent loss/error reports once, not once per poll. */
+  private readonly symbolLockRenewalLog = createRepeatSuppressedLog();
   /** Tracks per-task candidacy fingerprints for task:updated auto-claim invalidation gating. */
   private lastAutoClaimFingerprint = new Map<string, string>();
   /** Tracks recent engine-sourced in-progress → todo requeues to prevent immediate re-dispatch races. */
@@ -1624,6 +1627,7 @@ export class Scheduler {
     this.wasNodeDispatchValidationBlocked.clear();
     this.wasPermanentAgentUnavailable.clear();
     this.wasDispatchQueuedReasonLogged.clear();
+    this.symbolLockRenewalLog.reset();
     schedulerLog.log("Stopped");
   }
 
@@ -2170,22 +2174,57 @@ export class Scheduler {
         try {
           missionLinked = Boolean(await this.options.missionStore.getFeatureByTaskId(task.id));
         } catch (error) {
-          schedulerLog.warn(`Symbol-lock renewal lineage lookup failed for ${task.id}:`, error);
+          const message = error instanceof Error ? error.message : String(error);
+          this.symbolLockRenewalLog.logOnce(
+            schedulerLog,
+            task.id,
+            `lineage-lookup-failed:${message}`,
+            `Symbol-lock renewal lineage lookup failed for ${task.id}: ${message}`,
+            "warn",
+          );
           continue;
         }
       }
       if (!missionLinked) continue;
 
+      /*
+      FNXC:EngineDiagnostics 2026-08-10-17:13:
+      Renewal re-runs every poll for every implementation-column task that declares symbols, and a LOST lock never
+      recovers by renewing — `renewSymbolLocks` reports the same `lost` set on every subsequent pass, so the warning and
+      its `logEntry` companion repeated forever: log-pane spam plus an unbounded activityLog append for a stuck task.
+      Report a lost set (and a persistent renewal error) once per task per distinct signature — a changed set of lost
+      symbols or a new error message is a real transition and reports again — and clear the memo on a clean renewal so a
+      later loss is reported afresh. The `logEntry` write is gated on the SAME first-occurrence decision, so the task's
+      activity log records the transition rather than one row per poll.
+      */
       try {
         const result = await this.store.renewSymbolLocks(symbols, task.id, SYMBOL_LOCK_LEASE_MS);
         if (result.lost.length > 0) {
-          schedulerLog.warn(`Symbol-lock renewal lost ownership for ${task.id}: ${result.lost.join(", ")}`);
-          await this.store.logEntry(task.id, `symbol-lock renewal lost: ${result.lost.join(", ")}`);
+          const lost = [...result.lost].sort();
+          const appended = this.symbolLockRenewalLog.logOnce(
+            schedulerLog,
+            task.id,
+            `lost:${lost.join(",")}`,
+            `Symbol-lock renewal lost ownership for ${task.id}: ${result.lost.join(", ")}`,
+            "warn",
+          );
+          if (appended) {
+            await this.store.logEntry(task.id, `symbol-lock renewal lost: ${result.lost.join(", ")}`);
+          }
+        } else {
+          this.symbolLockRenewalLog.clear(task.id);
         }
       } catch (error) {
         // Do not abort capacity admission for unrelated tasks; the durable expiry
         // and self-healing reconciliation remain the crash-safe backstop.
-        schedulerLog.warn(`Symbol-lock renewal failed for ${task.id}:`, error);
+        const message = error instanceof Error ? error.message : String(error);
+        this.symbolLockRenewalLog.logOnce(
+          schedulerLog,
+          task.id,
+          `renewal-failed:${message}`,
+          `Symbol-lock renewal failed for ${task.id}: ${message}`,
+          "warn",
+        );
       }
     }
   }
