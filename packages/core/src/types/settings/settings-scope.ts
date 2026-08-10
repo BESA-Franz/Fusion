@@ -2097,6 +2097,8 @@ export interface ProjectSettings {
   /** Directory for memory backup snapshots, relative to project root.
    *  Default: ".fusion/backups/memory". */
   memoryBackupDir?: string;
+  /** Directory for the committable deterministic knowledge graph. */
+  knowledgeGraphDir?: string;
   /** Scope of memory backup snapshots.
    *  - "project": backups `.fusion/memory` only
    *  - "agents": backups `.fusion/agent-memory` only

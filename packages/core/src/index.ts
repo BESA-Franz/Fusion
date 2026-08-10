@@ -1607,6 +1607,7 @@ export {
   syncMemoryBackupRoutine,
 } from "./memory/memory-backup.js";
 export type { MemoryBackupInfo, MemoryBackupOptions } from "./memory/memory-backup.js";
+export * from "./knowledge-graph/index.js";
 export {
   exportSettings,
   importSettings,

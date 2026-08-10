@@ -1937,3 +1937,7 @@ Settings → Authentication can hold multiple named credential accounts for each
 ### Engine liveness heartbeat
 
 `engineLastActiveAt` is engine liveness bookkeeping. It is deliberately non-versioned and is preserved from the live settings object when a project configuration rollback restores a historic snapshot.
+
+### Knowledge graph artifact location
+
+`knowledgeGraphDir` is an optional project setting. Its default is `.fusion-knowledge/graph`; keep it outside `.fusion`, which is ignored. The directory is intentionally committable and is refreshed with `fn knowledge-graph build`.
