@@ -650,6 +650,23 @@ export {
   type ResolveOptionalReviewRevisionBudgetInput,
 } from "./workflows/workflow-settings-resolver.js";
 export {
+  applyReviewSeverityGate,
+  formatFindingsByPriority,
+  isBlockingFinding,
+  isReviewBlockingSeverity,
+  resolveReviewBlockingSeverity,
+  CODE_REVIEW_BLOCKING_SEVERITY_SETTING_ID,
+  DEFAULT_CODE_REVIEW_BLOCKING_SEVERITY,
+  DEFAULT_PLAN_REVIEW_BLOCKING_SEVERITY,
+  PLAN_REVIEW_BLOCKING_SEVERITY_SETTING_ID,
+  REVIEW_BLOCKING_SEVERITIES,
+  SEVERITY_PRIORITY_LABEL,
+  type ResolveReviewBlockingSeverityInput,
+  type ReviewBlockingSeverity,
+  type ReviewSeverityGateInput,
+  type ReviewSeverityGateResult,
+} from "./workflows/review-severity-gate.js";
+export {
   applyWorkflowSettingsOverlay,
   type WorkflowSettingsOverlayInput,
 } from "./config/effective-settings-overlay.js";

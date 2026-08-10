@@ -1,4 +1,8 @@
 import { THINKING_LEVELS, type Settings } from "../types.js";
+import {
+  DEFAULT_CODE_REVIEW_BLOCKING_SEVERITY,
+  DEFAULT_PLAN_REVIEW_BLOCKING_SEVERITY,
+} from "./review-severity-gate.js";
 import type { WorkflowSettingDefinition } from "./workflow-ir-types.js";
 
 /**
@@ -545,6 +549,42 @@ export const BUILTIN_REVIEW_REVISION_SETTINGS: WorkflowSettingDefinition[] = [
      */
     description:
       "Maximum automatic Code Review remediation attempts for this workflow. Leave unset to use the workflow's authored default; set 0 to disable automatic revision.",
+  },
+  /*
+   * FNXC:ReviewSeverityGate 2026-08-10-17:33:
+   * The blocking threshold shapes review churn at its source; the revision caps above only truncate a
+   * loop once it is already running. Exposed per workflow so an operator can restore the pre-gate
+   * behavior ("any") for a high-assurance workflow without editing a read-only built-in.
+   */
+  {
+    id: "planReviewBlockingSeverity",
+    name: "Plan Review blocking severity",
+    type: "enum",
+    options: [
+      { value: "critical", label: "P0 only (critical)" },
+      { value: "high", label: "P0 + P1 (high and above)" },
+      { value: "medium", label: "P0 + P1 + P2 medium" },
+      { value: "low", label: "Any classified finding" },
+      { value: "any", label: "Every REVISE blocks" },
+    ],
+    default: DEFAULT_PLAN_REVIEW_BLOCKING_SEVERITY,
+    description:
+      "Minimum finding severity that lets Plan Review block execution. A REVISE carrying no finding at or above this level is recorded as APPROVE_WITH_NOTES and its findings are handed to the implementer. Choose \"any\" to block on every REVISE.",
+  },
+  {
+    id: "codeReviewBlockingSeverity",
+    name: "Code Review blocking severity",
+    type: "enum",
+    options: [
+      { value: "critical", label: "P0 only (critical)" },
+      { value: "high", label: "P0 + P1 (high and above)" },
+      { value: "medium", label: "P0 + P1 + P2 medium" },
+      { value: "low", label: "Any classified finding" },
+      { value: "any", label: "Every REVISE blocks" },
+    ],
+    default: DEFAULT_CODE_REVIEW_BLOCKING_SEVERITY,
+    description:
+      "Minimum finding severity that lets Code Review block merge. A REVISE carrying no finding at or above this level is recorded as APPROVE_WITH_NOTES and its findings are handed to the implementer. Choose \"any\" to block on every REVISE.",
   },
   {
     id: "planReviewReplanCap",

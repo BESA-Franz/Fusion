@@ -254,6 +254,7 @@ describe("TaskExecutor pre-merge optional-step fix seam", () => {
         true,
         false,
         { attempt: 1, max: 3 },
+        undefined,
       );
     }
   });
@@ -312,6 +313,7 @@ describe("TaskExecutor pre-merge optional-step fix seam", () => {
       true,
       false,
       { attempt: 1, max: 2 },
+      undefined,
     );
     expect(store.updateTask.mock.invocationCallOrder[0]).toBeLessThan(sendBack.mock.invocationCallOrder[0]);
   });
@@ -809,6 +811,7 @@ describe("TaskExecutor pre-merge optional-step fix seam", () => {
         true,
         false,
         { attempt: count + 1, max: undefined },
+        undefined,
       );
     }
   });
@@ -893,6 +896,51 @@ describe("TaskExecutor pre-merge optional-step fix seam", () => {
       true,
       false,
       { attempt: 4, max: undefined },
+      undefined,
+    );
+  });
+
+  /*
+  FNXC:ReviewSeverityGate 2026-08-10-17:33:
+  Self-healing recovery must forward the PERSISTED structured findings, not just the prose `output`.
+  Without this the implementer sees an undifferentiated blob on a restart-recovered bounce and cannot
+  tell a P0 from an optional note — the exact ambiguity that turned single REVISE verdicts into
+  multi-round negotiations.
+  */
+  it("forwards persisted review findings into failed-step recovery remediation", async () => {
+    const store = createMockStore();
+    const findings = [
+      { id: "f-blocking", title: "guard missing", body: "null deref", severity: "critical" as const },
+      { id: "f-advisory", title: "naming", body: "minor", severity: "low" as const },
+    ];
+    const liveTask = task({
+      column: "in-review",
+      workflowStepResults: [{
+        workflowStepId: "code-review",
+        workflowStepName: "Code Review",
+        phase: "pre-merge",
+        status: "failed",
+        output: "Fix the review finding.",
+        findings,
+        completedAt: new Date().toISOString(),
+      }],
+    });
+    store.getSettings.mockResolvedValue({ maxPostReviewFixes: 3 });
+    const executor = new TaskExecutor(store, "/tmp/test");
+    const sendBack = vi.spyOn(executor as any, "sendTaskBackForFix").mockResolvedValue(undefined);
+
+    await expect(executor.recoverFailedPreMergeWorkflowStep(liveTask)).resolves.toBe(true);
+
+    expect(sendBack).toHaveBeenCalledWith(
+      liveTask,
+      liveTask.worktree,
+      "Fix the review finding.",
+      "Code Review",
+      expect.any(String),
+      true,
+      false,
+      expect.anything(),
+      findings,
     );
   });
 

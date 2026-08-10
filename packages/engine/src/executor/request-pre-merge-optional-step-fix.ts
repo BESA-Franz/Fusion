@@ -25,7 +25,7 @@
  * FNXC:RemediationVisibility 2026-07-26-19:20:
  * Unscheduled remediation (zero budget, non-REVISE hard fail) must log loudly, never silently park.
  */
-import type { Task, TaskStore, WorkflowStepResult as CoreWorkflowStepResult } from "@fusion/core";
+import type { Task, TaskStore, WorkflowReviewFinding, WorkflowStepResult as CoreWorkflowStepResult } from "@fusion/core";
 import {
   DEFAULT_MAX_POST_REVIEW_FIXES,
   hasPreMergeRemediationAutoMergeHold,
@@ -60,6 +60,12 @@ export type RequestPreMergeOptionalStepFixInfo = {
   failureValue?: string;
   nodeId?: string;
   maxRevisions?: unknown;
+  /**
+   * FNXC:ReviewSeverityGate 2026-08-10-17:33:
+   * Structured findings from a review-kind gate, carried so remediation can present them grouped by
+   * priority instead of as one undifferentiated prose blob. Absent for prose-only / non-review steps.
+   */
+  findings?: WorkflowReviewFinding[];
 };
 
 export type RequestPreMergeOptionalStepFixDeps = {
@@ -87,6 +93,7 @@ export type RequestPreMergeOptionalStepFixDeps = {
     preserveResumeState: boolean,
     mergeVerificationFailure: boolean,
     retryPresentation?: { attempt: number; max?: number },
+    findings?: WorkflowReviewFinding[],
   ) => Promise<void>;
 };
 
@@ -322,6 +329,7 @@ export async function requestPreMergeOptionalStepFix(
     true,
     false,
     { attempt: nextCount, max: budget.unbounded ? undefined : budget.max },
+    info.findings,
   );
   return true;
 }

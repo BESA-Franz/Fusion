@@ -556,6 +556,28 @@ export {
   type OptionalReviewRevisionBudget,
   type ResolveOptionalReviewRevisionBudgetInput,
 } from "./workflows/workflow-settings-resolver.js";
+/*
+FNXC:ReviewSeverityGate 2026-08-10-17:33:
+Keep in SYNC with the main barrel (index.ts) — the `engine-core` vitest project builds @fusion/core from
+THIS file, so a gate export present only in index.ts resolves to `undefined` under engine-core alone.
+*/
+export {
+  applyReviewSeverityGate,
+  formatFindingsByPriority,
+  isBlockingFinding,
+  isReviewBlockingSeverity,
+  resolveReviewBlockingSeverity,
+  CODE_REVIEW_BLOCKING_SEVERITY_SETTING_ID,
+  DEFAULT_CODE_REVIEW_BLOCKING_SEVERITY,
+  DEFAULT_PLAN_REVIEW_BLOCKING_SEVERITY,
+  PLAN_REVIEW_BLOCKING_SEVERITY_SETTING_ID,
+  REVIEW_BLOCKING_SEVERITIES,
+  SEVERITY_PRIORITY_LABEL,
+  type ResolveReviewBlockingSeverityInput,
+  type ReviewBlockingSeverity,
+  type ReviewSeverityGateInput,
+  type ReviewSeverityGateResult,
+} from "./workflows/review-severity-gate.js";
 export {
   applyWorkflowSettingsOverlay,
   type WorkflowSettingsOverlayInput,
