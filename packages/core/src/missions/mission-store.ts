@@ -2280,7 +2280,8 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
    * @returns The updated feature
    * @throws Error if feature not found
    */
-  updateFeature(id: string, updates: Partial<MissionFeature>): MissionFeature {
+  /* FNXC:MissionStatusWrites 2026-08-10-12:47: The SQLite store is a non-production legacy mirror; retain options signature parity without adding a second audit implementation. */
+  updateFeature(id: string, updates: Partial<MissionFeature>, _options: MissionUpdateOptions = {}): MissionFeature {
     const feature = this.getFeature(id);
     if (!feature) {
       throw new Error(`Feature ${id} not found`);
@@ -2759,13 +2760,13 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
    * @returns The updated feature
    * @throws Error if feature not found
    */
-  updateFeatureStatus(featureId: string, status: FeatureStatus): MissionFeature {
+  updateFeatureStatus(featureId: string, status: FeatureStatus, options: MissionUpdateOptions = {}): MissionFeature {
     const feature = this.getFeature(featureId);
     if (!feature) {
       throw new Error(`Feature ${featureId} not found`);
     }
 
-    const updated = this.updateFeature(featureId, { status });
+    const updated = this.updateFeature(featureId, { status }, options);
 
     // Recompute slice status
     this.recomputeSliceStatus(updated.sliceId);
