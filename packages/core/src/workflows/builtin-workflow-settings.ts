@@ -9,6 +9,21 @@ ran p50 12.7 / p90 39.5 / p99 105.7 minutes, so a tighter bound would abort legi
 for the restart, which is the churn this bound exists to remove.
 */
 export const DEFAULT_PLANNING_TIMEOUT_MS = 5_400_000;
+
+/*
+FNXC:PlanReviewReplan 2026-08-10-18:32:
+Built-in ceiling for consecutive Plan Review REVISE -> replan cycles when the resolved revision budget
+is unbounded, used when the `planReviewReplanCap` workflow value is unset.
+
+15 preserves the ceiling that was ACTUALLY in force before this constant existed. That backstop was
+`PLAN_REVIEW_FEEDBACK_HISTORY_LIMIT` — a bound on how much reviewer PROSE is replayed into the next
+planning prompt, whose own comment states it is "bounded independently of persistence and retry
+accounting". Two unrelated concerns were sharing one number, so trimming the prompt history would have
+silently tightened a safety ceiling. Splitting them is the point; the value is held at 15 so the split
+is a pure re-wiring rather than a silent behavior change. Operators can now lower it, which is what the
+`planReviewReplanCap` setting always claimed to do but never did — nothing read it.
+*/
+export const DEFAULT_PLAN_REVIEW_REPLAN_CAP = 15;
 import {
   DEFAULT_CODE_REVIEW_BLOCKING_SEVERITY,
   DEFAULT_PLAN_REVIEW_BLOCKING_SEVERITY,

@@ -104,23 +104,26 @@ function isPlanningLifecycleLockTransportError(error: unknown): error is Error {
 }
 
 /*
-FNXC:PlanReviewReplan 2026-07-13-00:00:
-The triage pre-execution Plan Review gate (runPlanReviewBeforeExecution) routes a REVISE
-verdict back to `needs-replan`, which re-plans and re-reviews. Without a ceiling, a planner
-and reviewer that persistently disagree loop plan → Plan Review REVISE → replan forever
-(observed on TC-002), and in `planApprovalMode: require-all` there is no human escape because
-the task never reaches `awaiting-approval`. Bound the consecutive REVISE replans with a
-cap (default 8, mirroring the executor graph's PLAN_REVIEW_REPLAN_HARD_CAP backstop): after
-this many replans the gate escalates the task to `awaiting-approval` for a human decision
-instead of replanning again. The counter (Task.planReviewReplanCount) resets when the gate passes.
+FNXC:PlanReviewReplan 2026-08-10-18:32 (TOMBSTONE — do not re-add):
+`PLAN_REVIEW_GATE_REPLAN_CAP = 8` is DELETED. It belonged to the out-of-graph triage Plan Review gate
+(`runPlanReviewBeforeExecution`, itself tombstoned in U10/R4), and it did not survive that deletion as
+working code: nothing read it, and its companion counter `Task.planReviewReplanCount` was persisted,
+serialized and reset but never incremented and never compared. A constant and a column that look like
+a live safety ceiling while enforcing nothing are worse than no ceiling at all — they answer "is this
+loop bounded?" with a confident yes.
 
-FNXC:PlanReviewReplan 2026-07-15-11:09:
-Raise the automatic REVISE replan ceiling from 3 to 8 so planner/reviewer pairs get more
-room to converge before escalation. When the cap is hit, the dashboard must still make the
-approval reason explicit (awaitingApprovalReason `plan-review-replan-cap`) so operators know
-this is a non-converging Plan Review loop, not a routine require-all plan gate.
+The capability was NOT lost, only re-owned. U3 moved the cap-park into the graph, where
+`requestPreMergeOptionalStepFix` enforces it against a per-step budget derived from the persisted
+workflow-step results (`countPlanReviewRevisionAttempts`) rather than a task column:
+  - an explicit finite budget (`planReviewMaxRevisions`, node `maxRevisions`) parks at `budget.max`;
+  - the unbounded default is backstopped at `PLAN_REVIEW_FEEDBACK_HISTORY_LIMIT`;
+both call `parkPlanReviewReplanCapExhausted`, which parks `awaiting-approval` with
+`awaitingApprovalReason: "plan-review-replan-cap"` — the same reason string the dashboard badge,
+detail banner and notifications already key on. That is the live owner; look there, not here.
+
+Ratcheted by `packages/engine/src/__tests__/legacy-tombstones.test.ts`, which strips comments before
+searching, so this note survives while the constant must not.
 */
-export const PLAN_REVIEW_GATE_REPLAN_CAP = 8;
 
 export function inlineTaskListFallback(
   lines: string[],
