@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { reconcileMissionFeatureState } from "../missions/mission-feature-sync.js";
+import { projectMissionFeatureAlignment, reconcileMissionFeatureState, resolveMissionFeatureAlignment } from "../missions/mission-feature-sync.js";
 
 describe("reconcileMissionFeatureState", () => {
+  it("projects persisted drift separately from delivery status", async () => {
+    expect(projectMissionFeatureAlignment({ alignment: "diverged-needs-review" })).toBe("diverged-needs-review");
+    expect(projectMissionFeatureAlignment(undefined)).toBe("unavailable");
+    await expect(resolveMissionFeatureAlignment({ getLatestSpecDriftReport: async () => ({ alignment: "diverged-relocked-approved" }) } as never, "FN-1"))
+      .resolves.toBe("diverged-relocked-approved");
+    await expect(resolveMissionFeatureAlignment({ getLatestSpecDriftReport: async () => { throw new Error("read failed"); } } as never, "FN-1"))
+      .resolves.toBe("unavailable");
+  });
+
   it("keeps assertion validation as the completion gate for research-derived features", async () => {
     const decision = await reconcileMissionFeatureState(
       { getTask: async () => undefined } as never,
@@ -9,7 +18,7 @@ describe("reconcileMissionFeatureState", () => {
       { id: "F-1", status: "in-progress", lastValidatorStatus: "failed" } as never,
       { hasLinkedAssertions: true },
     );
-    expect(decision).toEqual(expect.objectContaining({ kind: "noop" }));
+    expect(decision).toEqual(expect.objectContaining({ kind: "noop", alignment: "unavailable" }));
   });
 
   it("reconciles return and active board states without fabricating completion", async () => {
@@ -22,7 +31,7 @@ describe("reconcileMissionFeatureState", () => {
 
   it("keeps archived and failed task outcomes as idempotent non-completion", async () => {
     const taskStore = { getTask: async () => undefined } as never;
-    await expect(reconcileMissionFeatureState(taskStore, { id: "FN-1", column: "archived" } as never, { id: "F-1", status: "in-progress" } as never)).resolves.toEqual({ kind: "noop" });
+    await expect(reconcileMissionFeatureState(taskStore, { id: "FN-1", column: "archived" } as never, { id: "F-1", status: "in-progress" } as never)).resolves.toEqual({ kind: "noop", alignment: "unavailable" });
     await expect(reconcileMissionFeatureState(taskStore, { id: "FN-1", column: "todo", status: "failed", error: "BLOCKED" } as never, { id: "F-1", status: "triaged" } as never)).resolves.toMatchObject({ kind: "failure" });
   });
 });

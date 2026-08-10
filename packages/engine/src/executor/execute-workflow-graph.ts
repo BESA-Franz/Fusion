@@ -19,6 +19,9 @@ import type {
 } from "@fusion/core";
 import {
   ACTIVE_WORKFLOW_WORK_ITEM_STATES,
+  computePlanApprovalFingerprint,
+  isPlanReviewSatisfied,
+  PLAN_REVIEW_GROUP_ID,
   getBuiltinWorkflow,
   resolveColumnAgentBinding,
   resolveMaxConsecutiveToolFailureRetries,
@@ -38,6 +41,7 @@ import { executorLog } from "../logger.js";
 import type { EngineRunContext } from "../util/run-audit.js";
 import { takePreHeldExecutorSlot } from "../concurrency/concurrency.js";
 import { resolveCompleteColumnFor } from "./lifecycle-columns.js";
+import { nextPlanReviewAttemptCount, PLAN_REVIEW_FEEDBACK_HISTORY_LIMIT } from "../plan-review-feedback-history.js";
 import type { AgentSemaphore } from "../concurrency/concurrency.js";
 import type { WorkflowAgentCapacity } from "../agents/workflow-agent-capacity.js";
 import {
@@ -472,8 +476,49 @@ export async function executeWorkflowGraph(
             fix) must preserve the prior `status:"failed"` entry's history in
             `priorAttempts` rather than silently overwriting it.
             */
-            const existing = upsertWorkflowStepResult(live?.workflowStepResults, result);
-            await deps.store.updateTask(taskId, { workflowStepResults: existing }, deps.getRunContextFor(taskId));
+            const isPlanReviewResult = result.workflowStepId === PLAN_REVIEW_GROUP_ID
+              || result.workflowStepName === "Plan Review";
+            const resultToPersist = isPlanReviewResult
+              ? {
+                  ...result,
+                  planReviewAttemptCount: nextPlanReviewAttemptCount(
+                    live?.workflowStepResults?.find((existing) => existing.workflowStepId === result.workflowStepId),
+                    result,
+                  ),
+                }
+              : result;
+            const existing = upsertWorkflowStepResult(
+              live?.workflowStepResults,
+              resultToPersist,
+              isPlanReviewResult ? { maxPriorAttempts: PLAN_REVIEW_FEEDBACK_HISTORY_LIMIT } : undefined,
+            );
+            if (isPlanReviewResult && isPlanReviewSatisfied(resultToPersist) && deps.store.isBackendMode()) {
+              /*
+              FNXC:SpecLock 2026-08-09-20:21:
+              A graph Plan Review pass is an acceptance producer, not merely progress telemetry.
+              Create its immutable lock before publishing the satisfied result that scheduler and
+              hold-release consume; a lock failure leaves the old unsatisfied result in place.
+              */
+              const prompt = await deps.readTaskArtifact(taskId, "PROMPT.md");
+              if (!prompt?.trim()) throw new Error("Plan Review cannot accept an unreadable PROMPT.md without a spec lock");
+              const fingerprint = computePlanApprovalFingerprint(prompt);
+              await deps.store.withPlanningLifecycleLock(taskId, async () => {
+                const fresh = await deps.store.getTask(taskId);
+                const acceptedResult = upsertWorkflowStepResult(
+                  fresh.workflowStepResults,
+                  resultToPersist,
+                  { maxPriorAttempts: PLAN_REVIEW_FEEDBACK_HISTORY_LIMIT },
+                );
+                await deps.store.lockCurrentPlanWhilePlanningLocked(taskId, fingerprint, prompt);
+                const accepted = await deps.store.updateTask(taskId, {
+                  workflowStepResults: acceptedResult,
+                  approvedPlanFingerprint: fingerprint,
+                }, deps.getRunContextFor(taskId));
+                await deps.store.reconcileSpecDriftWhilePlanningLocked(accepted);
+              });
+            } else {
+              await deps.store.updateTask(taskId, { workflowStepResults: existing }, deps.getRunContextFor(taskId));
+            }
           } catch {
             // Result recording is additive visibility — never affect the run.
           }

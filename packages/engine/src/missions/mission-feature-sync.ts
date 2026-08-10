@@ -1,8 +1,34 @@
-import type { MissionFeature, Task, TaskStore } from "@fusion/core";
+import type { DriftAlignment, MissionFeature, Task, TaskStore } from "@fusion/core";
 import { getTaskCompletionBlockerForStore } from "../execution/task-completion.js";
 import { resolveLifecycleColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask } from "@fusion/core";
 
 export type MissionFeatureSyncTargetStatus = "done" | "in-progress" | "triaged";
+
+/**
+ * FNXC:SpecLockMissionAlignment 2026-08-09-07:36:
+ * Drift alignment is an orthogonal mission projection. It intentionally does not participate in
+ * delivery-status transitions: a diverged task may still be in progress, complete, or failed.
+ */
+export function projectMissionFeatureAlignment(report: { alignment: DriftAlignment } | undefined): DriftAlignment {
+  return report?.alignment ?? "unavailable";
+}
+
+/**
+ * FNXC:SpecLockMissionAlignment 2026-08-09-19:51:
+ * Mission delivery reconciliation consumes the retained report instead of deriving scope state
+ * from a task column. An absent report is unavailable, never an implicit on-plan projection.
+ */
+export async function resolveMissionFeatureAlignment(
+  taskStore: Pick<TaskStore, "getLatestSpecDriftReport">,
+  taskId: string | undefined,
+): Promise<DriftAlignment> {
+  if (!taskId) return "unavailable";
+  try {
+    return projectMissionFeatureAlignment(await taskStore.getLatestSpecDriftReport(taskId));
+  } catch {
+    return "unavailable";
+  }
+}
 
 export interface MissionFeatureSyncContext {
   hasLinkedAssertions?: boolean;
@@ -35,17 +61,19 @@ export const LEGACY_PLANNER_COLUMNS: readonly string[] = ["triage", "todo"];
 
 
 export type MissionFeatureSyncDecision =
-  | { kind: "failure"; reason: string }
-  | { kind: "blocked"; reason: string }
-  | { kind: "update"; status: MissionFeatureSyncTargetStatus; reason: string }
-  | { kind: "noop" };
+  | { kind: "failure"; reason: string; alignment: DriftAlignment }
+  | { kind: "blocked"; reason: string; alignment: DriftAlignment }
+  | { kind: "update"; status: MissionFeatureSyncTargetStatus; reason: string; alignment: DriftAlignment }
+  | { kind: "noop"; alignment: DriftAlignment };
 
 export async function reconcileMissionFeatureState(
-  taskStore: Pick<TaskStore, "getTask"> & Parameters<typeof resolveTaskLifecycleColumns>[0],
+  taskStore: Pick<TaskStore, "getTask" | "getLatestSpecDriftReport"> & Parameters<typeof resolveTaskLifecycleColumns>[0],
   task: Task,
   feature: Pick<MissionFeature, "id" | "status" | "lastValidatorStatus">,
   context: MissionFeatureSyncContext = {},
 ): Promise<MissionFeatureSyncDecision> {
+  const alignment = await resolveMissionFeatureAlignment(taskStore, task.id);
+
   /*
   FNXC:MissionReconciliation 2026-07-30-00:00:
   FN-8307 makes failure a provenance-preserving withheld outcome regardless of
@@ -56,6 +84,7 @@ export async function reconcileMissionFeatureState(
     return {
       kind: "failure",
       reason: `task ${task.id} failed; feature ${feature.id} remains ${feature.status}`,
+      alignment,
     };
   }
 
@@ -139,7 +168,7 @@ export async function reconcileMissionFeatureState(
   if ((lane.complete !== undefined && task.column === lane.complete)) {
     const blocker = await getTaskCompletionBlockerForStore(taskStore, task);
     if (blocker) {
-      return { kind: "blocked", reason: blocker };
+      return { kind: "blocked", reason: blocker, alignment };
     }
 
     if (hasUnvalidatedAssertions) {
@@ -148,9 +177,10 @@ export async function reconcileMissionFeatureState(
           kind: "update",
           status: "in-progress",
           reason: `task ${task.id} completed; awaiting assertion validation`,
+          alignment,
         };
       }
-      return { kind: "noop" };
+      return { kind: "noop", alignment };
     }
 
     if (feature.status !== "done") {
@@ -158,10 +188,11 @@ export async function reconcileMissionFeatureState(
         kind: "update",
         status: "done",
         reason: `task ${task.id} completed`,
+        alignment,
       };
     }
 
-    return { kind: "noop" };
+    return { kind: "noop", alignment };
   }
 
   /*
@@ -170,7 +201,7 @@ export async function reconcileMissionFeatureState(
   status untouched so a terminal/duplicate archive cannot fabricate roadmap
   progress; callers may still recompute hierarchy idempotently.
   */
-  if ((lane.archived !== undefined && task.column === lane.archived)) return { kind: "noop" };
+  if ((lane.archived !== undefined && task.column === lane.archived)) return { kind: "noop", alignment };
 
   if (
     ((lane.wip !== undefined && task.column === lane.wip) || (lane.review !== undefined && task.column === lane.review))
@@ -182,6 +213,7 @@ export async function reconcileMissionFeatureState(
       reason: (lane.review !== undefined && task.column === lane.review)
         ? `task ${task.id} is in review`
         : `task ${task.id} started`,
+      alignment,
     };
   }
 
@@ -226,8 +258,9 @@ export async function reconcileMissionFeatureState(
       kind: "update",
       status: "triaged",
       reason: `task ${task.id} returned to triage`,
+      alignment,
     };
   }
 
-  return { kind: "noop" };
+  return { kind: "noop", alignment };
 }

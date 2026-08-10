@@ -53,6 +53,7 @@ import { resolveIntegrationBranch } from "./merge/integration-branch.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { InProcessRuntime } from "./runtimes/in-process-runtime.js";
+import { createStoreSpecDriftRepository, SpecDriftReconciler } from "./spec-drift-reconciler.js";
 import type { WorktreePool } from "./worktree/worktree-pool.js";
 import type { ProjectRuntimeConfig } from "./project/project-runtime.js";
 import { PrMonitor } from "./merge/pr-monitor.js";
@@ -399,6 +400,7 @@ type MergeResolver = { resolve: (result: MergeResult) => void; reject: (err: Err
 export class ProjectEngine {
   private runtime: InProcessRuntime;
   private started = false;
+  private specDriftReconciler?: SpecDriftReconciler;
   private prMonitor?: PrMonitor;
   /**
    * FNXC:PlannerOversight 2026-07-04-00:00:
@@ -682,6 +684,7 @@ export class ProjectEngine {
   private taskMovedHandler?: (...args: any[]) => void;
   private taskUpdatedHandler?: (...args: any[]) => void;
   private taskDeletedHandler?: (...args: any[]) => void;
+  private specDriftTaskMutationHandler?: (...args: any[]) => void;
   private autostashOrphansHandler?: (...args: any[]) => void;
   private legacyAutoMergeStampAdvisoryEmitted = false;
 
@@ -946,6 +949,29 @@ export class ProjectEngine {
     });
 
     const store = this.runtime.getTaskStore();
+    /*
+    FNXC:SpecDrift 2026-08-10-09:36:
+    The startup and live-event reconciler must receive the shared store repository rather than an
+    inline latest-report snapshot. Full append-only history preserves re-locked divergence, while
+    the report identity fence intentionally cannot detect an incorrect alignment value.
+    */
+    this.specDriftReconciler = new SpecDriftReconciler(createStoreSpecDriftRepository(store));
+    /*
+    FNXC:SpecDrift 2026-08-09-18:32:
+    Startup repair alone leaves a long-running engine blind to direct task mutations and workflow
+    moves. Subscribe once at the runtime boundary; the reconciler coalesces bursts and its report
+    insert fence prevents this listener from turning task:updated into a feedback loop.
+    */
+    this.specDriftTaskMutationHandler = (event: Task | { task?: Task }) => {
+      const task = "id" in event ? event : event.task;
+      if (task?.id) this.specDriftReconciler?.enqueue(task.id);
+    };
+    store.on("task:created", this.specDriftTaskMutationHandler);
+    store.on("task:updated", this.specDriftTaskMutationHandler);
+    store.on("task:moved", this.specDriftTaskMutationHandler);
+    for (const task of await store.listTasks({ includeArchived: true, slim: true })) {
+      this.specDriftReconciler.enqueue(task.id);
+    }
     const cwd = this.config.workingDirectory;
     const settings = await store.getSettings();
     const migrationNotice = settings.sqliteMigrationNotice;
@@ -1410,6 +1436,8 @@ export class ProjectEngine {
     */
     this.shuttingDown = true;
     this.startupGeneration += 1;
+    this.specDriftReconciler?.stop();
+    this.specDriftReconciler = undefined;
 
     // FNXC:VerificationConcurrency 2026-07-15-09:05: Drop this project's cap so it no longer pins process min.
     unregisterProjectVerificationLimit(this.config.projectId);
@@ -1509,6 +1537,11 @@ export class ProjectEngine {
       }
       if (this.taskDeletedHandler) {
         store.off("task:deleted", this.taskDeletedHandler);
+      }
+      if (this.specDriftTaskMutationHandler) {
+        store.off("task:created", this.specDriftTaskMutationHandler);
+        store.off("task:updated", this.specDriftTaskMutationHandler);
+        store.off("task:moved", this.specDriftTaskMutationHandler);
       }
       if (this.autostashOrphansHandler) {
         store.off("merger:autostashOrphans", this.autostashOrphansHandler as any);

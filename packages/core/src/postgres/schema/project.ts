@@ -351,6 +351,19 @@ export const tasks = projectSchema.table("tasks", {
   index("idxTasksSearchVector").using("gin", t.searchVector),
 ]);
 
+/* FNXC:SpecLock 2026-08-09-07:06: plan locks, evidence, and reports omit task FKs so immutable history survives archive cleanup and task tombstones. */
+export const specLocks = projectSchema.table("spec_locks", {
+  projectId: text("project_id").notNull(), taskId: text("task_id").notNull(), version: integer("version").notNull(),
+  acceptedAt: text("accepted_at").notNull(), approvalFingerprint: text("approval_fingerprint").notNull(), currentPlanVersion: integer("current_plan_version").notNull(), currentPlanHash: text("current_plan_hash").notNull(),
+  snapshot: jsonb("snapshot").notNull(), priorVersion: integer("prior_version"), diff: jsonb("diff"),
+}, (t) => [primaryKey({ columns: [t.projectId, t.taskId, t.version] })]);
+export const currentPlanEvidence = projectSchema.table("current_plan_evidence", {
+  projectId: text("project_id").notNull(), taskId: text("task_id").notNull(), version: integer("version").notNull(), sourceRevision: bigint("source_revision", { mode: "number" }).notNull(), sourceHash: text("source_hash").notNull(), capturedAt: text("captured_at").notNull(), snapshot: jsonb("snapshot").notNull(),
+}, (t) => [primaryKey({ columns: [t.projectId, t.taskId, t.version] }), unique("current_plan_evidence_source").on(t.projectId, t.taskId, t.sourceHash)]);
+export const specDriftReports = projectSchema.table("spec_drift_reports", {
+  projectId: text("project_id").notNull(), taskId: text("task_id").notNull(), reportHash: text("report_hash").notNull(), lockVersion: integer("lock_version"), currentPlanVersion: integer("current_plan_version"), currentPlanHash: text("current_plan_hash"), executionHash: text("execution_hash").notNull(), report: jsonb("report").notNull(), createdAt: text("created_at").notNull(),
+}, (t) => [primaryKey({ columns: [t.projectId, t.taskId, t.reportHash] })]);
+
 // ── Config ───────────────────────────────────────────────────────────
 export const config = projectSchema.table("config", {
   // FNXC:MultiProjectIsolation 2026-07-11:

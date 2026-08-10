@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, type MouseEvent, typ
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { getErrorMessage, type Goal } from "@fusion/core";
+import { getErrorMessage, type DriftAlignment, type Goal } from "@fusion/core";
 import {
   X,
   Plus,
@@ -103,6 +103,7 @@ import {
   fetchMissionInterviewDrafts,
   discardMissionInterviewDraft,
   fetchTaskDetail,
+  fetchSpecLock,
   apiGetBranchGroup,
   api,
   type AiSessionSummary,
@@ -1271,6 +1272,35 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   an unavailable candidate can be skipped but an old response never leaks its
   branch, member count, or PR state into the current mission.
   */
+  /*
+  FNXC:SpecLockMissionAlignment 2026-08-09-08:25:
+  FN-8845 keeps delivery status and spec alignment independent. Mission cards obtain the
+  persisted task report instead of inferring alignment from a task column, so an archived or
+  unlinked feature never gains a fabricated roadmap projection.
+  */
+  const [featureSpecAlignments, setFeatureSpecAlignments] = useState<Record<string, DriftAlignment>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    const linkedFeatures = selectedMission?.milestones.flatMap((milestone) =>
+      milestone.slices.flatMap((slice) => slice.features.flatMap((feature) => feature.taskId ? [feature] : [])),
+    ) ?? [];
+    setFeatureSpecAlignments({});
+    if (!isActive || linkedFeatures.length === 0) return () => { cancelled = true; };
+
+    void Promise.all(linkedFeatures.map(async (feature) => {
+      try {
+        const evidence = await fetchSpecLock(feature.taskId!, projectId);
+        return [feature.id, evidence.report?.alignment ?? "unavailable"] as const;
+      } catch {
+        return [feature.id, "unavailable"] as const;
+      }
+    })).then((entries) => {
+      if (!cancelled) setFeatureSpecAlignments(Object.fromEntries(entries));
+    });
+    return () => { cancelled = true; };
+  }, [isActive, projectId, selectedMission]);
+
   useEffect(() => {
     let cancelled = false;
     setSelectedMissionBranchGroup(null);
@@ -3726,6 +3756,15 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                           >
                                             {feature.status}
                                           </span>
+                                          {feature.taskId && featureSpecAlignments[feature.id] && (
+                                            <span
+                                              className={`mission-status-badge mission-status-badge--sm mission-spec-alignment mission-spec-alignment--${featureSpecAlignments[feature.id]}`}
+                                              data-testid={`mission-feature-spec-alignment-${feature.id}`}
+                                              aria-label={t("missions.specAlignment", "Spec alignment: {{alignment}}", { alignment: featureSpecAlignments[feature.id] })}
+                                            >
+                                              {featureSpecAlignments[feature.id]}
+                                            </span>
+                                          )}
                                           {/* Loop state indicator */}
                                           {(feature.loopState && feature.loopState !== "idle") && (
                                             <span

@@ -4811,6 +4811,17 @@ export class TriageProcessor {
       logger: { warn: (m: string) => planLog.warn(m) },
     });
 
+    /*
+    FNXC:SpecLock 2026-08-09-07:36:
+    Planning finalization writes PROMPT.md without going through updateTask({ prompt }), so it must
+    capture the same canonical evidence before any approval path can release the task. This remains
+    before the release boundary: a database/parser failure leaves the planning hold intact.
+    */
+    const supportsSpecLock = (this.store as unknown as { isBackendMode?: () => boolean }).isBackendMode?.() === true;
+    if (supportsSpecLock) {
+      await this.store.captureCurrentPlanEvidence(task.id, written);
+    }
+
     let taskIntentSignature: ReturnType<typeof extractIntentSignature> = {
       routePaths: [],
       filePaths: [],
@@ -5120,6 +5131,24 @@ export class TriageProcessor {
         planLog.log(`✓ ${task.id} specified and awaiting manual approval`);
         return;
       }
+    }
+
+    /*
+    FNXC:SpecLock 2026-08-09-07:36:
+    Auto-approved finalization is an accepted-plan path too. Append/reuse its immutable lock before
+    the scheduler-visible handoff, then persist the matching fingerprint; a crash between these
+    writes leaves an inert historical lock rather than granting mutable prompt content approval.
+    */
+    if (supportsSpecLock) {
+      const fingerprint = computePlanApprovalFingerprint(written);
+      await this.store.lockCurrentPlanWhilePlanningLocked(task.id, fingerprint, written);
+      if (!await this.updatePlanningStateIfStillCurrent(task, { approvedPlanFingerprint: fingerprint })) return;
+      /*
+      FNXC:SpecDrift 2026-08-09-07:36:
+      Establish the first report while the planning lifecycle fence is still held. A release never
+      races ahead of the deterministic comparison; later evidence updates can coalesce retries.
+      */
+      await this.store.reconcileSpecDriftWhilePlanningLocked({ ...task, approvedPlanFingerprint: fingerprint });
     }
 
     if (shouldClearWorkflowRunStepInstances) {

@@ -2431,3 +2431,6 @@ In **Settings → Merge**, pull-request mode offers **Required pull-request chec
 ### Durable agent activity telemetry
 
 Activity includes durable and ephemeral agent sessions from heartbeat, executor, workflow-step, triage, reviewer, and merger lanes. **Sessions** is the sum of CLI session rows and `usage_events` session-start rows in the `agent-session` category; each session class has one writer. Human chat and mailbox turns supply `user_message` events. Active nodes remains zero on a single-node installation when no mesh routing node id exists.
+## Plan alignment in Task Detail
+
+The shared Task Detail Definition view shows the persisted spec alignment, latest lock/current-plan versions, and deterministic finding categories. `activeLock` is derived from the live approval fingerprint and current-plan hash; an unavailable or inactive lock is not presented as on-plan. A historical report from a prior lock or plan revision stays in retained history and displays as unavailable until a matching current report exists. Findings are structural; `mission-statement` identifies a changed Mission narrative hash without displaying or judging its prose. The same shared content is used by modal and right-dock task detail hosts.

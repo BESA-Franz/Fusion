@@ -4,10 +4,28 @@ import { TaskLaneCache } from "./task-lane-cache.js";
 import { randomUUID } from "node:crypto";
 import { WEDGE_RENOTIFY_COOLDOWN_MS } from "./types/task/task-core.js";
 import { join } from "node:path";
-import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { createCurrentPlanEvidence, diffSpecLocks, isSpecLockActive, type CurrentPlanEvidence, type PlanEvidenceBindings, type SpecLock } from "./planner/spec-lock.js";
+import { evaluateSpecDrift, hasPriorLockDivergence, type DriftReport } from "./planner/drift-report.js";
 import * as schema from "./postgres/schema/index.js";
 import { type FSWatcher } from "node:fs";
+import { readFile } from "node:fs/promises";
 import type { Task, TaskDetail, TaskCreateInput, TaskAttachment, AgentLogEntry, BoardConfig, Column, ColumnId, CheckoutClaimPrecondition, MergeResult, Settings, GlobalSettings, ProjectSettings, ActivityLogEntry, ActivityEventType, TaskDocument, TaskDocumentRevision, TaskDocumentCreateInput, ArchivedTaskDocumentAdditionInput, ArchivedTaskDocumentAdditionResult, TaskDocumentWithTask, Artifact, ArtifactCreateInput, ArtifactType, ArtifactWithTask, InboxTask, TaskLogEntry, RunMutationContext, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, ArchivedTaskEntry, ArchiveAgentLogMode, TaskPriority, WorkflowStepTemplate, Agent, AutostashOrphanRecord, TaskCommitAssociation, CommitAssociationDiffBackfillReport, GithubIssueAction, TaskDeleteClosureContext, MergeQueueEntry, MergeQueueEnqueueOptions, MergeQueueAcquireOptions, MergeQueueReleaseOutcome, HandoffToReviewOptions, GoalCitation, GoalCitationFilter, GoalCitationInput, GoalCitationSurface, BranchGroup, BranchGroupCreateInput, BranchGroupUpdate, TaskBranchAssignmentMode, MergeRequestRecord, MergeRequestState, MergeRequestWorkflowProjectionOptions, CompletionHandoffMarker, WorkflowWorkItem, WorkflowWorkItemDueFilter, WorkflowWorkItemKind, WorkflowWorkItemState, WorkflowWorkItemTransitionPatch, WorkflowWorkItemUpsertInput, PrEntity, PrEntityCreateInput, PrEntityUpdate, PrThreadState, PrThreadOutcome, PluginActivation, PluginActivationInput } from "./types.js";
+
+/*
+FNXC:SpecLock 2026-08-09-21:01:
+Current-plan evidence includes durable scope relations that can mutate independently of PROMPT.md.
+Keep this projection small and structural; it captures IDs only and never copies prompt prose into
+telemetry or a mutable task field.
+*/
+function specLockBindings(task: Pick<Task, "dependencies" | "missionId" | "sliceId" | "sourceParentTaskId">): PlanEvidenceBindings {
+  return {
+    dependencies: task.dependencies ?? [],
+    missionId: task.missionId,
+    sliceId: task.sliceId,
+    sourceParentTaskId: task.sourceParentTaskId,
+  };
+}
 
 export type OverlapBlockerRepairReason =
   | "task-not-found"
@@ -59,7 +77,7 @@ export const WORKFLOW_COMPILED_STEP_TEMPLATE_PREFIX = "workflow:";
 import { GlobalSettingsStore } from "./config/global-settings.js";
 import { Database } from "./db/db.js";
 import { ArchiveDatabase } from "./db/archive-db.js";
-import type { AsyncDataLayer, DbTransaction } from "./postgres/data-layer.js";
+import { projectScopeFor, type AsyncDataLayer, type DbTransaction } from "./postgres/data-layer.js";
 import { withPlanningLifecycleAdvisoryLock } from "./postgres/advisory-locks.js";
 import { MissionStore } from "./missions/mission-store.js";
 import { AsyncMissionStore } from "./async-stores/async-mission-store.js";
@@ -959,8 +977,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public async atomicWriteTaskJson(dir: string, task: Task): Promise<void> {
     return atomicWriteTaskJsonImpl2(this, dir, task);
   }
-  public async atomicWriteTaskJsonWithAudit( dir: string, task: Task, auditInput?: RunAuditEventInput, planningInvalidation?: PlanningDependencyInvalidation, ): Promise<void> {
-    return atomicWriteTaskJsonWithAuditImpl(this, dir, task, auditInput, planningInvalidation);
+  public async atomicWriteTaskJsonWithAudit( dir: string, task: Task, auditInput?: RunAuditEventInput, planningInvalidation?: PlanningDependencyInvalidation, specPlanPrompt?: string, ): Promise<void> {
+    return atomicWriteTaskJsonWithAuditImpl(this, dir, task, auditInput, planningInvalidation, specPlanPrompt);
   }
   /*
   FNXC:TaskTiming 2026-07-15-00:00:
@@ -1146,6 +1164,216 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   }
   async refineTask(id: string, feedback: string): Promise<Task> {
     return refineTaskImpl(this, id, feedback);
+  }
+  /**
+   * FNXC:SpecLock 2026-08-09-07:06:
+   * FN-8845 retains plan snapshots outside the mutable task row. Backend-only storage is deliberate:
+   * SQLite is no longer a runtime path and silently falling back would lose audit history on restart.
+   */
+  async appendCurrentPlanEvidence(taskId: string, evidence: import("./planner/spec-lock.js").CurrentPlanEvidence): Promise<import("./planner/spec-lock.js").CurrentPlanEvidence> {
+    if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");
+    const projectId = this.asyncLayer.projectId ?? "";
+    await this.asyncLayer.db.insert(schema.project.currentPlanEvidence).values({ projectId, taskId, version: evidence.version, sourceRevision: evidence.sourceRevision, sourceHash: evidence.sourceHash, capturedAt: evidence.capturedAt, snapshot: evidence }).onConflictDoNothing();
+    const rows = await this.asyncLayer.db.select().from(schema.project.currentPlanEvidence).where(and(projectScopeFor(schema.project.currentPlanEvidence.projectId, this.asyncLayer.projectId), eq(schema.project.currentPlanEvidence.taskId, taskId), eq(schema.project.currentPlanEvidence.sourceHash, evidence.sourceHash))).limit(1);
+    return rows[0]!.snapshot as import("./planner/spec-lock.js").CurrentPlanEvidence;
+  }
+  async getLatestCurrentPlanEvidence(taskId: string): Promise<CurrentPlanEvidence | undefined> {
+    if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");
+    const rows = await this.asyncLayer.db.select().from(schema.project.currentPlanEvidence).where(and(projectScopeFor(schema.project.currentPlanEvidence.projectId, this.asyncLayer.projectId), eq(schema.project.currentPlanEvidence.taskId, taskId))).orderBy(desc(schema.project.currentPlanEvidence.version)).limit(1);
+    return rows[0]?.snapshot as CurrentPlanEvidence | undefined;
+  }
+  /**
+   * FNXC:SpecLock 2026-08-09-12:34:
+   * FN-8845 records every authoritative full PROMPT write before it can be released. Content-hash
+   * dedupe makes retries idempotent while monotonically assigning versions to material rewrites.
+   */
+  async captureCurrentPlanEvidence(taskId: string, prompt: string, sourceRevision = Date.now()): Promise<CurrentPlanEvidence> {
+    return this.withPlanningLifecycleLock(taskId, () => this.captureCurrentPlanEvidenceWhilePlanningLocked(taskId, prompt, sourceRevision));
+  }
+  /**
+   * FNXC:SpecLock 2026-08-09-19:01:
+   * An authoritative prompt update already owns the planning lifecycle lock before taking the
+   * task lock. Reuse that lock here so its current-plan revision cannot race acceptance or be
+   * published after a later re-lock.
+   */
+  async captureCurrentPlanEvidenceWhilePlanningLocked(
+    taskId: string,
+    prompt: string,
+    sourceRevision = Date.now(),
+    liveTask?: Pick<Task, "dependencies" | "missionId" | "sliceId" | "sourceParentTaskId">,
+  ): Promise<CurrentPlanEvidence> {
+    return this.captureCurrentPlanEvidenceLocked(taskId, prompt, sourceRevision, liveTask);
+  }
+  private async captureCurrentPlanEvidenceLocked(
+    taskId: string,
+    prompt: string,
+    sourceRevision: number,
+    liveTask?: Pick<Task, "dependencies" | "missionId" | "sliceId" | "sourceParentTaskId">,
+  ): Promise<CurrentPlanEvidence> {
+    const [prior, task] = await Promise.all([this.getLatestCurrentPlanEvidence(taskId), liveTask ?? this.getTask(taskId)]);
+    const candidate = createCurrentPlanEvidence({
+      version: (prior?.version ?? 0) + 1,
+      sourceRevision,
+      capturedAt: new Date().toISOString(),
+      prompt,
+      bindings: specLockBindings(task),
+    });
+    if (prior?.sourceHash === candidate.sourceHash) return prior;
+    return this.appendCurrentPlanEvidence(taskId, candidate);
+  }
+  async appendSpecLock(taskId: string, lock: import("./planner/spec-lock.js").SpecLock): Promise<import("./planner/spec-lock.js").SpecLock> {
+    if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");
+    const projectId = this.asyncLayer.projectId ?? "";
+    await this.asyncLayer.db.insert(schema.project.specLocks).values({ projectId, taskId, version: lock.version, acceptedAt: lock.acceptedAt, approvalFingerprint: lock.approvalFingerprint, currentPlanVersion: lock.currentPlanVersion, currentPlanHash: lock.currentPlanHash, snapshot: lock.plan, priorVersion: lock.priorVersion, diff: lock.diff }).onConflictDoNothing();
+    const rows = await this.asyncLayer.db.select().from(schema.project.specLocks).where(and(projectScopeFor(schema.project.specLocks.projectId, this.asyncLayer.projectId), eq(schema.project.specLocks.taskId, taskId), eq(schema.project.specLocks.version, lock.version))).limit(1);
+    const row = rows[0]!;
+    return { version: row.version, acceptedAt: row.acceptedAt, approvalFingerprint: row.approvalFingerprint, currentPlanVersion: row.currentPlanVersion, currentPlanHash: row.currentPlanHash, plan: row.snapshot as import("./planner/spec-lock.js").CanonicalPlan, priorVersion: row.priorVersion ?? undefined, diff: row.diff as import("./planner/spec-lock.js").SpecLockDiff | undefined };
+  }
+  async getLatestSpecLock(taskId: string): Promise<SpecLock | undefined> {
+    if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");
+    const rows = await this.asyncLayer.db.select().from(schema.project.specLocks).where(and(projectScopeFor(schema.project.specLocks.projectId, this.asyncLayer.projectId), eq(schema.project.specLocks.taskId, taskId))).orderBy(desc(schema.project.specLocks.version)).limit(1);
+    const row = rows[0];
+    return row ? { version: row.version, acceptedAt: row.acceptedAt, approvalFingerprint: row.approvalFingerprint, currentPlanVersion: row.currentPlanVersion, currentPlanHash: row.currentPlanHash, plan: row.snapshot as import("./planner/spec-lock.js").CanonicalPlan, priorVersion: row.priorVersion ?? undefined, diff: row.diff as import("./planner/spec-lock.js").SpecLockDiff | undefined } : undefined;
+  }
+  /**
+   * FNXC:SpecLock 2026-08-09-19:19:
+   * The active lock is a derived live view, not a mutable column. Retained history stays append-only
+   * while API readers receive no active lock after a stale approval or current-plan rewrite.
+   */
+  async getActiveSpecLock(taskId: string): Promise<SpecLock | undefined> {
+    const [task, latestLock, currentPlan] = await Promise.all([
+      this.getTask(taskId),
+      this.getLatestSpecLock(taskId),
+      this.getLatestCurrentPlanEvidence(taskId),
+    ]);
+    return isSpecLockActive(latestLock, currentPlan, task.approvedPlanFingerprint) ? latestLock : undefined;
+  }
+  /** Create or reuse the immutable lock for an already-persisted current-plan revision. */
+  async lockCurrentPlan(taskId: string, approvalFingerprint: string, prompt: string): Promise<SpecLock> {
+    return this.withPlanningLifecycleLock(taskId, () => this.lockCurrentPlanWhilePlanningLocked(taskId, approvalFingerprint, prompt));
+  }
+  /**
+   * FNXC:SpecLockLifecycleLock 2026-08-09-17:37:
+   * Approval finalization already owns the non-reentrant PostgreSQL planning advisory lock. This
+   * companion avoids reacquiring it while preserving one serialized lock/current-plan append.
+   */
+  async lockCurrentPlanWhilePlanningLocked(taskId: string, approvalFingerprint: string, prompt: string): Promise<SpecLock> {
+    const currentPlan = await this.captureCurrentPlanEvidenceLocked(taskId, prompt, Date.now());
+    if (currentPlan.plan.status !== "available" || !currentPlan.plan.contentHash) {
+      throw new Error(`Cannot lock an unavailable plan: ${currentPlan.plan.reason ?? "unknown"}`);
+    }
+    const prior = await this.getLatestSpecLock(taskId);
+    if (prior?.approvalFingerprint === approvalFingerprint && prior.currentPlanHash === currentPlan.plan.contentHash) return prior;
+    const lock: SpecLock = { version: (prior?.version ?? 0) + 1, acceptedAt: new Date().toISOString(), approvalFingerprint, currentPlanVersion: currentPlan.version, currentPlanHash: currentPlan.plan.contentHash, plan: currentPlan.plan, ...(prior ? { priorVersion: prior.version, diff: diffSpecLocks(prior.plan, currentPlan.plan) } : {}) };
+    return this.appendSpecLock(taskId, lock);
+  }
+  async appendSpecDriftReport(taskId: string, report: DriftReport): Promise<DriftReport> {
+    return this.withPlanningLifecycleLock(taskId, () => this.appendSpecDriftReportWhilePlanningLocked(taskId, report));
+  }
+  /**
+   * FNXC:SpecDriftFence 2026-08-09-18:45:
+   * Report insertion shares the planning advisory lock with prompt writes, re-locks, and dependency
+   * invalidation. Re-check all snapshot identities while holding that lock; otherwise a stale worker
+   * can insert an on-plan result after the newer plan has already become authoritative.
+   */
+  async appendSpecDriftReportWhilePlanningLocked(taskId: string, report: DriftReport): Promise<DriftReport> {
+    if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");
+    const [task, latestLock, currentPlan] = await Promise.all([
+      this.getTask(taskId),
+      this.getLatestSpecLock(taskId),
+      this.getLatestCurrentPlanEvidence(taskId),
+    ]);
+    const executionFence = evaluateSpecDrift({ latestLock, currentPlan, modifiedFiles: task.modifiedFiles }).executionHash;
+    if (
+      report.lockVersion !== latestLock?.version
+      || report.currentPlanVersion !== currentPlan?.version
+      || report.currentPlanHash !== currentPlan?.plan.contentHash
+      || report.approvedPlanFingerprint !== (task.approvedPlanFingerprint?.trim() || undefined)
+      || report.executionHash !== executionFence
+    ) {
+      return this.reconcileSpecDriftWhilePlanningLocked(task);
+    }
+    return this.persistSpecDriftReport(taskId, report);
+  }
+  async listSpecLocks(taskId: string): Promise<SpecLock[]> {
+    if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");
+    const rows = await this.asyncLayer.db.select().from(schema.project.specLocks).where(and(projectScopeFor(schema.project.specLocks.projectId, this.asyncLayer.projectId), eq(schema.project.specLocks.taskId, taskId))).orderBy(schema.project.specLocks.version);
+    return rows.map((row) => ({ version: row.version, acceptedAt: row.acceptedAt, approvalFingerprint: row.approvalFingerprint, currentPlanVersion: row.currentPlanVersion, currentPlanHash: row.currentPlanHash, plan: row.snapshot as import("./planner/spec-lock.js").CanonicalPlan, priorVersion: row.priorVersion ?? undefined, diff: row.diff as import("./planner/spec-lock.js").SpecLockDiff | undefined }));
+  }
+  async listCurrentPlanEvidence(taskId: string): Promise<CurrentPlanEvidence[]> {
+    if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");
+    const rows = await this.asyncLayer.db.select().from(schema.project.currentPlanEvidence).where(and(projectScopeFor(schema.project.currentPlanEvidence.projectId, this.asyncLayer.projectId), eq(schema.project.currentPlanEvidence.taskId, taskId))).orderBy(schema.project.currentPlanEvidence.version);
+    return rows.map((row) => row.snapshot as CurrentPlanEvidence);
+  }
+  async listSpecDriftReports(taskId: string): Promise<DriftReport[]> {
+    if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");
+    const rows = await this.asyncLayer.db.select().from(schema.project.specDriftReports).where(and(projectScopeFor(schema.project.specDriftReports.projectId, this.asyncLayer.projectId), eq(schema.project.specDriftReports.taskId, taskId))).orderBy(schema.project.specDriftReports.createdAt);
+    return rows.map((row) => row.report as DriftReport);
+  }
+  async getLatestSpecDriftReport(taskId: string): Promise<DriftReport | undefined> {
+    if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");
+    const rows = await this.asyncLayer.db.select().from(schema.project.specDriftReports).where(and(projectScopeFor(schema.project.specDriftReports.projectId, this.asyncLayer.projectId), eq(schema.project.specDriftReports.taskId, taskId))).orderBy(desc(schema.project.specDriftReports.createdAt)).limit(1);
+    return rows[0]?.report as DriftReport | undefined;
+  }
+  /** Evaluate retained evidence from one store snapshot; reporting never changes task lifecycle. */
+  async reconcileSpecDrift(task: Pick<Task, "id" | "approvedPlanFingerprint" | "modifiedFiles">): Promise<DriftReport> {
+    return this.withPlanningLifecycleLock(task.id, () => this.reconcileSpecDriftWhilePlanningLocked(task));
+  }
+  /**
+   * FNXC:SpecLockLifecycleLock 2026-08-09-17:37:
+   * Reconciliation is part of approval's serialized handoff. Do not call the public wrapper from
+   * that handoff: PostgreSQL advisory locks are intentionally non-reentrant and would deadlock.
+   */
+  async reconcileSpecDriftWhilePlanningLocked(task: Pick<Task, "id" | "approvedPlanFingerprint" | "modifiedFiles">): Promise<DriftReport> {
+    const live = await this.getTask(task.id);
+    let currentPlan = await this.getLatestCurrentPlanEvidence(task.id);
+    /*
+    FNXC:SpecLock 2026-08-09-19:01:
+    A prompt write can reach disk and invalidate approval before a transient database failure
+    appends its evidence. During later event/startup reconciliation, repair only that inactive
+    source mismatch from PROMPT.md; active plans and cosmetic title synchronization never create a
+    surprise revision. An unreadable file remains an honest unavailable report.
+    */
+    if (!live.approvedPlanFingerprint) {
+      try {
+        const prompt = await readFile(join(this.taskDir(task.id), "PROMPT.md"), "utf8");
+        const candidate = createCurrentPlanEvidence({
+          version: (currentPlan?.version ?? 0) + 1,
+          sourceRevision: Date.now(),
+          capturedAt: new Date().toISOString(),
+          prompt,
+          bindings: specLockBindings(live),
+        });
+        if (currentPlan?.sourceHash !== candidate.sourceHash) {
+          currentPlan = await this.captureCurrentPlanEvidenceLocked(task.id, prompt, candidate.sourceRevision, live);
+        }
+      } catch {
+        /* FNXC:SpecLock 2026-08-09-19:01: Retain history and let the evaluator report unavailable
+           rather than inventing evidence when PROMPT.md is unavailable (including archive cleanup). */
+      }
+    }
+    const [latestLock, reports] = await Promise.all([this.getLatestSpecLock(task.id), this.listSpecDriftReports(task.id)]);
+    /*
+    FNXC:SpecDrift 2026-08-09-21:01:
+    Re-lock approval retains the fact that an earlier immutable version diverged. Looking only at
+    the latest report loses that fact after the first clean v2 reconciliation and falsely returns
+    on-plan; use the shared history predicate so store and engine cannot drift apart.
+    */
+    const priorDivergence = hasPriorLockDivergence(reports, latestLock?.version);
+    const report = evaluateSpecDrift({ latestLock, currentPlan, approvedPlanFingerprint: live.approvedPlanFingerprint, modifiedFiles: live.modifiedFiles, priorDivergence });
+    const [fencedTask, fencedLock, fencedPlan] = await Promise.all([this.getTask(task.id), this.getLatestSpecLock(task.id), this.getLatestCurrentPlanEvidence(task.id)]);
+    const fenced = fencedLock?.version !== latestLock?.version || fencedPlan?.version !== currentPlan?.version || fencedPlan?.plan.contentHash !== currentPlan?.plan.contentHash || fencedTask.approvedPlanFingerprint !== live.approvedPlanFingerprint || JSON.stringify(fencedTask.modifiedFiles ?? []) !== JSON.stringify(live.modifiedFiles ?? []);
+    const persisted = fenced
+      ? evaluateSpecDrift({ latestLock: fencedLock, currentPlan: fencedPlan, approvedPlanFingerprint: fencedTask.approvedPlanFingerprint, modifiedFiles: fencedTask.modifiedFiles, priorDivergence: hasPriorLockDivergence(reports, fencedLock?.version) })
+      : report;
+    return this.persistSpecDriftReport(task.id, persisted);
+  }
+  private async persistSpecDriftReport(taskId: string, report: DriftReport): Promise<DriftReport> {
+    if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");
+    const projectId = this.asyncLayer.projectId ?? "";
+    await this.asyncLayer.db.insert(schema.project.specDriftReports).values({ projectId, taskId, reportHash: report.reportHash, lockVersion: report.lockVersion, currentPlanVersion: report.currentPlanVersion, currentPlanHash: report.currentPlanHash, executionHash: report.executionHash, report, createdAt: new Date().toISOString() }).onConflictDoNothing();
+    const rows = await this.asyncLayer.db.select().from(schema.project.specDriftReports).where(and(projectScopeFor(schema.project.specDriftReports.projectId, this.asyncLayer.projectId), eq(schema.project.specDriftReports.taskId, taskId), eq(schema.project.specDriftReports.reportHash, report.reportHash))).limit(1);
+    return rows[0]!.report as DriftReport;
   }
   async getTask(id: string, options?: { activityLogLimit?: number; includeDeleted?: boolean }): Promise<TaskDetail> {
     return getTaskImpl(this, id, options);
@@ -1450,6 +1678,12 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     id: string,
     updates: { title?: string; description?: string; priority?: TaskPriority | null; prompt?: string; worktree?: string | null; workspaceWorktrees?: import("./types.js").Task["workspaceWorktrees"]; status?: string | null; awaitingApprovalReason?: import("./types.js").Task["awaitingApprovalReason"] | null; dependencies?: string[]; steps?: import("./types.js").TaskStep[]; customFields?: Record<string, unknown>; currentStep?: number; blockedBy?: string | null; overlapBlockedBy?: string | null; assignedAgentId?: string | null; pausedByAgentId?: string | null; pausedReason?: string | null; wedgeNotification?: import("./types.js").TaskWedgeNotificationState | null; tokenBudgetSoftAlertedAt?: string | null; worktrunkFallbackAlertedAt?: string | null; worktrunkFailure?: import("./types.js").Task["worktrunkFailure"] | null; tokenBudgetHardAlertedAt?: string | null; tokenBudgetOverride?: import("./types.js").TaskTokenBudgetOverride | null; dispatchStormCount?: number | null; lastDispatchAt?: string | null; assigneeUserId?: string | null; scopeOverride?: boolean | null; scopeOverrideReason?: string | null; scopeAutoWiden?: string[] | null; nodeId?: string | null; effectiveNodeId?: string | null; effectiveNodeSource?: string | null; checkedOutBy?: string | null; checkedOutAt?: string | null; checkoutNodeId?: string | null; checkoutRunId?: string | null; checkoutLeaseRenewedAt?: string | null; checkoutLeaseEpoch?: number | null; paused?: boolean; baseBranch?: string | null; autoMerge?: boolean | null; branch?: string | null; executionStartBranch?: string | null; baseCommitSha?: string | null; size?: "S" | "M" | "L"; reviewLevel?: number; executionMode?: import("./types.js").ExecutionMode | null; mergeRetries?: number; workflowStepRetries?: number; stuckKillCount?: number | null; resumeLimboCount?: number | null; executeRequeueLoopCount?: number | null; graphResumeRetryCount?: number | null; consecutiveToolFailureRetryCount?: number | null; executorEscalationAttempted?: boolean | null; toolFailureDetectorLogCursor?: number | null; toolFailureRetryExhaustedAuditEmitted?: boolean | null; resumeLimboTipSha?: string | null; resumeLimboStepSignature?: string | null; executeRequeueLoopSignature?: string | null; postReviewFixCount?: number | null; planReviewReplanCount?: number | null; recoveryRetryCount?: number | null; taskDoneRetryCount?: number | null; bulkCompletionRefusalAt?: string | null; workflowIrPin?: string | null; workflowIrPinNodeId?: string | null; workflowIrPinColumnId?: string | null; legacyAdoptedAt?: string | null; worktreeSessionRetryCount?: number | null; completionHandoffLimboRecoveryCount?: number | null; verificationFailureCount?: number | null; mergeConflictBounceCount?: number | null; mergeAuditBounceCount?: number | null; mergeTransientRetryCount?: number | null; branchConflictRecoveryCount?: number | null; reviewerContextRetryCount?: number | null; reviewerFallbackRetryCount?: number | null; nextRecoveryAt?: string | null; enabledWorkflowSteps?: string[]; noCommitsExpected?: boolean | null; modelProvider?: string | null; credentialInstanceId?: string | null; modelId?: string | null; validatorModelProvider?: string | null; validatorCredentialInstanceId?: string | null; validatorModelId?: string | null; planningModelProvider?: string | null; planningCredentialInstanceId?: string | null; planningModelId?: string | null; mergerModelProvider?: string | null; mergerCredentialInstanceId?: string | null; mergerModelId?: string | null; thinkingLevel?: string | null; validatorThinkingLevel?: string | null; planningThinkingLevel?: string | null; mergerThinkingLevel?: string | null; error?: string | null; summary?: string | null; recommendations?: import("./types.js").TaskRecommendation[]; sessionFile?: string | null; firstExecutionAt?: string | null; cumulativeActiveMs?: number | null; cumulativePlanningMs?: number | null; planningStartedAt?: string | null; executionStartedAt?: string | null; executionCompletedAt?: string | null; review?: import("./types.js").TaskReview | null; reviewState?: import("./types.js").TaskReviewState | null; workflowStepResults?: import("./types.js").WorkflowStepResult[] | null; mergeDetails?: import("./types.js").MergeDetails | null; sourceIssue?: import("./types.js").TaskSourceIssue | null; sourceMetadataPatch?: Record<string, unknown> | null; githubTracking?: import("./types.js").TaskGithubTracking | null; tokenUsage?: import("./types.js").TaskTokenUsage | null; modifiedFiles?: string[] | null; declaredSymbols?: string[] | null | undefined; missionId?: string | null; sliceId?: string | null; workflowTransitionNotification?: import("./types.js").WorkflowTransitionNotificationMarker | undefined; plannerOversightLevel?: string | null; sessionAdvisorEnabled?: boolean | null; approvedPlanFingerprint?: string | null },    runContext?: RunMutationContext,
   ): Promise<Task> {
+    /*
+    FNXC:SpecLock 2026-08-09-20:34:
+    updateTaskImpl owns the planning lifecycle fence for every authoritative plan mutation. Keep
+    this public entry unwrapped so its post-task-lock reconciliation can use the lock-held variant
+    without attempting a non-reentrant nested advisory lock.
+    */
     return updateTaskImpl(this, id, updates, runContext);
   }
   /**
