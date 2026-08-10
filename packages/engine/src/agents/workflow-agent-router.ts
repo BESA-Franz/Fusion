@@ -118,12 +118,22 @@ export function validateFencedWorkflowPrincipal(input: {
   )) {
     return staleFence;
   }
-  if (input.authority === "review-node-override" && (
-    input.nodeInstanceId
-      ? !isCurrentReviewerNodeOverride(input.ir, input.nodeInstanceId, input.principalAgentId)
-      : input.node.reviewerAgentId !== input.principalAgentId
-  )) {
-    return staleFence;
+  /*
+   * FNXC:WorkflowAgentRouting 2026-08-10-08:35:
+   * "The override was edited away" and "I cannot resolve this node instance at all" are NOT the same fact, and
+   * `isCurrentReviewerNodeOverride` returns false for both. Marking the second one stale would fail OPEN: an IR
+   * that failed to load, or an instance id this run cannot resolve, would discard a REAL reviewer fence and let
+   * the role pool take a review the operator explicitly named someone for. Only a resolved node whose
+   * `reviewerAgentId` genuinely differs is stale; an unresolvable instance holds closed and waits for a human.
+   */
+  if (input.authority === "review-node-override") {
+    const instance = input.nodeInstanceId
+      ? findWorkflowNodeInstance(input.ir, input.nodeInstanceId)
+      : input.node;
+    if (!instance || classifyWorkflowAgentNode(instance) !== "reviewer") {
+      return { status: "held", role: input.role, reason: "named-principal-unavailable" };
+    }
+    if (instance.reviewerAgentId !== input.principalAgentId) return staleFence;
   }
   /*
    * FNXC:WorkflowAgentRouting 2026-08-07-04:45:
@@ -131,8 +141,11 @@ export function validateFencedWorkflowPrincipal(input: {
    * binding that was removed or redirected; otherwise an old column principal
    * could keep acting after an operator changed workflow routing.
    */
-  if (input.authority === "column-binding" && (!input.ir || resolveColumnAgentBinding(input.ir, input.node.id)?.agentId !== input.principalAgentId)) {
-    return staleFence;
+  if (input.authority === "column-binding") {
+    // FNXC:WorkflowAgentRouting 2026-08-10-08:35: same fail-closed split as the review override above — an
+    // absent IR is "cannot resolve", not "binding removed", and must never discard a live operator binding.
+    if (!input.ir) return { status: "held", role: input.role, reason: "named-principal-unavailable" };
+    if (resolveColumnAgentBinding(input.ir, input.node.id)?.agentId !== input.principalAgentId) return staleFence;
   }
   const agent = input.agents.find((candidate) => candidate.id === input.principalAgentId);
   // A vanished or role-less principal is a dead fence; a capable one that is merely busy is a real wait.

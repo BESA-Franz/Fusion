@@ -898,6 +898,25 @@ function releaseReservedSlot(reservedSlots: number): number {
   return Math.max(0, reservedSlots - 1);
 }
 
+/**
+ * FNXC:DependencyUnblock 2026-08-10-08:20:
+ * Dependency auto-unblock clears ONLY the `queued` blocked marker it owns — never an arbitrary lifecycle status.
+ *
+ * Both unblock paths used to write `status: null` unconditionally, meaning to undo the `status: "queued"` the
+ * blocked branch sets a few lines up. But `status` is a shared lifecycle channel, and the value most likely to
+ * be sitting there is `needs-replan` — the graph's durable replan signal, and the ONLY thing that re-admits a
+ * hold-column card to planning (`isTaskAwaitingPlanning` refuses a card whose PROMPT.md is already a real spec).
+ *
+ * FN-8923 died exactly here. Its plan node held on principal routing, triage correctly recorded
+ * `needs-replan`, and then its blocker completing nulled that status. From that moment the card was invisible
+ * to BOTH lanes: triage saw a fully-written spec with no replan flag and skipped it, while the executor's
+ * `isUnplannedForExecution` still refused to dispatch because no capacity-boundary continuation existed. It sat
+ * silent in Todo for 7+ hours with zero run-audit rows — not stuck in a retry loop, simply unowned.
+ */
+export function clearBlockedStatusOnly(dependent: Pick<Task, "status">): { status: null } | Record<string, never> {
+  return dependent.status === "queued" || dependent.status == null ? { status: null } : {};
+}
+
 export class Scheduler {
   private running = false;
   private scheduling = false;
@@ -1210,7 +1229,7 @@ export class Scheduler {
                     `Auto-reblocked: unresolved dependency ${unresolvedDeps[0]} remains after ${task.id} reached ${to}`,
                   );
                 } else {
-                  await this.store.updateTask(dependent.id, { blockedBy: null, status: null });
+                  await this.store.updateTask(dependent.id, { blockedBy: null, ...clearBlockedStatusOnly(dependent) });
                   const unblockMessage = currentlyBlockedByCompletedTask
                     ? `Auto-unblocked: blocker ${task.id} reached ${to}`
                     : `Auto-unblocked: blocker ${task.id} reached ${to} — all dependencies satisfied`;
@@ -1485,7 +1504,7 @@ export class Scheduler {
                   `Auto-reblocked (FN-5496): unresolved dependency ${nextBlocker} remains after blocker ${task.id} was soft-deleted`,
                 );
               } else if (dependent.column === deletedParked.hold) {
-                await this.store.updateTask(dependent.id, { blockedBy: null, status: null });
+                await this.store.updateTask(dependent.id, { blockedBy: null, ...clearBlockedStatusOnly(dependent) });
                 await this.store.logEntry(dependent.id, `Auto-unblocked (FN-5496): blocker ${task.id} was soft-deleted`);
               } else {
                 await this.store.updateTask(dependent.id, { blockedBy: null });

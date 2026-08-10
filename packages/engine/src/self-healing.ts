@@ -113,7 +113,7 @@ import {
   type NtfyNotifier,
 } from "./util/notifier.js";
 import type { GhostBugDecision } from "./triage-domain/triage-preflight.js";
-import { filterPathsByIgnoreList, getUnmetSchedulingDependencies, isCoordinationOnlyTask, pathsOverlap, shouldHoldActiveFileScopeLease, resolveDependencySatisfactionColumns} from "./scheduler.js";
+import { clearBlockedStatusOnly, filterPathsByIgnoreList, getUnmetSchedulingDependencies, isCoordinationOnlyTask, pathsOverlap, shouldHoldActiveFileScopeLease, resolveDependencySatisfactionColumns} from "./scheduler.js";
 import { runSurfacingSweep, hours, type SurfacingCycle } from "./surfacing-sweeps.js";
 /* U4 substrate PR1: the git-evidence readers and their helpers now live in
    self-healing-git-evidence.ts. Imported back here because call sites remain. */
@@ -849,6 +849,23 @@ function hasTerminalInvalidDoneTransition(task: Pick<Task, "error">): boolean {
 /** Sentinel for a workflow selection whose READ failed, distinct from "no selection". */
 const UNREADABLE_WORKFLOW_SELECTION = "\u0000unreadable-workflow-selection";
 
+/*
+FNXC:PrincipalHeldPlanning 2026-08-10-08:35:
+The ONE status test the principal-held-planning sweep owns, shared by its scan and its pre-write re-read.
+
+`status` is a shared lifecycle channel, so this sweep may only act on a card whose status it is entitled to
+replace. `needs-replan` is already the target signal; `planning` and `awaiting-approval` mean another lane
+holds the card; `queued` means a dependency blocker owns it (with `blockedBy` still set); and `failed`,
+`stuck-killed`, and `plan-review-unavailable` are operator-visible terminal or diagnostic states that a
+recovery sweep must not quietly launder into a replan. Only a null status is unowned.
+
+Two call sites read this predicate because they drifted when they were written out by hand: the scan
+excluded `planning`, the re-read did not, and a triage claim landing between them was overwritten.
+*/
+function isPrincipalHeldPlanningStatusOwned(status: Task["status"] | undefined): boolean {
+  return status === null || status === undefined;
+}
+
 export class SelfHealingManager extends SelfHealingGitEvidence {
   // ── Auto-unpause state ──────────────────────────────────────────────
   private unpauseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -896,6 +913,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    * without flooding run-audit.
    */
   private strandedHoldContinuationNoActionAudited = new Set<string>();
+  private principalHeldPlanningNoActionAudited = new Set<string>();
   /* FNXC:SymbolLock 2026-07-30-14:20: idle symbol-lock sweeps emit one no-action audit until a stale lock re-arms the diagnostic. */
   private symbolLockNoActionAudited = false;
   private maintenanceTickCounter = 0;
@@ -1712,6 +1730,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       // stall-deadlock ride this sweep exists to prevent.
       { name: "reconcile-orphaned-pending-step-results", fn: () => this.reconcileOrphanedPendingStepResults().then(() => undefined) },
       { name: "reconcile-stranded-hold-continuations", fn: () => this.reconcileStrandedHoldContinuations().then(() => undefined) },
+      // FNXC:PrincipalHeldPlanning 2026-08-10-08:20: a planning hold from principal routing has no other
+      // retry owner, so it must be re-queued before the steps below classify the card as simply idle.
+      { name: "reconcile-principal-held-planning", fn: () => this.reconcilePrincipalHeldPlanningContinuations().then(() => undefined) },
       { name: "no-progress-no-task-done", fn: () => this.recoverNoProgressNoTaskDoneFailures().then(() => undefined) },
       { name: "completed-tasks", fn: () => this.recoverCompletedTasks().then(() => undefined) },
       { name: "recover-stranded-completed-todo", fn: () => this.recoverStrandedCompletedTodoTasks().then(() => undefined) },
@@ -2824,6 +2845,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           // duplicated here — running it twice per cycle would re-scan every in-review task for
           // no benefit.
           { name: "reconcile-stranded-hold-continuations", fn: () => this.reconcileStrandedHoldContinuations() },
+          { name: "reconcile-principal-held-planning", fn: () => this.reconcilePrincipalHeldPlanningContinuations() },
           { name: "recover-mergeable-review", fn: () => this.recoverMergeableReviewTasks() },
           // FNXC:Workspace 2026-06-22-09:30 (Phase D U1) — workspace-mode reconcilers.
           { name: "reconcile-workspace-partial-lands", fn: () => this.reconcileWorkspacePartialLands() },
@@ -5225,7 +5247,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                 action: `Auto-recovered (FN-4523): preserved queued status — still blocked by file scope overlap with ${overlapBlockedBy}`,
               });
             } else {
-              await this.store.updateTask(dependent.id, { blockedBy: null, overlapBlockedBy: null, status: null });
+              await this.store.updateTask(dependent.id, { blockedBy: null, overlapBlockedBy: null, ...clearBlockedStatusOnly(dependent) });
               await this.store.logEntry(
                 dependent.id,
                 `Auto-recovered (FN-4523): cleared stale blockedBy — blocker ${taskId} is done`,
@@ -6366,7 +6388,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                   });
                   didRecover = transition.appended;
                 } else {
-                  await this.store.updateTask(task.id, { blockedBy: null, overlapBlockedBy: null, status: null });
+                  await this.store.updateTask(task.id, { blockedBy: null, overlapBlockedBy: null, ...clearBlockedStatusOnly(task) });
                   await this.store.logEntry(task.id, `Auto-recovered (FN-5488): cleared stale blockedBy — blocker=${blockerId} blockerStatus=${blocker?.status ?? "none"} reason=${reasonCode ?? "unspecified"}; ${reason}`);
                   didRecover = true;
                 }
@@ -6401,7 +6423,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                 if (transition.appended) recovered++;
               } else {
                 // FN-5434: routine scheduler↔self-healing queued-status churn should stay silent; keep state cleanup only.
-                await this.store.updateTask(task.id, { blockedBy: null, overlapBlockedBy: null, status: null });
+                await this.store.updateTask(task.id, { blockedBy: null, overlapBlockedBy: null, ...clearBlockedStatusOnly(task) });
               }
             } catch (err: unknown) {
               const errorMessage = err instanceof Error ? err.message : String(err);
@@ -7530,6 +7552,141 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       return repaired;
     } catch (error) {
       log.warn(`reconcileStrandedHoldContinuations failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+  }
+
+  /**
+   * FNXC:PrincipalHeldPlanning 2026-08-10-08:20:
+   * A planning hold written for PRINCIPAL ROUTING has no retry owner. Give it one.
+   *
+   * When triage cannot route a `triage`-role principal it records a `held` planning continuation and sets
+   * `status: "needs-replan"`, then returns. Nothing re-drives that row: the executor's holds get bounced by
+   * the recovery sweeps, but a held PLAN node is re-admitted only through triage discovery, and for a
+   * hold-column card that discovery keys on `status === "needs-replan"` (a card whose PROMPT.md is already a
+   * real spec is otherwise not "awaiting planning"). So the hold survives exactly as long as that status
+   * does — and any unrelated writer that clears status silently ends the card's life.
+   *
+   * FN-8923 held on `role-pool-exhausted:triage` at 17:08, had its `needs-replan` nulled by dependency
+   * auto-unblock three hours later, and then produced ZERO run-audit rows for 7+ hours: triage skipped it
+   * (spec written, no replan flag) while the executor refused it (`isUnplannedForExecution` found no
+   * capacity-boundary continuation). Unowned by both lanes, not looping — silent.
+   *
+   * The repair restores the replan signal so triage retries the routing. It is deliberately signal-only: it
+   * does not retire the continuation (triage's own atomic replace does that when it takes the slot), does not
+   * move columns, and never touches an operator pause. Routing exhaustion is usually transient — a busy or
+   * momentarily disabled role agent — so retrying is the correct response, not parking for a human.
+   */
+  async reconcilePrincipalHeldPlanningContinuations(): Promise<number> {
+    try {
+      // Long enough that a routing hold in an actively-planning cycle is left alone to resolve on its own.
+      const graceMs = 5 * 60_000;
+      const settings = await this.store.getSettings();
+      if (settings.globalPause === true || settings.enginePaused === true) return 0;
+      if (typeof this.store.listWorkflowWorkItemsForTask !== "function") return 0;
+      const live = (taskId: string) => activeSessionRegistry.pathsForTask(taskId).some((path) => activeSessionRegistry.isPathActive(path))
+        || executingTaskLock.has(taskId)
+        || this.options.isTaskActive?.(taskId) === true;
+      let offset = 0;
+      let repaired = 0;
+      for (;;) {
+        const tasks = await this.store.listTasks({ slim: false, includeArchived: false, includeDeleted: false, limit: 500, offset });
+        for (const snapshot of tasks) {
+          try {
+            // FNXC:PrincipalHeldPlanning 2026-08-10-08:35: `slim:false` already carries pause/status/column, so
+            // the row scan needs no per-task `getTask` (which additionally takes the task lock). The authoritative
+            // re-read still happens once, immediately before the write, for the only row we actually mutate.
+            const task = snapshot;
+            if (!isPrincipalHeldPlanningStatusOwned(task.status)) continue;
+            if (task.userPaused === true || task.paused === true) continue;
+            const items = await this.store.listWorkflowWorkItemsForTask(task.id);
+            const active = items.filter((item) => ACTIVE_WORKFLOW_WORK_ITEM_STATES.includes(item.state));
+            const heldPlanning = active.find((item) => item.state === "held"
+              && item.workflowRole === "triage"
+              && typeof item.blockedReason === "string"
+              && item.blockedReason.startsWith("workflow-principal-"));
+            if (!heldPlanning) continue;
+            // Any other live continuation means the graph still owns this card; only a lone dead hold qualifies.
+            if (active.some((item) => item.id !== heldPlanning.id)) continue;
+            /*
+             * FNXC:PrincipalHeldPlanning 2026-08-10-08:35:
+             * `needs-replan` is a PLANNING-LANE signal, and it also blocks auto-merge. Writing it onto a card that
+             * has already left the planning lane would park in-review work behind a replan nobody asked for, so
+             * candidacy is gated on the card's own lane (the `resolveColumnFlags` hold/planning test the sibling
+             * sweep uses) and on effective auto-merge, exactly as `evaluateStrandedHoldContinuation` gates its own.
+             */
+            const laneIr = await resolveWorkflowIrForTask(this.store, task.id).catch(() => undefined);
+            const laneColumn = laneIr && "columns" in laneIr
+              ? laneIr.columns.find((entry) => entry.id === task.column)
+              : undefined;
+            if (!laneColumn) continue;
+            const laneFlags = resolveColumnFlags(laneColumn);
+            // The planning lane is the hold/intake pair triage itself discovers from; anything else has left it.
+            if (!laneFlags.hold && !laneFlags.intake) continue;
+            if (!allowsAutoMergeProcessing(task, { autoMerge: resolveEffectiveAutoMerge(task, settings) })) continue;
+            const stalenessMs = Date.now() - new Date(heldPlanning.updatedAt ?? task.updatedAt).getTime();
+            const audit = async (type: "task:reconcile-principal-held-planning" | "task:reconcile-principal-held-planning-no-action", reason?: string) => {
+              const key = `${task.id}:${reason ?? "retried"}`;
+              if (type.endsWith("no-action") && this.principalHeldPlanningNoActionAudited.has(key)) return;
+              await createRunAuditor(this.store, {
+                runId: generateSyntheticRunId("reconcile-principal-held-planning", task.id),
+                agentId: "self-healing", taskId: task.id, taskLineageId: task.lineageId,
+                phase: "reconcile-principal-held-planning",
+              }).database({
+                type: type as DatabaseMutationType,
+                target: task.id,
+                metadata: {
+                  taskId: task.id, column: task.column, nodeId: heldPlanning.nodeId,
+                  blockedReason: heldPlanning.blockedReason, stalenessMs: Math.max(0, stalenessMs),
+                  ...(reason ? { reason } : {}),
+                },
+              });
+              if (type.endsWith("no-action")) this.principalHeldPlanningNoActionAudited.add(key);
+            };
+            if (stalenessMs < graceMs) continue;
+            if (live(task.id)) { await audit("task:reconcile-principal-held-planning-no-action", "live-session"); continue; }
+            /*
+             * FNXC:PrincipalHeldPlanning 2026-08-10-08:35:
+             * The re-read runs UNDER the same planning lifecycle lock the sibling sweep takes, and re-applies the
+             * full status test rather than a narrower one. A bare re-read is not enough: triage claims a card by
+             * writing `status: "planning"`, and a claim landing between the scan and the write was overwritten
+             * with `needs-replan` — clobbering a live planning session. The lock serializes read and write; the
+             * shared predicate stops the two checks from drifting apart, which is how the gap opened.
+             */
+            const repairUnderLifecycleLock = async (): Promise<boolean> => {
+              const fresh = await this.store.getTask(task.id);
+              if (!fresh || !isPrincipalHeldPlanningStatusOwned(fresh.status)
+                || fresh.userPaused === true || fresh.paused === true) {
+                await audit("task:reconcile-principal-held-planning-no-action", "raced");
+                return false;
+              }
+              await this.store.updateTask(task.id, { status: "needs-replan" });
+              await this.store.logEntry(
+                task.id,
+                `[recovery] planning re-queued — ${heldPlanning.blockedReason} held with no retry owner`,
+              );
+              await audit("task:reconcile-principal-held-planning");
+              return true;
+            };
+            const lifecycleLock = (this.store as Partial<TaskStore>).withPlanningLifecycleLock;
+            const didRepair = lifecycleLock
+              ? await lifecycleLock.call(this.store, task.id, repairUnderLifecycleLock)
+              : await repairUnderLifecycleLock();
+            if (!didRepair) continue;
+            this.principalHeldPlanningNoActionAudited.delete(`${task.id}:live-session`);
+            this.principalHeldPlanningNoActionAudited.delete(`${task.id}:raced`);
+            repaired += 1;
+          } catch (error) {
+            log.warn(`reconcilePrincipalHeldPlanningContinuations: failed for ${snapshot.id}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        if (tasks.length < 500) break;
+        offset += tasks.length;
+      }
+      if (repaired > 0) log.log(`Re-queued planning for ${repaired} task(s) stranded on a principal-routing hold`);
+      return repaired;
+    } catch (error) {
+      log.warn(`reconcilePrincipalHeldPlanningContinuations failed: ${error instanceof Error ? error.message : String(error)}`);
       return 0;
     }
   }

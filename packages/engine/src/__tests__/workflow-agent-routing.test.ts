@@ -153,6 +153,40 @@ describe("routeWorkflowPrincipal", () => {
       .toEqual({ status: "held", role: "executor", reason: "named-principal-unavailable" });
   });
 
+  /*
+  FNXC:WorkflowAgentRouting 2026-08-10-08:35:
+  "Cannot resolve this instance" must fail CLOSED while "the override was edited away" re-routes. Both make
+  `isCurrentReviewerNodeOverride` return false, so marking them alike discarded a real reviewer fence whenever
+  the IR failed to load — handing a named review to the pool. The pair is asserted together because only their
+  DIFFERENCE is the invariant; either one alone passes under the broken code.
+  */
+  it("fails closed on an unresolvable fence and re-routes only on a real override edit", () => {
+    const reviewer = agent("reviewer", ["reviewer"]);
+    const node = { id: "review", kind: "prompt", reviewerAgentId: "reviewer", config: { workflowRole: "reviewer" } } as any;
+    const reviewerIr = { ...ir, nodes: [node] } as any;
+    const base = {
+      task: {}, node, principalAgentId: "reviewer", role: "reviewer",
+      authority: "review-node-override", agents: [reviewer],
+    } as any;
+
+    // Unresolvable instance id, and a missing IR: hold, never stale.
+    expect(validateFencedWorkflowPrincipal({ ...base, ir: reviewerIr, nodeInstanceId: "does-not-exist" }))
+      .toEqual({ status: "held", role: "reviewer", reason: "named-principal-unavailable" });
+    expect(validateFencedWorkflowPrincipal({ ...base, ir: undefined, nodeInstanceId: "review" }))
+      .toEqual({ status: "held", role: "reviewer", reason: "named-principal-unavailable" });
+
+    // A resolved node whose override genuinely changed is stale and re-routes.
+    const edited = { ...ir, nodes: [{ ...node, reviewerAgentId: "replacement" }] } as any;
+    expect(validateFencedWorkflowPrincipal({ ...base, ir: edited, nodeInstanceId: "review" }))
+      .toEqual({ status: "held", role: "reviewer", reason: "named-principal-unavailable", staleFence: true });
+
+    // A column binding behaves the same way: an absent IR cannot prove the binding was removed.
+    expect(validateFencedWorkflowPrincipal({
+      task: {}, ir: undefined, node: { id: "e", kind: "prompt", config: { seam: "execute" } } as any,
+      principalAgentId: "bound", role: "executor", authority: "column-binding", agents: [agent("bound", ["executor"])],
+    })).toEqual({ status: "held", role: "executor", reason: "named-principal-unavailable" });
+  });
+
   it("keeps a fenced engineer owner on its own executor node", () => {
     const engineer = agent("backend-engineer", ["engineer"]);
     expect(validateFencedWorkflowPrincipal({

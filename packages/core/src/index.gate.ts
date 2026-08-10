@@ -673,11 +673,17 @@ export {
   getAgentAssignmentPolicy,
   isAgentAutoAssignable,
   canAgentReceiveImplementationTasks,
+  // FNXC:WorkflowAgentRouting 2026-08-10-08:35: the gate barrel must mirror index.ts for anything the routing
+  // hot path calls. workflow-agent-router.ts calls all three of these on every dispatch; when the reduced
+  // barrel omits one it resolves to `undefined` inside the gate bundle and throws only once a suite reaches it.
+  hasWorkflowRoleCapability,
+  isWorkflowPrincipalEligible,
+  isBuiltinWorkflowRoleAgent,
   evaluateImplementationTaskBind,
   assertImplementationTaskBindAllowed,
   AgentTaskRoutingPolicyError,
 } from "./agents/agent-role-policy.js";
-export type { AgentAssignmentPolicy, ImplementationTaskBindContext, ImplementationTaskBindVerdict } from "./agents/agent-role-policy.js";
+export type { AgentAssignmentPolicy, ImplementationTaskBindContext, ImplementationTaskBindVerdict, WorkflowRoleCapabilityOptions } from "./agents/agent-role-policy.js";
 export { ReflectionStore } from "./agents/reflection-store.js";
 export type { ReflectionStoreEvents } from "./agents/reflection-store.js";
 export { MessageStore } from "./stores/message-store.js";

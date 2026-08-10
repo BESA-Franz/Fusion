@@ -45,6 +45,9 @@ const GOVERNED_IDS = ["triage", "todo", "in-progress", "in-review"] as const;
  */
 const NON_COLUMN_RECEIVERS: ReadonlySet<string> = new Set([
   "role",
+  // FNXC:PrincipalHeldPlanning 2026-08-10-08:20: a workflow work item's `workflowRole` is the stage principal
+  // role ("triage"/"executor"/"reviewer"/"merger") — the same non-column meaning `role` is already exempt for.
+  "workflowRole",
   "agentType",
   "sessionPurpose",
   "surface",
