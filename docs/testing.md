@@ -520,7 +520,14 @@ quo, never below it) — it does **not** fail the build. Refresh is **manual/sch
 the default branch only**: each CI shard uploads per-shard JSON timing artifacts (U1), and
 `node scripts/ci-test-shard.mjs --write-timings` merges them into the snapshot. Download the
 shard artifacts into `.timings/` first (the default lookup directory), or pass
-`--inputs-dir <path>` to point at wherever they were downloaded. A future
+`--inputs-dir <path>` to point at wherever they were downloaded.
+
+<!-- FNXC:CITestSharding 2026-08-10-18:12: A deleted test can leave a phantom path in the committed timing snapshot. Prune only that drift without fabricating fresh timing evidence or resetting the staleness budget. -->
+
+When deleted test files leave phantom snapshot entries, run
+`node scripts/ci-test-shard.mjs --prune-timings`. Pruning removes only paths absent from disk,
+drops packages with no remaining paths, and **never restamps `capturedAt`**. A real refresh still
+requires `--write-timings` with timing artifacts, and the 30-day staleness budget still applies. A future
 scheduled job can gate on freshness via `node scripts/ci-test-shard.mjs --check-timings-staleness`,
 which exits non-zero when the snapshot is missing or older than the 30-day budget. Package test
 wrappers that launch Vitest (including `@fusion/desktop`) must forward caller reporter/output
