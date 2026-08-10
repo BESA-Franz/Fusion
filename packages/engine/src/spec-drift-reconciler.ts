@@ -10,6 +10,7 @@ export interface SpecDriftSnapshot {
 export interface SpecDriftRepository {
   snapshot(taskId: string): Promise<SpecDriftSnapshot>;
   persist(taskId: string, report: DriftReport): Promise<void>;
+  onPersisted?(taskId: string, report: DriftReport): Promise<void>;
 }
 
 const RETRY_DELAY_MS = 1_000;
@@ -23,6 +24,7 @@ const RETRY_DELAY_MS = 1_000;
  */
 export function createStoreSpecDriftRepository(
   store: Pick<TaskStore, "getTask" | "getLatestSpecLock" | "getLatestCurrentPlanEvidence" | "listSpecDriftReports" | "appendSpecDriftReport">,
+  onPersisted?: SpecDriftRepository["onPersisted"],
 ): SpecDriftRepository {
   return {
     snapshot: async (taskId) => {
@@ -41,6 +43,7 @@ export function createStoreSpecDriftRepository(
       };
     },
     persist: async (taskId, report) => { await store.appendSpecDriftReport(taskId, report); },
+    onPersisted,
   };
 }
 
@@ -84,6 +87,8 @@ export class SpecDriftReconciler {
       const report = evaluateSpecDrift(snapshot);
       if (this.stopped) return undefined;
       await this.repository.persist(taskId, report);
+      /* FNXC:SpecLockMissionAlignment 2026-08-10-16:40: publish mission alignment only after the report is durable, so failed projection retries retained evidence. */
+      await this.repository.onPersisted?.(taskId, report);
       const retry = this.retryTimers.get(taskId);
       if (retry) clearTimeout(retry);
       this.retryTimers.delete(taskId);

@@ -30,7 +30,7 @@ import { planTaskWorktreePath, resolveTaskWorkingBranch } from "./worktree/workt
 import { schedulerLog } from "./logger.js";
 import { createRepeatSuppressedLog } from "./util/repeat-suppressed-log.js";
 import { type PrMonitor, type PrComment } from "./merge/pr-monitor.js";
-import { reconcileMissionFeatureState } from "./missions/mission-feature-sync.js";
+import { persistMissionFeatureReconciliation, reconcileMissionFeatureState } from "./missions/mission-feature-sync.js";
 import { resolveDedicatedPlannerColumnsForTask, resolvePlannerLanesForTask } from "./planner-lane-resolution.js";
 import { evaluateSpecStaleness, getPromptPath } from "./execution/spec-staleness.js";
 import { resolveEffectiveNode, type EffectiveNode } from "./project/effective-node.js";
@@ -3171,6 +3171,22 @@ export class Scheduler {
         },
       );
 
+      const sliceIdBeforeUpdate = feature.sliceId;
+
+      /*
+      FNXC:SpecLockMissionAlignment 2026-08-10-16:17:
+      Scheduler move reconciliation is a production consumer of deterministic drift. Persist its
+      orthogonal projection even when delivery status is unchanged, or the evaluated alignment is
+      discarded before Mission Manager can render the roadmap's actual state.
+      */
+      if (await persistMissionFeatureReconciliation(missionStore, feature, reconciliation)) {
+        if (reconciliation.kind === "update") {
+          schedulerLog.log(
+            `Feature ${feature.id} marked ${reconciliation.status} (${reconciliation.reason})`,
+          );
+        }
+      }
+
       if (reconciliation.kind === "blocked") {
         schedulerLog.warn(`Task ${taskId} mission update blocked — ${reconciliation.reason}`);
         return;
@@ -3179,15 +3195,6 @@ export class Scheduler {
       if (reconciliation.kind === "failure") {
         schedulerLog.warn(`Task ${taskId} mission update reported failure — ${reconciliation.reason}`);
         return;
-      }
-
-      const sliceIdBeforeUpdate = feature.sliceId;
-
-      if (reconciliation.kind === "update") {
-        await missionStore.updateFeatureStatus(feature.id, reconciliation.status);
-        schedulerLog.log(
-          `Feature ${feature.id} marked ${reconciliation.status} (${reconciliation.reason})`,
-        );
       }
 
       /*
@@ -3554,6 +3561,15 @@ export class Scheduler {
               hasLinkedAssertions,
             });
 
+            /*
+            FNXC:SpecLockMissionAlignment 2026-08-10-16:17:
+            Periodic reconciliation must retain the same drift projection as event-driven moves;
+            otherwise a quiet task's alignment disappears until an unrelated status transition.
+            */
+            if (await persistMissionFeatureReconciliation(missionStore, featureForReconciliation, reconciliation)) {
+              totalFixed++;
+            }
+
             if (reconciliation.kind === "failure") {
               if (this.options.onTaskFailed) {
                 await this.options.onTaskFailed(task.id);
@@ -3569,10 +3585,6 @@ export class Scheduler {
               continue;
             }
 
-            if (reconciliation.kind === "update") {
-              await missionStore.updateFeatureStatus(featureForReconciliation.id, reconciliation.status);
-              totalFixed++;
-            }
           }
         }
       }

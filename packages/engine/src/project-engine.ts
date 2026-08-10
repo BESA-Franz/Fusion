@@ -54,6 +54,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { InProcessRuntime } from "./runtimes/in-process-runtime.js";
 import { createStoreSpecDriftRepository, SpecDriftReconciler } from "./spec-drift-reconciler.js";
+import { publishPersistedMissionFeatureAlignment } from "./missions/mission-feature-sync.js";
 import type { WorktreePool } from "./worktree/worktree-pool.js";
 import type { ProjectRuntimeConfig } from "./project/project-runtime.js";
 import { PrMonitor } from "./merge/pr-monitor.js";
@@ -955,7 +956,7 @@ export class ProjectEngine {
     inline latest-report snapshot. Full append-only history preserves re-locked divergence, while
     the report identity fence intentionally cannot detect an incorrect alignment value.
     */
-    this.specDriftReconciler = new SpecDriftReconciler(createStoreSpecDriftRepository(store));
+    this.specDriftReconciler = new SpecDriftReconciler(createStoreSpecDriftRepository(store, async (taskId, report) => { await publishPersistedMissionFeatureAlignment(store, taskId, report); }));
     /*
     FNXC:SpecDrift 2026-08-09-18:32:
     Startup repair alone leaves a long-running engine blind to direct task mutations and workflow

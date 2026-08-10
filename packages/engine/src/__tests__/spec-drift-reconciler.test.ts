@@ -14,6 +14,20 @@ describe("SpecDriftReconciler", () => {
     expect(report?.findings).toContainEqual(expect.objectContaining({ kind: "scope-creep", path: "src/outside.ts" }));
     expect(persisted).toHaveLength(1);
   });
+  it("projects mission alignment after the report is durably persisted", async () => {
+    const persisted: string[] = [];
+    const projected: string[] = [];
+    const reconciler = new SpecDriftReconciler({
+      snapshot: async () => ({ latestLock: lock, currentPlan: evidence, approvedPlanFingerprint: "approved", modifiedFiles: ["src/outside.ts"] }),
+      persist: async (_taskId, report) => { persisted.push(report.alignment); },
+      onPersisted: async (_taskId, report) => { projected.push(report.alignment); },
+    });
+
+    await reconciler.reconcile("FN-MISSION");
+    expect(persisted).toEqual(["diverged-needs-review"]);
+    expect(projected).toEqual(persisted);
+  });
+
   it("retries a failed persistence write without waiting for restart", async () => {
     vi.useFakeTimers();
     let attempts = 0;
