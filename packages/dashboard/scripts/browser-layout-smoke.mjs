@@ -131,6 +131,12 @@ export function createSmokeHtml() {
       </section>
     `)
     .join("");
+  const agentsOverviewCards = Array.from({ length: 13 }, (_, index) => `
+    <div class="live-agent-card" role="button" tabindex="0"${index === 12 ? ' data-smoke="agents-overview-last-card"' : ""}>
+      <div class="live-agent-card-header"><span class="live-agent-card-name">Active agent ${index + 1}</span></div>
+      <div class="live-agent-card-transcript">Waiting for workflow output and heartbeat activity.</div>
+      <div class="live-agent-card-footer">Active</div>
+    </div>`).join("");
 
   /*
   FNXC:QuickAddActionRow 2026-07-17-12:00:
@@ -398,6 +404,7 @@ export function createSmokeHtml() {
             <button class="btn-icon" data-smoke="show-command-center-charts" type="button" aria-label="Show Command Center charts fixture">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M8 15l3-4 3 2 4-6"></path></svg>
             </button>
+            <button class="btn-icon" data-smoke="show-agents-overview-scroll" type="button" aria-label="Show Agents overview scroll fixture">Agents overview</button>
           </div>
         </header>
       </div>
@@ -628,6 +635,26 @@ export function createSmokeHtml() {
       </section>
 
       <!--
+      FNXC:AgentsOverviewScroll 2026-08-10-10:02:
+      Real Blink must verify this flex scroll chain because jsdom has no layout engine. This fixture mirrors the production chain asserted by AgentsOverviewBar.mobile-scroll.test.tsx, including metrics, panel, grid, and realistic live-agent cards.
+      -->
+      <section data-smoke="agents-overview-scroll" hidden>
+        <section class="agents-view" aria-label="Agents overview scroll fixture" style="height: min(calc(var(--space-2xl) * 16), calc(100dvh - var(--space-2xl)));">
+          <section class="agents-overview-bar" aria-label="Agents overview">
+            <button class="agents-overview-bar__toggle" type="button" aria-expanded="true"><span class="agents-overview-bar__title-wrap"><span class="agents-overview-bar__title">Overview</span></span><span class="agents-overview-bar__meta text-secondary">13 active</span></button>
+            <div class="agents-overview-bar__content" data-smoke="agents-overview-scroll-owner">
+              <div class="agent-metrics-bar agents-overview-bar__metrics"><div class="agent-metric-card agent-metric-card--active">Active</div><div class="agent-metric-card agent-metric-card--tasks">Tasks</div><div class="agent-metric-card agent-metric-card--success">Success</div><div class="agent-metric-card agent-metric-card--runs">Runs</div></div>
+              <div class="active-agents-panel agents-overview-bar__active-panel"><div class="active-agents-panel-header">Active Agents (13)</div><div class="active-agents-grid">${agentsOverviewCards}</div></div>
+            </div>
+          </section>
+          <div class="agents-view-content">Sibling Agents content</div>
+        </section>
+        <section class="agents-view" data-smoke="agents-overview-scroll-empty" style="height: min(calc(var(--space-2xl) * 16), calc(100dvh - var(--space-2xl)));">
+          <section class="agents-overview-bar" aria-label="Empty Agents overview"><button class="agents-overview-bar__toggle" type="button" aria-expanded="true">Overview</button><div class="agents-overview-bar__content" data-smoke="agents-overview-empty-scroll-owner"><div class="agent-metrics-bar agents-overview-bar__metrics"><div class="agent-metric-card agent-metric-card--active">Active</div><div class="agent-metric-card agent-metric-card--tasks">Tasks</div><div class="agent-metric-card agent-metric-card--success">Success</div><div class="agent-metric-card agent-metric-card--runs">Runs</div></div></div></section>
+        </section>
+      </section>
+
+      <!--
       FNXC:CommandCenterTesting 2026-06-19-02:04:
       FN-6685 requires a real-Blink desktop and mobile gate for the FN-6683/FN-6684 recharts surfaces because jsdom cannot compute ResponsiveContainer parent height, min-content shrink, or overflow. This fixture mirrors Command Center tabpanel/card wrappers and includes populated pie/line plus empty states so emitted dashboard CSS owns the sizing chain under test.
       -->
@@ -743,6 +770,7 @@ export function createSmokeHtml() {
       const prPanel = document.querySelector('[data-smoke="pr-panel"]');
       const prChecks = document.querySelector('[data-smoke="pr-checks"]');
       const commandCenterCharts = document.querySelector('[data-smoke="command-center-charts"]');
+      const agentsOverviewScroll = document.querySelector('[data-smoke="agents-overview-scroll"]');
 
       function setView(view) {
         const isList = view === 'list';
@@ -757,6 +785,7 @@ export function createSmokeHtml() {
         prPanel.hidden = name !== 'pr-panel';
         prChecks.hidden = name !== 'pr-checks';
         commandCenterCharts.hidden = name !== 'command-center-charts';
+        agentsOverviewScroll.hidden = name !== 'agents-overview-scroll';
       }
 
       boardButton.addEventListener('click', () => setView('board'));
@@ -765,6 +794,7 @@ export function createSmokeHtml() {
       document.querySelector('[data-smoke="show-pr-panel"]').addEventListener('click', () => showSmokeSection('pr-panel'));
       document.querySelector('[data-smoke="show-pr-checks"]').addEventListener('click', () => showSmokeSection('pr-checks'));
       document.querySelector('[data-smoke="show-command-center-charts"]').addEventListener('click', () => showSmokeSection('command-center-charts'));
+      document.querySelector('[data-smoke="show-agents-overview-scroll"]').addEventListener('click', () => showSmokeSection('agents-overview-scroll'));
       document.querySelector('[data-smoke="open-modal"]').addEventListener('click', () => {
         modalOverlay.classList.add('open');
         nav.hidden = true;
@@ -1241,6 +1271,62 @@ async function runSmokeChecks(page, pageUrl) {
     && layout.banner.top >= layout.card.bottom - 1
     && layout.badgeReason === "plan-review-replan-cap"
     && layout.bannerReason === "plan-review-replan-cap";
+
+  const collectAgentsOverviewScrollLayout = () => evaluate(page, `(() => {
+    document.querySelector('[data-smoke="show-agents-overview-scroll"]').click();
+    const section = document.querySelector('[data-smoke="agents-overview-scroll"]');
+    const fixture = section.querySelector('.agents-view');
+    const owner = section.querySelector('[data-smoke="agents-overview-scroll-owner"]');
+    const lastCard = section.querySelector('[data-smoke="agents-overview-last-card"]');
+    const sibling = fixture.querySelector('.agents-view-content');
+    const empty = section.querySelector('[data-smoke="agents-overview-scroll-empty"]');
+    const emptyOwner = section.querySelector('[data-smoke="agents-overview-empty-scroll-owner"]');
+    owner.scrollTop = owner.scrollHeight - owner.clientHeight;
+    const ownerRect = owner.getBoundingClientRect();
+    const lastRect = lastCard.getBoundingClientRect();
+    const toggleRect = empty.querySelector('.agents-overview-bar__toggle').getBoundingClientRect();
+    const emptyRect = empty.getBoundingClientRect();
+    return {
+      overflowY: getComputedStyle(owner).overflowY,
+      overflow: owner.scrollHeight - owner.clientHeight,
+      lastCard: { top: lastRect.top, bottom: lastRect.bottom },
+      owner: { top: ownerRect.top, bottom: ownerRect.bottom },
+      siblingHeight: sibling.clientHeight,
+      documentOverflow: document.documentElement.scrollWidth - window.innerWidth,
+      emptyOverflow: emptyOwner.scrollHeight - emptyOwner.clientHeight,
+      emptyToggleVisible: toggleRect.top >= emptyRect.top - 1 && toggleRect.bottom <= emptyRect.bottom + 1,
+    };
+  })()`);
+
+  for (const { width, height, deviceScaleFactor, mobile } of [
+    { width: 390, height: 844, deviceScaleFactor: 2, mobile: true },
+    { width: 1280, height: 700, deviceScaleFactor: 1, mobile: false },
+  ]) {
+    await page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor, mobile });
+    const agentsOverviewLayout = await collectAgentsOverviewScrollLayout();
+    const viewport = `${width}×${height}`;
+    assertSmokeResult(
+      `Agents Overview scroll owner reaches every active card at ${viewport}`,
+      (agentsOverviewLayout.overflowY === "auto" || agentsOverviewLayout.overflowY === "scroll")
+        && agentsOverviewLayout.overflow > 0
+        && agentsOverviewLayout.lastCard.bottom <= agentsOverviewLayout.owner.bottom + 1
+        && agentsOverviewLayout.lastCard.top >= agentsOverviewLayout.owner.top - 1
+        && agentsOverviewLayout.siblingHeight > 0
+        && agentsOverviewLayout.documentOverflow <= 1,
+      JSON.stringify(agentsOverviewLayout),
+    );
+    assertSmokeResult(
+      `Agents Overview empty scroll owner stays unclipped at ${viewport}`,
+      agentsOverviewLayout.emptyOverflow <= 1 && agentsOverviewLayout.emptyToggleVisible,
+      JSON.stringify(agentsOverviewLayout),
+    );
+  }
+  await page.send("Emulation.setDeviceMetricsOverride", {
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 2,
+    mobile: true,
+  });
 
   const mobileResolvedGithubTableLayout = await collectResolvedGithubTableLayout();
   assertSmokeResult(

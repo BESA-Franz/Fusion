@@ -121,6 +121,30 @@ describe("browser layout smoke fixture", () => {
     expect(html).toContain("Plan Review needs approval");
   });
 
+  it("includes the production Agents Overview scroll chain", () => {
+    const html = createSmokeHtml();
+    for (const hook of [
+      "agents-overview-scroll",
+      "show-agents-overview-scroll",
+      "agents-overview-scroll-owner",
+      "agents-overview-last-card",
+      "agents-overview-scroll-empty",
+      "agents-overview-empty-scroll-owner",
+    ]) {
+      expect(html).toContain(`data-smoke="${hook}"`);
+    }
+    for (const className of [
+      "agents-overview-bar__content",
+      "agent-metrics-bar",
+      "active-agents-panel",
+      "active-agents-grid",
+      "live-agent-card",
+    ]) {
+      expect(html).toContain(className);
+    }
+    expect(html.match(/class="live-agent-card"/g)).toHaveLength(13);
+  });
+
   it("includes PR flow fixture sections and class hooks", () => {
     const html = createSmokeHtml();
     expect(html).toContain('data-smoke="pr-create-modal"');
@@ -158,7 +182,7 @@ describe("browser layout smoke fixture", () => {
     expect(html).toContain('data-smoke="quick-add-save-row"');
     expect(html).toContain('data-smoke="quick-add-save-button"');
     expect(html).toContain('data-testid="quick-entry-session-advisor-toggle"');
-    expect(html.match(/data-testid="quick-entry-(?:attach|github-toggle|session-advisor-toggle|priority-button|fast-toggle)"/g)).toHaveLength(120);
+    expect(html.match(/data-testid="quick-entry-(?:attach|github-toggle|session-advisor-toggle|priority-button|fast-toggle)"/g)).toHaveLength(140);
     for (const label of ["Save", "Guardar", "Enregistrer", "저장", "保存", "儲存"]) {
       expect(html).toContain(label);
     }
