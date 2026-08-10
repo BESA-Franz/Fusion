@@ -78,7 +78,7 @@ import { GlobalSettingsStore } from "./config/global-settings.js";
 import { Database } from "./db/db.js";
 import { ArchiveDatabase } from "./db/archive-db.js";
 import { projectScopeFor, type AsyncDataLayer, type DbTransaction } from "./postgres/data-layer.js";
-import { withPlanningLifecycleAdvisoryLock } from "./postgres/advisory-locks.js";
+import { planningLifecycleLockTransportAvailability, withPlanningLifecycleAdvisoryLock, withPlanningLifecycleAdvisoryLocks } from "./postgres/advisory-locks.js";
 import { MissionStore } from "./missions/mission-store.js";
 import { AsyncMissionStore } from "./async-stores/async-mission-store.js";
 import { AsyncIdeationStore } from "./async-stores/async-ideation-store.js";
@@ -891,6 +891,30 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       if (planningLifecycleLocks.get(key) === current) planningLifecycleLocks.delete(key);
     }
   }
+  /** Acquire all child planning keys in deterministic order without a fan-out connection cost. */
+  public async withPlanningLifecycleLocks<T>(ids: readonly string[], fn: () => Promise<T>): Promise<T> {
+    const sorted = [...new Set(ids)].sort();
+    if (sorted.length === 0) return fn();
+    const backend = this.asyncLayer?.backend;
+    if (this.asyncLayer && backend) {
+      return withPlanningLifecycleAdvisoryLocks({
+        projectId: this.asyncLayer.projectId ?? this.rootDir,
+        taskIds: sorted,
+        directSessionUrl: backend.directSessionUrl ?? null,
+        provenance: backend.directSessionProvenance ?? null,
+        runtimeUrl: backend.runtimeUrl,
+        migrationUrl: backend.migrationUrl,
+      }, fn);
+    }
+    const acquire = async (index: number): Promise<T> => index === sorted.length ? fn() : this.withPlanningLifecycleLock(sorted[index]!, () => acquire(index + 1));
+    return acquire(0);
+  }
+  public planningLifecycleLockTransportAvailability(): { available: true } | { available: false; reason: string } {
+    const backend = this.asyncLayer?.backend;
+    if (!this.asyncLayer || !backend) return { available: true };
+    return planningLifecycleLockTransportAvailability({ directSessionUrl: backend.directSessionUrl ?? null, provenance: backend.directSessionProvenance ?? null, runtimeUrl: backend.runtimeUrl, migrationUrl: backend.migrationUrl });
+  }
+
   public getTaskIdFromDir(dir: string): string {
     return getTaskIdFromDirImpl(this, dir);
   }
