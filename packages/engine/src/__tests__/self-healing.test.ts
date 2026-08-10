@@ -4946,7 +4946,14 @@ describe("SelfHealingManager", () => {
       managerWithRecovery.stop();
     });
 
-    it("does not recover fresh merging tasks before the stuck timeout", async () => {
+    /*
+    FNXC:MergeReliability 2026-08-10-15:52:
+    FN-8924 rejects replacing this age gate with merger-log recency: abandoned merge bodies can
+    write the same `agent: "merger"` records, so that clock is not independently attributable.
+    Keep this pin until a task-scoped ownership/activity generation exists that an orphan cannot
+    refresh; a fresh `updatedAt` must therefore continue to prevent non-owner recovery.
+    */
+    it("retains the age gate when a non-owner merging task was recently updated", async () => {
       const managerWithRecovery = new SelfHealingManager(store, {
         rootDir: "/tmp/test-project",
       });
