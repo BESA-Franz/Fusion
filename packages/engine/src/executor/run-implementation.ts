@@ -188,7 +188,7 @@ import { resolveDedicatedPlannerColumnsForTask } from "../planner-lane-resolutio
 import { mergeEffectiveSettings } from "../project/effective-settings.js";
 import { buildStepFailureMessage, emitProactiveStatus, sanitizeFailureReason } from "../project/proactive-status.js";
 import { createRunAuditor, generateSyntheticRunId, type EngineRunContext } from "../util/run-audit.js";
-import { acquireTaskWorktree } from "../worktree/worktree-acquisition.js";
+import { acquireTaskWorktree, WorktreeBaseRefreshError } from "../worktree/worktree-acquisition.js";
 import { resolveWorktreesDir } from "../worktree/worktree-paths.js";
 import {
   RemovalReason,
@@ -2884,6 +2884,26 @@ export async function runImplementation(
         // Dependency added mid-execution — discard worktree and move to triage
         deps.depAborted.delete(task.id);
         await deps.handleDepAbortCleanup(task.id, worktreePath);
+      } else if (err instanceof WorktreeBaseRefreshError) {
+        /*
+        FNXC:WorktreeBaseRefresh 2026-08-10-01:15:
+        Classified FIRST among error types, and re-applied after the U4 executor peel (#3317) rewrote
+        executor.ts from a pre-change base and dropped it. Acquisition throws this BEFORE any session starts,
+        so the generic sink below would park the task `failed` and page the operator for a pre-session
+        checkout state — that path parked 99 tasks and produced 47 operator alerts over 2026-08-01..09.
+        Post-fix only an UNPROVEN tree (failed compensation) still throws, and a later acquisition can repair
+        that once git state changes, so it stays a wait: leave the row cleanly dispatchable and let ordinary
+        scheduling retry it rather than terminalizing recoverable work.
+        */
+        executorLog.warn(`${task.id}: worktree base refresh blocked execution (${err.refresh.kind}) — leaving the task queued for re-dispatch (not a failure)`);
+        await deps.store.logEntry(
+          task.id,
+          `Worktree base refresh blocked execution (${err.refresh.kind}) — task left queued for a later clean acquisition`,
+          err.refresh.detail,
+          deps.getRunContextFor(task.id),
+        ).catch(() => undefined);
+        await deps.persistTokenUsage(task.id);
+        return;
       } else if (isInvalidAssistantContinuationErrorMessage(errorMessage)) {
         /*
         FNXC:PostDoneContinuation 2026-07-16-11:57:
