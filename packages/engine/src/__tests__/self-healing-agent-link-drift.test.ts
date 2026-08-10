@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { isEphemeralAgent, type Agent, type AgentStore, type Task } from "@fusion/core";
+import { TaskDeletedError, TaskNotFoundError, isEphemeralAgent, type Agent, type AgentStore, type Task } from "@fusion/core";
 
 import { SelfHealingManager } from "../self-healing.js";
 
@@ -182,6 +182,43 @@ describe("FN-4296: self-healing agent link drift", () => {
     const { manager } = buildManager(agents, { "FN-1": null });
     await manager.recoverDriftedAgentTaskLinks();
     expect(agents[0].taskId).toBeUndefined();
+    manager.stop();
+  });
+
+  it("continues after task-gone lookup races and clears later drifted links", async () => {
+    const agents = [
+      makeAgent("agent-deleted", "FN-DELETED"),
+      makeAgent("agent-missing", "FN-MISSING"),
+      makeAgent("agent-error", "FN-ERROR"),
+      makeAgent("agent-done", "FN-DONE"),
+    ];
+    const store = {
+      getTask: vi.fn(async (taskId: string) => {
+        if (taskId === "FN-DELETED") throw new TaskDeletedError(taskId, new Date().toISOString());
+        if (taskId === "FN-MISSING") throw new TaskNotFoundError(taskId);
+        if (taskId === "FN-ERROR") throw new Error("database unavailable");
+        return { id: taskId, column: "done" } as Task;
+      }),
+      recordRunAuditEvent: vi.fn(async () => {}),
+    } as any;
+    const agentStore = {
+      listAgents: vi.fn(async (filter?: { includeEphemeral?: boolean }) => filter?.includeEphemeral === false ? agents.filter((agent) => !isEphemeralAgent(agent)) : agents),
+      getActiveHeartbeatRun: vi.fn(async () => null),
+      updateAgentState: vi.fn(async (agentId: string, state: Agent["state"]) => {
+        const agent = agents.find((candidate) => candidate.id === agentId);
+        if (agent) agent.state = state;
+      }),
+      syncExecutionTaskLink: vi.fn(async (agentId: string, taskId?: string) => {
+        const agent = agents.find((candidate) => candidate.id === agentId);
+        if (agent) agent.taskId = taskId;
+      }),
+    } as unknown as AgentStore;
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project", agentStore });
+
+    const cleared = await manager.recoverDriftedAgentTaskLinks();
+
+    expect(cleared).toBe(3);
+    expect(agentStore.syncExecutionTaskLink).toHaveBeenCalledWith("agent-done", undefined);
     manager.stop();
   });
 

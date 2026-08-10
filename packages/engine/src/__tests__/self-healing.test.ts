@@ -143,7 +143,7 @@ vi.mock("../merger.js", () => ({
 
 import { SelfHealingManager, isBranchAheadOfBase, MAX_AUTO_MERGE_RETRIES } from "../self-healing.js";
 import { HEARTBEAT_ERROR_RECOVERY_METADATA_KEY, HEARTBEAT_ERROR_RETRY_EXHAUSTED_PAUSE_REASON, HEARTBEAT_ERROR_UNRECOVERABLE_PAUSE_REASON, readHeartbeatErrorRetryCount } from "../agent-heartbeat.js";
-import type { TaskStore, Settings, Task, AgentStore, Agent, NotificationProvider } from "@fusion/core";
+import { TaskDeletedError, TaskNotFoundError, type TaskStore, type Settings, type Task, type AgentStore, type Agent, type NotificationProvider } from "@fusion/core";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -1949,6 +1949,43 @@ describe("SelfHealingManager", () => {
       expect(agentStore.updateAgentState).toHaveBeenCalledWith("agent-recover", "active");
       expect(agentStore.syncExecutionTaskLink).toHaveBeenCalledWith("agent-recover", undefined);
       expect(agentStore.updateAgentState).not.toHaveBeenCalledWith("agent-keep", "active");
+      managerWithAgents.stop();
+    });
+
+    it("continues after task-gone lookup races and recovers later agents", async () => {
+      const agents: Agent[] = [
+        { id: "agent-deleted", state: "running", taskId: "FN-DELETED", updatedAt: new Date(Date.now() - 120_000).toISOString() } as Agent,
+        { id: "agent-missing", state: "running", taskId: "FN-MISSING", updatedAt: new Date(Date.now() - 120_000).toISOString() } as Agent,
+        { id: "agent-error", state: "running", taskId: "FN-ERROR", updatedAt: new Date(Date.now() - 120_000).toISOString() } as Agent,
+        { id: "agent-later", state: "running", taskId: "FN-LATER", updatedAt: new Date(Date.now() - 120_000).toISOString() } as Agent,
+      ];
+      const getTask = vi.fn(async (taskId: string) => {
+        if (taskId === "FN-DELETED") throw new TaskDeletedError(taskId, new Date().toISOString());
+        if (taskId === "FN-MISSING") throw new TaskNotFoundError(taskId);
+        if (taskId === "FN-ERROR") throw new Error("database unavailable");
+        return { id: taskId, column: "todo" } as Task;
+      });
+      const agentStore = {
+        listAgents: vi.fn(async () => agents),
+        getActiveHeartbeatRun: vi.fn(async () => null),
+        updateAgentState: vi.fn(async (agentId: string, state: Agent["state"]) => {
+          const agent = agents.find((candidate) => candidate.id === agentId);
+          if (agent) agent.state = state;
+        }),
+        syncExecutionTaskLink: vi.fn(async (agentId: string, taskId?: string) => {
+          const agent = agents.find((candidate) => candidate.id === agentId);
+          if (agent) agent.taskId = taskId;
+        }),
+      } as unknown as AgentStore;
+      const managerWithAgents = new SelfHealingManager(
+        createMockStore({ getTask }),
+        { rootDir: "/tmp/test-project", agentStore },
+      );
+
+      const recovered = await managerWithAgents.recoverAgentsRunningOnInactiveTasks();
+
+      expect(recovered).toBe(3);
+      expect(agentStore.syncExecutionTaskLink).toHaveBeenCalledWith("agent-later", undefined);
       managerWithAgents.stop();
     });
 

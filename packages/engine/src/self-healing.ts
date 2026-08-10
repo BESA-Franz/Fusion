@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync,
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveReboundTarget, resolveReboundTargetForTask, resolveArchiveTargetForTask, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr,
+import { TaskDeletedError, type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveReboundTarget, resolveReboundTargetForTask, resolveArchiveTargetForTask, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr,
   resolveNearDuplicateCanonicalFlags,
   LEGACY_COLUMN_IDS_BY_ROLE,
   TERMINAL_ROLES,
@@ -185,6 +185,46 @@ import {
 
 
 const log = createLogger("self-healing");
+
+/*
+FNXC:SelfHealingAgentLinks 2026-08-10-05:47:
+A durable agent may outlive its task when a soft-delete races the self-healing
+read. Treat typed and serialized task-gone errors as a missing link, while
+quarantining unrelated lookup failures to this candidate so later agents in
+the same sweep still get evaluated.
+*/
+type SelfHealingTaskLookup =
+  | { status: "found"; task: Task }
+  | { status: "missing" }
+  | { status: "error" };
+
+function isTaskDeletedLookupError(error: unknown): boolean {
+  if (error instanceof TaskDeletedError) return true;
+  if (!error || typeof error !== "object") return false;
+  return (error as { name?: unknown }).name === "TaskDeletedError";
+}
+
+function isTaskNotFoundLookupError(error: unknown): boolean {
+  if (isTaskNotFoundError(error)) return true;
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { name?: unknown; code?: unknown };
+  return candidate.name === "TaskNotFoundError" || candidate.code === "TASK_NOT_FOUND";
+}
+
+async function lookupTaskForSelfHealing(store: Pick<TaskStore, "getTask">, taskId: string): Promise<SelfHealingTaskLookup> {
+  try {
+    const task = await store.getTask(taskId);
+    return task ? { status: "found", task } : { status: "missing" };
+  } catch (error) {
+    if (isTaskNotFoundLookupError(error) || isTaskDeletedLookupError(error)) {
+      return { status: "missing" };
+    }
+    log.warn(
+      `[self-healing] task lookup failed for ${taskId}; skipping this agent candidate: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return { status: "error" };
+  }
+}
 
 /*
 DELIBERATE-LITERAL — the no-metadata fallback for dependency satisfaction, mirroring
@@ -13227,7 +13267,11 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
         continue;
       }
 
-      const linkedTask = await this.store.getTask(agent.taskId);
+      const linkedTaskLookup = await lookupTaskForSelfHealing(this.store, agent.taskId);
+      if (linkedTaskLookup.status === "error") {
+        continue;
+      }
+      const linkedTask = linkedTaskLookup.status === "found" ? linkedTaskLookup.task : null;
       /* FNXC:WorkflowResolvedColumns 2026-07-31-16:50 (fleet, round 2): WIP u REVIEW u TERMINAL. Keyed on
          ids none matched on a renamed board, so this sweep evaluated agents whose task was still executing. */
       if (linkedTask && (agentLinkLiveColumns.has(linkedTask.column) || agentLinkTerminalColumns.has(linkedTask.column))) {
@@ -13315,7 +13359,11 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
       }
 
       const linkedTaskId = agent.taskId;
-      const linkedTask = await this.store.getTask(linkedTaskId);
+      const linkedTaskLookup = await lookupTaskForSelfHealing(this.store, linkedTaskId);
+      if (linkedTaskLookup.status === "error") {
+        continue;
+      }
+      const linkedTask = linkedTaskLookup.status === "found" ? linkedTaskLookup.task : null;
       let shouldClear = false;
       let reason = "";
       let hadFreshRun = false;
