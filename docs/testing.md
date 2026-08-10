@@ -204,6 +204,9 @@ Command Center responsive chart fixes need evidence beyond jsdom. Keep the jsdom
 
 The same required-browser lane also measures the Agents Overview fixture at 390×844 mobile and 1280×700 short-desktop viewports. It verifies the real Active Agents scroll owner overflows, reaches the final card after scrolling, preserves sibling Agents content, avoids horizontal page overflow, and leaves the metrics-only empty state unclipped.
 
+<!-- FNXC:DashboardBrowserSmoke 2026-08-10-19:25: FN-8952 derives Quick Add Save smoke fixtures and their assertion count from shipped locales and tasks.save catalogs, so adding a locale cannot desynchronize the Chromium layout contract. -->
+The Quick Add Save fixtures at the supported 300px minimum derive both their locale set and expected count from `SUPPORTED_LOCALES` plus each shipped `tasks.save` catalog entry; adding a locale needs no smoke-script edit. The fixture HTML escapes catalog labels to preserve React-equivalent text rendering, and `browser-layout-smoke-fixture.test.ts` uses an injection seam to guard locale derivation drift, missing translations, and escaping in the fast jsdom lane.
+
 The shared mobile/tablet overflow-containment net lives at `packages/dashboard/app/__tests__/dashboard-overflow-containment.test.tsx`. It covers board/kanban columns, task-detail modal shell, workflow/simple workflow editors, and Activity Log modal at mobile, tablet, and landscape-phone breakpoints. Run it directly when touching dashboard viewport containment or shared modal/workflow CSS:
 
 ```bash
