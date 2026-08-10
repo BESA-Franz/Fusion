@@ -130,6 +130,7 @@ types/policy for severity-routed notes before they reach steering inject.
 export * from "./planner/overseer-advice.js";
 export * from "./planner/overseer-emission-guard.js";
 export * from "./tasks/frontend-ux-policy.js";
+export * from "./tasks/terminal-failure-auto-recovery.js";
 export * from "./tasks/original-description-policy.js";
 export * from "./planner/planning-plan-md.js";
 export * from "./tasks/file-scope-classification.js";

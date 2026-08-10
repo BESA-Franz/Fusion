@@ -574,6 +574,14 @@ engine's no-store fallback aligned across restarts.
 */
 export const WEDGE_RENOTIFY_COOLDOWN_MS = 6 * 60 * 60 * 1_000;
 
+/*
+FNXC:TaskWedgeNotifications 2026-08-10-18:54:
+`recoveryRetryCount` is a display mirror that executor, triage, and scheduler clear while
+creating terminal parks, so it cannot bound generic terminal-failure recovery. The durable
+budget instead lives in the existing wedge JSON and is revisioned because stale full-row writes
+can otherwise erase it. `applyToken` is a rotating fence consumed by the single clear/requeue
+transition; `lastApplyStartedAt` only detects abandonment and is never a lock.
+*/
 export interface TaskWedgeNotificationState {
   reasonKey: string;
   episodeId: string;
@@ -586,6 +594,22 @@ export interface TaskWedgeNotificationState {
   would let X -> Y -> X re-notify X while its own cooldown is still active.
   */
   lastNotifiedAtByReason?: Record<string, string>;
+  /** Monotonic durable-state version used to reject stale whole-object writes. */
+  budgetRevision?: number;
+  /** Sweep-owned generic terminal-failure recovery state. */
+  autoRecovery?: {
+    attempts: number;
+    lastAttemptAt: string;
+    budgetStartedAt?: string;
+    retryAppliedAt?: string;
+    resumeCount?: number;
+    lastApplyStartedAt?: string;
+    applyToken?: string;
+    lastBudgetWriteAt?: string;
+    exhaustedAt?: string;
+    escalationNotifiedAt?: string;
+    escalationReason?: "budget-exhausted" | "auto-recovery-disabled";
+  };
 }
 
 export type TaskRecommendationCategory = "improvement" | "feature" | "bug" | "other";
