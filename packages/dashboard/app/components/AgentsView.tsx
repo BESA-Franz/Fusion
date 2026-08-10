@@ -49,6 +49,7 @@ export interface AgentsViewProps {
   projectId?: string;
   onOpenTaskLogs?: (taskId: string) => void;
   agentOnboardingEnabled?: boolean;
+  focusAgent?: { agentId: string; requestId: number };
 }
 
 function getAgentRoles(t: TFunction<"app">): { value: AgentCapability; label: string; icon: string }[] {
@@ -391,7 +392,7 @@ function OrgChartConnectors({
   );
 }
 
-export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardingEnabled = false }: AgentsViewProps) {
+export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardingEnabled = false, focusAgent }: AgentsViewProps) {
   const { t } = useTranslation("app");
   const activitySnapshot = useAgentActivity(projectId);
   const agentRoles = getAgentRoles(t);
@@ -1228,6 +1229,16 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
       setIsOverviewOpen(false);
     }
   }, [isMobileViewport, openAgentDetail]);
+  const handledFocusRequestRef = useRef<number | undefined>(undefined);
+  /*
+  FNXC:CommandCenterAgentActivity 2026-08-10-01:30:
+  Command Center supplies a monotonic request id, not merely an agent id, so repeat activity-row clicks reopen the same detail while unrelated renders remain inert.
+  */
+  useEffect(() => {
+    if (!focusAgent || handledFocusRequestRef.current === focusAgent.requestId) return;
+    handledFocusRequestRef.current = focusAgent.requestId;
+    handleOverviewAgentSelect(focusAgent.agentId);
+  }, [focusAgent, handleOverviewAgentSelect]);
 
   const handleRunHeartbeat = async (agentId: string, agentName: string) => {
     // Optimistic state flip: the API call can take several seconds before the
