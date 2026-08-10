@@ -292,7 +292,7 @@ This is a forward-safety guard for stranded completed tasks. See FN-4055/FN-4079
 Fusion now derives `task.inReviewStall` for non-paused `in-review` tasks when a known stuck-state shape is detected. This signal is state-based (not log-heuristic) and is computed server-side on task hydration.
 
 `InReviewStallCode` values:
-- `transient-merge-status-no-owner` — task is still in `merging`/`merging-pr`/`merging-fix` after the stale-merging age threshold, but no active merger owns it.
+- `transient-merge-status-no-owner` — task is still in `merging`/`merging-pr`/`merging-fix` after the stale-merging age threshold, but no active merger owns it. `recoverStaleMergingStatus()` clears this stamp and re-enqueues auto-merge-eligible, non-workspace, non-`mergeConfirmed` tasks; paused tasks remain skipped and the signal itself remains diagnostic-only.
 - `merge-retries-exhausted` — `mergeRetries` reached the auto-merge retry cap without `mergeDetails.mergeConfirmed === true`.
 - `no-worktree-no-merge-confirmed` — task has no worktree path and merge is not confirmed (excluding explicit no-op merges).
 - `merge-blocker` — `getTaskMergeBlocker()` reports a merge/finalization blocker.

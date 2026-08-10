@@ -85,6 +85,7 @@ import {
   resolveActiveTaskCapacityLimit,
 } from "./concurrency/concurrency.js";
 import { canStartNextMergeBody } from "./merge/merge-reclaim-policy.js";
+import { shouldClearOrphanedMergeStamp } from "./merge/merge-active-status.js";
 import {
   registerProjectVerificationLimit,
   unregisterProjectVerificationLimit,
@@ -608,6 +609,44 @@ export class ProjectEngine {
     for (const r of this.takeMergeResolvers(taskId)) r.reject(err);
   }
 
+  /*
+  FNXC:MergeQueue 2026-08-09-22:35:
+  An aborted merge owns its transient stamp and must clear it before its resolver rejection starts
+  issue #3395's bounded retry. The abort-signal fence in runAiMerge makes this clear durable even
+  when the body outlives the settle latch. Keep lane release in the drain finally: it is already
+  synchronous before resolver continuations, and moving task-id keyed cleanup would tear down a
+  successor attempt.
+  */
+  private async clearAbortedMergeStamp(taskId: string): Promise<void> {
+    const store = this.runtime.getTaskStore();
+    const task = await store.getTask(taskId).catch(() => null);
+    if (!task || !shouldClearOrphanedMergeStamp(task)) return;
+    const clearedStatus = task.status;
+    await store.updateTask(taskId, { status: null }).catch(() => undefined);
+    await store
+      .logEntry(taskId, `Auto-recovered: cleared stale '${clearedStatus}' status`, "MergeAborted")
+      .catch(() => undefined);
+  }
+
+  /*
+  FNXC:MergeQueue 2026-08-09-22:35:
+  Reconcile only after the serialized pump has claimed its generation, never at enqueue entry
+  points. The closed writer set is the current drain holder plus stale self-healing: `mergeRunning`
+  excludes sibling iterations and the abort-signal fence excludes bodies that outlived the bounded
+  settle latch. A claim alone is not enough. This choke point covers onMerge/requestInterpreterMerge
+  and synchronous internalEnqueueMerge callers; pre-enqueue blockers remain self-healing's job.
+  */
+  private async reconcileClaimedMergeStamp(taskId: string): Promise<void> {
+    const store = this.runtime.getTaskStore();
+    const task = await store.getTask(taskId).catch(() => null);
+    if (!task || !shouldClearOrphanedMergeStamp(task)) return;
+    const clearedStatus = task.status;
+    await store.updateTask(taskId, { status: null }).catch(() => undefined);
+    await store
+      .logEntry(taskId, `Auto-recovered: reconciled orphaned '${clearedStatus}' merge status`, "MergeQueue")
+      .catch(() => undefined);
+  }
+
   /** FN-5697/FN-5674: cap transient provider/network abort retries in auto-merge.
    *  Examples: "This operation was aborted", "socket hang up", `server_error`,
    *  and (FN-8004) ACP provider turn failures such as `acp rpc code -32603`.
@@ -850,6 +889,11 @@ export class ProjectEngine {
    * generation cannot start until the orphan work settles.
    */
   private runAbortableMergeBody<T>(bodyFactory: () => Promise<T>, signal: AbortSignal, taskId: string): Promise<T> {
+    // FNXC:MergeQueue 2026-08-09-23:45: Pump-side stamp reconciliation awaits store I/O after
+    // claiming the generation. If cancellation arrives in that window, do not instantiate a body:
+    // `raceMergeWithAbort` checks too late (after bodyFactory), and an aborted runAiMerge can still
+    // reach unrelated finalization paths before its later cooperative abort check.
+    if (signal.aborted) return Promise.reject(this.createMergeAbortedError(taskId));
     const body = this.trackMergeBody(bodyFactory());
     return this.raceMergeWithAbort(body, signal, taskId);
   }
@@ -4201,6 +4245,7 @@ export class ProjectEngine {
             */
             const result = await runWithMergeAdmission(async () => {
               const abortSignal = this.claimActiveMerge(taskId);
+              await this.reconcileClaimedMergeStamp(taskId);
               runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge processing PR flow for ${taskId}...`);
               return await this.runAbortableMergeBody(
                 () =>
@@ -4283,6 +4328,7 @@ export class ProjectEngine {
 
             const rawMerge = async () => {
               const abortSignal = this.claimActiveMerge(taskId);
+              await this.reconcileClaimedMergeStamp(taskId);
               /*
               FNXC:GrokCliRouting 2026-07-15-09:45:
               AI merge creates sessions via createResolvedAgentSession with the same Grok CLI no-visible-key auto-derive seam as chat/executor. Without pluginRunner, getRuntimeById("grok") is unavailable and grok-cli merger/fallback selections throw "Grok CLI models require the bundled Grok CLI runtime" even when chat works (ChatManager already receives engine.getPluginRunner()). Forward the engine PluginRunner so merge can route to the logged-in grok CLI like every other lane.
@@ -4429,10 +4475,9 @@ export class ProjectEngine {
           if (mergeWasAborted) {
             runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge aborted for ${taskId}: ${errorMsg}`);
             this.mergeAbortController = null;
+            await this.clearAbortedMergeStamp(taskId);
             if (hasManualResolver) {
               this.rejectMergeResolvers(taskId, err instanceof Error ? err : new Error(errorMsg));
-            } else {
-              await store.updateTask(taskId, { status: null }).catch(() => undefined);
             }
             continue;
           }

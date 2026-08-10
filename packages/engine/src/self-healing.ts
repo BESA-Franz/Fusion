@@ -510,7 +510,7 @@ shares ONE definition with this sweep. Previously the manual gate hardcoded its 
 and refused to retry ANY merge-active status, so an orphaned `landing` stamp was un-retryable by
 hand while this sweep cleared it automatically minutes later.
 */
-import { ACTIVE_MERGE_STATUSES, DEFAULT_STALE_MERGING_STATUS_MIN_AGE_MS, isStaleMergeActiveStatus } from "./merge/merge-active-status.js";
+import { ACTIVE_MERGE_STATUSES, DEFAULT_STALE_MERGING_STATUS_MIN_AGE_MS, isStaleMergeActiveStatus, shouldClearOrphanedMergeStamp } from "./merge/merge-active-status.js";
 export { ACTIVE_MERGE_STATUSES, DEFAULT_STALE_MERGING_STATUS_MIN_AGE_MS, isMergeActiveStatus, isStaleMergeActiveStatus } from "./merge/merge-active-status.js";
 const NON_TERMINAL_STEP_STATUSES = new Set(["pending", "in-progress"]);
 const STRANDED_COMPLETED_TODO_ACTIVE_STATUSES = new Set([
@@ -3576,24 +3576,78 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
       let recovered = 0;
       for (const task of stale) {
-        const previousStatus = task.status;
         try {
           /*
           FNXC:Workspace 2026-06-22-09:30 (Phase D U1, KTD1 — workspace-safe by construction):
-          This reconciler makes NO single-commit assumption: it only clears the transient
-          `merging`/`merging-pr` status (status:null) + clearMergeActive and never calls
-          findLandedTaskCommit or moves the task. That is exactly the correct workspace action
-          (clear the stale status so a re-land can be re-enqueued; the partial-land reconciler /
-          recover-interrupted-merging owns the actual re-enqueue). So a workspace task is handled
-          identically and safely here — no workspace-specific branch is needed.
+          This reconciler makes NO single-commit assumption: it clears the transient
+          `merging`/`merging-pr` status (status:null) + clearMergeActive but never directly
+          re-enqueues workspace work. The partial-land reconciler / recover-interrupted-merging
+          owns workspace re-land, avoiding a double enqueue while preserving the safe clear.
+
+          FNXC:MergeReliability 2026-08-09-22:35:
+          Issue #3395 showed that clear-only recovery leaves an annotated but stuck card until an
+          operator presses Retry. Eligible non-workspace, non-confirmed tasks re-enter the merge
+          queue after this sweep's unchanged pause/global-pause/staleness gates; autoMerge:false
+          still clears an unowned badge but remains terminal until human action.
+          */
+          /*
+          FNXC:MergeReliability 2026-08-09-22:50:
+          The listed snapshot can become a live merge while this sweep resolves workflow columns.
+          Re-read and re-apply the unchanged stale-owner predicate immediately before clearing so a
+          newly claimed generation is never clobbered; the clear remains limited to unowned stamps.
+          */
+          let previousStatus: string | null | undefined;
+          const clearIfStillStale = (live: Task): boolean => {
+            const currentActiveMergeTaskId = this.options.getActiveMergeTaskId?.() ?? null;
+            if (
+              !shouldClearOrphanedMergeStamp(live)
+              || !isStaleMergeActiveStatus(live, {
+                activeMergeTaskId: currentActiveMergeTaskId,
+                nowMs: Date.now(),
+                minAgeMs,
+              })
+            ) {
+              return false;
+            }
+            previousStatus = live.status;
+            return true;
+          };
+          let current: Task;
+          if (typeof this.store.updateTaskAtomic === "function") {
+            current = await this.store.updateTaskAtomic(task.id, (live) =>
+              clearIfStillStale(live) ? { status: null } : null,
+            );
+          } else {
+            // Compatibility only for structural test/extension stores; production TaskStore is atomic.
+            current = await this.store.getTask(task.id);
+            if (clearIfStillStale(current)) await this.store.updateTask(task.id, { status: null });
+          }
+          if (previousStatus === undefined) continue;
+
+          /*
+          FNXC:MergeReliability 2026-08-09-23:09:
+          Stale recovery must validate and clear under `updateTaskAtomic`'s task lock. A list
+          snapshot plus a later blind write can erase a fresh generation that claimed meanwhile;
+          the locked live-row predicate makes a newly active owner a no-op instead.
           */
           log.warn(`Clearing stale merge status for ${task.id}: ${previousStatus}`);
-          await this.store.updateTask(task.id, { status: null });
           this.options.clearMergeActive?.(task.id);
           await this.store.logEntry(
             task.id,
             `Auto-recovered: cleared stale '${previousStatus}' status (no active merger)`,
           );
+          if (
+            allowsAutoMergeProcessing(current, settings)
+            && current.mergeDetails?.mergeConfirmed !== true
+            && !isWorkspaceTask(current)
+          ) {
+            try {
+              await this.options.enqueueMerge?.(task.id);
+            } catch (err: unknown) {
+              const errorMessage = err instanceof Error ? err.message : String(err);
+              log.error(`Failed to re-enqueue recovered merge ${task.id}: ${errorMessage}`);
+            }
+          }
           recovered++;
         } catch (err: unknown) {
           const errorMessage = err instanceof Error ? err.message : String(err);
