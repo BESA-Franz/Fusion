@@ -11,7 +11,7 @@ import type {
   Task,
 } from "@fusion/core";
 import type { LifecycleColumns, TaskMoveLanes, WorkflowIrResolverStore } from "@fusion/core";
-import { DASHBOARD_USER_ID, NotificationDispatcher, resolveProjectColumnsForRoles, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, WEDGE_RENOTIFY_COOLDOWN_MS } from "@fusion/core";
+import { DASHBOARD_USER_ID, isTaskNotFoundError, NotificationDispatcher, resolveProjectColumnsForRoles, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, WEDGE_RENOTIFY_COOLDOWN_MS } from "@fusion/core";
 import { DEFAULT_NTFY_EVENTS, buildNtfyClickUrl, formatTaskIdentifier } from "../util/notifier.js";
 import { schedulerLog } from "../logger.js";
 import { NtfyNotificationProvider } from "./ntfy-provider.js";
@@ -535,9 +535,20 @@ export class NotificationService {
   }
 
   private async maybeNotifyTaskWedge(task: Task, suppliedDescriptor?: TaskWedgeDescriptor | null): Promise<void> {
-    // Task events carry snapshots. Re-read before a durable claim so an immediate
-    // recovery update cannot turn a stale failed event into an operator alert.
-    const liveTask = this.store.getTask ? (await this.store.getTask(task.id)) ?? task : task;
+    /*
+    FNXC:TaskWedgeNotifications 2026-08-10-04:35:
+    `getTask` throws TaskNotFoundError for soft-deleted rows instead of returning
+    undefined. A missing or unreadable live row cannot prove an actionable park,
+    so fail quiet and preserve enqueueWedgeHandling's never-reject contract.
+    */
+    let liveTask: Task;
+    try {
+      liveTask = this.store.getTask ? (await this.store.getTask(task.id)) ?? task : task;
+    } catch (error) {
+      const detail = isTaskNotFoundError(error) ? "not found" : error instanceof Error ? error.message : String(error);
+      schedulerLog.warn(`[notify] ${task.id} wedge live-read failed (${detail}) — suppressed notification`);
+      return;
+    }
     const recoveryOwner = describeTaskRecoveryOwner(liveTask);
     if (recoveryOwner) {
       // Recovery ownership is not a wedge episode. Resolve only an episode we
@@ -549,12 +560,17 @@ export class NotificationService {
       return;
     }
     /*
-    FNXC:TaskWedgeNotifications 2026-08-09-06:30:
-    Self-healing descriptors encode a no-action proof that the generic classifier
-    cannot recompute. They still cannot claim after the live task resumes, so let
-    the existing no-descriptor resolution path close any active stale episode.
+    FNXC:TaskWedgeNotifications 2026-08-10-04:35:
+    Archived/complete lanes and deleted rows may retain failed snapshots, but they
+    are terminal history rather than operator-actionable parks. Revalidate a
+    self-healing descriptor's live pause and auto-merge hold too; only role
+    membership is stable when workflows rename lifecycle columns.
     */
-    const descriptor = suppliedDescriptor && isTaskProgressing(liveTask)
+    const terminalLanes = await resolveProjectColumnsForRoles(this.store, ["complete", "archived"]);
+    const liveRowCannotBeWedge = liveTask.deletedAt != null || terminalLanes.has(liveTask.column);
+    const suppliedDescriptorIsHeldOrProgressing = suppliedDescriptor != null
+      && (liveTask.paused === true || liveTask.userPaused === true || liveTask.autoMerge === false || isTaskProgressing(liveTask));
+    const descriptor = liveRowCannotBeWedge || suppliedDescriptorIsHeldOrProgressing
       ? null
       : suppliedDescriptor ?? describeTaskWedge(liveTask);
     task = liveTask;
