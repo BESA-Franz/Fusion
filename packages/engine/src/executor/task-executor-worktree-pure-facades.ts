@@ -22,7 +22,23 @@ export abstract class TaskExecutorWorktreePureFacades extends TaskExecutorState 
   protected async isLiveCleanupRefusal(worktreePath: string, taskId: string): Promise<boolean> { return pure.isLiveCleanupRefusal(this.activeWorktrees, this.store, worktreePath, taskId); }
   protected async cleanupStaleBranch(branch: string, taskId: string): Promise<boolean> { return pure.cleanupStaleBranch(this.rootDir, this.store, branch, taskId); }
   protected async planSquashImportFromDep(...args: FacadeAfterSecond<typeof pure.planSquashImportFromDep>): ReturnType<typeof pure.planSquashImportFromDep> { return pure.planSquashImportFromDep(this.rootDir, this.store, ...args); }
-  protected async reconcileSelfOwnedBeforeRemove(...args: FacadeRestArgs<typeof pure.reconcileSelfOwnedBeforeRemove>): ReturnType<typeof pure.reconcileSelfOwnedBeforeRemove> { return pure.reconcileSelfOwnedBeforeRemove(this.store, ...args); }
+  /*
+  FNXC:WorktreeConflictRecovery 2026-08-10-20:31:
+  The free reconcile helper requires the executor's live-binding probe in addition to its store.
+  Bind that host-owned callback here so every two-argument facade caller receives the production
+  liveness guard instead of forwarding an undefined third argument into conflict cleanup.
+  */
+  protected async reconcileSelfOwnedBeforeRemove(
+    worktreePath: string,
+    taskId: string,
+  ): ReturnType<typeof pure.reconcileSelfOwnedBeforeRemove> {
+    return pure.reconcileSelfOwnedBeforeRemove(
+      this.store,
+      worktreePath,
+      taskId,
+      (ownerTaskId, path) => this.hasActiveWorktreeBinding(ownerTaskId, path),
+    );
+  }
   protected async emitStaleLockAudit(...args: FacadeRestArgs<typeof pure.emitStaleLockAudit>): ReturnType<typeof pure.emitStaleLockAudit> { return pure.emitStaleLockAudit(bags.buildStaleLockRecoveryDeps(this), ...args); }
   protected async recoverIndexLockIfStale(taskId: string, path: string, conflictInfo: { lockPath?: string; message?: string }): Promise<boolean> { return pure.recoverIndexLockIfStale(bags.buildStaleLockRecoveryDeps(this), taskId, path, conflictInfo); }
   protected async recoverStaleRegistration(taskId: string, path: string, conflictInfo: { path?: string; message?: string }): Promise<boolean> { return pure.recoverExecutorStaleRegistration(bags.buildStaleLockRecoveryDeps(this), taskId, path, conflictInfo); }
