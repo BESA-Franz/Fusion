@@ -31,8 +31,40 @@ describe("resolveTaskIntakeOwner", () => {
     expect(resolveTaskIntakeOwner({ workflow, explicitAssigneeId: "explicit", agents: [agent("bound"), agent("explicit")] })).toEqual({ status: "selected", agentId: "explicit", source: "explicit" });
   });
 
-  it("rejects an ineligible explicit owner and unavailable named execute binding", () => {
-    expect(resolveTaskIntakeOwner({ workflow, explicitAssigneeId: "triage", agents: [agent("triage", { roles: ["triage"], role: "triage" })] })).toEqual({ status: "rejected", reason: "explicit-assignee-ineligible" });
+  it("uses the canonical explicit-routing policy for engineers and operator overrides", () => {
+    const engineer = agent("engineer", { roles: ["engineer"], role: "engineer" });
+    const deprecatedEngineer = agent("deprecated-engineer", { roles: [], role: "engineer" });
+    const multiRoleEngineer = agent("multi-role-engineer", { roles: ["reviewer", "engineer"], role: "reviewer" });
+    const reviewer = agent("reviewer", { roles: ["reviewer"], role: "reviewer" });
+    for (const selected of [engineer, deprecatedEngineer, multiRoleEngineer]) {
+      expect(resolveTaskIntakeOwner({ workflow, explicitAssigneeId: selected.id, agents: [selected] }))
+        .toEqual({ status: "selected", agentId: selected.id, source: "explicit" });
+    }
+    expect(resolveTaskIntakeOwner({ workflow, explicitAssigneeId: reviewer.id, agents: [reviewer] }))
+      .toEqual({ status: "rejected", reason: "explicit-assignee-ineligible" });
+    expect(resolveTaskIntakeOwner({ workflow, explicitAssigneeId: reviewer.id, explicitAssigneeRoleOverride: true, agents: [reviewer] }))
+      .toEqual({ status: "selected", agentId: reviewer.id, source: "explicit" });
+  });
+
+  it("keeps non-role explicit eligibility gates hard even with an override", () => {
+    const rejected = [
+      agent("policy-none", { runtimeConfig: { assignmentPolicy: "none" } }),
+      agent("ephemeral", { metadata: { internal: true } }),
+      agent("disabled", { runtimeConfig: { enabled: false } }),
+      agent("paused", { state: "paused" }),
+      agent("error", { state: "error" }),
+    ];
+    for (const candidate of rejected) {
+      expect(resolveTaskIntakeOwner({
+        workflow,
+        explicitAssigneeId: candidate.id,
+        explicitAssigneeRoleOverride: true,
+        agents: [candidate],
+      })).toEqual({ status: "rejected", reason: "explicit-assignee-ineligible" });
+    }
+  });
+
+  it("rejects an unavailable named execute binding", () => {
     expect(resolveTaskIntakeOwner({ workflow, agents: [agent("pool")] })).toEqual({ status: "rejected", reason: "named-execute-binding-unavailable" });
   });
 
@@ -92,19 +124,30 @@ describe("resolveTaskIntakeOwner", () => {
     expect(resolveTaskIntakeOwner({ workflow: "no-workflow-context", agents: [] })).toEqual({ status: "unowned", reason: "no-eligible-executor" });
   });
 
-  it("keeps automatic selection role-safe and orders its pool by load, creation time, then id", () => {
+  it("keeps automatic selection executor-only and orders its pool by load, creation time, then id", () => {
     const explicitOnly = agent("explicit-only", { runtimeConfig: { assignmentPolicy: "explicit-only" } });
+    const engineer = agent("engineer", { roles: ["engineer"], role: "engineer" });
     const paused = agent("paused", { state: "paused" });
     const policyDenied = agent("denied", { runtimeConfig: { assignmentPolicy: "none" } });
     const olderBusy = agent("older-busy", { createdAt: "2025-01-01T00:00:00.000Z" });
     const newerIdle = agent("newer-idle", { createdAt: "2026-01-01T00:00:00.000Z" });
     expect(resolveTaskIntakeOwner({
       workflow: "no-workflow-context",
-      agents: [explicitOnly, paused, policyDenied, olderBusy, newerIdle],
+      agents: [explicitOnly, engineer, paused, policyDenied, olderBusy, newerIdle],
       activeSessions: new Map([["older-busy", 1]]),
     })).toEqual({ status: "selected", agentId: "newer-idle", source: "executor-pool" });
     expect(resolveTaskIntakeOwner({ workflow: "no-workflow-context", explicitAssigneeId: "explicit-only", agents: [explicitOnly] }))
       .toEqual({ status: "selected", agentId: "explicit-only", source: "explicit" });
+    expect(resolveTaskIntakeOwner({ workflow: "no-workflow-context", agents: [engineer] }))
+      .toEqual({ status: "unowned", reason: "no-eligible-executor" });
+    const engineerBinding = {
+      ...workflow,
+      columns: workflow.columns.map((column) => column.id === "work"
+        ? { ...column, agent: { agentId: engineer.id, mode: "defer" as const } }
+        : column),
+    };
+    expect(resolveTaskIntakeOwner({ workflow: engineerBinding, agents: [engineer] }))
+      .toEqual({ status: "rejected", reason: "named-execute-binding-unavailable" });
   });
 
   it("finds a reachable executor nested inside a container template", () => {

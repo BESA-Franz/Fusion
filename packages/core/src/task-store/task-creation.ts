@@ -546,6 +546,13 @@ export async function _createTaskInternalBackendImpl(store: TaskStore, input: Ta
       // explicit owner". Normalize it to omission so it follows pool/binding
       // resolution rather than becoming an ineligible named assignee.
       explicitAssigneeId: input.assignedAgentId ?? undefined,
+      /*
+      FNXC:IntakeOwnership 2026-08-11-02:04:
+      sourceMetadata.executorRoleOverride is the only create-time role override channel. Explicit operator/tool
+      override:true writes it (CLI extension.ts and engine agent-tools.ts), so intake honors the same contract as
+      every binding surface without exposing a public create-input opt-out.
+      */
+      explicitAssigneeRoleOverride: input.source?.sourceMetadata?.executorRoleOverride === true,
       agents,
       enabledWorkflowSteps: resolvedWorkflowSteps,
       activeSessions,

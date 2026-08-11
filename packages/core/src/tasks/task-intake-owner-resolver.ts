@@ -3,7 +3,12 @@ import type { WorkflowIr, WorkflowIrNode } from "../workflows/workflow-ir-types.
 import { classifyWorkflowAgentNode } from "../workflows/workflow-ir-types.js";
 import { instanceNodeId, resolveColumnAgentBinding, resolveEffectiveAgent } from "../agents/column-agent-resolver.js";
 import { isEphemeralAgent } from "../types.js";
-import { canAgentReceiveImplementationTasks, isAgentAutoAssignable } from "../agents/agent-role-policy.js";
+import {
+  canAgentReceiveImplementationTasks,
+  canAgentTakeImplementationTaskForExplicitRouting,
+  isAgentAutoAssignable,
+  isExecutorRoleAgent,
+} from "../agents/agent-role-policy.js";
 
 export type TaskIntakeOwnerResolution =
   | { status: "selected"; agentId: string; source: "explicit" | "execute-binding" | "executor-pool" }
@@ -71,6 +76,11 @@ export function getInternalIntakeOwnershipExemptionReason(value: unknown): Intak
 export interface ResolveTaskIntakeOwnerInput {
   workflow: WorkflowIr | "no-workflow-context" | "unresolvable";
   explicitAssigneeId?: string;
+  /**
+   * Bypasses only the explicit assignee's role check. It never bypasses policy "none",
+   * ephemeral, disabled-runtime, paused, or error eligibility gates, and cannot affect automatic routing.
+   */
+  explicitAssigneeRoleOverride?: boolean;
   agents?: readonly Agent[];
   /** Internal plumbing supplies this only after validating an opaque exemption capability. */
   ownershipExemptionReason?: IntakeOwnershipExemptionReason;
@@ -93,22 +103,34 @@ export function resolveTaskIntakeOwner(input: ResolveTaskIntakeOwnerInput): Task
   if (!input.agents) return { status: "rejected", reason: "agent-backend-unavailable" };
   if (input.workflow === "unresolvable") return { status: "rejected", reason: "workflow-unresolvable" };
 
-  const eligible = (agent: Agent | undefined, automatic: boolean): agent is Agent => Boolean(
+  const meetsNonRoleEligibility = (agent: Agent | undefined): agent is Agent => Boolean(
     agent
     && !isEphemeralAgent(agent)
-    && agent.roles.includes("executor")
     && agent.runtimeConfig?.enabled !== false
     && agent.state !== "paused"
     && agent.state !== "error"
-    && canAgentReceiveImplementationTasks(agent)
+    && canAgentReceiveImplementationTasks(agent),
+  );
+  const automaticallyEligible = (agent: Agent | undefined): agent is Agent => Boolean(
+    meetsNonRoleEligibility(agent)
     // `explicit-only` is valid only for a caller's deliberate assignee. A binding
     // or pool choice is automatic routing and must retain that policy boundary.
-    && (!automatic || isAgentAutoAssignable(agent)),
+    && isAgentAutoAssignable(agent)
+    && isExecutorRoleAgent(agent),
   );
   const byId = new Map(input.agents.map((agent) => [agent.id, agent]));
   if (input.explicitAssigneeId !== undefined) {
     const explicit = byId.get(input.explicitAssigneeId);
-    return eligible(explicit, false)
+    /*
+    FNXC:IntakeOwnership 2026-08-11-02:04:
+    FN-8843 duplicated an executor-only role check here, contradicting explicit-routing policy and the
+    executorRoleOverride contract so every explicitly assigned engineer or operator override failed before insert.
+    The shared policy now owns the explicit role decision; binding and pool routing remain executor-only.
+    */
+    const explicitRoleEligible = explicit !== undefined
+      && (input.explicitAssigneeRoleOverride === true
+        || canAgentTakeImplementationTaskForExplicitRouting(explicit, { column: "todo" }));
+    return meetsNonRoleEligibility(explicit) && explicitRoleEligible
       ? { status: "selected", agentId: explicit.id, source: "explicit" }
       : { status: "rejected", reason: "explicit-assignee-ineligible" };
   }
@@ -123,7 +145,7 @@ export function resolveTaskIntakeOwner(input: ResolveTaskIntakeOwnerInput): Task
       });
       if (effective.source === "column-agent") {
         const bound = byId.get(effective.agentId);
-        return eligible(bound, true)
+        return automaticallyEligible(bound)
           ? { status: "selected", agentId: bound.id, source: "execute-binding" }
           : { status: "rejected", reason: "named-execute-binding-unavailable" };
       }
@@ -131,7 +153,7 @@ export function resolveTaskIntakeOwner(input: ResolveTaskIntakeOwnerInput): Task
   }
 
   const activeSessions = input.activeSessions ?? new Map<string, number>();
-  const pool = input.agents.filter((agent) => eligible(agent, true)).sort((a, b) =>
+  const pool = input.agents.filter((agent) => automaticallyEligible(agent)).sort((a, b) =>
     (activeSessions.get(a.id) ?? 0) - (activeSessions.get(b.id) ?? 0)
     || a.createdAt.localeCompare(b.createdAt)
     || a.id.localeCompare(b.id),

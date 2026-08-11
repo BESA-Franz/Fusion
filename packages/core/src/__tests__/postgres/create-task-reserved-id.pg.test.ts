@@ -70,6 +70,35 @@ pgDescribe("createTaskWithReservedId backend mode (PostgreSQL)", () => {
     }
   });
 
+  it("accepts explicit engineers and metadata-authorized overrides through both create gateways", async () => {
+    const h = await makeHarness();
+    const agents = new AgentStore({ rootDir: h.rootDir, asyncLayer: h.layer, projectId: h.layer.projectId });
+    try {
+      const engineer = await agents.createAgent({ name: "Explicit intake engineer", role: "engineer" });
+      const reviewer = await agents.createAgent({ name: "Override intake reviewer", role: "reviewer" });
+      const ordinary = await h.store.createTask({
+        description: "ordinary explicit engineer intake owner",
+        assignedAgentId: engineer.id,
+      });
+      const reserved = await h.store.createTaskWithReservedId(
+        {
+          description: "reserved explicit override intake owner",
+          assignedAgentId: reviewer.id,
+          source: { sourceType: "cli", sourceMetadata: { executorRoleOverride: true } },
+        },
+        { taskId: "FN-OWNER-RESERVED-OVERRIDE", applyDefaultWorkflowSteps: false },
+      );
+
+      expect(ordinary.assignedAgentId).toBe(engineer.id);
+      expect((await h.store.getTask(ordinary.id))?.assignedAgentId).toBe(engineer.id);
+      expect(reserved.assignedAgentId).toBe(reviewer.id);
+      expect((await h.store.getTask(reserved.id))?.assignedAgentId).toBe(reviewer.id);
+    } finally {
+      agents.close();
+      await teardown();
+    }
+  });
+
   it("fails rejected owner outcomes before either gateway inserts a row", async () => {
     const h = await makeHarness();
     const agents = new AgentStore({ rootDir: h.rootDir, asyncLayer: h.layer, projectId: h.layer.projectId });
