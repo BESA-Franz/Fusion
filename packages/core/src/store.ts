@@ -79,6 +79,7 @@ import { GlobalSettingsStore } from "./config/global-settings.js";
 import { Database } from "./db/db.js";
 import { ArchiveDatabase } from "./db/archive-db.js";
 import { projectScopeFor, type AsyncDataLayer, type DbTransaction } from "./postgres/data-layer.js";
+import { appendPlanEvidenceInTransaction } from "./task-store/plan-evidence.js";
 import { planningLifecycleLockTransportAvailability, withPlanningLifecycleAdvisoryLock, withPlanningLifecycleAdvisoryLocks } from "./postgres/advisory-locks.js";
 import { MissionStore } from "./missions/mission-store.js";
 import { AsyncMissionStore } from "./async-stores/async-mission-store.js";
@@ -1197,16 +1198,19 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     return refineTaskImpl(this, id, feedback);
   }
   /**
-   * FNXC:SpecLock 2026-08-09-07:06:
-   * FN-8845 retains plan snapshots outside the mutable task row. Backend-only storage is deliberate:
-   * SQLite is no longer a runtime path and silently falling back would lose audit history on restart.
+   * FNXC:SpecLock 2026-08-11-02:04:
+   * Evidence append uses the shared column-versioned, conflict-tolerant path. sourceHash remains
+   * the idempotence key, so callers receive the durable matching snapshot rather than a fabricated
+   * candidate after a concurrent insert.
    */
   async appendCurrentPlanEvidence(taskId: string, evidence: import("./planner/spec-lock.js").CurrentPlanEvidence): Promise<import("./planner/spec-lock.js").CurrentPlanEvidence> {
     if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");
-    const projectId = this.asyncLayer.projectId ?? "";
-    await this.asyncLayer.db.insert(schema.project.currentPlanEvidence).values({ projectId, taskId, version: evidence.version, sourceRevision: evidence.sourceRevision, sourceHash: evidence.sourceHash, capturedAt: evidence.capturedAt, snapshot: evidence }).onConflictDoNothing();
-    const rows = await this.asyncLayer.db.select().from(schema.project.currentPlanEvidence).where(and(projectScopeFor(schema.project.currentPlanEvidence.projectId, this.asyncLayer.projectId), eq(schema.project.currentPlanEvidence.taskId, taskId), eq(schema.project.currentPlanEvidence.sourceHash, evidence.sourceHash))).limit(1);
-    return rows[0]!.snapshot as import("./planner/spec-lock.js").CurrentPlanEvidence;
+    const result = await appendPlanEvidenceInTransaction(this.asyncLayer.db, {
+      projectId: this.asyncLayer.projectId,
+      taskId,
+      buildEvidence: (version) => ({ ...evidence, version: Math.max(version, evidence.version) }),
+    });
+    return result.evidence;
   }
   async getLatestCurrentPlanEvidence(taskId: string): Promise<CurrentPlanEvidence | undefined> {
     if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");
@@ -1241,16 +1245,20 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     sourceRevision: number,
     liveTask?: Pick<Task, "dependencies" | "missionId" | "sliceId" | "sourceParentTaskId">,
   ): Promise<CurrentPlanEvidence> {
-    const [prior, task] = await Promise.all([this.getLatestCurrentPlanEvidence(taskId), liveTask ?? this.getTask(taskId)]);
-    const candidate = createCurrentPlanEvidence({
-      version: (prior?.version ?? 0) + 1,
-      sourceRevision,
-      capturedAt: new Date().toISOString(),
-      prompt,
-      bindings: specLockBindings(task),
+    const task = liveTask ?? await this.getTask(taskId);
+    if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");
+    const result = await appendPlanEvidenceInTransaction(this.asyncLayer.db, {
+      projectId: this.asyncLayer.projectId,
+      taskId,
+      buildEvidence: (version) => createCurrentPlanEvidence({
+        version,
+        sourceRevision,
+        capturedAt: new Date().toISOString(),
+        prompt,
+        bindings: specLockBindings(task),
+      }),
     });
-    if (prior?.sourceHash === candidate.sourceHash) return prior;
-    return this.appendCurrentPlanEvidence(taskId, candidate);
+    return result.evidence;
   }
   async appendSpecLock(taskId: string, lock: import("./planner/spec-lock.js").SpecLock): Promise<import("./planner/spec-lock.js").SpecLock> {
     if (!this.asyncLayer) throw new Error("Spec-lock history requires PostgreSQL backend storage");

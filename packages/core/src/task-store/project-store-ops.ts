@@ -13,7 +13,7 @@ import { resolveCapacityPoolId } from "../workflows/workflow-capacity.js";
 import {resolveWorkflowIntakeFacts} from "./task-creation.js";
 import {TransitionRejectionError} from "./errors.js";
 import * as schema from "../postgres/schema/index.js";
-import {and, desc, eq, inArray, isNull, ne, or, sql} from "drizzle-orm";
+import {and, eq, inArray, isNull, ne, or, sql} from "drizzle-orm";
 import {mkdir, writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import type {Task, ColumnId, CheckoutClaimPrecondition, ActivityLogEntry, RunAuditEvent, RunAuditEventInput, RunAuditEventFilter, GoalCitation, GoalCitationFilter} from "../types.js";
@@ -43,6 +43,7 @@ import {recordActivityLogEntry as recordActivityLogEntryAsync} from "./async/asy
 import {applyOriginalDescription} from "../tasks/original-description-policy.js";
 import {isPlanReviewSatisfied} from "../planner/plan-approval.js";
 import {createCurrentPlanEvidence} from "../planner/spec-lock.js";
+import {appendPlanEvidenceInTransaction} from "./plan-evidence.js";
 import {recordRunAuditEvent as recordRunAuditEventAsync} from "../postgres/data-layer.js";
 import {listGoalCitations as listGoalCitationsAsync} from "./async/async-events.js";
 import type {RunAuditEventRow} from "../task-store/row-types.js";
@@ -137,33 +138,29 @@ export async function atomicWriteTaskJsonWithAuditImpl(store: TaskStore, dir: st
       const persist = async () => {
       const row = await readTaskRowInTransaction(tx, id, { includeDeleted: true }, layer.projectId);
       /*
-      FNXC:SpecLock 2026-08-09-18:17:
-      A full PROMPT.md rewrite publishes its evidence and clears approval in this one task-row
-      transaction. A database rollback therefore cannot leave either half visible by itself.
+      FNXC:SpecLock 2026-08-11-02:04:
+      A full PROMPT.md rewrite publishes evidence and clears approval in this task-row transaction,
+      so rollback cannot expose either half alone. FN-8969 requires the shared append path here:
+      it reads the durable version column with unbound-safe scope, retries PK races, and dedupes by
+      sourceHash rather than trusting a snapshot version that can be stale.
       */
       if (specPlanPrompt !== undefined) {
-        const projectId = layer.projectId ?? "";
-        const priorRows = await tx.select().from(schema.project.currentPlanEvidence)
-          .where(and(eq(schema.project.currentPlanEvidence.projectId, projectId), eq(schema.project.currentPlanEvidence.taskId, id)))
-          .orderBy(desc(schema.project.currentPlanEvidence.version)).limit(1);
-        const prior = priorRows[0]?.snapshot as import("../planner/spec-lock.js").CurrentPlanEvidence | undefined;
-        const candidate = createCurrentPlanEvidence({
-          version: (prior?.version ?? 0) + 1,
-          sourceRevision: Date.now(),
-          capturedAt: new Date().toISOString(),
-          prompt: specPlanPrompt,
+        await appendPlanEvidenceInTransaction(tx, {
+          projectId: layer.projectId,
+          taskId: id,
+          buildEvidence: (version) => createCurrentPlanEvidence({
+            version,
+            sourceRevision: Date.now(),
+            capturedAt: new Date().toISOString(),
+            prompt: specPlanPrompt,
+            bindings: {
+              dependencies: task.dependencies ?? [],
+              missionId: task.missionId,
+              sliceId: task.sliceId,
+              sourceParentTaskId: task.sourceParentTaskId,
+            },
+          }),
         });
-        if (prior?.sourceHash !== candidate.sourceHash) {
-          await tx.insert(schema.project.currentPlanEvidence).values({
-            projectId,
-            taskId: id,
-            version: candidate.version,
-            sourceRevision: candidate.sourceRevision,
-            sourceHash: candidate.sourceHash,
-            capturedAt: candidate.capturedAt,
-            snapshot: candidate,
-          });
-        }
       }
       if (row && row.deletedAt != null) {
         return { deletedAt: row.deletedAt as string };

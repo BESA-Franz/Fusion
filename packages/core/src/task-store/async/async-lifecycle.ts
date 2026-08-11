@@ -27,11 +27,12 @@
  *   integration tests consume. They program against the stable `AsyncDataLayer`
  *   interface (U4), not the underlying driver.
  */
-import { and, desc, eq, ne, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import * as schema from "../../postgres/schema/index.js";
-import { projectScopeFor, type AsyncDataLayer, type DbTransaction } from "../../postgres/data-layer.js";
+import { type AsyncDataLayer, type DbTransaction } from "../../postgres/data-layer.js";
 import { ACTIVE_TASK_FILTER } from "./async-persistence.js";
-import { createCurrentPlanEvidence, type CurrentPlanEvidence } from "../../planner/spec-lock.js";
+import { createCurrentPlanEvidence } from "../../planner/spec-lock.js";
+import { appendPlanEvidenceInTransaction, PlanEvidenceAppendError } from "../plan-evidence.js";
 import { storeLog } from "../../store.js";
 
 /**
@@ -186,11 +187,11 @@ export async function removeLineageReferences(
   const evidenceUnavailableChildIds: string[] = [];
   let evidenceInsertAttempts = 0;
   /*
-  FNXC:SpecLockLineageInvalidation 2026-08-10-14:47:
-  Evidence inserts use the trigger-compatible blank value, while reads preserve an unbound layer's
-  project-agnostic scope instead of filtering for the blank value the trigger rewrites.
+  FNXC:SpecLockLineageInvalidation 2026-08-11-02:04:
+  FN-8969 converges lineage writes on the shared helper: it writes the trigger-compatible blank
+  value but reads with unbound-safe project scope, derives versions from the durable column, and
+  dedupes only by sourceHash while preserving this path's lineage truthfulness validator.
   */
-  const evidenceProjectId = projectId ?? "";
   for (const child of returned) {
     const prompt = promptByChildId.get(child.id);
     if (prompt === undefined) {
@@ -199,24 +200,24 @@ export async function removeLineageReferences(
       storeLog.warn(`[spec-lock] lineage evidence unavailable: missing PROMPT.md for ${child.id}`);
       continue;
     }
-    let resolved = false;
-    for (let attempt = 0; attempt < 3 && !resolved; attempt += 1) {
-      const latest = await tx.select({ version: schema.project.currentPlanEvidence.version }).from(schema.project.currentPlanEvidence)
-        .where(and(projectScopeFor(schema.project.currentPlanEvidence.projectId, projectId), eq(schema.project.currentPlanEvidence.taskId, child.id))).orderBy(desc(schema.project.currentPlanEvidence.version)).limit(1);
-      const computed = (latest[0]?.version ?? 0) + 1;
-      const evidence = createCurrentPlanEvidence({ version: evidenceTargetVersionForTest?.(child.id, computed, attempt) ?? computed, sourceRevision: Date.now(), capturedAt: nowIso, prompt, bindings: { dependencies: (child.dependencies as string[] | undefined) ?? [], missionId: child.missionId ?? undefined, sliceId: child.sliceId ?? undefined } });
-      evidenceInsertAttempts += 1;
-      const inserted = await tx.insert(schema.project.currentPlanEvidence).values({ projectId: evidenceProjectId, taskId: child.id, version: evidence.version, sourceRevision: evidence.sourceRevision, sourceHash: evidence.sourceHash, capturedAt: evidence.capturedAt, snapshot: evidence }).onConflictDoNothing().returning({ version: schema.project.currentPlanEvidence.version });
-      if (inserted[0]) { evidenceVersionByChild.set(child.id, inserted[0].version); resolved = true; break; }
-      const matching = await tx.select({ version: schema.project.currentPlanEvidence.version, snapshot: schema.project.currentPlanEvidence.snapshot }).from(schema.project.currentPlanEvidence)
-        .where(and(projectScopeFor(schema.project.currentPlanEvidence.projectId, projectId), eq(schema.project.currentPlanEvidence.taskId, child.id), eq(schema.project.currentPlanEvidence.sourceHash, evidence.sourceHash))).limit(1);
-      if (matching[0]) {
-        const snapshot = matching[0].snapshot as CurrentPlanEvidence;
-        if (snapshot.plan.sections.lineage.canonical.split("\n").includes(`parent-task:${parentId}`)) throw new LineageEvidenceAppendError(child.id, attempt + 1, "matched-row-not-truthful");
-        evidenceVersionByChild.set(child.id, matching[0].version); resolved = true; break;
-      }
+    try {
+      const result = await appendPlanEvidenceInTransaction(tx, {
+        projectId,
+        taskId: child.id,
+        maxAttempts: 3,
+        buildEvidence: (computed, attempt) => {
+          evidenceInsertAttempts += 1;
+          return createCurrentPlanEvidence({ version: evidenceTargetVersionForTest?.(child.id, computed, attempt) ?? computed, sourceRevision: Date.now(), capturedAt: nowIso, prompt, bindings: { dependencies: (child.dependencies as string[] | undefined) ?? [], missionId: child.missionId ?? undefined, sliceId: child.sliceId ?? undefined } });
+        },
+        validateMatchedEvidence: (snapshot, _version, attempt) => {
+          if (snapshot.plan.sections.lineage.canonical.split("\n").includes(`parent-task:${parentId}`)) throw new LineageEvidenceAppendError(child.id, attempt + 1, "matched-row-not-truthful");
+        },
+      });
+      evidenceVersionByChild.set(child.id, result.version);
+    } catch (error) {
+      if (error instanceof PlanEvidenceAppendError) throw new LineageEvidenceAppendError(child.id, 3, "no-durable-version");
+      throw error;
     }
-    if (!resolved) throw new LineageEvidenceAppendError(child.id, 3, "no-durable-version");
   }
   return { clearedChildIds: returned.map((row) => row.id), evidenceVersionByChild, evidenceUnavailableChildIds, evidenceInsertAttempts };
 }
