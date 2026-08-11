@@ -154,6 +154,7 @@ async function loadCommandHandlers() {
   const { runPluginDev } = await import("./commands/plugin-dev.js");
   const { runPluginPublish } = await import("./commands/plugin-publish.js");
   const { runSkillsSearch, runSkillsInstall } = await import("./commands/skills.js");
+  const { runComputer } = await import("./commands/computer.js");
   const { runResearchCreate, runResearchList, runResearchShow, runResearchExport, runResearchCancel, runResearchRetry } = await import("./commands/research.js");
   const { runExperimentFinalize } = await import("./commands/experiment-finalize.js");
   const { dispatchUpdateCliArgs } = await import("./commands/update.js");
@@ -287,6 +288,7 @@ async function loadCommandHandlers() {
     runPluginPublish,
     runSkillsSearch,
     runSkillsInstall,
+    runComputer,
     runResearchCreate,
     runResearchList,
     runResearchShow,
@@ -495,6 +497,8 @@ PR:
   fn skills install <owner/repo>      Install skills from a source
   fn skills install <owner/repo> --skill <name>
                                       Install a specific skill
+  fn computer <subcommand> [--json]  Inspect and automate supported desktop applications
+                                      See fn computer --help for snapshot → act → snapshot commands
 
 Options:
   --project, -P <name>       Target a specific project (bypasses CWD detection)
@@ -842,6 +846,7 @@ async function main() {
     runPluginPublish,
     runSkillsSearch,
     runSkillsInstall,
+    runComputer,
     runResearchCreate,
     runResearchList,
     runResearchShow,
@@ -2289,6 +2294,12 @@ async function main() {
             console.log("Try: fn plugin list | install | add (alias for install) | uninstall | enable | disable | available | settings | rescan | setup-status | setup | create | new | dev | publish");
             process.exit(1);
         }
+        break;
+      }
+
+      case "computer": {
+        const exitCode = await runComputer(args.slice(1), { projectRoot: process.cwd() });
+        if (exitCode !== 0) process.exit(exitCode);
         break;
       }
 
