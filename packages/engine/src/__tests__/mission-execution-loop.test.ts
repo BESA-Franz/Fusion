@@ -1042,10 +1042,10 @@ describe("MissionExecutionLoop", () => {
 
     it.each(["running", "budget-exhausted"] as const)("preserves automatic %s admission short-circuit without invoking manual admission", async (outcome) => {
       /*
-      FNXC:MissionValidation 2026-08-11-04:17:
-      FN-8963 changes only manual admission. The automatic loop must retain its existing
-      fingerprint-scoped running and budget-exhausted short-circuits and never call the manual
-      primitive; FN-8976 owns widening automatic admission to observe manual runs.
+      FNXC:MissionValidation 2026-08-11-05:38:
+      FN-8976 makes a feature-scoped live run report the existing running outcome. The automatic
+      loop must dispose its memoized checkout and return without starting, passing, or manually
+      admitting a validator; budget-exhausted retains the same disposal boundary.
       */
       const feature = createMockFeature({ loopState: "implementing", taskId: "FN-001" });
       missionStore._setFeature(feature);
@@ -1068,6 +1068,7 @@ describe("MissionExecutionLoop", () => {
         rootDir: "/tmp",
         checkoutMaterializer: { materialize: vi.fn().mockResolvedValue({ dir: "/inspection/landed", dispose }), assertSourceClean: vi.fn() },
       });
+      const handleValidationPass = vi.spyOn(loop as any, "handleValidationPass");
       loop.start();
 
       await loop.processTaskOutcome("FN-001");
@@ -1075,6 +1076,7 @@ describe("MissionExecutionLoop", () => {
       expect(admitValidatorRun).toHaveBeenCalledOnce();
       expect(startManualValidatorRun).not.toHaveBeenCalled();
       expect(missionStore.startValidatorRun).not.toHaveBeenCalled();
+      expect(handleValidationPass).not.toHaveBeenCalled();
       expect(createResolvedAgentSession).not.toHaveBeenCalled();
       expect(dispose).toHaveBeenCalledOnce();
     });

@@ -1839,12 +1839,36 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
   }
 
   /*
+  FNXC:MissionValidation 2026-08-11-05:38:
+  Find the newest live run while callers hold the feature lock. Lock run rows in the same feature
+  then runs order so manual and automatic admission remain serialized across processes.
+  */
+  private async findBlockingInFlightRun(
+    tx: QueryHandle,
+    featureId: string,
+    now = Date.now(),
+  ): Promise<MissionValidatorRun | undefined> {
+    const rows = await tx.select().from(schema.project.missionValidatorRuns).where(and(
+      eq(schema.project.missionValidatorRuns.projectId, missionProjectId()),
+      eq(schema.project.missionValidatorRuns.featureId, featureId),
+      eq(schema.project.missionValidatorRuns.status, "running"),
+    )).orderBy(
+      desc(schema.project.missionValidatorRuns.completedAt),
+      desc(schema.project.missionValidatorRuns.startedAt),
+      desc(schema.project.missionValidatorRuns.createdAt),
+      desc(schema.project.missionValidatorRuns.id),
+    ).for("update");
+    const cutoff = now - VALIDATION_INFLIGHT_STALE_MAX_AGE_MS;
+    return rows.map((row) => rowToValidatorRun(row as never))
+      .find((run) => Date.parse(run.startedAt) >= cutoff);
+  }
+
+  /*
   FNXC:MissionValidation 2026-08-11-03:43:
   Manual validation previously had no in-flight guard: automatic admission is fingerprint-scoped
   and FN-8947 guarded only repair re-runs. This feature-scoped transaction observes engine-started
-  runs, while runs beyond the reaper window do not wedge the button. A fingerprint-less manual run
-  intentionally remains invisible to fingerprint-scoped automatic admission; FN-8976 owns that
-  tested boundary rather than widening admitValidatorRun here.
+  runs, while runs beyond the reaper window do not wedge the button. FN-8976 shares this predicate
+  with automatic admission so fingerprint-less manual runs cannot create a second live validator.
   */
   async startManualValidatorRun(
     featureId: string,
@@ -1857,10 +1881,7 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       )).for("update");
       const feature = locked[0] ? await getFeature(tx, featureId) : undefined;
       if (!feature) throw new Error(`Feature ${featureId} not found`);
-      const cutoff = Date.now() - VALIDATION_INFLIGHT_STALE_MAX_AGE_MS;
-      const blockingRun = (await listValidatorRunsByFeature(tx, featureId)).find(
-        (run) => run.status === "running" && Date.parse(run.startedAt) >= cutoff,
-      );
+      const blockingRun = await this.findBlockingInFlightRun(tx, featureId);
       if (blockingRun) return { outcome: "already-running", run: blockingRun };
       const run = await this.buildValidatorRun(tx, feature, input.triggerType ?? "manual", input.taskId);
       await createValidatorRun(tx, run);
@@ -1932,6 +1953,14 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       )).for("update");
       const feature = locked[0] ? await getFeature(tx, featureId) : undefined;
       if (!feature) throw new Error(`Feature ${featureId} not found`);
+      /*
+      FNXC:MissionValidation 2026-08-11-05:38:
+      Automatic admission must observe fingerprint-less manual and non-memo automatic runs so
+      one feature cannot validate concurrently. The shared reaper window prevents a dead run
+      from starving the loop; reuse-pass and failure-budget decisions below stay strictly
+      fingerprint-scoped because they are content-addressed.
+      */
+      const blockingRun = await this.findBlockingInFlightRun(tx, featureId);
       const rows = await tx.select().from(schema.project.missionValidatorRuns).where(and(
         eq(schema.project.missionValidatorRuns.projectId, missionProjectId()),
         eq(schema.project.missionValidatorRuns.featureId, featureId),
@@ -1944,13 +1973,25 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       const slice = await getSlice(tx, feature.sliceId);
       const milestone = slice ? await getMilestone(tx, slice.milestoneId) : undefined;
       const mission = milestone ? await getMission(tx, milestone.missionId) : undefined;
-      const append = async (outcome: ValidatorRunAdmission["outcome"], run?: MissionValidatorRun, stuck = false) => {
+      const append = async (
+        outcome: ValidatorRunAdmission["outcome"],
+        run?: MissionValidatorRun,
+        stuck = false,
+        blockingScope?: ValidatorRunAdmission["blockingScope"],
+      ) => {
         if (!mission) return;
         const seq = (await getMaxEventSeq(tx)) + 1;
-        await insertMissionEvent(tx, { id: this.generateId("ME"), missionId: mission.id, eventType: "warning", description: "validation memoized", metadata: { outcome, featureId, fingerprint: input.inputFingerprint, ...(run ? { runId: run.id } : {}) }, timestamp: new Date().toISOString(), seq });
+        await insertMissionEvent(tx, { id: this.generateId("ME"), missionId: mission.id, eventType: "warning", description: "validation memoized", metadata: { outcome, featureId, fingerprint: input.inputFingerprint, ...(run ? { runId: run.id } : {}), ...(blockingScope ? { blockingScope } : {}) }, timestamp: new Date().toISOString(), seq });
         if (stuck) await insertMissionEvent(tx, { id: this.generateId("ME"), missionId: mission.id, eventType: "warning", description: "validation-stuck", metadata: { featureId, fingerprint: input.inputFingerprint, ...(run ? { runId: run.id } : {}) }, timestamp: new Date().toISOString(), seq: seq + 1 });
       };
-      if (running) { await append("running", running); return { outcome: "running", run: running }; }
+      if (blockingRun) {
+        await append("running", blockingRun, false, "feature");
+        return { outcome: "running", run: blockingRun, blockingScope: "feature" };
+      }
+      if (running) {
+        await append("running", running, false, "fingerprint");
+        return { outcome: "running", run: running, blockingScope: "fingerprint" };
+      }
       if (terminal?.status === "passed" && input.reusePass) {
         await updateFeature(tx, { ...feature, status: "done", loopState: "passed", lastValidatorStatus: "passed", lastValidatorRunId: terminal.id, updatedAt: new Date().toISOString() });
         statusEvent = await this.recordFeatureStatusChange(tx, feature, "done", { type: "system", id: "mission-store", source: "validator-reuse-pass" });

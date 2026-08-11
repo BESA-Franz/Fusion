@@ -698,6 +698,8 @@ export type ValidatorRunAdmissionOutcome = "start" | "running" | "reuse-pass" | 
 export interface ValidatorRunAdmission {
   outcome: ValidatorRunAdmissionOutcome;
   run?: MissionValidatorRun;
+  /** FNXC:MissionValidation 2026-08-11-05:38: Distinguish content and feature-liveness refusals without changing the outcome contract. */
+  blockingScope?: "fingerprint" | "feature";
 }
 export interface ValidatorRunAdmissionInput {
   inputFingerprint: string;
