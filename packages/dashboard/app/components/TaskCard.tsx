@@ -58,7 +58,12 @@ import { ACTIVE_STATUSES, isTaskAgentActive } from "../utils/taskActivity";
 import { getPrBadgeModifierClass } from "../utils/prBadgeClass";
 import { getTotalAgentActiveMs, getEndToEndDurationMs, getTimedDurationMs, getWorkflowRuntimeMs, parseTimestampToMs } from "../utils/taskTiming";
 import { getTaskStatusBadgeLabel, getTaskWipLifecycleBadgeLabel, type TaskStatusBadgeContext, hasTaskStatusBadge, isTaskPlanningActive } from "../utils/taskStatusBadgeLabel";
-import { isReviewBudgetExhaustedApproval, isTaskAwaitingPlanApproval } from "../utils/reviewBudgetApproval";
+import {
+  isPlanReviewGateUnsatisfied,
+  isReviewBudgetExhaustedApproval,
+  isTaskAwaitingPlanApproval,
+  isTaskBlockedOnApprovalHold,
+} from "../utils/reviewBudgetApproval";
 import { canStartPrFeedbackAddressing, getTaskPrimaryPrInfo } from "../utils/prFeedback";
 import type { ToastType } from "../hooks/useToast";
 import { useConfirm } from "../hooks/useConfirm";
@@ -1511,6 +1516,10 @@ function TaskCardComponent({
     () => isPlanReviewRunning(task),
     [task.steps, task.enabledWorkflowSteps, task.workflowStepResults],
   );
+  const planReviewGateUnsatisfied = useMemo(
+    () => isPlanReviewGateUnsatisfied(task),
+    [task.enabledWorkflowSteps, task.workflowStepResults],
+  );
   /*
   FNXC:WorkflowResolvedColumns 2026-07-30-00:40 (partial-supply seam, caught by the gate):
   `getRunningOptionalGateBadge` takes resolved flags and BOTH ListView call sites supply them; this
@@ -1549,6 +1558,7 @@ function TaskCardComponent({
   */
   const isPlanReviewReplanCapApproval = isReviewBudgetExhaustedApproval(task);
   const isAwaitingApproval = isTaskAwaitingPlanApproval(task, isIntakeColumn);
+  const isBlockedOnApprovalHold = isTaskBlockedOnApprovalHold(task);
   const isAwaitingInput = task.status === "awaiting-user-input";
   const isArchived = isArchivedColumn;
   /*
@@ -1590,12 +1600,21 @@ function TaskCardComponent({
   Post-U11, the hold column is also the planning lane, so Promote must not be offered while a card is unplanned, being planned, in Plan Review, or awaiting plan approval. That click is rejected as `unplanned-for-execution` and the force path would start implementation against an incomplete plan.
 
   `awaitingPlanning` is absent from SSE payloads, so its step-count fallback deliberately matches the Ready / Queued to plan badge pair. `isAwaitingApproval` only applies on an intake-trait merged planning lane or for the `plan-review-replan-cap` reason.
+
+  FNXC:TaskCardPromote 2026-08-11-09:13:
+  FN-8950 anticipates `issueRelease`'s approval and unplanned refusal arms. An enabled-but-pending
+  default-on Plan Review in Todo and an absent enabled-step selection are both blocked; approval
+  holds are blocked on every column rather than only intake. This is deliberately conservative,
+  not exact parity: the card cannot resolve custom defaultOn values, plan-review's column/WIP
+  position, or capacity continuations, and also suppresses the planning-stage `specifying` and
+  `plan-review-unavailable` statuses. Hiding a shortcut is safer than offering a click the server
+  rejects: capacity release and explicit force promotion remain available.
   */
   const isStillInPlanning = awaitingPlanning
-    || task.status === "planning"
-    || task.status === "needs-replan"
-    || planReviewRunning
-    || isAwaitingApproval;
+    || ["planning", "specifying", "needs-replan", "plan-review-unavailable"].includes(task.status ?? "")
+    || planReviewGateUnsatisfied
+    || isAwaitingApproval
+    || isBlockedOnApprovalHold;
   const showPromoteAction = Boolean(onPromote) && !isStillInPlanning;
   const showIdleTodoBadge = !isPaused
     && isHoldColumn

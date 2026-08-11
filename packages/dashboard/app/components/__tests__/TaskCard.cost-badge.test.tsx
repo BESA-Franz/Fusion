@@ -40,6 +40,8 @@ function taskWithUsage(overrides: Partial<Task> = {}): Task {
     column: "todo",
     steps: [{ name: "Implement", status: "pending" }] as any,
     awaitingPlanning: false,
+    // FNXC:TaskCardPromote 2026-08-11-09:13: This promote-visible fixture explicitly disables the default-on plan-review gate.
+    enabledWorkflowSteps: [],
     dependencies: [],
     tokenUsage: {
       inputTokens: 1_000_000,

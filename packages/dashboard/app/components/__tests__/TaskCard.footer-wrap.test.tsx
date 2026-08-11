@@ -88,6 +88,8 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     column: "in-progress",
     status: "executing" as Task["status"],
     steps: [],
+    // FNXC:TaskCardPromote 2026-08-11-09:13: Promote-visible footer fixtures explicitly clear the default-on plan-review gate.
+    enabledWorkflowSteps: [],
     dependencies: [],
     sourceType: "dashboard_ui",
     githubTracking: {

@@ -6724,6 +6724,7 @@ describe("TaskCard", () => {
       id: "FN-8324",
       column: "todo",
       awaitingPlanning: false,
+      enabledWorkflowSteps: [],
       steps: [{ name: "Implement", status: "pending" }] as any,
       tokenUsage: {
         inputTokens: 1_000_000,
@@ -7881,7 +7882,7 @@ describe("TaskCard mission badge", () => {
     try {
       render(
         <TaskCard
-          task={makeTask({ id: "FN-777", column: "todo", awaitingPlanning: false, steps: [{ name: "Implement", status: "pending" }] as any })}
+          task={makeTask({ id: "FN-777", column: "todo", awaitingPlanning: false, enabledWorkflowSteps: [], steps: [{ name: "Implement", status: "pending" }] as any })}
           onOpenDetail={noop}
           addToast={noop}
           onPromote={onPromote}
@@ -7912,7 +7913,7 @@ describe("TaskCard mission badge", () => {
 
     render(
       <TaskCard
-        task={makeTask({ id: "FN-781", column: "todo", awaitingPlanning: false, steps: [{ name: "Implement", status: "pending" }] as any })}
+        task={makeTask({ id: "FN-781", column: "todo", awaitingPlanning: false, enabledWorkflowSteps: [], steps: [{ name: "Implement", status: "pending" }] as any })}
         onOpenDetail={noop}
         addToast={noop}
         onPromote={onPromote}
@@ -7934,7 +7935,7 @@ describe("TaskCard mission badge", () => {
 
     const soloRender = render(
       <TaskCard
-        task={makeTask({ id: "FN-782", column: "todo", awaitingPlanning: false, steps: [{ name: "Implement", status: "pending" }] as any })}
+        task={makeTask({ id: "FN-782", column: "todo", awaitingPlanning: false, enabledWorkflowSteps: [], steps: [{ name: "Implement", status: "pending" }] as any })}
         onOpenDetail={noop}
         addToast={noop}
         onPromote={onPromote}
@@ -7948,7 +7949,7 @@ describe("TaskCard mission badge", () => {
 
     render(
       <TaskCard
-        task={makeTask({ id: "FN-783", column: "in-review", paused: false, userPaused: false, prInfo: undefined as any, awaitingPlanning: false, steps: [{ name: "Implement", status: "pending" }] as any })}
+        task={makeTask({ id: "FN-783", column: "in-review", paused: false, userPaused: false, prInfo: undefined as any, awaitingPlanning: false, enabledWorkflowSteps: [], steps: [{ name: "Implement", status: "pending" }] as any })}
         onOpenDetail={noop}
         addToast={noop}
         onPromote={onPromote}
@@ -7973,7 +7974,7 @@ describe("TaskCard mission badge", () => {
 
     render(
       <TaskCard
-        task={makeTask({ id: "FN-778", column: "todo", awaitingPlanning: false, steps: [{ name: "Implement", status: "pending" }] as any })}
+        task={makeTask({ id: "FN-778", column: "todo", awaitingPlanning: false, enabledWorkflowSteps: [], steps: [{ name: "Implement", status: "pending" }] as any })}
         onOpenDetail={onOpenDetail}
         addToast={noop}
         onPromote={onPromote}
@@ -7991,7 +7992,7 @@ describe("TaskCard mission badge", () => {
 
     render(
       <TaskCard
-        task={makeTask({ id: "FN-779", column: "todo", awaitingPlanning: false, steps: [{ name: "Implement", status: "pending" }] as any })}
+        task={makeTask({ id: "FN-779", column: "todo", awaitingPlanning: false, enabledWorkflowSteps: [], steps: [{ name: "Implement", status: "pending" }] as any })}
         onOpenDetail={noop}
         addToast={noop}
         onPromote={onPromote}
@@ -8010,12 +8011,14 @@ describe("TaskCard mission badge", () => {
   it("suppresses Promote for every planning state while retaining the planned capacity-hold action", () => {
     let sequence = 0;
     const makePromoteFixture = (overrides: Partial<Task> = {}) => makeTask({
-      id: `FN-8907-${sequence++}`,
+      id: `FN-8950-${sequence++}`,
       title: `Promote fixture ${sequence}`,
       column: "todo",
       awaitingPlanning: false,
       status: null as any,
       steps: [{ name: "Implement", status: "pending" }] as any,
+      // FNXC:TaskCardPromote 2026-08-11-09:13: An explicit empty list disables the built-in default-on plan-review group for promotable controls.
+      enabledWorkflowSteps: [],
       ...overrides,
     });
     const renderPromoteFixture = (task: Task, taskColumnFlags: any, cost = false) => render(
@@ -8023,19 +8026,22 @@ describe("TaskCard mission badge", () => {
         <TaskCard task={task} taskColumnFlags={taskColumnFlags} onOpenDetail={noop} addToast={noop} onPromote={vi.fn().mockResolvedValue(undefined)} />
       </CostBadgeProvider>,
     );
-    const expectSuppressedWithControl = (planning: Partial<Task>, control: Partial<Task>, flags: any) => {
+    const expectSuppressedWithControl = (name: string, planning: Partial<Task>, control: Partial<Task>, flags: any) => {
       const planningTask = makePromoteFixture(planning);
       const suppressed = renderPromoteFixture(planningTask, flags);
-      expect(screen.getByText(planningTask.title)).toBeInTheDocument();
-      expect(screen.queryByTestId(`card-promote-${planningTask.id}`)).toBeNull();
+      expect(screen.getByText(planningTask.title), `${name}: card must render`).toBeInTheDocument();
+      // FNXC:TaskCardPromote 2026-08-11-09:13: Soft assertion keeps the gate-only revert evidence comprehensive by reporting every named escape in one run.
+      expect.soft(screen.queryByTestId(`card-promote-${planningTask.id}`), `${name}: Promote must be suppressed`).toBeNull();
       suppressed.unmount();
 
       const controlTask = makePromoteFixture(control);
       const positive = renderPromoteFixture(controlTask, flags);
-      expect(screen.getByText(controlTask.title)).toBeInTheDocument();
-      expect(screen.getByTestId(`card-promote-${controlTask.id}`)).toBeInTheDocument();
+      expect(screen.getByText(controlTask.title), `${name}: control card must render`).toBeInTheDocument();
+      expect(screen.getByTestId(`card-promote-${controlTask.id}`), `${name}: control must keep Promote`).toBeInTheDocument();
       positive.unmount();
     };
+    const passedPlanReview = [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "passed" }] as any;
+    const auditedSkippedPlanReview = [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "skipped", bypassedFromStatus: "failed", bypassedFromVerdict: "REVISE", bypassedBy: "operator", bypassedAt: "2026-08-11T00:00:00Z", bypassReason: "review dispatch failed" }] as any;
 
     // Harness self-check: planned capacity-held cards must reach the rendered Promote branch.
     const readyTask = makePromoteFixture();
@@ -8045,29 +8051,52 @@ describe("TaskCard mission badge", () => {
     expect(readyPromote).toHaveTextContent("Promote");
     ready.unmount();
 
-    expectSuppressedWithControl({ awaitingPlanning: true }, { awaitingPlanning: false }, { hold: true });
-    expectSuppressedWithControl({ awaitingPlanning: undefined, steps: [] }, { awaitingPlanning: undefined, steps: [{ name: "Implement", status: "pending" }] as any }, { hold: true });
-    expectSuppressedWithControl({ status: "planning" as any }, { status: null as any }, { hold: true });
-    expectSuppressedWithControl({ status: "needs-replan" as any }, { status: null as any }, { hold: true });
-    expectSuppressedWithControl({
-      enabledWorkflowSteps: ["plan-review"],
-      workflowStepResults: [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "pending", startedAt: "2026-08-09T00:00:00Z" }],
-    }, {
-      enabledWorkflowSteps: ["plan-review"],
-      workflowStepResults: [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "pending" }],
-    }, { hold: true });
-    expectSuppressedWithControl({ awaitingPlanning: true }, { awaitingPlanning: false }, undefined);
+    expectSuppressedWithControl("awaitingPlanning", { awaitingPlanning: true }, { awaitingPlanning: false }, { hold: true });
+    expectSuppressedWithControl("empty steps", { awaitingPlanning: undefined, steps: [] }, { awaitingPlanning: undefined, steps: [{ name: "Implement", status: "pending" }] as any }, { hold: true });
+    expectSuppressedWithControl("planning status", { status: "planning" as any }, { status: null as any }, { hold: true });
+    expectSuppressedWithControl("needs-replan status", { status: "needs-replan" as any }, { status: null as any }, { hold: true });
 
-    /* isTaskAwaitingPlanApproval requires intake unless the replan-cap reason is set. */
-    expectSuppressedWithControl({ status: "awaiting-approval" as any }, { status: null as any }, { hold: true, intake: true });
-    expectSuppressedWithControl(
-      { status: "awaiting-approval" as any, awaitingApprovalReason: "plan-review-replan-cap" as any },
-      { status: "awaiting-approval" as any, awaitingApprovalReason: undefined },
-      { hold: true },
-    );
+    /*
+    FNXC:TaskCardPromote 2026-08-11-09:13:
+    FN-8950 corrects the former control, which used pending Plan Review and therefore asserted the
+    defect. An omitted selection is default-on, so every positive control explicitly clears or
+    satisfies the plan gate.
+    */
+    expectSuppressedWithControl("absent enabled-steps array (default-on)", { enabledWorkflowSteps: undefined, workflowStepResults: undefined }, { enabledWorkflowSteps: [] }, { hold: true });
+    expectSuppressedWithControl("enabled plan-review with no results", { enabledWorkflowSteps: ["plan-review"], workflowStepResults: undefined }, { enabledWorkflowSteps: ["plan-review"], workflowStepResults: passedPlanReview }, { hold: true });
+    expectSuppressedWithControl("enabled plan-review with empty results", { enabledWorkflowSteps: ["plan-review"], workflowStepResults: [] }, { enabledWorkflowSteps: ["plan-review"], workflowStepResults: passedPlanReview }, { hold: true });
+    expectSuppressedWithControl("enabled-not-started plan-review", { enabledWorkflowSteps: ["plan-review"], workflowStepResults: [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "pending" }] as any }, { enabledWorkflowSteps: ["plan-review"], workflowStepResults: passedPlanReview }, { hold: true });
+    expectSuppressedWithControl("running pending plan-review", { enabledWorkflowSteps: ["plan-review"], workflowStepResults: [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "pending", startedAt: "2026-08-11T00:00:00Z" }] as any }, { enabledWorkflowSteps: ["plan-review"], workflowStepResults: passedPlanReview }, { hold: true });
+    expectSuppressedWithControl("failed plan-review", { enabledWorkflowSteps: ["plan-review"], workflowStepResults: [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "failed" }] as any }, { enabledWorkflowSteps: ["plan-review"], workflowStepResults: passedPlanReview }, { hold: true });
+    expectSuppressedWithControl("advisory_failure plan-review", { enabledWorkflowSteps: ["plan-review"], workflowStepResults: [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "advisory_failure" }] as any }, { enabledWorkflowSteps: ["plan-review"], workflowStepResults: passedPlanReview }, { hold: true });
+    expectSuppressedWithControl("superseded passed plan-review", { enabledWorkflowSteps: ["plan-review"], workflowStepResults: [{ ...passedPlanReview[0], supersededAt: "2026-08-11T00:00:00Z" }] }, { enabledWorkflowSteps: ["plan-review"], workflowStepResults: passedPlanReview }, { hold: true });
+    expectSuppressedWithControl("unaudited skipped plan-review", { enabledWorkflowSteps: ["plan-review"], workflowStepResults: [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "skipped", bypassedFromStatus: "failed", bypassedFromVerdict: "REVISE", bypassedBy: "operator" }] as any }, { enabledWorkflowSteps: ["plan-review"], workflowStepResults: auditedSkippedPlanReview }, { hold: true });
+    expectSuppressedWithControl("duplicate superseded plan-review", { enabledWorkflowSteps: ["plan-review"], workflowStepResults: [{ ...passedPlanReview[0], supersededAt: "2026-08-11T00:00:00Z" }, { workflowStepId: "code-review", workflowStepName: "Code Review", status: "passed" }] }, { enabledWorkflowSteps: ["plan-review"], workflowStepResults: passedPlanReview }, { hold: true });
+    expectSuppressedWithControl("plan-review disabled by another explicit group", { enabledWorkflowSteps: ["plan-review"], workflowStepResults: undefined }, { enabledWorkflowSteps: ["code-review"] }, { hold: true });
+
+    // FNXC:TaskCardPromote 2026-08-11-09:13: The extra planning-stage statuses are conservative ledger arms; issueRelease does not literally reject them.
+    expectSuppressedWithControl("status specifying", { status: "specifying" as any }, { status: null as any }, { hold: true });
+    expectSuppressedWithControl("status plan-review-unavailable", { status: "plan-review-unavailable" as any }, { status: null as any }, { hold: true });
+    expectSuppressedWithControl("pause-shaped approval hold", { paused: true, pausedReason: "awaiting-approval" as any, status: null as any }, { paused: false, pausedReason: undefined, status: null as any }, { hold: true });
+
+    /* FNXC:TaskCardPromote 2026-08-11-09:13: Promote mirrors core's column-independent approval hold; intake remains only for approval badge and control rendering. */
+    expectSuppressedWithControl("status awaiting-approval on a hold-only lane", { status: "awaiting-approval" as any }, { status: null as any }, { hold: true });
+    expectSuppressedWithControl("awaiting-approval intake lane", { status: "awaiting-approval" as any }, { status: null as any }, { hold: true, intake: true });
+    expectSuppressedWithControl("plan-review-replan-cap", { status: "awaiting-approval" as any, awaitingApprovalReason: "plan-review-replan-cap" as any }, { status: null as any, awaitingApprovalReason: undefined }, { hold: true });
+
+    // Repeat the gate and approval shapes for legacy fallback and merged planning trait resolution.
+    expectSuppressedWithControl("enabled-not-started plan-review no-metadata fallback", { enabledWorkflowSteps: ["plan-review"], workflowStepResults: [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "pending" }] as any }, { enabledWorkflowSteps: ["plan-review"], workflowStepResults: passedPlanReview }, undefined);
+    expectSuppressedWithControl("enabled-not-started plan-review merged planning lane", { enabledWorkflowSteps: ["plan-review"], workflowStepResults: [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "pending" }] as any }, { enabledWorkflowSteps: ["plan-review"], workflowStepResults: passedPlanReview }, { hold: true, intake: true });
+    expectSuppressedWithControl("status awaiting-approval no-metadata fallback", { status: "awaiting-approval" as any }, { status: null as any }, undefined);
+    expectSuppressedWithControl("status awaiting-approval merged planning lane", { status: "awaiting-approval" as any }, { status: null as any }, { hold: true, intake: true });
+
+    const pendingGate = makePromoteFixture({ enabledWorkflowSteps: ["plan-review"], workflowStepResults: undefined });
+    const pendingGateRender = renderPromoteFixture(pendingGate, { hold: true });
+    expect(screen.getByText("Ready")).toBeInTheDocument();
+    pendingGateRender.unmount();
 
     // Promote/cost-row CSS is media-query-only, so DOM absence covers desktop and mobile alike.
-    const pricedPlanning = makePromoteFixture({ awaitingPlanning: true, tokenUsage: {
+    const pricedPlanning = makePromoteFixture({ enabledWorkflowSteps: ["plan-review"], workflowStepResults: [{ workflowStepId: "plan-review", workflowStepName: "Plan Review", status: "pending" }] as any, tokenUsage: {
       inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1_000_000,
       firstUsedAt: "2026-08-09T00:00:00Z", lastUsedAt: "2026-08-09T00:00:00Z", modelProvider: "openai", modelId: "gpt-5-mini",
     } });
@@ -8723,6 +8752,7 @@ describe("TaskCard trailing-row layout (FN-8631)", () => {
                   id: `FN-cost-${width}`,
                   column: "todo",
                   awaitingPlanning: false,
+                  enabledWorkflowSteps: [],
                   steps: [{ name: "Implement", status: "pending" }] as any,
                   tokenUsage: { inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1_000_000, firstUsedAt: "2026-01-01T00:00:00Z", lastUsedAt: "2026-01-01T00:00:00Z", modelProvider: "openai", modelId: "gpt-5-mini" },
                 } as Partial<Task>)}
