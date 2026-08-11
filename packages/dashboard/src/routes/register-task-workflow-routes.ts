@@ -902,7 +902,7 @@ function getWorkflowReviewKind(
   return undefined;
 }
 
-function buildWorkflowReviewItemId(task: Task, result: WorkflowStepResult, findingId?: string): string {
+function buildWorkflowReviewItemId(task: Task, result: WorkflowStepResult, findingId?: string, resolution?: string): string {
   const identity = JSON.stringify({
     taskId: task.id,
     workflowStepId: result.workflowStepId,
@@ -916,6 +916,7 @@ function buildWorkflowReviewItemId(task: Task, result: WorkflowStepResult, findi
     output: result.output,
     notes: result.notes,
     findingId,
+    resolution,
   });
   return `workflow-review-${createHash("sha256").update(identity).digest("hex").slice(0, 24)}`;
 }
@@ -929,7 +930,7 @@ async function buildWorkflowReviewItems(task: Task, store: TaskStore): Promise<T
       const timestamp = result.completedAt ?? result.startedAt ?? task.updatedAt ?? task.createdAt;
       if (result.findings?.length) {
         return result.findings.map((finding) => ({
-          itemId: buildWorkflowReviewItemId(task, result, finding.id),
+          itemId: buildWorkflowReviewItemId(task, result, finding.id, finding.resolution),
           sourceMode: "reviewer-agent" as const,
           title: finding.title,
           body: finding.body,
@@ -939,6 +940,7 @@ async function buildWorkflowReviewItems(task: Task, store: TaskStore): Promise<T
           ...(finding.filePath ? { filePath: finding.filePath } : {}),
           ...(finding.line ? { line: finding.line } : {}),
           ...(finding.severity ? { severity: finding.severity } : {}),
+          ...(finding.resolution ? { resolution: finding.resolution } : {}),
           reviewState: result.verdict,
           verdict: result.verdict,
           reviewType,
@@ -6704,6 +6706,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         path: item.filePath,
         line: item.line,
         severity: item.severity,
+        resolution: item.resolution,
         threadId: item.threadId,
         htmlUrl: item.url,
         state: item.reviewState ?? undefined,
@@ -6741,6 +6744,13 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       }
 
       const canonicalById = new Map(reviewState.items.map((item) => [item.id, item] as const));
+      const resolvedSelection = selectedItems.find((selected) => {
+        const item = canonicalById.get(selected.id);
+        return item?.resolution === "resolved-in-review" || item?.resolution === "superseded";
+      });
+      if (resolvedSelection) {
+        throw badRequest("Review items already resolved during review cannot be selected for revision");
+      }
       const canonicalSelections = selectedItems.map((selected) => {
         const item = canonicalById.get(selected.id);
         if (!item) throw badRequest("selectedItems must reference existing review items");

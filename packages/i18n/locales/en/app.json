@@ -8382,7 +8382,9 @@
     "showRawText": "Show raw text",
     "startedAtSep": " · Started: {{timestamp}}",
     "updateFailed": "Failed to update {{taskId}}: {{error}}",
-    "upToDate": "Up to date"
+    "upToDate": "Up to date",
+    "fixedInReview": "Fixed in review",
+    "superseded": "Superseded"
   },
   "tasks": {
     "addTaskPlaceholder": "Add a task...",
