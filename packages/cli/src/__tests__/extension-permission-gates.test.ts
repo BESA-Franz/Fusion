@@ -10,6 +10,12 @@
  *    behavior, and agents under the shipped default `unrestricted` preset stay
  *    friction-free on policy-gated tools (no approval row minted).
  * Expectations are HARDCODED — never derived from the constants under test.
+ *
+ * FNXC:ToolPermissionGates 2026-08-11-04:51:
+ * CLI test resolution now routes dashboard and engine imports through this mock. Spread the real
+ * module so ChatManager retains SessionManager.create/open and their file-backed session methods,
+ * while explicit runtime, credential, extension, and session-creation overrides still prevent real
+ * provider, credential, or CLI process access.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import express from "express";
@@ -40,7 +46,8 @@ const { createPiAgentSessionMock, piFindModelMock } = vi.hoisted(() => ({
   piFindModelMock: vi.fn((provider: string, id: string) => ({ provider, id })),
 }));
 
-vi.mock("@earendil-works/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   LegacyCredentialStorage: { create: () => ({ setFallbackResolver: vi.fn(), getApiKey: vi.fn(), get: vi.fn(), set: vi.fn(), has: vi.fn(), hasAuth: vi.fn(), getAll: vi.fn(() => ({})), list: vi.fn(), logout: vi.fn(), remove: vi.fn(), reload: vi.fn() }) },
   createAgentSession: createPiAgentSessionMock,
   createBashTool: vi.fn(() => ({ name: "bash" })),
@@ -59,7 +66,6 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
   getAgentDir: () => "/mock-agent-dir",
   ModelRuntime: { create: async () => ({ getAuth: async () => ({ auth: { headers: {} } }), refresh: async () => {} }) },
   ModelRegistry: class { static create() { return new this(); } find(provider: string, id: string) { return piFindModelMock(provider, id); } getAll() { return []; } registerProvider() {} async refresh() {} async getApiKeyAndHeaders() { return { ok: true }; } },
-  SessionManager: { inMemory: () => ({ getSessionId: () => undefined }) },
   SettingsManager: { create: () => ({}), inMemory: () => ({}) },
 }));
 

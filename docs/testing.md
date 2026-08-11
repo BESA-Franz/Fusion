@@ -681,6 +681,12 @@ Prefer `it.each` over copy-pasted `it()` blocks. When trimming, keep: first case
 
 When a test owns a process-wide singleton that has asynchronous owners (timers, processors, or lane starts), use the same teardown in `beforeEach` and `afterEach`: await every tracked owner’s `stop()` with `Promise.allSettled`, then clear all shared state in a `finally` block. Do not clear first: a pending stop or callback can repopulate the singleton after the apparent reset. Test reset mutators establish cleanup; read-only inspection seams must prove reservations, mutex/draining state, registrations, and companion module-global slots are actually empty. Fix the isolation seam at the root rather than adding retries, wider timeouts, weakened assertions, or a quarantine entry.
 
+## Cross-package Vitest mock scoping
+
+<!-- FNXC:CliTests 2026-08-11-04:53: CLI tests that drive dashboard or engine source must resolve pi-coding-agent through one exact alias so their runtime mock reaches every workspace importer. -->
+
+In this pnpm workspace, one dependency version can resolve to several peer-hashed instances. A `vi.mock` declared in a `packages/cli` test is keyed by the resolved module path, so it does not automatically reach `@fusion/dashboard` or `@fusion/engine` source that imports another instance. For `@earendil-works/pi-coding-agent`, retain the anchored package-root alias in `packages/cli/vitest.config.ts` (with subpath aliases ordered first). The symptom is a mocked function with zero calls alongside real runtime/provider log noise. Use an `importOriginal()`-spread factory when cross-package consumers need unmocked exports, and keep a guard that fails when the alias is removed.
+
 ## Standing Rule: Do Not Add Slow Tests (FN-5048)
 
 - Default new tests to narrow seams, in-memory fakes, shared harnesses, and targeted assertions.
