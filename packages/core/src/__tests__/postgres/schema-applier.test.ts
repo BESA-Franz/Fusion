@@ -96,6 +96,7 @@ import {
   SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION,
   MEMORY_RECALL_RECORDS_VERSION,
   MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
+  AGENT_RATING_PROJECT_ISOLATION_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -125,7 +126,8 @@ describe("schema-applier: immutable migration identities", () => {
     expect(SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION).toBe("0051");
     expect(MEMORY_RECALL_RECORDS_VERSION).toBe("0052");
     expect(MISSION_FEATURE_SPEC_ALIGNMENT_VERSION).toBe("0053");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0053");
+    expect(AGENT_RATING_PROJECT_ISOLATION_VERSION).toBe("0054");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0054");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -1794,6 +1796,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION,
       MEMORY_RECALL_RECORDS_VERSION,
       MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
+      AGENT_RATING_PROJECT_ISOLATION_VERSION,
     ]);
     expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
   });
@@ -1873,6 +1876,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION,
       MEMORY_RECALL_RECORDS_VERSION,
       MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
+      AGENT_RATING_PROJECT_ISOLATION_VERSION,
     ]);
   });
 
@@ -2085,6 +2089,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION,
       MEMORY_RECALL_RECORDS_VERSION,
       MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
+      AGENT_RATING_PROJECT_ISOLATION_VERSION,
     ]);
   });
 
@@ -2178,6 +2183,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION,
       MEMORY_RECALL_RECORDS_VERSION,
       MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
+      AGENT_RATING_PROJECT_ISOLATION_VERSION,
     ]);
   });
 
@@ -2271,6 +2277,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION,
       MEMORY_RECALL_RECORDS_VERSION,
       MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
+      AGENT_RATING_PROJECT_ISOLATION_VERSION,
     ]);
   });
 });
@@ -2354,8 +2361,8 @@ pgDescribe("schema-applier: VAL-SCHEMA-005 CHECK constraints preserved and enfor
     await applySchemaBaseline(ctx.db);
     await expectPgError(
       ctx.db.execute(sql`
-        INSERT INTO project.agent_ratings (id, agent_id, rater_type, score, created_at)
-        VALUES ('r1', 'a1', 'user', 99, '2026-01-01')
+        INSERT INTO project.agent_ratings (project_id, id, agent_id, rater_type, score, created_at)
+        VALUES ('schema-test', 'r1', 'a1', 'user', 99, '2026-01-01')
       `),
       /score_check|check constraint/i,
     );

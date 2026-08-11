@@ -2042,7 +2042,8 @@ export const messages = projectSchema.table("messages", {
 ]);
 
 export const agentRatings = projectSchema.table("agent_ratings", {
-  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(),
   agentId: text("agent_id").notNull(),
   raterType: text("rater_type").notNull(),
   raterId: text("rater_id"),
@@ -2053,8 +2054,9 @@ export const agentRatings = projectSchema.table("agent_ratings", {
   taskId: text("task_id"),
   createdAt: text("created_at").notNull(),
 }, (t) => [
+  primaryKey({ columns: [t.projectId, t.id] }),
   check("agent_ratings_score_check", sql`${t.score} BETWEEN 1 AND 5`),
-  index("idxAgentRatingsAgentId").on(t.agentId),
+  index("idxAgentRatingsAgentId").on(t.projectId, t.agentId),
   index("idxAgentRatingsCreatedAt").on(t.createdAt),
 ]);
 

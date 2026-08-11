@@ -48,6 +48,15 @@ Core `central` tables (names as exposed by the data layer; SQL uses snake_case):
 
 Per-project task data is keyed by `projectId` in PostgreSQL's `project` schema. Each repo keeps `.fusion/project.json` as its filesystem identity marker; `.fusion/fusion.db` is read only by the one-time legacy migrator.
 
+### Agent ownership predicates
+
+<!--
+FNXC:MultiProjectIsolation 2026-08-11-09:31:
+Runfusion/Fusion#3414 requires every `project.agents` read, update, and delete—plus its agent-owned satellite rows—to carry the same ownership predicate as writes. External PostgreSQL deployments commonly use owner or superuser connections that bypass RLS, so application predicates remain the isolation boundary.
+-->
+
+Bound agent-store layers scope those operations with `projectScopeFor(..., projectId)`. An unbound or blank layer is intentionally a no-op scope for compatibility and cross-project analytics callers; it must not be converted to a literal empty `project_id` filter or a throwing project-id accessor.
+
 Use PostgreSQL-native backup/restore tooling for authoritative runtime data. Legacy `fn backup` SQLite artifacts remain migration/recovery inputs; restoring one does not replace the live PostgreSQL registry.
 
 `taskClaims` is the central cross-node lease mutex introduced by FN-4819 §2: claim acquisition/renewal/release happen in PostgreSQL, while per-project lease fields mirror the central winner for local scheduler/runtime consumption.

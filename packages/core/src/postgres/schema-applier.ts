@@ -61,7 +61,8 @@ capacity-model table drop that landed while this PR was open.
 /* FNXC:SpecLock 2026-08-09-18:17: 0050 stores immutable plan history and 0051 widens source revisions before Date.now()-based writes. */
 /* FNXC:MemoryRecall 2026-08-10-11:03: Explicit baseline registration prevents the recall migration from being silently skipped. */
 /* FNXC:SpecLockMissionAlignment 2026-08-10-16:17: advance the schema ceiling so SQLite and PostgreSQL feature projections retain reconciled drift alignment. */
-export const SCHEMA_BASELINE_VERSION = "0053";
+/* FNXC:MultiProjectIsolation 2026-08-11-10:25: schema startup must register project-local agent ratings before bound stores scope their mutations. */
+export const SCHEMA_BASELINE_VERSION = "0054";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -210,6 +211,8 @@ export const SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION = "0051";
 export const MEMORY_RECALL_RECORDS_VERSION = "0052";
 /** FNXC:SpecLockMissionAlignment 2026-08-10-16:17: durable feature alignment is registered after all existing migration identities. */
 export const MISSION_FEATURE_SPEC_ALIGNMENT_VERSION = "0053";
+/** FNXC:MultiProjectIsolation 2026-08-11-10:25: keep rating identity project-local after the universal ownership migration. */
+export const AGENT_RATING_PROJECT_ISOLATION_VERSION = "0054";
 
 /** SECURITY DEFINER helper that only inserts LEGACY_ADOPTION_DRAINED_MARKER. */
 export const LEGACY_ADOPTION_DRAINED_MARKER_FUNCTION = "fusion_mark_legacy_adoption_drained";
@@ -437,6 +440,7 @@ const SPEC_LOCK_DRIFT_REPORT_MIGRATION_PATH = join(MIGRATIONS_DIR, "0050_spec_lo
 const SPEC_LOCK_SOURCE_REVISION_BIGINT_MIGRATION_PATH = join(MIGRATIONS_DIR, "0051_spec_lock_source_revision_bigint.sql");
 const MEMORY_RECALL_RECORDS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0052_fn_8922_memory_recall_records.sql");
 const MISSION_FEATURE_SPEC_ALIGNMENT_MIGRATION_PATH = join(MIGRATIONS_DIR, "0053_mission_feature_spec_alignment.sql");
+const AGENT_RATING_PROJECT_ISOLATION_MIGRATION_PATH = join(MIGRATIONS_DIR, "0054_fn_8957_agent_rating_project_isolation.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -560,6 +564,7 @@ export async function applySchemaBaseline(
     const specLockSourceRevisionBigintAlreadyApplied = applied.includes(SPEC_LOCK_SOURCE_REVISION_BIGINT_VERSION);
     const memoryRecallRecordsAlreadyApplied = applied.includes(MEMORY_RECALL_RECORDS_VERSION);
     const missionFeatureSpecAlignmentAlreadyApplied = applied.includes(MISSION_FEATURE_SPEC_ALIGNMENT_VERSION);
+    const agentRatingProjectIsolationAlreadyApplied = applied.includes(AGENT_RATING_PROJECT_ISOLATION_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -1228,6 +1233,12 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(MISSION_FEATURE_SPEC_ALIGNMENT_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${MISSION_FEATURE_SPEC_ALIGNMENT_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    if (!agentRatingProjectIsolationAlreadyApplied) {
+      const migrationSql = await readFile(AGENT_RATING_PROJECT_ISOLATION_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${AGENT_RATING_PROJECT_ISOLATION_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
     return { applied: schemaChanged, pluginHooksRun: pluginHooks.length };

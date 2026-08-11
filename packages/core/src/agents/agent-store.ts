@@ -769,7 +769,11 @@ export class AgentStore extends EventEmitter {
   async findAgentByName(name: string, executor?: QueryHandle): Promise<Agent | null> {
     // FNXC:SqliteFinalRemoval 2026-06-25-23:45:
     // Backend mode: read via async Drizzle helper, filter ephemeral in-memory.
-        const agents = await findAgentRowsByNameAsync(executor ?? this.asyncLayer!.db, name);
+        const agents = await findAgentRowsByNameAsync(
+      executor ?? this.asyncLayer!.db,
+      name,
+      this.workflowProjectId,
+    );
     for (const agent of agents) {
       if (!isEphemeralAgent(agent)) {
         return this.parseAgent(agent as unknown as AgentData);
@@ -889,7 +893,7 @@ export class AgentStore extends EventEmitter {
     FNXC:SqliteDualPathCleanup 2026-07-26-14:05:
     Agent reads are PostgreSQL-only via readAgentAsync. Populate getCachedAgent memory so sync heartbeat resolveAgentConfig can honor per-agent runtimeConfig without a SQLite handle.
     */
-    const agent = await readAgentAsync(this.asyncLayer!.db, agentId);
+    const agent = await readAgentAsync(this.asyncLayer!.db, agentId, this.workflowProjectId);
     const parsed = agent ? this.parseAgent(agent) : null;
     if (parsed) this.agentMemoryCache.set(agentId, parsed);
     else this.agentMemoryCache.delete(agentId);
@@ -1025,7 +1029,7 @@ export class AgentStore extends EventEmitter {
      * Backend-mode: delegate to async Drizzle addRating helper. The score CHECK
      * constraint is enforced by PostgreSQL (VAL-SCHEMA-005).
      */
-        const saved = await addRatingAsync(this.asyncLayer!.db, rating);
+        const saved = await addRatingAsync(this.asyncLayer!.db, rating, this.workflowProjectId);
     this.emit("rating:added", saved);
     return saved;
 }
@@ -1035,7 +1039,7 @@ export class AgentStore extends EventEmitter {
      * FNXC:SqliteFinalRemoval 2026-06-26-09:15:
      * Backend-mode: delegate to async Drizzle getRatings helper.
      */
-        return getRatingsAsync(this.asyncLayer!.db, agentId, options);
+        return getRatingsAsync(this.asyncLayer!.db, agentId, options, this.workflowProjectId);
 }
 
   async getRatingSummary(agentId: string): Promise<AgentRatingSummary> {
@@ -1103,7 +1107,7 @@ export class AgentStore extends EventEmitter {
      * FNXC:SqliteFinalRemoval 2026-06-26-09:15:
      * Backend-mode: delegate to async Drizzle deleteRating helper.
      */
-        await deleteRatingAsync(this.asyncLayer!.db, ratingId);
+        await deleteRatingAsync(this.asyncLayer!.db, ratingId, this.workflowProjectId);
     return;
 }
 
@@ -2006,7 +2010,11 @@ export class AgentStore extends EventEmitter {
     // FNXC:WorkflowAgentRouting 2026-08-07-03:12:
     // Role-pool membership is canonical multi-tag state, so SQL must not use the
     // deprecated singular projection to exclude a matching durable principal.
-    const agents = await listAgentRowsAsync(executor ?? this.asyncLayer!.db, { state: filter?.state });
+    const agents = await listAgentRowsAsync(
+      executor ?? this.asyncLayer!.db,
+      { state: filter?.state },
+      this.workflowProjectId,
+    );
     return agents
       .map((a) => this.parseAgent(a as unknown as AgentData))
       .filter((agent) => !filter?.role || agent.roles.includes(filter.role))
@@ -2159,7 +2167,7 @@ export class AgentStore extends EventEmitter {
        * FNXC:SqliteFinalRemoval 2026-06-26-09:20:
        * Backend-mode: delegate to async Drizzle insertApiKey helper.
        */
-            await insertApiKeyAsync(this.asyncLayer!.db, key);
+            await insertApiKeyAsync(this.asyncLayer!.db, key, this.workflowProjectId);
 
       return { key, token };
     });
@@ -2208,7 +2216,7 @@ export class AgentStore extends EventEmitter {
        * FNXC:SqliteFinalRemoval 2026-06-26-09:20:
        * Backend-mode: delegate to async Drizzle revokeApiKeyRow helper.
        */
-            await revokeApiKeyRowAsync(this.asyncLayer!.db, keyId, agentId, revoked);
+            await revokeApiKeyRowAsync(this.asyncLayer!.db, keyId, agentId, revoked, this.workflowProjectId);
 
       return revoked;
     });
@@ -2243,7 +2251,7 @@ export class AgentStore extends EventEmitter {
       // FNXC:SqliteFinalRemoval 2026-06-25-23:55:
       // Backend mode: delete via async Drizzle helper (cascading FKs handle
       // heartbeats, runs, task sessions, API keys, config revisions, etc.).
-            await deleteAgentAsync(this.asyncLayer!.db, agentId);
+            await deleteAgentAsync(this.asyncLayer!.db, agentId, this.workflowProjectId);
 
       // FN-7723: keep this instance's own change-detection snapshot in sync
       // with its own delete so a later poll never mistakes the row's absence
@@ -2297,7 +2305,7 @@ export class AgentStore extends EventEmitter {
         timestamp: event.timestamp,
         status: event.status,
         runId: event.runId,
-      });
+      }, this.workflowProjectId);
 
       // Update agent's lastHeartbeatAt if status is ok
       if (status === "ok") {
@@ -2330,8 +2338,8 @@ export class AgentStore extends EventEmitter {
   async getHeartbeatHistory(agentId: string, limit = 50): Promise<AgentHeartbeatEvent[]> {
     // FNXC:SqliteFinalRemoval 2026-06-26-00:05:
     // Backend mode: read via async Drizzle helper.
-        void this.backendProjectId;
-    return getHeartbeatHistoryAsync(this.asyncLayer!.db, agentId, limit);
+    void this.backendProjectId;
+    return getHeartbeatHistoryAsync(this.asyncLayer!.db, agentId, limit, this.workflowProjectId);
 }
 
   /**
@@ -2455,7 +2463,7 @@ export class AgentStore extends EventEmitter {
      * FNXC:SqliteFinalRemoval 2026-06-26-09:30:
      * Backend-mode: delegate to async Drizzle getTaskSession helper.
      */
-        return getTaskSessionAsync(this.asyncLayer!.db, agentId, taskId);
+        return getTaskSessionAsync(this.asyncLayer!.db, agentId, taskId, this.workflowProjectId);
 }
 
   /**
@@ -2477,7 +2485,7 @@ export class AgentStore extends EventEmitter {
      * FNXC:SqliteFinalRemoval 2026-06-26-09:30:
      * Backend-mode: delegate to async Drizzle upsertTaskSession helper.
      */
-        await upsertTaskSessionAsync(this.asyncLayer!.db, saved);
+        await upsertTaskSessionAsync(this.asyncLayer!.db, saved, this.workflowProjectId);
 
     return saved;
   }
@@ -2492,7 +2500,7 @@ export class AgentStore extends EventEmitter {
      * FNXC:SqliteFinalRemoval 2026-06-26-09:30:
      * Backend-mode: delegate to async Drizzle deleteTaskSession helper.
      */
-        await deleteTaskSessionAsync(this.asyncLayer!.db, agentId, taskId);
+        await deleteTaskSessionAsync(this.asyncLayer!.db, agentId, taskId, this.workflowProjectId);
     return;
 }
 
@@ -2731,7 +2739,7 @@ export class AgentStore extends EventEmitter {
    */
   async getLastBlockedState(agentId: string): Promise<BlockedStateSnapshot | null> {
     // FNXC:PostgresCutover 2026-07-04: delegate to async Drizzle helper in backend mode.
-        return getLastBlockedStateAsync(this.asyncLayer!.db, agentId);
+        return getLastBlockedStateAsync(this.asyncLayer!.db, agentId, this.workflowProjectId);
 }
 
   /**
@@ -2740,7 +2748,7 @@ export class AgentStore extends EventEmitter {
   async setLastBlockedState(agentId: string, state: BlockedStateSnapshot): Promise<void> {
     await this.withLock(agentId, async () => {
       // FNXC:PostgresCutover 2026-07-04: delegate to async Drizzle helper in backend mode.
-            await setLastBlockedStateAsync(this.asyncLayer!.db, agentId, state);
+            await setLastBlockedStateAsync(this.asyncLayer!.db, agentId, state, this.workflowProjectId);
       return;
 });
   }
@@ -2751,7 +2759,7 @@ export class AgentStore extends EventEmitter {
   async clearLastBlockedState(agentId: string): Promise<void> {
     await this.withLock(agentId, async () => {
       // FNXC:PostgresCutover 2026-07-04: delegate to async Drizzle helper in backend mode.
-            await clearLastBlockedStateAsync(this.asyncLayer!.db, agentId);
+            await clearLastBlockedStateAsync(this.asyncLayer!.db, agentId, this.workflowProjectId);
       return;
 });
   }
@@ -2766,13 +2774,13 @@ export class AgentStore extends EventEmitter {
 
   private async appendConfigRevision(revision: AgentConfigRevision): Promise<void> {
     // FNXC:SqliteFinalRemoval 2026-06-26-00:10: backend mode async delegation.
-        await appendConfigRevisionAsync(this.asyncLayer!.db, revision);
+        await appendConfigRevisionAsync(this.asyncLayer!.db, revision, this.workflowProjectId);
     return;
 }
 
   private async readConfigRevisions(agentId: string): Promise<AgentConfigRevision[]> {
     // FNXC:SqliteFinalRemoval 2026-06-26-00:10: backend mode async delegation.
-        return readConfigRevisionsAsync(this.asyncLayer!.db, agentId);
+        return readConfigRevisionsAsync(this.asyncLayer!.db, agentId, this.workflowProjectId);
 }
 
   private createConfigRevision(params: {
@@ -2862,7 +2870,7 @@ export class AgentStore extends EventEmitter {
 
   private async findConfigRevisionAcrossAgents(revisionId: string): Promise<AgentConfigRevision | null> {
     // FNXC:PostgresCutover 2026-07-04: delegate to async Drizzle helper in backend mode.
-        return findConfigRevisionByIdAsync(this.asyncLayer!.db, revisionId);
+        return findConfigRevisionByIdAsync(this.asyncLayer!.db, revisionId, this.workflowProjectId);
 }
 
   private computeNextResetAt(period: AgentBudgetConfig["budgetPeriod"], resetDay?: number): string | null {
@@ -3098,7 +3106,7 @@ export class AgentStore extends EventEmitter {
      * FNXC:SqliteFinalRemoval 2026-06-26-09:20:
      * Backend-mode: delegate to async Drizzle readApiKeys helper.
      */
-        return readApiKeysAsync(this.asyncLayer!.db, agentId);
+        return readApiKeysAsync(this.asyncLayer!.db, agentId, this.workflowProjectId);
 }
 
   private readAgent(_agentId: string): Agent | null {
