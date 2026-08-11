@@ -1816,6 +1816,9 @@ export type {
   MissionTransitionActorType,
   MissionTransitionActor,
   MissionUpdateOptions,
+  MissionBlockerSource,
+  MissionBlockerDescriptor,
+  MissionBlockedDiagnostics,
   AutopilotStatus,
   Mission,
   MissionBranchStrategy,
@@ -1865,7 +1868,7 @@ export type {
 } from "./missions/mission-types.js";
 export { MissionStore } from "./missions/mission-store.js";
 export type { MissionStoreEvents, MissionSummary } from "./missions/mission-store.js";
-export { AsyncMissionStore, MissionRemediationStoppedError, MissionResumeConflictError, RepairGroundTruthStaleError, RepairNotEligibleError, RepairValidatorRunInFlightError, RepairAssertionsMissingError, TerminalTaskReconciliationError } from "./async-stores/async-mission-store.js";
+export { AsyncMissionStore, MissionRemediationStoppedError, MissionResumeConflictError, MissionBlockedClearConflictError, RepairGroundTruthStaleError, RepairNotEligibleError, RepairValidatorRunInFlightError, RepairAssertionsMissingError, TerminalTaskReconciliationError } from "./async-stores/async-mission-store.js";
 export type { TerminalTaskReconciliationErrorCode } from "./async-stores/async-mission-store.js";
 export { AsyncIdeationStore } from "./async-stores/async-ideation-store.js";
 export { IDEATION_SESSION_STATUSES, IDEATION_CANDIDATE_ORIGINS } from "./ideation/ideation-types.js";

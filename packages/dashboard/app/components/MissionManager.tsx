@@ -8,6 +8,7 @@ import {
   getErrorMessage,
   type DriftAlignment,
   type Goal,
+  type MissionBlockerDescriptor,
 } from "@fusion/core";
 import {
   X,
@@ -86,6 +87,9 @@ import {
   previewEnrichedDescription,
   resumeMission,
   stopMission,
+  clearMissionBlockedStatus,
+  fetchMissionBlockedDiagnostics,
+  normalizeMissionBlockers,
   startMission,
   updateMissionAutopilot,
   fetchMissionsHealth,
@@ -241,6 +245,15 @@ function getInterviewStatusLabel(status: AiSessionSummary["status"], t: (key: st
   }
 }
 
+/**
+ * FNXC:MissionBlockedRepair 2026-08-11-02:56:
+ * Feature-validation repair intentionally does not change mission status. Both badge surfaces use
+ * this shared eligibility helper so a stale mission badge always has the same explicit repair path.
+ */
+export function getMissionBlockedRepairState(mission: Pick<Mission, "status">, blockers: MissionBlockerDescriptor[]): { showClear: boolean; blockers: MissionBlockerDescriptor[] } {
+  return { showClear: mission.status === "blocked", blockers: mission.status === "blocked" ? blockers : [] };
+}
+
 function getMissionRunHelperText(status: MissionStatus, t: (key: string, fallback: string) => string): string | null {
   switch (status) {
     case "planning":
@@ -248,7 +261,7 @@ function getMissionRunHelperText(status: MissionStatus, t: (key: string, fallbac
     case "active":
       return t("missions.runHelperActive", "Stopping pauses linked tasks and marks the mission blocked.");
     case "blocked":
-      return t("missions.runHelperBlocked", "Resuming re-activates the mission and continues execution.");
+      return t("missions.runHelperBlocked", "Resume re-activates execution; Clear blocked status repairs only a stale badge.");
     default:
       return null;
   }
@@ -1071,6 +1084,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const [validationRoundsExpanded, setValidationRoundsExpanded] = useState(true);
   const [validatingFeatures, setValidatingFeatures] = useState<Set<string>>(new Set());
   const [repairingValidationFeatures, setRepairingValidationFeatures] = useState<Set<string>>(new Set());
+  const [missionBlockers, setMissionBlockers] = useState<MissionBlockerDescriptor[]>([]);
+  const [missionBlockedDiagnosticsError, setMissionBlockedDiagnosticsError] = useState(false);
+  const [clearingBlockedMissionId, setClearingBlockedMissionId] = useState<string | null>(null);
+  const [missionBlockedReason, setMissionBlockedReason] = useState("");
 
   // Feature loop state
   const [featureLoopStates, setFeatureLoopStates] = useState<Map<string, MissionFeatureLoopSnapshot>>(new Map());
@@ -2681,6 +2698,35 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     }
   }, [projectId]);
 
+  useEffect(() => {
+    if (!selectedMission || selectedMission.status !== "blocked") {
+      setMissionBlockers([]); setMissionBlockedDiagnosticsError(false); return;
+    }
+    let cancelled = false;
+    fetchMissionBlockedDiagnostics(selectedMission.id, projectId).then((diagnostics) => {
+      if (!cancelled) {
+        const blockers = diagnostics?.blockers;
+        // FNXC:MissionBlockedRepair 2026-08-11-03:15:
+        // A malformed diagnostics response must retain the clear control but identify its blocker
+        // explanation as unavailable instead of presenting an authoritative-looking empty list.
+        setMissionBlockers(normalizeMissionBlockers(blockers));
+        setMissionBlockedDiagnosticsError(!Array.isArray(blockers));
+      }
+    }).catch(() => { if (!cancelled) { setMissionBlockers([]); setMissionBlockedDiagnosticsError(true); } });
+    return () => { cancelled = true; };
+  }, [projectId, selectedMission?.id, selectedMission?.status]);
+
+  const handleClearMissionBlockedStatus = useCallback(async (missionId: string, reason?: string) => {
+    try {
+      setClearingBlockedMissionId(missionId);
+      const result = await clearMissionBlockedStatus(missionId, reason?.trim() ? { reason: reason.trim() } : {}, projectId);
+      setMissionBlockers(normalizeMissionBlockers(result.blockers));
+      addToast(result.blockers.length > 0 ? t("missions.blockedClearedStillGated", "Blocked status cleared; automation remains gated until Resume.") : t("missions.blockedCleared", "Blocked status cleared"), result.blockers.length > 0 ? "warning" : "success");
+      await loadMissionDetail(missionId); loadMissions();
+    } catch (err) { addToast(getErrorMessage(err) || t("missions.clearBlockedFailed", "Failed to clear blocked status"), "error"); }
+    finally { setClearingBlockedMissionId(null); }
+  }, [addToast, loadMissionDetail, loadMissions, projectId, t]);
+
   // Toggle feature expansion to show run history
   const toggleFeatureExpanded = useCallback(async (featureId: string) => {
     if (expandedFeatureId === featureId) {
@@ -2711,9 +2757,13 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       await loadMissionDetail(missionId);
       loadMissions();
     } catch (err) {
-      addToast(getErrorMessage(err) || t("missions.resumeFailed", "Failed to resume mission"), "error");
+      if (err instanceof ApiRequestError && err.status === 409 && (err.details as { code?: string } | undefined)?.code === "MISSION_RESUME_CONFLICT") {
+        setMissionBlockers(normalizeMissionBlockers((err.details as { blockers?: unknown }).blockers));
+        setMissionBlockedDiagnosticsError(false);
+        addToast(t("missions.resumeBlocked", "Mission cannot resume until its recorded blockers are resolved."), "error");
+      } else addToast(getErrorMessage(err) || t("missions.resumeFailed", "Failed to resume mission"), "error");
     }
-  }, [addToast, loadMissionDetail, loadMissions, projectId]);
+  }, [addToast, loadMissionDetail, loadMissions, projectId, t]);
 
   // Stop mission — set status to "blocked" and pause all linked tasks
   const handleStopMission = useCallback(async (missionId: string) => {
@@ -3203,6 +3253,28 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                         <Play size={14} />
                         <span>{t("missions.resumeMission", "Resume mission")}</span>
                       </button>
+                    )}
+                    {getMissionBlockedRepairState(selectedMission, missionBlockers).showClear && (
+                      <>
+                        {/* FNXC:MissionBlockedRepair 2026-08-11-02:56: This mission-level control is separate from feature validation repair because that repair never alters the durable mission badge. */}
+                        <button
+                          className="mission-btn mission-btn--ghost"
+                          onClick={() => handleClearMissionBlockedStatus(selectedMission.id, missionBlockedReason)}
+                          title={t("missions.clearBlockedStatus", "Clear blocked status")}
+                          aria-label={t("missions.clearBlockedStatus", "Clear blocked status")}
+                          disabled={clearingBlockedMissionId === selectedMission.id}
+                        >
+                          <Check size={14} />
+                          <span>{t("missions.clearBlockedStatus", "Clear blocked status")}</span>
+                        </button>
+                        <div className="mission-blocked-repair" aria-label={t("missions.whyBlocked", "Why blocked")}>
+                          <strong>{t("missions.whyBlocked", "Why blocked")}</strong>
+                          {missionBlockedDiagnosticsError ? <span>{t("missions.blockedDiagnosticsUnknown", "Blocker diagnostics are unavailable.")}</span> : missionBlockers.length === 0 ? <span>{t("missions.noRecordedBlockers", "No recorded blockers.")}</span> : (
+                            <ul>{missionBlockers.map((blocker) => <li key={`${blocker.featureId}\u0000${blocker.reason}`}>{blocker.featureId}: {blocker.reason}{blocker.source !== "unspecified" ? ` (${blocker.source})` : ""}</li>)}</ul>
+                          )}
+                          <input className="input" value={missionBlockedReason} onChange={(event) => setMissionBlockedReason(event.target.value)} placeholder={t("missions.clearBlockedReason", "Optional repair reason")} aria-label={t("missions.clearBlockedReason", "Optional repair reason")} />
+                        </div>
+                      </>
                     )}
                     {selectedMission.status === "planning" && (
                       <button
@@ -4977,6 +5049,18 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
               >
                 <Play size={14} />
                 <span>{t("missions.resumeMission", "Resume mission")}</span>
+              </button>
+            )}
+            {getMissionBlockedRepairState(m, []).showClear && (
+              <button
+                className="mission-btn mission-btn--ghost mission-btn--sm"
+                onClick={() => handleClearMissionBlockedStatus(m.id)}
+                title={t("missions.clearBlockedStatus", "Clear blocked status")}
+                aria-label={t("missions.clearBlockedStatus", "Clear blocked status")}
+                disabled={clearingBlockedMissionId === m.id}
+              >
+                <Check size={14} />
+                <span>{t("missions.clearBlockedStatus", "Clear blocked status")}</span>
               </button>
             )}
             {m.status === "planning" && (

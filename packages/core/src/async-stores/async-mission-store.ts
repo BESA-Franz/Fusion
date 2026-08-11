@@ -14,7 +14,7 @@ import { EventEmitter } from "node:events";
 import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import * as schema from "../postgres/schema/index.js";
 import type { AsyncDataLayer } from "../postgres/data-layer.js";
-import { boundMissionEventReason, FEATURE_LOOP_REPAIR_TRANSITIONS, buildMissionStatusEventMetadata, featureValidationRepairEligibility, FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionType, normalizeMissionTransitionActorForEvent, renderValidationCause, selectNextSerialMissionSlice } from "../missions/mission-types.js";
+import { boundMissionEventReason, classifyMissionResumeBlockers, FEATURE_LOOP_REPAIR_TRANSITIONS, buildMissionStatusEventMetadata, featureValidationRepairEligibility, FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionType, normalizeMissionTransitionActorForEvent, renderValidationCause, selectNextSerialMissionSlice } from "../missions/mission-types.js";
 import type {
   Mission,
   Milestone,
@@ -50,6 +50,8 @@ import type {
   MissionTransitionActor,
   MissionUpdateOptions,
   MissionFeatureRepairGroundTruth,
+  MissionBlockerDescriptor,
+  MissionBlockedDiagnostics,
 } from "../missions/mission-types.js";
 import type { Goal } from "../goals/goal-types.js";
 import {
@@ -228,6 +230,14 @@ export class MissionResumeConflictError extends Error {
   constructor(public readonly blockers: Array<{ id: string; reason: string }>) {
     super("Mission resume is blocked by non-resumable lineage stops");
     this.name = "MissionResumeConflictError";
+  }
+}
+
+/** Raised when a clear request races a prior clear or targets a non-blocked mission. */
+export class MissionBlockedClearConflictError extends Error {
+  constructor(public readonly status: MissionStatus) {
+    super(`Mission is not blocked (status: ${status})`);
+    this.name = "MissionBlockedClearConflictError";
   }
 }
 
@@ -680,6 +690,65 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
     this.emit("mission:deleted", id);
   }
 
+  private async getMissionBlockedDescriptorsWithHandle(handle: QueryHandle, missionId: string, lockStops = false): Promise<MissionBlockerDescriptor[]> {
+    const allFeatures = await listAllFeatures(handle);
+    const featureMission = new Map<string, string>();
+    for (const feature of allFeatures) {
+      const slice = await getSlice(handle, feature.sliceId);
+      const milestone = slice ? await getMilestone(handle, slice.milestoneId) : undefined;
+      if (milestone) featureMission.set(feature.id, milestone.missionId);
+    }
+    const stopsQuery = handle.select().from(schema.project.missionLineageStops)
+      .where(and(eq(schema.project.missionLineageStops.projectId, missionProjectId()), eq(schema.project.missionLineageStops.missionId, missionId)));
+    const stops = lockStops ? await stopsQuery.for("update") : await stopsQuery;
+    const roots = allFeatures.filter((feature) => featureMission.get(feature.id) === missionId && !feature.generatedFromFeatureId && feature.loopState === "blocked");
+    return classifyMissionResumeBlockers({ rootFeatures: roots, lineageStops: stops }).blockers;
+  }
+
+  async getMissionBlockedDiagnostics(missionId: string): Promise<MissionBlockedDiagnostics> {
+    const mission = await getMission(this.db, missionId);
+    if (!mission) throw new Error(`Mission ${missionId} not found`);
+    const [recomputedStatus, blockers] = await Promise.all([
+      this.computeMissionStatusWithHandle(this.db, missionId),
+      this.getMissionBlockedDescriptorsWithHandle(this.db, missionId),
+    ]);
+    return { missionId, status: mission.status, recomputedStatus, clearable: mission.status === "blocked", resumable: mission.status === "blocked" && blockers.length === 0, blockers };
+  }
+
+  /**
+   * FNXC:MissionBlockedRepair 2026-08-11-02:56:
+   * Clearing repairs only a stale mission badge. It never resumes automation, unpauses tasks, or
+   * launders feature and lineage stops; Resume remains the sole path that changes those states.
+   * The legacy synchronous MissionStore is not constructed at runtime, so it intentionally has no
+   * parallel primitive.
+   */
+  async clearMissionBlockedStatus(missionId: string, options: { actor: MissionTransitionActor; reason?: string }): Promise<{ mission: Mission; blockers: MissionBlockerDescriptor[] }> {
+    const result = await this.layer.transactionImmediate(async (tx) => {
+      const mission = await getMission(tx, missionId);
+      if (!mission) throw new Error(`Mission ${missionId} not found`);
+      // Match resume's lock before deciding whether the stale badge can be cleared.
+      await tx.select().from(schema.project.missions).where(eq(schema.project.missions.id, missionId)).for("update");
+      const locked = await getMission(tx, missionId);
+      if (!locked) throw new Error(`Mission ${missionId} not found`);
+      if (locked.status !== "blocked") throw new MissionBlockedClearConflictError(locked.status);
+      const blockers = await this.getMissionBlockedDescriptorsWithHandle(tx, missionId, true);
+      const status = await this.computeMissionStatusWithHandle(tx, missionId);
+      const updated = { ...locked, status, updatedAt: new Date().toISOString() };
+      await updateMission(tx, updated);
+      const event: MissionEvent = {
+        id: this.generateId("ME"), missionId, eventType: "mission_status_changed",
+        description: "Mission blocked status cleared",
+        metadata: buildMissionStatusEventMetadata({ entity: "mission", field: "status", from: "blocked", to: status, ids: { missionId, repairAction: "clear-blocked" }, actor: options.actor, reason: options.reason }),
+        timestamp: new Date().toISOString(), seq: (await getMaxEventSeq(tx)) + 1,
+      };
+      await insertMissionEvent(tx, event);
+      return { mission: updated, blockers, event };
+    });
+    this.emit("mission:updated", result.mission);
+    this.emit("mission:event", result.event);
+    return { mission: result.mission, blockers: result.blockers };
+  }
+
   /**
    * FNXC:MissionLineageBudget 2026-07-22-12:00:
    * Resume is the only seam that clears operator intervention. Classify every
@@ -700,16 +769,13 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       const stops = await tx.select().from(schema.project.missionLineageStops)
         .where(and(eq(schema.project.missionLineageStops.projectId, missionProjectId()), eq(schema.project.missionLineageStops.missionId, id))).for("update");
       const roots = allFeatures.filter((feature) => featureMission.get(feature.id) === id && !feature.generatedFromFeatureId && feature.loopState === "blocked");
-      const stopIds = new Set(stops.map((stop) => stop.rootFeatureId));
-      const blockers = roots.filter((root) => root.implementationStopReason !== "operator-intervention")
-        .map((root) => ({ id: root.id, reason: root.implementationStopReason ?? "legacy-unknown-stop" }));
-      for (const stop of stops) if (stop.reason !== "operator-intervention") blockers.push({ id: stop.rootFeatureId, reason: stop.reason });
-      if (blockers.length > 0) {
-        const stable = blockers.sort((a, b) => a.id.localeCompare(b.id));
-        throw new MissionResumeConflictError(stable);
+      const classified = classifyMissionResumeBlockers({ rootFeatures: roots, lineageStops: stops });
+      if (classified.resumeConflictBlockers.length > 0) {
+        throw new MissionResumeConflictError(classified.resumeConflictBlockers);
       }
+      const clearableFeatureIds = new Set(classified.clearableFeatureIds);
       for (const root of roots) {
-        if (root.implementationStopReason === "operator-intervention" || stopIds.has(root.id)) {
+        if (clearableFeatureIds.has(root.id)) {
           await updateFeature(tx, { ...root, loopState: "needs_fix", implementationStopReason: undefined, implementationStoppedAt: undefined, implementationStopOrigin: undefined, updatedAt: new Date().toISOString() });
         }
       }
@@ -2779,7 +2845,11 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
   }
 
   async computeMissionStatus(missionId: string): Promise<MissionStatus> {
-    const milestones = await listMilestones(this.db, missionId);
+    return this.computeMissionStatusWithHandle(this.db, missionId);
+  }
+
+  private async computeMissionStatusWithHandle(handle: QueryHandle, missionId: string): Promise<MissionStatus> {
+    const milestones = await listMilestones(handle, missionId);
     if (milestones.length === 0) return "planning";
     const allComplete = milestones.every((m) => m.status === "complete");
     if (allComplete) return "complete";

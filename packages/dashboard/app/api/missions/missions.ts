@@ -632,6 +632,35 @@ export function fetchValidationRun(runId: string, projectId?: string): Promise<M
   return api(withProjectId(`/missions/validation-runs/${encodeURIComponent(runId)}`, projectId));
 }
 
+export type MissionBlockerSource = "feature-stop" | "lineage-stop" | "unspecified";
+export interface MissionBlockerDescriptor { featureId: string; reason: string; source: MissionBlockerSource; }
+
+/** Normalize canonical diagnostics and the frozen legacy resume-conflict payload into one render shape. */
+export function normalizeMissionBlockers(input: unknown): MissionBlockerDescriptor[] {
+  if (!Array.isArray(input)) return [];
+  const descriptors = input.flatMap((entry): MissionBlockerDescriptor[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const value = entry as Record<string, unknown>;
+    if (typeof value.featureId === "string" && typeof value.reason === "string" && (value.source === "feature-stop" || value.source === "lineage-stop" || value.source === "unspecified")) return [{ featureId: value.featureId, reason: value.reason, source: value.source }];
+    if (typeof value.id === "string" && typeof value.reason === "string") return [{ featureId: value.id, reason: value.reason, source: "unspecified" }];
+    return [];
+  });
+  const seen = new Set<string>();
+  return descriptors.filter((descriptor) => {
+    const key = `${descriptor.featureId}\u0000${descriptor.reason}`;
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  }).sort((a, b) => a.featureId.localeCompare(b.featureId) || a.source.localeCompare(b.source) || a.reason.localeCompare(b.reason));
+}
+
+export function fetchMissionBlockedDiagnostics(missionId: string, projectId?: string): Promise<{ missionId: string; status: MissionStatus; recomputedStatus: MissionStatus; clearable: boolean; resumable: boolean; blockers: MissionBlockerDescriptor[] }> {
+  return api(withProjectId(`/missions/${encodeURIComponent(missionId)}/blocked-diagnostics`, projectId));
+}
+
+export function clearMissionBlockedStatus(missionId: string, options: { reason?: string } = {}, projectId?: string): Promise<{ mission: Mission; blockers: MissionBlockerDescriptor[] }> {
+  return api(withProjectId(`/missions/${encodeURIComponent(missionId)}/clear-blocked`, projectId), { method: "POST", body: JSON.stringify(options.reason ? { reason: options.reason } : {}) });
+}
+
 /** Pause a mission (sets status to "blocked", in-flight tasks continue) */
 export function pauseMission(missionId: string, projectId?: string): Promise<Mission> {
   return api<Mission>(withProjectId(`/missions/${encodeURIComponent(missionId)}/pause`, projectId), {

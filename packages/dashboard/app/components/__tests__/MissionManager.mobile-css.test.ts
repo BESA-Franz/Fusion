@@ -252,3 +252,11 @@ describe("Mission view overscroll containment", () => {
     expect(eventsRule).toContain("-webkit-overflow-scrolling: touch;");
   });
 });
+
+describe("MissionManager blocked repair mobile styles", () => {
+  it("keeps the blocked diagnostics usable in stacked layout", () => {
+    const css = loadAllAppCss();
+    expect(css).toContain(".mission-manager__body--stacked .mission-blocked-repair");
+    expect(css).toContain("inline-size: 100%;");
+  });
+});

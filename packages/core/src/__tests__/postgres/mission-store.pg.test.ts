@@ -28,6 +28,8 @@ import {
 import * as schema from "../../postgres/schema/index.js";
 import {
   AsyncMissionStore,
+  MissionBlockedClearConflictError,
+  MissionResumeConflictError,
   createMission as createMissionRow,
   createMilestone as createMilestoneRow,
   deleteMission as deleteMissionRow,
@@ -1050,6 +1052,75 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
     const stops = await h.layer().db.select().from(schema.project.missionLineageStops)
       .where(sql`${schema.project.missionLineageStops.rootFeatureId} = ${root.id}`);
     expect(stops).toMatchObject([{ reason: "operator-intervention", origin: "task-archive" }]);
+  });
+
+  it("clears only a stale blocked mission badge with one attributed audit event", async () => {
+    const m = missions();
+    const mission = await m.createMission({ title: "Clear stale blocked badge" });
+    await m.updateMission(mission.id, { status: "blocked" });
+    const before = (await m.getMissionEvents(mission.id, { limit: 20 })).events.length;
+    const cleared = await m.clearMissionBlockedStatus(mission.id, { actor: { type: "operator", id: "operator", source: "dashboard" }, reason: "resolved" });
+    expect(cleared.mission.status).toBe("planning");
+    expect(cleared.blockers).toEqual([]);
+    const events = (await m.getMissionEvents(mission.id, { limit: 20 })).events;
+    expect(events).toHaveLength(before + 1);
+    expect(events[0]).toMatchObject({ eventType: "mission_status_changed", metadata: expect.objectContaining({ from: "blocked", to: "planning", repairAction: "clear-blocked", reason: "resolved", actor: { type: "operator", id: "operator", source: "dashboard" } }) });
+    await expect(m.clearMissionBlockedStatus(mission.id, { actor: { type: "operator", id: "operator", source: "dashboard" } })).rejects.toBeInstanceOf(MissionBlockedClearConflictError);
+  });
+
+  /*
+  FNXC:MissionBlockedRepair 2026-08-11-03:24:
+  Clearing a stale mission badge is deliberately non-destructive. Exercise the persisted
+  feature-stop and lineage-stop fixture so this transaction cannot accidentally launder the
+  records that still make Resume unsafe, while the legacy conflict wire remains duplicated.
+  */
+  it("clears a blocked badge without laundering persisted stop records", async () => {
+    const m = missions();
+    const mission = await m.createMission({ title: "Persisted blocked repair" });
+    const milestone = await m.addMilestone(mission.id, { title: "MS" });
+    const slice = await m.addSlice(milestone.id, { title: "SL" });
+    const root = await m.addFeature(slice.id, { title: "Budget-exhausted root" });
+    const stoppedAt = "2026-08-11T03:24:00.000Z";
+
+    await h.layer().db.update(schema.project.missionFeatures)
+      .set({
+        loopState: "blocked",
+        implementationStopReason: "budget-exhausted",
+        implementationStoppedAt: stoppedAt,
+        implementationStopOrigin: "validator-budget",
+      })
+      .where(sql`${schema.project.missionFeatures.id} = ${root.id}`);
+    await h.layer().db.insert(schema.project.missionLineageStops).values({
+      projectId: "mission-store-pg-test",
+      rootFeatureId: root.id,
+      missionId: mission.id,
+      reason: "budget-exhausted",
+      stoppedAt,
+      origin: "validator-budget",
+    });
+    await m.updateMission(mission.id, { status: "blocked" });
+
+    const featureBefore = await m.getFeature(root.id);
+    const stopsBefore = await h.layer().db.select().from(schema.project.missionLineageStops)
+      .where(sql`${schema.project.missionLineageStops.rootFeatureId} = ${root.id}`);
+    const cleared = await m.clearMissionBlockedStatus(mission.id, {
+      actor: { type: "operator", id: "operator", source: "dashboard" },
+      reason: "badge is stale",
+    });
+
+    expect(cleared.mission.status).toBe(await m.computeMissionStatus(mission.id));
+    expect(cleared.blockers).toEqual([
+      { featureId: root.id, reason: "budget-exhausted", source: "feature-stop" },
+    ]);
+    expect(await m.getFeature(root.id)).toEqual(featureBefore);
+    expect(await h.layer().db.select().from(schema.project.missionLineageStops)
+      .where(sql`${schema.project.missionLineageStops.rootFeatureId} = ${root.id}`)).toEqual(stopsBefore);
+    await expect(m.resumeMission(mission.id)).rejects.toMatchObject({
+      blockers: [
+        { id: root.id, reason: "budget-exhausted" },
+        { id: root.id, reason: "budget-exhausted" },
+      ],
+    });
   });
 
   it("records generated-feature deletion as a durable root stop and resumes only explicitly", async () => {

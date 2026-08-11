@@ -2992,3 +2992,9 @@ Generated fix features can carry the same stale blocked state as ordinary rows. 
 [data-theme="light"] .mission-manager__header {
   background: color-mix(in srgb, var(--surface) 80%, transparent);
 }
+
+/* FNXC:MissionBlockedRepair 2026-08-11-02:56: Keep stale-badge diagnostics adjacent to existing run controls without creating a parallel button system. */
+.mission-blocked-repair { display: grid; gap: var(--space-2); color: var(--text-muted); }
+.mission-blocked-repair ul { margin: 0; padding-inline-start: var(--space-4); }
+.mission-blocked-repair .input { max-inline-size: 100%; }
+@media (max-width: 768px) { .mission-manager__body--stacked .mission-blocked-repair { inline-size: 100%; } }

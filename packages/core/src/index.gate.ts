@@ -1641,6 +1641,9 @@ export type {
   MissionTransitionActorType,
   MissionTransitionActor,
   MissionUpdateOptions,
+  MissionBlockerSource,
+  MissionBlockerDescriptor,
+  MissionBlockedDiagnostics,
   AutopilotStatus,
   Mission,
   MissionBranchStrategy,
@@ -1689,6 +1692,7 @@ export type {
   MilestoneValidationUpdatedPayload,
 } from "./missions/mission-types.js";
 export { MissionStore } from "./missions/mission-store.js";
+export { MissionBlockedClearConflictError } from "./async-stores/async-mission-store.js";
 export type { MissionStoreEvents, MissionSummary } from "./missions/mission-store.js";
 export { ACTIVE_GOAL_LIMIT, ActiveGoalLimitExceededError } from "./goals/goal-types.js";
 export type { Goal, GoalCreateInput, GoalListFilter, GoalStatus, GoalUpdateInput } from "./goals/goal-types.js";

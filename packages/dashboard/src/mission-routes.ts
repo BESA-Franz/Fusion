@@ -20,6 +20,7 @@ import {
   resolvePlanningSettingsModel,
   THINKING_LEVELS,
   MissionResumeConflictError,
+  MissionBlockedClearConflictError,
   TerminalTaskReconciliationError,
   featureValidationRepairEligibility,
   RepairGroundTruthStaleError,
@@ -476,6 +477,8 @@ export function createMissionRouter(
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
+  // These PostgreSQL-only repair operations intentionally have no legacy synchronous-store twin.
+  const asyncMissionStore = missionStore as AsyncMissionStore;
 
   router.use(async (req, _res, next) => {
     try {
@@ -3089,6 +3092,52 @@ export function createMissionRouter(
   );
 
   // ── Mission Pause/Stop/Resume Endpoints ─────────────────────────────────────
+
+  /**
+   * GET /api/missions/:missionId/blocked-diagnostics
+   * Returns the canonical blocker descriptors without changing mission state.
+   */
+  router.get(
+    "/:missionId/blocked-diagnostics",
+    catchTypedHandler(async (req, res) => {
+      const { missionId } = req.params;
+      if (!validateMissionId(missionId)) throw badRequest("Invalid mission ID format");
+      try {
+        res.json(await asyncMissionStore.getMissionBlockedDiagnostics(missionId));
+      } catch (error) {
+        if (error instanceof Error && error.message === `Mission ${missionId} not found`) throw notFound("Mission not found");
+        throw error;
+      }
+    }),
+  );
+
+  /**
+   * FNXC:MissionBlockedRepair 2026-08-11-02:56:
+   * This clear route repairs a stale badge only. Unlike resume it deliberately does not watch the
+   * mission, recover stale work, unpause tasks, or alter lineage stops.
+   */
+  router.post(
+    "/:missionId/clear-blocked",
+    catchTypedHandler(async (req, res) => {
+      const { missionId } = req.params;
+      if (!validateMissionId(missionId)) throw badRequest("Invalid mission ID format");
+      const reason = validateDescription(req.body?.reason);
+      // FNXC:MissionBlockedRepair 2026-08-11-03:15:
+      // Check existence before the mutation so an unknown id is consistently a 404 even when a
+      // store implementation cannot distinguish a missing row from another clear precondition.
+      if (!await missionStore.getMission(missionId)) throw notFound("Mission not found");
+      try {
+        const result = await asyncMissionStore.clearMissionBlockedStatus(missionId, { actor: DASHBOARD_MISSION_ACTOR, reason });
+        res.json(result);
+      } catch (error) {
+        if (error instanceof MissionBlockedClearConflictError) {
+          throw conflict("Mission is not blocked", { code: "MISSION_NOT_BLOCKED", status: error.status });
+        }
+        if (error instanceof Error && error.message === `Mission ${missionId} not found`) throw notFound("Mission not found");
+        throw error;
+      }
+    }),
+  );
 
   /**
    * POST /api/missions/:missionId/pause

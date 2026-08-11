@@ -150,6 +150,14 @@ Mission detail refreshes now preserve expanded milestone/slice state and keep th
 
 Mission, milestone, slice, and feature read-only text surfaces in Mission Manager render Markdown (GFM) for descriptions, verification, and acceptance criteria; edit forms continue to use raw plain-text `<textarea>` inputs.
 
+### Clearing a stale mission blocked badge
+
+Use **Clear blocked status** when the mission-level `blocked` badge is stale. It recomputes and records the mission status with an attributed audit event, but does **not** resume the mission, unpause linked tasks, re-arm autopilot, or clear lineage stops. **Resume** remains the separate operation that reactivates execution.
+
+`MissionBlockerDescriptor` is the canonical diagnosis shape: `{ featureId, reason, source }`, where `source` is `feature-stop` or `lineage-stop`. The diagnostics and clear responses use this deduplicated shape. For backward compatibility, a `POST /api/missions/:missionId/resume` `409 MISSION_RESUME_CONFLICT` continues to return its legacy undeduplicated `{ id, reason }[]` blockers.
+
+Feature-validation repair controls repair feature state only; they intentionally do not modify a mission-level status badge.
+
 ### CLI
 
 ```bash
@@ -179,6 +187,8 @@ Fusion surfaces the persisted mission↔goal linkage through REST, CLI, and pi-e
 | `PUT /api/missions/:missionId/goals` | Replace the full linked-goal set with body `{ goalIds: string[] }`. Duplicate ids are deduplicated before reconciliation. |
 | `POST /api/missions/:missionId/goals/:goalId` | Idempotently link one goal to a mission. |
 | `DELETE /api/missions/:missionId/goals/:goalId` | Idempotently unlink one goal from a mission. |
+| `GET /api/missions/:missionId/blocked-diagnostics` | Return the read-only blocked-badge diagnosis: mission status, recomputed status, clearability, resumability, and canonical blockers. |
+| `POST /api/missions/:missionId/clear-blocked` | Clear only a stale mission `blocked` badge. Optional `{ reason }` is bounded and audit-attributed; it returns `{ mission, blockers }`. |
 
 The mission detail payload keeps `linkedGoals` separate from the milestone tree so read paths can surface strategy context without traversing slices/features. All goal-link write endpoints preserve the same invariant: missing goals on link write paths (`POST /api/missions`, `PATCH /api/missions/:missionId`, `PUT /api/missions/:missionId/goals`, `POST /api/missions/:missionId/goals/:goalId`) reject with `400 { code: "GOAL_NOT_FOUND" }`, archived goals reject with `400 { code: "GOAL_ARCHIVED" }`, duplicate/relinked ids are no-ops, and the `DELETE /api/missions/:missionId/goals/:goalId` unlink path treats unknown goals as a `404` while remaining allowed even after a goal is archived.
 
@@ -629,7 +639,7 @@ A feature transitions to `blocked` when:
 - `MilestoneValidationRollup.state` reflects `blocked` assertions
 - The feature remains in `blocked` state until operator intervention
 - Deleting a generated fix, or archiving/deleting its generated task, records a durable root-scoped `operator-intervention` stop in the same transaction as unlink/removal. Recovery, duplicate delivery, unarchive, task/root recreation, and relinking cannot mint a sibling. The stop remains even if a hierarchy cascade removes root and lineage rows.
-- `POST /api/missions/:missionId/resume` is the sole resume seam. It atomically clears only operator-intervention stops, preserves attempt counts, moves extant roots to `needs_fix`, and activates the mission. If any root is budget-exhausted or legacy-unknown, it returns a typed `MISSION_RESUME_CONFLICT` with canonical root IDs/reason categories and changes no root, tombstone, counter, or mission state.
+- `POST /api/missions/:missionId/resume` is the sole resume seam. It atomically clears only operator-intervention stops, preserves attempt counts, moves extant roots to `needs_fix`, and activates the mission. If any root is budget-exhausted or legacy-unknown, it returns a typed `MISSION_RESUME_CONFLICT` with its legacy `{ id, reason }[]` blocker entries and changes no root, tombstone, counter, or mission state.
 
 On engine restart, `recoverActiveMissions()` re-enqueues features in `validating` or `needs_fix` states, ensuring no validation work is lost. It also re-triggers `implementing` features whose linked task is already `done`/`archived` and whose assertion validation has not passed yet. When the stale-run reaper has already converted an abandoned validator run into `needs_fix`, `processTaskOutcome()` promotes the feature back through `implementing` and re-validates instead of skipping it. The same recovery path is replayed during periodic self-heal maintenance, so historically stranded `implementing` features can self-heal without requiring an engine restart.
 

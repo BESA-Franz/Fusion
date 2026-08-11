@@ -18,6 +18,68 @@ import { redactSecrets } from "../secrets/redact-secrets.js";
 export const MISSION_STATUSES = ["planning", "active", "blocked", "complete", "archived"] as const;
 export type MissionStatus = (typeof MISSION_STATUSES)[number];
 
+/** The persisted source that prevents a mission from resuming automatically. */
+export type MissionBlockerSource = "feature-stop" | "lineage-stop" | "unspecified";
+
+/** Canonical, display-safe explanation for a mission-level blocked status. */
+export interface MissionBlockerDescriptor {
+  featureId: string;
+  reason: string;
+  source: MissionBlockerSource;
+}
+
+export interface MissionBlockedDiagnostics {
+  missionId: string;
+  status: MissionStatus;
+  recomputedStatus: MissionStatus;
+  clearable: boolean;
+  resumable: boolean;
+  blockers: MissionBlockerDescriptor[];
+}
+
+/**
+ * FNXC:MissionBlockedRepair 2026-08-11-02:56:
+ * Diagnostics and the resume gate share this pure classifier so their answer to "why blocked"
+ * cannot drift. New surfaces consume its deduped descriptors, while resume retains its historical
+ * undeduplicated { id, reason } payload because that 409 response is an existing wire contract.
+ */
+export function classifyMissionResumeBlockers(input: {
+  rootFeatures: ReadonlyArray<Pick<MissionFeature, "id" | "implementationStopReason">>;
+  lineageStops: ReadonlyArray<{ rootFeatureId: string; reason: string }>;
+}): {
+  blockers: MissionBlockerDescriptor[];
+  resumeConflictBlockers: Array<{ id: string; reason: string }>;
+  clearableFeatureIds: string[];
+} {
+  const featureStops = input.rootFeatures
+    .filter((root) => root.implementationStopReason !== "operator-intervention")
+    .map((root) => ({ id: root.id, reason: root.implementationStopReason ?? "legacy-unknown-stop" }));
+  const lineageStops = input.lineageStops
+    .filter((stop) => stop.reason !== "operator-intervention")
+    .map((stop) => ({ id: stop.rootFeatureId, reason: stop.reason }));
+  // Preserve the legacy append-then-stable-sort algorithm exactly, including duplicates.
+  const resumeConflictBlockers = [...featureStops, ...lineageStops].sort((a, b) => a.id.localeCompare(b.id));
+  const descriptors = [
+    ...featureStops.map((stop) => ({ featureId: stop.id, reason: stop.reason, source: "feature-stop" as const })),
+    ...lineageStops.map((stop) => ({ featureId: stop.id, reason: stop.reason, source: "lineage-stop" as const })),
+  ];
+  const seen = new Set<string>();
+  const blockers = descriptors.filter((descriptor) => {
+    const key = `${descriptor.featureId}\u0000${descriptor.reason}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((a, b) => a.featureId.localeCompare(b.featureId) || a.source.localeCompare(b.source) || a.reason.localeCompare(b.reason));
+  return {
+    blockers,
+    resumeConflictBlockers,
+    clearableFeatureIds: [...new Set([
+      ...input.rootFeatures.filter((root) => root.implementationStopReason === "operator-intervention").map((root) => root.id),
+      ...input.rootFeatures.filter((root) => input.lineageStops.some((stop) => stop.rootFeatureId === root.id)).map((root) => root.id),
+    ])],
+  };
+}
+
 /** Status values for a Milestone within a mission */
 export const MILESTONE_STATUSES = ["planning", "active", "blocked", "complete"] as const;
 export type MilestoneStatus = (typeof MILESTONE_STATUSES)[number];
