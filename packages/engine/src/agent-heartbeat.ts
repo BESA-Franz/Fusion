@@ -2396,7 +2396,7 @@ export class HeartbeatMonitor {
         successful skips; runtime errors remain failed runs so completeRun owns shared recovery.
         */
         if (agent.metadata?.builtInMemoryAgent === true) {
-          const emit = async (type: "memory:consolidation-completed" | "memory:consolidation-skipped" | "memory:consolidation-failed", metadata: Record<string, unknown>) => {
+          const emit = async (type: "memory:consolidation-completed" | "memory:consolidation-skipped" | "memory:consolidation-failed" | "memory:semantics-inferred" | "memory:semantics-skipped", metadata: Record<string, unknown>) => {
             try { await audit.database({ type, target: agentId, metadata }); } catch { /* audit is best effort */ }
           };
           /* FNXC:MemoryAgent 2026-08-11-10:17: Procedure seeding preserves operator edits and is best-effort, so a filesystem failure cannot prevent deterministic upkeep. */
@@ -2419,10 +2419,14 @@ export class HeartbeatMonitor {
           try {
             const outcome = await new MemoryConsolidationService(resolution.ports).runConsolidationTick({ agentId, projectId: resolution.projectId });
             if (outcome.skipped) await emit("memory:consolidation-skipped", { agentId, reason: outcome.skipped });
-            else if (outcome.changed) {
-              // `changed` drives emission but is not part of the published audit metadata contract.
-              const { changed: _changed, skipped: _skipped, ...metadata } = outcome;
-              await emit("memory:consolidation-completed", { agentId, ...metadata });
+            else {
+              if (outcome.semanticsWritten > 0) await emit("memory:semantics-inferred", { agentId, edgesWritten: outcome.semanticsWritten, edgesDeduped: outcome.semanticsDeduped, edgesDroppedUnresolved: outcome.semanticsDroppedUnresolved });
+              if (outcome.semanticsSkipped) await emit("memory:semantics-skipped", { agentId, reason: outcome.semanticsSkipped });
+              if (outcome.changed) {
+                // `changed` drives emission but is not part of the published audit metadata contract.
+                const { changed: _changed, skipped: _skipped, ...metadata } = outcome;
+                await emit("memory:consolidation-completed", { agentId, ...metadata });
+              }
             }
             await this.completeRun(agentId, run.id, { status: "completed", resultJson: { reason: "memory_consolidation", ...outcome }, skipStateTransition: true });
           } catch (error) {

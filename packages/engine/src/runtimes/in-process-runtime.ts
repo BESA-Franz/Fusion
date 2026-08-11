@@ -1318,6 +1318,17 @@ export class InProcessRuntime
       }
 
       // 5c. Initialize AgentReflectionService (requires agentStore and reflectionStore)
+      let recallCaptureWriter: import("@fusion/core").RecallCaptureWriter | undefined;
+      try {
+        const layer = this.taskStore.getAsyncLayer?.();
+        if (layer) {
+          const { createRecallCaptureWriter } = await import("@fusion/core");
+          recallCaptureWriter = createRecallCaptureWriter({ layer, logger: runtimeLog });
+        }
+      } catch (captureInitError) {
+        // FNXC:MemoryRecallCapture 2026-08-11-10:55: optional recall initialization cannot block runtime startup.
+        runtimeLog.warn("Recall capture initialization failed; automatic capture remains disabled:", captureInitError instanceof Error ? captureInitError.message : captureInitError);
+      }
       let reflectionService: import("../agents/agent-reflection.js").AgentReflectionService | undefined;
       if (agentStoreForReflection && reflectionStoreForService) {
         try {
@@ -1327,6 +1338,7 @@ export class InProcessRuntime
             taskStore: this.taskStore,
             reflectionStore: reflectionStoreForService,
             rootDir: this.config.workingDirectory,
+            ...(recallCaptureWriter ? { captureWriter: recallCaptureWriter } : {}),
           });
           runtimeLog.log("AgentReflectionService initialized");
         } catch (reflServiceErr) {
