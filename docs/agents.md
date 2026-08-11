@@ -1730,6 +1730,16 @@ Per-agent overrides via `runtimeConfig`:
 - **Budgets**: per-agent token budget tracking; `HeartbeatMonitor.executeHeartbeat()` skips when `isOverBudget` or `isOverThreshold` (timer triggers). Hard caps pause the agent.
 - **Performance ratings**: 1–5 scale with trend analysis, injected into system prompts.
 
+## Memory Keeper (FN-8932)
+
+Each project provisions a durable **Memory Keeper** custom agent for deterministic, hourly memory upkeep. It is heartbeat-enabled and has task auto-claim disabled, so it cannot claim board work or make product decisions. Provisioning identifies the owner by its provenance marker, not its display name: if an operator already owns `Memory Keeper`, Fusion creates `Memory Keeper (built-in)` instead; if both names are occupied, startup continues without a memory agent rather than renaming/adopting the operator agent or failing initialization.
+
+When enabled, a heartbeat refreshes the knowledge graph incrementally, appends deterministic FNXC rationale decisions through recall deduplication, then merges rationale/file node identifiers into each resulting recall record. Cross-references only grow: the per-record PostgreSQL advisory lock reads, unions, and writes in one transaction, and equal unions perform no update. Pruning is intentionally out of scope. A fingerprint-stable graph, duplicate recall results, and equal cross-reference unions yield a no-write tick; an in-process `(agentId, projectId)` guard skips re-entry. The guard is defense-in-depth for manual callers and does not fence another process or CLI graph build.
+
+Graph files are atomically replaced **per file**, not as an atomic three-file set. Concurrent builders can leave a transient mismatched set, but the manifest is written last and strict consistency validation reports `inconsistent-artifact` and triggers a full rebuild on the next load. This accepted residual risk can create temporary committable-tree artifact noise; `graphRecoveryReason` makes repeated recovery visible. The adapter alone imports graph filesystem/configuration APIs; the tick and material transformer may use only graph types and pure ID helpers so they remain fixture-testable. Missing data-layer/project/root-directory or invalid graph-directory environments are successful skips, while runtime failures use the existing shared heartbeat recovery budget.
+
+The workflow-native `memoryConsolidationEnabled` setting defaults to `true` and is resolved from the project default workflow for no-task heartbeats. Disabling it stops the tick without deleting the agent or memory. The tick makes no LLM calls.
+
 ## Workflow role principals
 
 Permanent agents carry one or more normalized role tags: `triage`, `executor`, `reviewer`, `merger`, `scheduler`, `engineer`, and `custom`. Upgrades preserve legacy singular roles, and every project receives four distinct heartbeat-disabled built-ins for planning, execution, review, and merge. Heartbeat enablement and `maxConcurrentRuns` are independent from `runtimeConfig.maxWorkflowSessions`.

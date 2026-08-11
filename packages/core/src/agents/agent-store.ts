@@ -110,6 +110,12 @@ import {
   BUILTIN_WORKFLOW_ROLE_AGENT_DEFAULT_LIST,
   type BuiltinWorkflowRole,
 } from "./workflow-role-agent-defaults.js";
+import {
+  BUILTIN_MEMORY_AGENT_DEFAULT,
+  BUILTIN_MEMORY_AGENT_FALLBACK_NAME,
+  BUILTIN_MEMORY_AGENT_NAME,
+  BUILTIN_MEMORY_AGENT_PROVENANCE_KEY,
+} from "./memory-agent-defaults.js";
 
 const agentStoreLog = createLogger("agent-store");
 
@@ -558,6 +564,12 @@ export class AgentStore extends EventEmitter {
     still invoke them independently of the heartbeat scheduler.
     */
     await this.provisionBuiltinWorkflowRoleAgents();
+    // Memory upkeep is optional; its collision-safe provisioning must never prevent startup.
+    try {
+      await this.provisionBuiltinMemoryAgent();
+    } catch (error) {
+      agentStoreLog.warn(`Unable to provision built-in memory agent: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**
@@ -2137,6 +2149,79 @@ export class AgentStore extends EventEmitter {
     */
     await Promise.all(agents.map((agent) => this.materializeBuiltinWorkflowRoleBundle(agent)));
     return agents;
+  }
+
+  /*
+  FNXC:MemoryAgent 2026-08-11-09:41:
+  Memory Keeper is custom because it is not a workflow-stage principal. Unlike the four routed
+  owners its heartbeat is enabled, while auto-claim remains off because it only maintains memory.
+  This runs during init, where createAgent name collisions would abort startup; preflight probes,
+  a fallback name, a null degraded result, and the init-side catch keep an operator's same-named
+  agent untouched and the project runnable.
+  */
+  async provisionBuiltinMemoryAgent(): Promise<Agent | null> {
+    const provision = async (executor?: QueryHandle): Promise<Agent | null> => {
+      const existing = await this.listAgents({ includeEphemeral: true }, executor);
+      const owners = existing
+        .filter((agent) => agent.metadata?.[BUILTIN_MEMORY_AGENT_PROVENANCE_KEY] === true)
+        .sort(compareBuiltinWorkflowOwnerAge);
+      let owner = owners[0];
+      for (const loser of owners.slice(1)) {
+        const { [BUILTIN_MEMORY_AGENT_PROVENANCE_KEY]: _builtInMemoryAgent, ...metadata } = loser.metadata ?? {};
+        await this.writeAgent({ ...loser, metadata, updatedAt: new Date().toISOString() }, executor);
+      }
+      if (!owner) {
+        /*
+        FNXC:MemoryAgent 2026-08-11-10:17:
+        Probe through the provisioning transaction executor. Opening a second pooled query while the
+        startup advisory lock is held can exhaust a small pool behind concurrent startup callers.
+        */
+        const canonicalTaken = (await this.findAgentByName(BUILTIN_MEMORY_AGENT_NAME, executor)) !== null;
+        const name = canonicalTaken ? BUILTIN_MEMORY_AGENT_FALLBACK_NAME : BUILTIN_MEMORY_AGENT_NAME;
+        if (canonicalTaken && (await this.findAgentByName(BUILTIN_MEMORY_AGENT_FALLBACK_NAME, executor)) !== null) {
+          agentStoreLog.warn(`Built-in memory agent not provisioned: both "${BUILTIN_MEMORY_AGENT_NAME}" and "${BUILTIN_MEMORY_AGENT_FALLBACK_NAME}" are in use`);
+          return null;
+        }
+        try {
+          owner = await this.createAgent({
+            name,
+            roles: [...BUILTIN_MEMORY_AGENT_DEFAULT.roles],
+            title: BUILTIN_MEMORY_AGENT_DEFAULT.title,
+            metadata: { [BUILTIN_MEMORY_AGENT_PROVENANCE_KEY]: true },
+            runtimeConfig: { enabled: true, autoClaimRelevantTasks: false, heartbeatIntervalMs: 3_600_000 },
+            instructionsText: BUILTIN_MEMORY_AGENT_DEFAULT.instructionsText,
+            soul: BUILTIN_MEMORY_AGENT_DEFAULT.soul,
+            bundleConfig: { ...BUILTIN_MEMORY_AGENT_DEFAULT.bundleConfig, files: [...BUILTIN_MEMORY_AGENT_DEFAULT.bundleConfig.files] },
+          }, executor);
+        } catch (error) {
+          if (error instanceof Error && error.message.includes("already exists")) {
+            agentStoreLog.warn(`Built-in memory agent not provisioned because its candidate name was claimed during creation`);
+            return null;
+          }
+          throw error;
+        }
+        return owner;
+      }
+      const metadata = { ...(owner.metadata ?? {}), [BUILTIN_MEMORY_AGENT_PROVENANCE_KEY]: true };
+      const runtimeConfig = { ...(owner.runtimeConfig ?? {}), enabled: true, autoClaimRelevantTasks: false, heartbeatIntervalMs: 3_600_000 };
+      const updates: Partial<Agent> = {
+        roles: [...BUILTIN_MEMORY_AGENT_DEFAULT.roles],
+        role: "custom",
+        title: owner.title ?? BUILTIN_MEMORY_AGENT_DEFAULT.title,
+        metadata,
+        runtimeConfig,
+        instructionsText: owner.instructionsText?.trim() ? owner.instructionsText : BUILTIN_MEMORY_AGENT_DEFAULT.instructionsText,
+        soul: owner.soul?.trim() ? owner.soul : BUILTIN_MEMORY_AGENT_DEFAULT.soul,
+      };
+      owner = { ...owner, ...updates, updatedAt: new Date().toISOString() };
+      await this.writeAgent(owner, executor);
+      return owner;
+    };
+    if (!this.asyncLayer) return provision();
+    return this.asyncLayer.transactionImmediate(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${this.backendProjectId}), hashtext('builtin-memory-agent-provisioning'))`);
+      return provision(tx);
+    });
   }
 
   /**

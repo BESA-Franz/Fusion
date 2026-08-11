@@ -12,6 +12,9 @@ outside that window, so the database exact-hash constraint remains a required ba
 export function normalizeRecallContent(content: string): string {
   return content.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?,;:]+$/g, "");
 }
+/** Per-record cross-reference locks avoid table-wide serialization and never contend with kind dedup locks. */
+export const recallGraphNodeIdsLockKey = (projectId: string, recordId: string): string => `fusion:memory-recall-xref:${projectId}:${recordId}`;
+
 export function recallContentHash(kind: RecallKind, content: string): string {
   return createHash("sha256").update(`${kind}\0${normalizeRecallContent(content)}`).digest("hex");
 }

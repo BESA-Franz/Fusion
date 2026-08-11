@@ -35,6 +35,7 @@ import {
   formatAssignedTasksWakeDeltaSection,
   resolveEffectiveSettingsById,
   resolveEffectivePlannerHeartbeatPatrolEnabled,
+  resolveEffectiveMemoryConsolidationEnabled,
   resolveReboundTarget,
   resolveWorkflowIrForTask,
   columnsWithFlag,
@@ -51,6 +52,7 @@ import {
   resolveAgentInstructionsWithRatings,
   buildPluginPromptSection,
   resolveAgentHeartbeatProcedure,
+  ensureDefaultHeartbeatProcedureFile,
 } from "./agents/agent-instructions.js";
 import { resolveHeartbeatPromptTemplate, resolveHeartbeatScopeDisciplineMode, selectHeartbeatProcedure } from "./agents/heartbeat-procedure-resolver.js";
 import { buildPromptLayers, collapsePromptLayers } from "./execution/prompt-layers.js";
@@ -105,6 +107,7 @@ import { trimPromptMd, trimTaskDescription, trimTriggeringComments } from "./age
 import { detectDeicticReference, extractAntecedentCandidates, renderAmbiguityPromptBlock, scoreReferentConfidence } from "./triage-domain/room-ambiguity.js";
 import { countActiveAgentMembers, decideRoomCoordination, detectTaskFilingIntent, renderRoomCoordinationPromptBlock } from "./triage-domain/room-coordination.js";
 import { evaluateParkedAgentTaskLink, isParkedTaskColumn, type AgentTaskLinkExecutionProof } from "./agents/task-agent-sync.js";
+import { MemoryConsolidationError, MemoryConsolidationService, resolveMemoryConsolidationPorts } from "./memory/index.js";
 
 /*
 FNXC:WorkflowLifecycleColumns 2026-07-28-09:25 (U11 conversion):
@@ -161,6 +164,14 @@ async function resolveNoTaskHeartbeatPatrolEnabled(
     heartbeatLog.warn(`Failed to resolve no-task heartbeat patrol setting: ${error instanceof Error ? error.message : String(error)} — defaulting enabled`);
     return true;
   }
+}
+
+async function resolveMemoryConsolidationEnabledForHeartbeat(taskStore: TaskStore, settings: Settings | undefined): Promise<boolean> {
+  try {
+    const projectId = typeof taskStore.getWorkflowSettingsProjectId === "function" ? taskStore.getWorkflowSettingsProjectId() : "default";
+    const effective = await resolveEffectiveSettingsById(taskStore, settings?.defaultWorkflowId || "builtin:coding", projectId);
+    return resolveEffectiveMemoryConsolidationEnabled(effective);
+  } catch { return resolveEffectiveMemoryConsolidationEnabled(undefined); }
 }
 
 interface SelfImproveServiceLike {
@@ -2370,6 +2381,50 @@ export class HeartbeatMonitor {
             });
             return (await this.store.getRunDetail(agentId, run.id))!;
           }
+        }
+
+        /*
+        FNXC:MemoryAgent 2026-08-11-09:41:
+        Memory Keeper runs before task/session assembly so 4a consumes no model quota. Provenance,
+        not its name, identifies fallback-named owners. Disabled or unavailable environments are
+        successful skips; runtime errors remain failed runs so completeRun owns shared recovery.
+        */
+        if (agent.metadata?.builtInMemoryAgent === true) {
+          const emit = async (type: "memory:consolidation-completed" | "memory:consolidation-skipped" | "memory:consolidation-failed", metadata: Record<string, unknown>) => {
+            try { await audit.database({ type, target: agentId, metadata }); } catch { /* audit is best effort */ }
+          };
+          /* FNXC:MemoryAgent 2026-08-11-10:17: Procedure seeding preserves operator edits and is best-effort, so a filesystem failure cannot prevent deterministic upkeep. */
+          try {
+            await ensureDefaultHeartbeatProcedureFile(rootDir, agent.heartbeatProcedurePath ?? `.fusion/agents/${agentId}/HEARTBEAT.md`, "# Memory Keeper\n\nRun deterministic graph refresh, recall consolidation, and graph-reference merging. Merge graph references without dropping existing ids. Do not use an LLM. Unchanged inputs write nothing.");
+          } catch (error) {
+            heartbeatLog.warn(`Unable to seed Memory Keeper heartbeat procedure: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          if (!await resolveMemoryConsolidationEnabledForHeartbeat(taskStore, heartbeatModelSettings)) {
+            await emit("memory:consolidation-skipped", { agentId, reason: "disabled" });
+            await this.completeRun(agentId, run.id, { status: "completed", resultJson: { reason: "memory_consolidation_disabled" }, skipStateTransition: true });
+            return (await this.store.getRunDetail(agentId, run.id))!;
+          }
+          const resolution = await resolveMemoryConsolidationPorts({ taskStore, rootDir, agentId, settings: heartbeatModelSettings });
+          if (resolution.status === "unavailable") {
+            await emit("memory:consolidation-skipped", { agentId, reason: "unavailable", unavailableReason: resolution.reason });
+            await this.completeRun(agentId, run.id, { status: "completed", resultJson: { reason: "memory_consolidation_unavailable", unavailableReason: resolution.reason }, skipStateTransition: true });
+            return (await this.store.getRunDetail(agentId, run.id))!;
+          }
+          try {
+            const outcome = await new MemoryConsolidationService(resolution.ports).runConsolidationTick({ agentId, projectId: resolution.projectId });
+            if (outcome.skipped) await emit("memory:consolidation-skipped", { agentId, reason: outcome.skipped });
+            else if (outcome.changed) {
+              // `changed` drives emission but is not part of the published audit metadata contract.
+              const { changed: _changed, skipped: _skipped, ...metadata } = outcome;
+              await emit("memory:consolidation-completed", { agentId, ...metadata });
+            }
+            await this.completeRun(agentId, run.id, { status: "completed", resultJson: { reason: "memory_consolidation", ...outcome }, skipStateTransition: true });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            await emit("memory:consolidation-failed", { agentId, stage: error instanceof MemoryConsolidationError ? error.stage : "unknown", recoverable: isHeartbeatErrorRecoverable({ lastError: message }), priorRetryCount: readHeartbeatErrorRetryCount(agent), retryLimit: resolveErrorRecoveryLimit(heartbeatModelSettings) });
+            await this.completeRun(agentId, run.id, { status: "failed", stderrExcerpt: message, errorMessage: message });
+          }
+          return (await this.store.getRunDetail(agentId, run.id))!;
         }
 
         // Check if agent has identity (used later for no-task run decisions)

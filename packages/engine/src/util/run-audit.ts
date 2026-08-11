@@ -799,6 +799,16 @@ export type DatabaseMutationType =
   | "reflection:skipped"
   | "reflection:failed"
   | "reflection:captured"
+  /*
+   * FNXC:MemoryAgent 2026-08-11-09:41:
+   * Memory consolidation telemetry is ids/counts/outcomes only. Completed metadata forwards the
+   * closed graphRecoveryReason enum so a manifest-last inconsistent-artifact rebuild loop is
+   * diagnosable; skipped reasons and failure stages are closed enums. No memory content, paths,
+   * node ids, error class/message, prompt text, or reasoning may be recorded. No-op ticks emit no row.
+   */
+  | "memory:consolidation-completed"
+  | "memory:consolidation-skipped"
+  | "memory:consolidation-failed"
   | "task:in-review-stall-deadlock-disposed"
   | "task:in-review-stall-terminal-provider-error"
   | "task:finalize-unproven-blocked"

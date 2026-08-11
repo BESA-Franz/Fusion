@@ -682,8 +682,22 @@ export const DEFAULT_MAX_POST_REVIEW_FIXES = 10;
 export const DEFAULT_PLANNER_OVERSEER_EXECUTOR_STUCK_AFTER_MS = 2 * 60 * 60 * 1000;
 
 export const PLANNER_HEARTBEAT_PATROL_ENABLED_SETTING_ID = "plannerHeartbeatPatrolEnabled";
+/*
+FNXC:MemoryAgent 2026-08-11-09:41:
+Memory consolidation resolves through the default workflow on a no-task heartbeat, so this is
+workflow-native like patrol rather than a ProjectSettings key. knowledgeGraphDir deliberately stays
+project-scoped because FN-8921 owns the artifact location.
+*/
+export const MEMORY_CONSOLIDATION_ENABLED_SETTING_ID = "memoryConsolidationEnabled";
 
 export const BUILTIN_OVERSIGHT_SETTINGS: WorkflowSettingDefinition[] = [
+  {
+    id: MEMORY_CONSOLIDATION_ENABLED_SETTING_ID,
+    name: "Memory consolidation enabled",
+    type: "boolean",
+    default: true,
+    description: "Enable the memory agent's deterministic knowledge-graph and recall consolidation tick. Disabling stops consolidation without deleting the agent or stored memory.",
+  },
   {
     id: "plannerOversightLevel",
     name: "Planner oversight level",

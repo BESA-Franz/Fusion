@@ -297,6 +297,7 @@ export {
   DEFAULT_PLANNING_TIMEOUT_MS,
   DEFAULT_PLAN_REVIEW_REPLAN_CAP,
   PLANNER_HEARTBEAT_PATROL_ENABLED_SETTING_ID,
+  MEMORY_CONSOLIDATION_ENABLED_SETTING_ID,
   renderTriagePolicyPlaceholders,
 } from "./workflows/builtin-workflow-settings.js";
 export {
@@ -550,6 +551,7 @@ export {
   resolveOptionalReviewRevisionBudget,
   resolveEffectivePlannerOversightLevel,
   resolveEffectivePlannerHeartbeatPatrolEnabled,
+  resolveEffectiveMemoryConsolidationEnabled,
   PLAN_REVIEW_MAX_REVISIONS_SETTING_ID,
   CODE_REVIEW_MAX_REVISIONS_SETTING_ID,
   PLAN_REVIEW_REPLAN_CAP_SETTING_ID,

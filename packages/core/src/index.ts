@@ -47,6 +47,13 @@ export {
 } from "./agents/workflow-role-agent-defaults.js";
 export type { BuiltinWorkflowRole, WorkflowRoleAgentDefault } from "./agents/workflow-role-agent-defaults.js";
 export {
+  BUILTIN_MEMORY_AGENT_DEFAULT,
+  BUILTIN_MEMORY_AGENT_FALLBACK_NAME,
+  BUILTIN_MEMORY_AGENT_NAME,
+  BUILTIN_MEMORY_AGENT_PROVENANCE_KEY,
+} from "./agents/memory-agent-defaults.js";
+export type { MemoryAgentDefault } from "./agents/memory-agent-defaults.js";
+export {
   resolveEntryPointBranchAssignment,
   sanitizeBranchSegment,
   derivePerTaskBranchName,
@@ -343,6 +350,7 @@ export {
   DEFAULT_PLAN_REVIEW_REPLAN_CAP,
   DEFAULT_PLANNER_OVERSEER_EXECUTOR_STUCK_AFTER_MS,
   PLANNER_HEARTBEAT_PATROL_ENABLED_SETTING_ID,
+  MEMORY_CONSOLIDATION_ENABLED_SETTING_ID,
   renderTriagePolicyPlaceholders,
 } from "./workflows/builtin-workflow-settings.js";
 export {
@@ -643,6 +651,7 @@ export {
   resolveOptionalReviewRevisionBudget,
   resolveEffectivePlannerOversightLevel,
   resolveEffectivePlannerHeartbeatPatrolEnabled,
+  resolveEffectiveMemoryConsolidationEnabled,
   PLAN_REVIEW_MAX_REVISIONS_SETTING_ID,
   CODE_REVIEW_MAX_REVISIONS_SETTING_ID,
   PLAN_REVIEW_REPLAN_CAP_SETTING_ID,

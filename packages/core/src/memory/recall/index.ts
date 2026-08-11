@@ -6,5 +6,6 @@ export {
   deleteRecallRecord,
   getRecallRecord,
   listRecall,
+  mergeRecallGraphNodeIds,
   searchRecall,
 } from "./recall-store.js";
