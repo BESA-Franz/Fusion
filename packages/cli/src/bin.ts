@@ -13,11 +13,11 @@
  */
 import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { Readable } from "node:stream";
-import { fileURLToPath } from "node:url";
+import { readOwnCliVersion } from "./cli-version.js";
 import { installQuietGate, resolveQuietMode, setQuietMode, uninstallQuietGate } from "./output.js";
 
 // @ts-expect-error -- Bun-only global; undefined in Node
@@ -644,41 +644,6 @@ function parsePrCreateOptions(args: string[]) {
   };
 }
 
-/**
- * Locate `@runfusion/fusion`'s own version by walking up from the running
- * `bin.js`. Mirrors `packages/dashboard/src/cli-package-version.ts` but is
- * inlined here to avoid pulling the dashboard barrel into the bin's static
- * import graph (bin keeps app imports dynamic until env bootstrap is done).
- */
-function readOwnCliVersion(): string | undefined {
-  let currentDir: string;
-  try {
-    currentDir = dirname(fileURLToPath(import.meta.url));
-  } catch {
-    return undefined;
-  }
-  for (let i = 0; i < 8; i += 1) {
-    const pkgPath = resolve(currentDir, "package.json");
-    if (existsSync(pkgPath)) {
-      try {
-        const parsed = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
-          name?: string;
-          version?: string;
-        };
-        if (parsed.name === "@runfusion/fusion" && typeof parsed.version === "string") {
-          return parsed.version;
-        }
-      } catch {
-        // Ignore malformed manifest and keep walking.
-      }
-    }
-    const parentDir = resolve(currentDir, "..");
-    if (parentDir === currentDir) break;
-    currentDir = parentDir;
-  }
-  return undefined;
-}
-
 async function main() {
   const { cleanedArgs: args, projectName, skipOnboarding, quiet } = extractGlobalProjectFlag(process.argv.slice(2));
   const hasJsonFlag = args.includes("--json");
@@ -694,12 +659,14 @@ async function main() {
   if (effectiveQuiet) installQuietGate();
   else uninstallQuietGate();
 
-  // Print version and exit before any application imports. This is what the
+  // Print version and exit before any application imports. The leaf resolver
+// keeps this static graph built-ins-only rather than importing the dashboard
+// resolver. This is what the
   // dashboard's CLI Binary panel probes via `<bin> --version`; without an
   // early exit, the flag falls through to the default `dashboard` command and
   // boots the full server.
   if (args.includes("--version") || args.includes("-v")) {
-    console.log(readOwnCliVersion() ?? "unknown");
+    console.log(readOwnCliVersion(import.meta.url) ?? "unknown");
     process.exit(0);
   }
 
