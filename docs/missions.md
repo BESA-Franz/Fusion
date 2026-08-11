@@ -216,6 +216,7 @@ The canonical per-parameter tool reference lives in `packages/cli/skill/fusion/r
 | `fn_mission_delete` | Delete a mission and its hierarchy. |
 | `fn_mission_update` | Update mission title/description using partial patches. |
 | `fn_mission_set_status` | Set mission lifecycle status with an attributed audit event. |
+| `fn_mission_clear_blocked` | Clear a stale mission-level `blocked` badge without resuming automation (operator-only). |
 | `fn_milestone_add` | Add a milestone to a mission. |
 | `fn_milestone_update` | Update milestone fields using partial patches. |
 | `fn_slice_add` | Add a slice to a milestone. |
@@ -276,6 +277,10 @@ The shared eligibility rule is used by the store, agent tool, REST route, and da
 For a status-changing clear, the engine resolves a target status and loop target plus a ground-truth fence. The fence type lives in `@fusion/core` while the engine produces it, preserving core's dependency direction. It captures the linked task identity, lane role, and whether that task was observed `live` or `absent`. A missing, deleted, or archived linked task is an absent ground truth that resolves to `defined`, so it can be repaired rather than permanently rejected.
 
 The store rechecks the fence under its feature-row lock: a live task must still be live and unchanged, while an absent task must remain absent. It retries a stale resolution once. The no-`taskStore` fixture fallback records `groundTruthTaskVerified: false` for a non-null task ID. Callers provide both resolved targets: the store ignores `resolvedLoopState` on a status-only clear and ignores `resolvedStatus` on a loop-only clear, avoiding stale pre-lock branching. The mutation and `feature_validation_repaired` audit event commit in one transaction; clearing resets the implementation retry count, and unlinked features cannot be resumed as `triaged` or `in-progress`. The normal execution loop still cannot escape `blocked` by itself.
+
+### Clear a stale mission blocked badge
+
+`fn_mission_clear_blocked` repairs only a stale mission-level `blocked` badge. It accepts an audit-logged optional `reason` and reports residual canonical blockers, but does not clear them or resume automation. Use **Resume mission** when automation should be re-armed. The tool is withheld from agent sessions and is available only to a human operator through the CLI/pi extension.
 
 ## Mission delete policy (hard delete with linked-task guard)
 
@@ -769,7 +774,7 @@ See also: [Multi-Project](./multi-project.md) and [Task Management](./task-manag
 
 Mission hierarchy operations are available with the same project-scoped `MissionStore` contract in the pi extension, engine-managed executor/triage/heartbeat agents, and provider-backed dashboard chat. The surface is `fn_mission_list`, `fn_mission_show`, `fn_mission_create`, `fn_mission_update`, `fn_mission_set_status`, `fn_mission_delete`, `fn_milestone_add`, `fn_milestone_update`, `fn_milestone_delete`, `fn_slice_add`, `fn_slice_activate`, `fn_slice_delete`, `fn_feature_add`, `fn_feature_update`, `fn_feature_set_status`, `fn_feature_repair_validation`, `fn_feature_delete`, and `fn_feature_link_task`.
 
-`fn_mission_list` and `fn_mission_show` are positively classified read-only. All other hierarchy operations, including `fn_feature_repair_validation` and `fn_mission_reconcile`, mutate persisted project data and remain subject to the engine action gate and permanent-agent permission policy; they are never treated as unknown or exempt tools.
+`fn_mission_list` and `fn_mission_show` are positively classified read-only. All other hierarchy operations, including `fn_feature_repair_validation` and `fn_mission_reconcile`, mutate persisted project data and remain subject to the engine action gate and permanent-agent permission policy; they are never treated as unknown or exempt tools. `fn_mission_clear_blocked` is intentionally absent from agent tool lists: it is classified as `task_agent_mutation` in both gate paths and denied in readonly workflow steps, while the CLI/pi-extension hard-withholds it from agent principals.
 
 ## Automatic mission reconciliation
 

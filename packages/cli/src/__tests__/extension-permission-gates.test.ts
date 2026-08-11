@@ -255,6 +255,7 @@ pgDescribe("extension tool permission gates", () => {
     const calls: Array<[string, Record<string, unknown>]> = [
       ["fn_task_bypass_review", { id: "FN-1", reason: "nope" }],
       ["fn_mission_delete", { id: "M-1" }],
+      ["fn_mission_clear_blocked", { id: "M-1" }],
       ["fn_milestone_delete", { milestoneId: "MS-1" }],
       ["fn_slice_delete", { sliceId: "SL-1" }],
       ["fn_feature_delete", { featureId: "F-1" }],
@@ -270,6 +271,31 @@ pgDescribe("extension tool permission gates", () => {
       expect(result.details?.tool, name).toBe(name);
       expect(result.details?.agentId, name).toBe("agent-rogue");
     }
+  });
+
+  it("fn_mission_clear_blocked: denies agent and ambiguous principals before the store, while operators proceed", async () => {
+    const cwd = h.rootDir();
+    const missionStore = h.store().getMissionStore();
+    const mission = await missionStore.createMission({ title: "withheld clear target" });
+    await missionStore.updateMission(mission.id, { status: "blocked" }, { actor: { type: "operator", id: "test", source: "test" } });
+    const clearMissionBlockedStatus = vi.spyOn(missionStore, "clearMissionBlockedStatus");
+    const tool = requireTool(freshApi(), "fn_mission_clear_blocked");
+
+    const explicitAgent = await tool.execute("agent", { id: mission.id }, undefined, undefined, { cwd, agentId: "agent-rogue" });
+    expect(explicitAgent).toMatchObject({ isError: true, details: { deniedFor: "agent-principal" } });
+    expect(clearMissionBlockedStatus).not.toHaveBeenCalled();
+
+    const disposeOne = registerFusionSessionIdentity(cwd, { agentId: "agent-one" });
+    const disposeTwo = registerFusionSessionIdentity(cwd, { agentId: "agent-two" });
+    const ambiguous = await tool.execute("ambiguous", { id: mission.id }, undefined, undefined, { cwd });
+    expect(ambiguous).toMatchObject({ isError: true, details: { deniedFor: "agent-principal" } });
+    expect(clearMissionBlockedStatus).not.toHaveBeenCalled();
+    disposeOne();
+    disposeTwo();
+
+    const operator = await tool.execute("operator", { id: mission.id }, undefined, undefined, { cwd });
+    expect(operator.isError).toBeUndefined();
+    expect(clearMissionBlockedStatus).toHaveBeenCalledTimes(1);
   });
 
   // ── Policy-gated list ────────────────────────────────────────────

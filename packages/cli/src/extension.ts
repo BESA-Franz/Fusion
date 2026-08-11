@@ -875,6 +875,7 @@ const WITHHELD_FROM_AGENT_EXTENSION_TOOLS: ReadonlySet<string> = new Set([
   "fn_task_bypass_review",
   "fn_workflow_step_resume",
   "fn_mission_delete",
+  "fn_mission_clear_blocked",
   "fn_milestone_delete",
   "fn_slice_delete",
   "fn_feature_delete",
@@ -4566,6 +4567,59 @@ export default function kbExtension(pi: ExtensionAPI) {
       const missionStore = (await getStore(ctx.cwd)).getMissionStore();
       try { const mission = await missionStore.updateMission(params.id, { status: params.status }, { actor: missionTransitionActor(ctx), reason: params.reason }); return { content: [{ type: "text", text: `Set ${mission.id} status to ${mission.status}` }], details: { mission } }; }
       catch (error) { const message = error instanceof Error ? error.message : String(error); return { content: [{ type: "text", text: message }], isError: true, details: { error: message } }; }
+    },
+  });
+
+  /*
+   * FNXC:MissionBlockedRepair 2026-08-11-03:58:
+   * Clear repairs a stale blocked badge without re-arming automation. Because it overrides a
+   * durable pause, stop, or manual PATCH signal, it is operator-only and absent from
+   * createMissionTools so engine lanes and dashboard chat never receive it.
+   */
+  // ── fn_mission_clear_blocked ─────────────────────────────────────
+  pi.registerTool({
+    name: "fn_mission_clear_blocked",
+    label: "fn: Clear Mission Blocked Status",
+    description: "Clear a stale mission-level blocked badge without resuming automation.",
+    promptSnippet: "Clear a stale mission blocked badge",
+    promptGuidelines: [
+      "Repairs the badge only; it does not resume mission automation",
+      "Use Resume mission as the only path that re-arms automation",
+    ],
+    parameters: Type.Object({
+      id: Type.String({ description: "Mission ID (e.g., M-001)" }),
+      reason: Type.Optional(Type.String({ description: "Why the badge is stale (audit-logged)" })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const withheldDenied = denyWithheldToolForAgentPrincipal("fn_mission_clear_blocked", ctx as ExtensionCallerContext);
+      if (withheldDenied) return withheldDenied;
+      const missionStore = (await getStore(ctx.cwd)).getMissionStore();
+      if (!("clearMissionBlockedStatus" in missionStore)) {
+        return { content: [{ type: "text", text: "Clearing mission blocked status requires the PostgreSQL mission store" }], isError: true, details: { code: "POSTGRES_REQUIRED" } };
+      }
+      const mission = await missionStore.getMission(params.id);
+      if (!mission) {
+        return { content: [{ type: "text", text: `Mission ${params.id} not found` }], isError: true, details: { code: "MISSION_NOT_FOUND" } };
+      }
+      try {
+        const { mission: clearedMission, blockers } = await missionStore.clearMissionBlockedStatus(params.id, {
+          actor: missionTransitionActor(ctx),
+          reason: params.reason,
+        });
+        const residualWarning = blockers.length > 0
+          ? `\n${blockers.length} blocker(s) remain; automation stays gated until they are resolved or the mission is resumed.`
+          : "";
+        return {
+          content: [{ type: "text", text: `Cleared blocked status for ${params.id} → ${clearedMission.status}${residualWarning}` }],
+          details: { mission: clearedMission, blockers },
+        };
+      } catch (error) {
+        if (error instanceof fusionCore.MissionBlockedClearConflictError) {
+          return { content: [{ type: "text", text: `Mission ${params.id} is not blocked (status: ${error.status})` }], isError: true, details: { code: "MISSION_NOT_BLOCKED", status: error.status } };
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        return { content: [{ type: "text", text: message }], isError: true, details: { error: message } };
+      }
     },
   });
 

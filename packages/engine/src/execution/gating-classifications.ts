@@ -95,6 +95,13 @@ const PERMANENT_TASK_AGENT_ONLY_TOOLS = [
   "fn_mission_delete",
   "fn_mission_update",
   "fn_mission_set_status",
+  /*
+   * FNXC:ToolGovernance 2026-08-11-03:58:
+   * Mission blocked-badge repair overrides a durable stop signal, so its CLI/pi-extension
+   * surface is hard-withheld from agent principals. Classify it here so both gate paths
+   * never fall through as unrecognized and readonly workflow steps record an explicit denial.
+   */
+  "fn_mission_clear_blocked",
   "fn_mission_reconcile",
   "fn_mission_backfill_assertions",
   "fn_milestone_add",

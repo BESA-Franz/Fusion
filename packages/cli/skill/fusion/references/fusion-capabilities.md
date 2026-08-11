@@ -67,6 +67,7 @@ All skill/extension tool invocations in this catalog use the public `fn_*` names
 | `fn_mission_backfill_assertions` | Backfill mission assertions by deriving and linking one store-managed assertion for each feature without linked assertions. Supports dry-run mode. |
 | `fn_mission_delete` | Delete a mission and all its milestones, slices, and features. Cannot be undone. |
 | `fn_mission_set_status` | Set a mission lifecycle status. |
+| `fn_mission_clear_blocked` | Clear a stale mission-level blocked badge without resuming automation. |
 | `fn_mission_update` | Update an existing mission's title or description. Partial patches leave untouched fields intact. |
 | `fn_milestone_add` | Add a milestone to a mission. Milestones represent phases of work. |
 | `fn_slice_add` | Add a slice to a milestone. Slices are work units that can be activated for implementation. |

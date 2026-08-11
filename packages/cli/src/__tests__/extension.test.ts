@@ -22,7 +22,7 @@ vi.mock("../commands/task.js", () => ({
 }));
 
 import { __setCachedStoreForTesting, closeCachedStores, resolveTaskListFormatter } from "../extension.js";
-import { TaskStore, AgentStore, MANUAL_RETRY_RESET_COUNTER_KEYS, MAX_TASK_LIST_TEXT_CHARS, formatTaskListText, COLUMN_LABELS, drizzleSql } from "@fusion/core";
+import { TaskStore, AgentStore, MANUAL_RETRY_RESET_COUNTER_KEYS, MAX_TASK_LIST_TEXT_CHARS, MissionBlockedClearConflictError, formatTaskListText, COLUMN_LABELS, drizzleSql } from "@fusion/core";
 import type { WorkflowIr } from "@fusion/core";
 import { isGhAvailable, isGhAuthenticated, runGhJsonAsync } from "@fusion/core/gh-cli";
 import { runTaskPlan } from "../commands/task.js";
@@ -297,6 +297,7 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
         "fn_mission_delete",
         "fn_mission_update",
         "fn_mission_set_status",
+        "fn_mission_clear_blocked",
         "fn_milestone_add",
         "fn_slice_add",
         "fn_feature_add",
@@ -2961,6 +2962,59 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
     );
     expect(result.isError).not.toBe(true);
     expect(await missionStore.getFeature(feature.id)).toMatchObject({ status: "defined", loopState: "idle" });
+  });
+
+  describe("fn_mission_clear_blocked", () => {
+    it("calls the attributed repair primitive and reports residual blockers", async () => {
+      const clearMissionBlockedStatus = vi.fn().mockResolvedValue({
+        mission: { id: "M-1", status: "planning" },
+        blockers: [{ source: "lineage", reason: "pending delivery" }],
+      });
+      const missionStore = {
+        getMission: vi.fn().mockResolvedValue({ id: "M-1", status: "blocked" }),
+        clearMissionBlockedStatus,
+      };
+      __setCachedStoreForTesting(tmpDir, { getMissionStore: () => missionStore } as never);
+
+      const result = await api.tools.get("fn_mission_clear_blocked")!.execute(
+        "clear", { id: "M-1", reason: "stale badge" }, undefined, undefined, makeCtx(tmpDir),
+      );
+
+      expect(clearMissionBlockedStatus).toHaveBeenCalledWith("M-1", {
+        actor: { type: "operator", id: "cli-operator", displayName: "CLI operator", source: "pi-extension" },
+        reason: "stale badge",
+      });
+      expect(result.details).toMatchObject({ mission: { id: "M-1", status: "planning" }, blockers: [{ source: "lineage" }] });
+      expect(result.content[0]?.text).toContain("Cleared blocked status for M-1 → planning");
+      expect(result.content[0]?.text).toContain("1 blocker(s) remain; automation stays gated");
+      __setCachedStoreForTesting(tmpDir, h.store());
+    });
+
+    it("reports missing, non-blocked, and PostgreSQL-required mission stores without writing", async () => {
+      const tool = api.tools.get("fn_mission_clear_blocked")!;
+      const missingStore = { getMission: vi.fn().mockResolvedValue(null), clearMissionBlockedStatus: vi.fn() };
+      __setCachedStoreForTesting(tmpDir, { getMissionStore: () => missingStore } as never);
+      await expect(tool.execute("missing", { id: "M-missing" }, undefined, undefined, makeCtx(tmpDir))).resolves.toMatchObject({
+        isError: true, details: { code: "MISSION_NOT_FOUND" },
+      });
+      expect(missingStore.clearMissionBlockedStatus).not.toHaveBeenCalled();
+
+      const conflictStore = {
+        getMission: vi.fn().mockResolvedValue({ id: "M-1", status: "active" }),
+        clearMissionBlockedStatus: vi.fn().mockRejectedValue(new MissionBlockedClearConflictError("active")),
+      };
+      __setCachedStoreForTesting(tmpDir, { getMissionStore: () => conflictStore } as never);
+      await expect(tool.execute("conflict", { id: "M-1" }, undefined, undefined, makeCtx(tmpDir))).resolves.toMatchObject({
+        isError: true, details: { code: "MISSION_NOT_BLOCKED", status: "active" },
+      });
+      expect(conflictStore.clearMissionBlockedStatus).toHaveBeenCalledTimes(1);
+
+      __setCachedStoreForTesting(tmpDir, { getMissionStore: () => ({ getMission: vi.fn() }) } as never);
+      await expect(tool.execute("postgres", { id: "M-1" }, undefined, undefined, makeCtx(tmpDir))).resolves.toMatchObject({
+        isError: true, details: { code: "POSTGRES_REQUIRED" },
+      });
+      __setCachedStoreForTesting(tmpDir, h.store());
+    });
   });
 
   describe("fn_task_list", () => {

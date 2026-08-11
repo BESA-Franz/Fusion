@@ -11,7 +11,10 @@ which owns live project-scoped task validation and bidirectional task linkage.
 describe("createMissionTools", () => {
   it("exposes the complete hierarchy surface with read and mutation names", () => {
     const store = { getMissionStore: vi.fn() } as never;
-    expect(createMissionTools(store).map((tool) => tool.name)).toEqual([
+    const toolNames = createMissionTools(store).map((tool) => tool.name);
+    // FNXC:MissionBlockedRepair 2026-08-11-03:58: Operator-only repair stays out of executor, triage, heartbeat, and chat.
+    expect(toolNames).not.toContain("fn_mission_clear_blocked");
+    expect(toolNames).toEqual([
       "fn_mission_list", "fn_mission_show", "fn_mission_create", "fn_mission_update", "fn_mission_set_status", "fn_mission_delete", "fn_mission_reconcile",
       "fn_milestone_add", "fn_milestone_update", "fn_milestone_delete", "fn_slice_add", "fn_slice_activate",
       "fn_slice_delete", "fn_feature_add", "fn_feature_update", "fn_feature_repair_validation", "fn_feature_set_status", "fn_feature_delete", "fn_feature_link_task", "fn_research_promote_finding",

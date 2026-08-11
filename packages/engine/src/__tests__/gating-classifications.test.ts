@@ -220,6 +220,14 @@ describe("gating-classifications parity", () => {
     });
   });
 
+  it("classifies mission blocked-badge repair in both gate paths without readonly exemptions", () => {
+    const toolName = "fn_mission_clear_blocked";
+    expect(ACTION_GATE_TASK_AGENT_MANAGEMENT_TOOLS.has(toolName)).toBe(true);
+    expect(PERMANENT_AGENT_TASK_MUTATION_TOOLS.has(toolName)).toBe(true);
+    expect(READONLY_FN_TOOLS.has(toolName)).toBe(false);
+    expect((COORDINATION_EXEMPT_TOOLS as readonly string[]).includes(toolName)).toBe(false);
+  });
+
   it("classifies ideation reads and mutations in both policy paths", () => {
     for (const toolName of ["fn_ideation_list", "fn_ideation_show"]) {
       expect(READONLY_FN_TOOLS.has(toolName)).toBe(true);

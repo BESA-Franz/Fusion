@@ -430,6 +430,15 @@ Set a mission lifecycle status.
 | `status` | union | ✓ |  |
 | `reason` | string | — |  |
 
+### fn_mission_clear_blocked
+
+Clear a stale mission-level blocked badge without resuming automation.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | ✓ | Mission ID (e.g., M-001) |
+| `reason` | string | — | Why the badge is stale (audit-logged) |
+
 ### fn_mission_update
 
 Update an existing mission's title or description. Partial patches leave untouched fields intact.
