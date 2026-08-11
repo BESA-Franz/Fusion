@@ -485,8 +485,17 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
         throw badRequest("Both modelProvider and modelId must be provided together, or neither should be provided");
       }
 
+      /*
+      FNXC:ChatSessionCreate 2026-08-11-09:38:
+      A chat may target a MODEL rather than an agent. The client marks that case with the synthetic sentinel id `__fn_agent__` (`app/hooks/useChat.ts`), which is deliberately never persisted as an agent row, and always sends an explicit `modelProvider`/`modelId` pair alongside it.
+      FN-8869 hoisted this lookup out of the `else` branch below so it ran unconditionally, which 404'd every model-target chat ("Agent __fn_agent__ not found") and surfaced as the generic "Failed to create chat session" toast.
+
+      The agent is REQUIRED only when it is the source of the model resolution. When the client supplies a complete model pair, a missing agent is not an error — that is the pre-FN-8869 contract, and the rest of the stack already treats the sentinel as legitimately agent-less (ChatManager tolerates a missing agent on send; the UI hides agent identity for it).
+      Do not re-hoist this check: match on the supplied model pair rather than hardcoding the sentinel, so the route stays agnostic to the client's marker value.
+      */
       const agent = await agentStore.getAgent(agentId);
-      if (!agent) {
+      const hasClientModel = hasClientModelProvider && hasClientModelId;
+      if (!agent && !hasClientModel) {
         throw notFound(`Agent ${agentId} not found`);
       }
       const settings = await scopedStore.getSettings();
@@ -496,18 +505,22 @@ export function registerChatRoutes(ctx: ApiRoutesContext, deps: ChatRouteDeps): 
       let resolvedModelId: string | null = null;
       let inheritedThinkingLevel: string | undefined;
 
-      if (hasClientModelProvider && hasClientModelId) {
+      if (hasClientModel) {
         // Use client-provided model
         resolvedProvider = modelProvider!.trim();
         resolvedModelId = modelId!.trim();
       } else {
-        // Resolve from agent's runtimeConfig.model
-        const resolved = resolvePermanentAgentEffectiveModel(agent, settings);
+        // Resolve from agent's runtimeConfig.model. `agent` is non-null here: the
+        // guard above only tolerates a missing agent when a client model pair exists.
+        const resolved = resolvePermanentAgentEffectiveModel(agent!, settings);
         resolvedProvider = resolved.provider ?? null;
         resolvedModelId = resolved.modelId ?? null;
-        inheritedThinkingLevel = resolvePermanentAgentEffectiveThinkingLevel(agent, settings);
+        inheritedThinkingLevel = resolvePermanentAgentEffectiveThinkingLevel(agent!, settings);
       }
-      inheritedThinkingLevel ??= resolvePermanentAgentEffectiveThinkingLevel(agent, settings);
+      // Agent-less model sessions inherit nothing — there is no role to inherit from.
+      inheritedThinkingLevel ??= agent
+        ? resolvePermanentAgentEffectiveThinkingLevel(agent, settings)
+        : undefined;
 
       // Create the chat session with projectId for multi-project scoping
       const session = await chatStore.createSession({

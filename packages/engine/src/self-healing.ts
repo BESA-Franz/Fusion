@@ -4422,6 +4422,18 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             }
             let reclaimedCleanly = false;
             try {
+              /*
+              FNXC:SelfHealingReclaim 2026-08-11-09:38:
+              Prune BEFORE attempting removal. A stale worktree registration (recorded path no longer on disk) makes
+              `git worktree remove --force` fail outright, and this sweep used to prune only AFTER the remove — so a
+              dangling registration reliably produced the very failure pruning would have prevented. Observed on this
+              repo at 89 registered worktrees against 20 present on disk.
+              */
+              await execAsync("git worktree prune", {
+                cwd: this.options.rootDir,
+                timeout: 120_000,
+                maxBuffer: 10 * 1024 * 1024,
+              }).catch(() => undefined);
               if (inspection.livePath && existsSync(inspection.livePath)) {
                 await removeWorktree({
                   rootDir: this.options.rootDir,
@@ -4513,10 +4525,25 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               log.warn(`Failed tip-already-merged cleanup for ${task.id}: ${message}`);
             }
 
-            if (reclaimedCleanly) {
-              continue;
+            /*
+            FNXC:SelfHealingReclaim 2026-08-11-09:38:
+            A failed `tip-already-merged` cleanup is NOT a branch conflict and must never be escalated as one.
+            This verdict means the tip is already an ancestor of the integration ref — the branch has nothing unique to
+            lose — so the only thing that can fail here is filesystem housekeeping, in practice `git worktree remove
+            --force` losing a race with pnpm writing into the worktree's `node_modules` (`ENOTEMPTY ... rmdir`).
+            Rethrowing handed that rmdir race to the outer catch, which classified it `branch-conflict-unrecoverable`
+            and FAILED + paused a task whose branch was already fully merged, with the misleading error "Task branch
+            conflict: <branch> is not safely reclaimable". 78 such parks were logged in 16 days, every one carrying a
+            worktree-removal message rather than any git conflict.
+
+            The reclaim is idempotent, so the correct response is to leave the row untouched and retry on the next
+            sweep — which is what actually resolved these tasks minutes later anyway. Only `live-foreign` below is a
+            real conflict verdict.
+            */
+            if (!reclaimedCleanly) {
+              log.warn(`tip-already-merged cleanup for ${task.id} did not complete — retrying on next sweep (not a branch conflict)`);
             }
-            throw new Error(`tip-already-merged cleanup failed for ${task.id}`);
+            continue;
           }
           if (inspection.kind === "live-foreign") {
             throw inspection.error;
