@@ -2057,6 +2057,13 @@ export type {
 } from "./memory/memory-insights.js";
 
 export {
+  buildMemoryPreSteeringNudge,
+  MEMORY_PRE_STEERING_MARKER,
+  MAX_PRE_STEERING_FULL_BYTES,
+  MAX_PRE_STEERING_INDEX_BYTES,
+} from "./memory/memory-pre-steering.js";
+
+export {
   getDefaultMemoryScaffold,
   ensureMemoryFile,
   ensureMemoryFileWithBackend,

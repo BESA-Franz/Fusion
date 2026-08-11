@@ -1945,3 +1945,5 @@ Settings → Authentication can hold multiple named credential accounts for each
 ### Knowledge graph artifact location
 
 `knowledgeGraphDir` is an optional project setting. Its default is `.fusion-knowledge/graph`; keep it outside `.fusion`, which is ignored. The directory is intentionally committable and is refreshed with `fn knowledge-graph build`.
+
+`agentMemoryInclusionMode` also controls memory-first pre-steering across triage, execution, review, heartbeat, and agent chat instruction assembly: `full` supplies detailed search-first guidance, `index` supplies a terse form, and `off` suppresses it.

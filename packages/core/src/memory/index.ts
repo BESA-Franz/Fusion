@@ -10,3 +10,4 @@ export * from "./memory-insights.js";
 export * from "./project-memory.js";
 export * from "./recall/index.js";
 export * from "./mcp/index.js";
+export * from "./memory-pre-steering.js";
