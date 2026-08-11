@@ -525,6 +525,15 @@ Set a feature lifecycle status.
 | `status` | union | ✓ |  |
 | `reason` | string | — |  |
 
+### fn_mission_reconcile
+
+Reconcile mission state against deterministic delivery ground truth.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | — |  |
+| `dryRun` | boolean | — |  |
+
 ### fn_feature_repair_validation
 
 Clear a stale validation badge or re-run validation.

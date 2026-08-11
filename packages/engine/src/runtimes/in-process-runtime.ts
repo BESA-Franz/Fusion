@@ -1797,7 +1797,7 @@ export class InProcessRuntime
           }
           return this.missionExecutionLoop.reapStaleValidatorRuns(VALIDATOR_RUN_STALE_MAX_AGE_MS);
         },
-        reconcileAllMissionFeatures: async () => this.scheduler.reconcileAllMissionFeatures(),
+        reconcileAllMissionFeatures: async () => this.scheduler.reconcileAllMissionFeatures("self-healing"),
         chatStore: this.chatStore,
         messageStore: this.messageStore,
         restartDurableAgentHeartbeat: async (agentId: string, context: { reason: string; attempt: number }) => {
@@ -1906,7 +1906,7 @@ export class InProcessRuntime
 
       // 13. Reconcile feature status for all active missions (not just autopilot)
       if (activeMissionStore) {
-        void this.scheduler.reconcileAllMissionFeatures();
+        void this.scheduler.reconcileAllMissionFeatures("startup");
       }
 
       // 14. Start MissionAutopilot background polling

@@ -95,6 +95,7 @@ const PERMANENT_TASK_AGENT_ONLY_TOOLS = [
   "fn_mission_delete",
   "fn_mission_update",
   "fn_mission_set_status",
+  "fn_mission_reconcile",
   "fn_mission_backfill_assertions",
   "fn_milestone_add",
   "fn_slice_add",

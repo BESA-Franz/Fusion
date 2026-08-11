@@ -42,6 +42,7 @@ export async function resolveMissionFeatureAlignment(
 ): Promise<DriftAlignment> {
   if (!taskId) return "unavailable";
   try {
+    if (typeof taskStore.getLatestSpecDriftReport !== "function") return "unavailable";
     return projectMissionFeatureAlignment(await taskStore.getLatestSpecDriftReport(taskId));
   } catch {
     return "unavailable";

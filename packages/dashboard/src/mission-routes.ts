@@ -28,7 +28,7 @@ import {
   RepairValidatorRunInFlightError,
 } from "@fusion/core";
 import type { AsyncMissionStore, Goal, Settings, ThinkingLevel } from "@fusion/core";
-import { resolveFeatureRepairTargets, resolvePlanningThinkingLevel } from "@fusion/engine";
+import { hasTerminalReconcileCapability, reconcileMissionState, resolveFeatureRepairTargets, resolvePlanningThinkingLevel } from "@fusion/engine";
 import {
   getScopedStore as resolveScopedRequestStore,
   getProjectContext as resolveSharedProjectContext,
@@ -2901,6 +2901,26 @@ export function createMissionRouter(
   );
 
   /**
+   * POST /api/missions/:missionId/reconcile
+   * Reconcile deterministic delivery ground truth without requiring a PostgreSQL-only capability.
+   */
+  router.post(
+    "/:missionId/reconcile",
+    catchTypedHandler(async (req, res) => {
+      const { missionId } = req.params;
+      if (!validateMissionId(missionId)) throw badRequest("Invalid mission ID format");
+      const { store: scopedStore } = await getProjectContext(req);
+      const missionStore = scopedStore.getMissionStore();
+      if (!await missionStore.getMission(missionId)) throw notFound("Mission not found");
+      const result = await reconcileMissionState(
+        { taskStore: scopedStore, missionStore },
+        { missionId, source: "api", actor: DASHBOARD_MISSION_ACTOR, dryRun: req.body?.dryRun === true },
+      );
+      res.json(result);
+    }),
+  );
+
+  /**
    * POST /api/missions/features/:featureId/reconcile-done
    * Reconcile feature completion against a shipped delivery task.
    */
@@ -2921,7 +2941,7 @@ export function createMissionRouter(
       const normalizedTaskId = taskId.trim();
       const { store: scopedStore } = await getProjectContext(req);
       const scopedMissionStore = scopedStore.getMissionStore();
-      if (!("reconcileFeatureDoneWithTerminalTask" in scopedMissionStore)) {
+      if (!hasTerminalReconcileCapability(scopedMissionStore)) {
         throw internalError("Terminal-task reconciliation requires the PostgreSQL mission store");
       }
 

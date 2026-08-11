@@ -85,6 +85,7 @@ import {
   evaluateAgentActionGate,
   resolveGateOutcome,
   resolveFeatureRepairTargets,
+  reconcileMissionState,
 } from "@fusion/engine";
 import * as dashboard from "@fusion/dashboard";
 import { resolve, relative, isAbsolute, sep, basename, extname, join } from "node:path";
@@ -5025,6 +5026,19 @@ export default function kbExtension(pi: ExtensionAPI) {
       if ((["triaged", "in-progress", "done", "blocked"] as const).includes(params.status) && !feature.taskId) return { content: [{ type: "text", text: `Cannot set status to '${params.status}' without a linked task. Use the triage endpoint to create and link a task first, or link an existing task via fn_feature_link_task.` }], isError: true, details: { error: "FEATURE_TASK_REQUIRED" } };
       try { const updated = await missionStore.updateFeatureStatus(params.id, params.status, { actor: missionTransitionActor(ctx), reason: params.reason }); return { content: [{ type: "text", text: `Set ${updated.id} status to ${updated.status}` }], details: { feature: updated } }; }
       catch (error) { const message = error instanceof Error ? error.message : String(error); return { content: [{ type: "text", text: message }], isError: true, details: { error: message } }; }
+    },
+  });
+
+  // ── fn_mission_reconcile ─────────────────────────────────────────
+  pi.registerTool({
+    name: "fn_mission_reconcile", label: "fn: Reconcile Mission", description: "Reconcile mission state against deterministic delivery ground truth.",
+    parameters: Type.Object({ id: Type.Optional(Type.String()), dryRun: Type.Optional(Type.Boolean()) }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      try {
+        const store = await getStore(ctx.cwd);
+        const result = await reconcileMissionState({ taskStore: store, missionStore: store.getMissionStore() }, { missionId: params.id, dryRun: params.dryRun === true, source: "tool", actor: missionTransitionActor(ctx) });
+        return { content: [{ type: "text", text: `Reconciled ${params.id ?? "project"}` }], details: result };
+      } catch (error) { const message = error instanceof Error ? error.message : String(error); return { content: [{ type: "text", text: message }], isError: true, details: { error: message } }; }
     },
   });
 

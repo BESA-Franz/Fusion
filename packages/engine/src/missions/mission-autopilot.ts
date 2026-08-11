@@ -20,6 +20,7 @@
  */
 
 import { AsyncMissionStore, resolveTaskLifecycleColumns } from "@fusion/core";
+import { reconcileMissionState } from "./mission-state-reconcile.js";
 import type {
   TaskStore,
   MissionStore,
@@ -49,9 +50,7 @@ import type {
  */
 type AutopilotMissionStore = MissionStore | AsyncMissionStore;
 import { autopilotLog } from "../logger.js";
-import { persistMissionFeatureReconciliation, reconcileMissionFeatureState } from "./mission-feature-sync.js";
 import { isOperatorActionableAgentError } from "../errors/transient-error-detector.js";
-import { resolvePlannerLanesForTask } from "../planner-lane-resolution.js";
 
 /** Maximum retry attempts for slice activation failures. */
 const MAX_RETRY_ATTEMPTS = 3;
@@ -910,95 +909,22 @@ export class MissionAutopilot {
   private async reconcileMissionConsistency(
     mission: MissionWithHierarchy,
   ): Promise<number> {
-    if (!mission) {
-      return 0;
+    if (!mission) return 0;
+    const completeSlices = mission.milestones.flatMap((milestone) => milestone.slices).filter((slice) => slice.status === "complete");
+    if (completeSlices.some((slice) => slice.features.some((feature) => feature.status !== "done"))) {
+      await this.recomputeMissionStatusChain(mission.id);
+      return 1;
     }
-
-    const activeSlices = mission.milestones
-      .flatMap((milestone) => milestone.slices)
-      .filter((slice) => slice.status === "active");
-
-    const completeSlices = mission.milestones
-      .flatMap((milestone) => milestone.slices)
-      .filter((slice) => slice.status === "complete");
-
-    // Process complete slices: check for stale "defined" features.
-    // Features with status "defined" should never exist in a "complete" slice.
-    // If found, recompute the status chain to fix the stale state.
-    if (completeSlices.length > 0) {
-      for (const slice of completeSlices) {
-        const definedFeatures = slice.features.filter((f) => f.status !== "done");
-        if (definedFeatures.length > 0) {
-          autopilotLog.warn(
-            `Slice ${slice.id} is marked complete but has ${definedFeatures.length} feature(s) not done; recomputing status chain`,
-            {
-              missionId: mission.id,
-              sliceId: slice.id,
-              definedFeatureIds: definedFeatures.map((f) => f.id),
-            },
-          );
-          await this.logMissionEventSafe(
-            mission.id,
-            "error",
-            `Slice ${slice.id} has stale "complete" status (${definedFeatures.length} feature(s) not done); recomputing status chain`,
-            { source: "reconcileMissionConsistency" },
-          );
-          await this.recomputeMissionStatusChain(mission.id);
-          // One recompute is sufficient for all complete slices; break after first hit
-          return 1;
-        }
-      }
+    const result = await reconcileMissionState({ taskStore: this.taskStore, missionStore: this.missionStore }, {
+      missionId: mission.id,
+      source: "autopilot",
+    });
+    for (const feature of mission.milestones.flatMap((milestone) => milestone.slices).flatMap((slice) => slice.features)) {
+      if (!feature.taskId) continue;
+      const task = await this.taskStore.getTask(feature.taskId);
+      if (task?.status === "failed" || task?.error) await this.handleTaskFailure(feature.taskId);
     }
-
-    if (activeSlices.length === 0) {
-      return 0;
-    }
-
-    let fixedCount = 0;
-
-    for (const slice of activeSlices) {
-      for (const feature of slice.features) {
-        if (!feature.taskId) {
-          continue;
-        }
-
-        const task = await this.taskStore.getTask(feature.taskId);
-        if (!task) {
-          continue;
-        }
-
-        const hasLinkedAssertions = typeof this.missionStore.listAssertionsForFeature === "function"
-          ? (await this.missionStore.listAssertionsForFeature(feature.id)).length > 0
-          : false;
-        const reconciliation = await reconcileMissionFeatureState(this.taskStore, task, feature, {
-          hasLinkedAssertions,
-          plannerColumns: await resolvePlannerLanesForTask(this.taskStore as never, task.id),
-        });
-
-        /*
-        FNXC:SpecLockMissionAlignment 2026-08-10-16:17:
-        Persist the evaluator's orthogonal projection on every reconciliation outcome. Previously
-        this loop calculated alignment only to discard it, leaving the mission roadmap stale when
-        delivery status did not also need a transition.
-        */
-        if (await persistMissionFeatureReconciliation(this.missionStore, feature, reconciliation)) {
-          fixedCount++;
-        }
-
-        if (reconciliation.kind === "failure") {
-          await this.handleTaskFailure(feature.taskId);
-          fixedCount++;
-          continue;
-        }
-
-        if (reconciliation.kind === "blocked") {
-          autopilotLog.warn(`Skipping feature ${feature.id} reconciliation — ${reconciliation.reason}`);
-          continue;
-        }
-      }
-    }
-
-    return fixedCount;
+    return result.statusUpdates + result.badgeRepairs + result.terminalRepairs;
   }
 
   // ── Helpers ────────────────────────────────────────────────────────

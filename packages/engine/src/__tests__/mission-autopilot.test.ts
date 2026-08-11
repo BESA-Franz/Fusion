@@ -854,7 +854,7 @@ describe("MissionAutopilot", () => {
 
       await (autopilot as any).runHealthCheck();
 
-      expect(missionStore.updateFeatureStatus).toHaveBeenCalledWith("F-001", "done");
+      expect(missionStore.updateFeatureStatus).toHaveBeenCalledWith("F-001", "done", expect.objectContaining({ actor: expect.objectContaining({ source: "mission-reconcile:autopilot" }) }));
       autopilot.stop();
     });
 
@@ -909,7 +909,7 @@ describe("MissionAutopilot", () => {
 
       await (autopilot as any).runHealthCheck();
 
-      expect(missionStore.updateFeatureStatus).toHaveBeenCalledWith("F-001", "in-progress");
+      expect(missionStore.updateFeatureStatus).toHaveBeenCalledWith("F-001", "in-progress", expect.objectContaining({ actor: expect.objectContaining({ source: "mission-reconcile:autopilot" }) }));
       autopilot.stop();
     });
 
@@ -930,7 +930,7 @@ describe("MissionAutopilot", () => {
 
       await (autopilot as any).runHealthCheck();
 
-      expect(missionStore.updateFeatureStatus).toHaveBeenCalledWith("F-001", "triaged");
+      expect(missionStore.updateFeatureStatus).toHaveBeenCalledWith("F-001", "triaged", expect.objectContaining({ actor: expect.objectContaining({ source: "mission-reconcile:autopilot" }) }));
       autopilot.stop();
     });
 
@@ -1299,7 +1299,7 @@ describe("MissionAutopilot", () => {
 
       await ap.recoverMissions(store as any);
 
-      expect(store.updateFeatureStatus).toHaveBeenCalledWith("F-001", "done");
+      expect(store.updateFeatureStatus).toHaveBeenCalledWith("F-001", "done", expect.objectContaining({ actor: expect.objectContaining({ source: "mission-reconcile:autopilot" }) }));
     });
 
     it("advances slices when active slice features are already done", async () => {

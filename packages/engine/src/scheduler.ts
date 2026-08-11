@@ -30,8 +30,8 @@ import { planTaskWorktreePath, resolveTaskWorkingBranch } from "./worktree/workt
 import { schedulerLog } from "./logger.js";
 import { createRepeatSuppressedLog } from "./util/repeat-suppressed-log.js";
 import { type PrMonitor, type PrComment } from "./merge/pr-monitor.js";
-import { persistMissionFeatureReconciliation, reconcileMissionFeatureState } from "./missions/mission-feature-sync.js";
-import { resolveDedicatedPlannerColumnsForTask, resolvePlannerLanesForTask } from "./planner-lane-resolution.js";
+import { reconcileMissionState, type MissionReconcileSource } from "./missions/mission-state-reconcile.js";
+import { resolveDedicatedPlannerColumnsForTask } from "./planner-lane-resolution.js";
 import { evaluateSpecStaleness, getPromptPath } from "./execution/spec-staleness.js";
 import { resolveEffectiveNode, type EffectiveNode } from "./project/effective-node.js";
 import { applyUnavailableNodePolicy, decideOwningNodeHandoff } from "./project/node-routing-policy.js";
@@ -3141,7 +3141,16 @@ export class Scheduler {
         return;
       }
 
-      const feature = await this.resolveMissionFeatureForTask(missionStore, task);
+      /*
+      FNXC:MissionAutoReconcile 2026-08-11-03:27:
+      Task moves must enter the reconciliation authority before title-based ownership repair. The
+      authority rejects ambiguous titles within a slice, so duplicate feature titles cannot make a
+      move attach its task to whichever unlinked feature happened to be listed first.
+      */
+      if (task.missionId) {
+        await reconcileMissionState({ taskStore: this.store, missionStore }, { missionId: task.missionId, source: "task-move" });
+      }
+      const feature = await resolveMissionFeatureForTask(missionStore, task);
       if (!feature) {
         /*
         FNXC:EngineDiagnostics 2026-08-03-05:54:
@@ -3159,42 +3168,22 @@ export class Scheduler {
         return;
       }
 
-      const hasLinkedAssertions = (await missionStore.listAssertionsForFeature(feature.id)).length > 0;
-
-      const reconciliation = await reconcileMissionFeatureState(
-        this.store,
-        { ...task, column: toColumn },
-        feature,
-        {
-          hasLinkedAssertions,
-          plannerColumns: await resolvePlannerLanesForTask(this.store, task.id),
-        },
-      );
-
       const sliceIdBeforeUpdate = feature.sliceId;
-
+      const featureSlice = await missionStore.getSlice(feature.sliceId);
+      const milestone = featureSlice ? await missionStore.getMilestone(featureSlice.milestoneId) : undefined;
+      const missionId = task.missionId ?? milestone?.missionId;
+      if (!missionId) {
+        schedulerLog.warn(`Task ${taskId} feature ${feature.id} has no resolvable mission; skipping reconciliation`);
+        return;
+      }
       /*
-      FNXC:SpecLockMissionAlignment 2026-08-10-16:17:
-      Scheduler move reconciliation is a production consumer of deterministic drift. Persist its
-      orthogonal projection even when delivery status is unchanged, or the evaluated alignment is
-      discarded before Mission Manager can render the roadmap's actual state.
+      FNXC:MissionAutoReconcile 2026-08-11-02:39:
+      Live moves use the same authority as maintenance rather than retaining a second direct
+      writer. This keeps task-move attribution and validation-badge repair identical to every
+      other deterministic ground-truth projection.
       */
-      if (await persistMissionFeatureReconciliation(missionStore, feature, reconciliation)) {
-        if (reconciliation.kind === "update") {
-          schedulerLog.log(
-            `Feature ${feature.id} marked ${reconciliation.status} (${reconciliation.reason})`,
-          );
-        }
-      }
-
-      if (reconciliation.kind === "blocked") {
-        schedulerLog.warn(`Task ${taskId} mission update blocked — ${reconciliation.reason}`);
-        return;
-      }
-
-      if (reconciliation.kind === "failure") {
-        schedulerLog.warn(`Task ${taskId} mission update reported failure — ${reconciliation.reason}`);
-        return;
+      if (missionId !== task.missionId) {
+        await reconcileMissionState({ taskStore: this.store, missionStore }, { missionId, source: "task-move" });
       }
 
       /*
@@ -3223,38 +3212,6 @@ export class Scheduler {
     } catch (err) {
       schedulerLog.error(`Error handling mission task move for ${taskId}:`, err);
     }
-  }
-
-  private async resolveMissionFeatureForTask(missionStore: MissionStore | AsyncMissionStore, task: Task): Promise<MissionFeature | undefined> {
-    const linkedFeature = await resolveMissionFeatureForTask(missionStore, task);
-    if (linkedFeature) {
-      return linkedFeature;
-    }
-
-    if (!task.sliceId || !task.title) {
-      return undefined;
-    }
-
-    const normalizedTaskTitle = this.normalizeMissionFeatureTitle(task.title);
-    const matchingFeature = (await missionStore
-      .listFeatures(task.sliceId))
-      .find((feature) =>
-        !feature.taskId
-        && this.normalizeMissionFeatureTitle(feature.title) === normalizedTaskTitle
-      );
-
-    if (!matchingFeature) {
-      return undefined;
-    }
-
-    schedulerLog.warn(
-      `Repairing one-way mission link: task ${task.id} matched unlinked feature ${matchingFeature.id}`,
-    );
-    return missionStore.linkFeatureToTask(matchingFeature.id, task.id);
-  }
-
-  private normalizeMissionFeatureTitle(title: string): string {
-    return title.trim().replace(/\s+/g, " ").toLowerCase();
   }
 
   /**
@@ -3401,202 +3358,70 @@ export class Scheduler {
    *
    * @returns The total number of fixes applied across all missions
    */
-  async reconcileAllMissionFeatures(): Promise<number> {
-    if (!this.options.missionStore) {
-      return 0;
-    }
-
+  async reconcileAllMissionFeatures(source: MissionReconcileSource = "self-healing"): Promise<number> {
+    if (!this.options.missionStore) return 0;
+    /*
+    FNXC:MissionAutoReconcile 2026-08-11-02:39:
+    Correction scans every non-archived mission and slice, but never activates or triages work.
+    Those autonomy actions remain in their dedicated active-mission paths; this shared service only
+    projects deterministic task ground truth into existing roadmap state.
+    */
     const missionStore = this.options.missionStore;
-    let totalFixed = 0;
+    /*
+    FNXC:MissionAutoReconcile 2026-08-11-03:10:
+    Reconcile unique title matches before the active-only triage tier. Otherwise an unlinked
+    feature with an already-existing delivery task is triaged into a duplicate before correction
+    can restore its guarded task link.
+    */
+    const result = await reconcileMissionState({ taskStore: this.store, missionStore }, { source });
+    const activationFixes = await this.reconcileActiveMissionAutomation(missionStore);
+    return result.statusUpdates + result.badgeRepairs + result.terminalRepairs + activationFixes;
+  }
 
+  /*
+  FNXC:MissionAutoReconcile 2026-08-11-02:39:
+  Correction intentionally scans non-archived history, but this activation tier remains limited
+  to active missions and active slices. It retains generated-fix recovery and triage without
+  creating work while correcting an idle, blocked, or complete roadmap.
+  */
+  private async reconcileActiveMissionAutomation(missionStore: MissionStore | AsyncMissionStore): Promise<number> {
+    let fixed = 0;
     try {
-      const missions = await missionStore.listMissions();
-      const activeMissions = missions.filter((m) => m.status === "active");
-      const activeMissionIds = new Set(activeMissions.map((mission) => mission.id));
-      const taskBySliceAndTitle = new Map<string, Task | null>();
-      const missionTasks = await this.store.listTasks({ slim: true, includeArchived: false });
-
-      for (const task of missionTasks) {
-        if (!task.missionId || !task.sliceId || !task.title || !activeMissionIds.has(task.missionId)) {
-          continue;
-        }
-
-        const key = this.getMissionFeatureTitleKey(task.sliceId, task.title);
-        taskBySliceAndTitle.set(
-          key,
-          taskBySliceAndTitle.has(key) ? null : task,
-        );
-      }
-
-      for (const mission of activeMissions) {
+      const missions = (await missionStore.listMissions()).filter((mission) => mission.status === "active");
+      for (const mission of missions) {
         const hierarchy = await missionStore.getMissionWithHierarchy(mission.id);
         if (!hierarchy) continue;
-
-        const activeSlices = hierarchy.milestones
-          .flatMap((milestone) => milestone.slices)
-          .filter((slice) => slice.status === "active");
-
-        for (const slice of activeSlices) {
-          const missionAutoTriageEnabled = mission.autopilotEnabled === true || mission.autoAdvance === true;
-          const supersededFixes = await missionStore.reconcileSupersededGeneratedFixFeatures(slice.id);
-          if (supersededFixes.supersededCount > 0) {
-            totalFixed += supersededFixes.supersededCount;
-            schedulerLog.warn(
-              `Superseded ${supersededFixes.supersededCount} stale generated fix feature(s) during mission reconciliation for slice ${slice.id}`,
-            );
+        for (const slice of hierarchy.milestones.flatMap((milestone) => milestone.slices).filter((slice) => slice.status === "active")) {
+          const superseded = await missionStore.reconcileSupersededGeneratedFixFeatures(slice.id);
+          fixed += superseded.supersededCount;
+          if (superseded.supersededCount > 0) {
+            const refreshed = await missionStore.getSlice(slice.id);
+            if (refreshed?.status === "complete") { await this.onSliceComplete(refreshed); continue; }
           }
-          const features = supersededFixes.supersededCount > 0
-            ? await missionStore.listFeatures(slice.id)
-            : slice.features;
-          const supersededFeatureIds = new Set(supersededFixes.featureIds);
-
-          if (supersededFixes.supersededCount > 0) {
-            const refreshedSlice = await missionStore.getSlice(slice.id);
-            if (refreshedSlice?.status === "complete") {
-              /*
-              FNXC:Missions 2026-07-11-12:35:
-              Startup reconciliation can terminalize every stale generated-fix feature in an active slice before the scheduler loop runs no-task recovery.
-              Treat the recomputed complete slice as complete immediately so stale fixes do not keep an active slice from advancing after restart.
-              */
-              await this.onSliceComplete(refreshedSlice);
-              continue;
-            }
-          }
-
+          const listFeatures = (missionStore as unknown as { listFeatures?: (sliceId: string) => Promise<MissionFeature[]> }).listFeatures;
+          const features = listFeatures ? await listFeatures(slice.id) : slice.features;
+          const supersededFeatureIds = new Set(superseded.featureIds ?? []);
+          const autoTriage = mission.autopilotEnabled === true || mission.autoAdvance === true;
           for (const feature of features) {
-            let featureForReconciliation = feature;
-            let task: Task | undefined;
-            if (supersededFeatureIds.has(feature.id)) {
-              /*
-              FNXC:Missions 2026-07-11-12:35:
-              The title-to-task map is built before generated-fix supersedence detaches stale task ownership.
-              Skip freshly superseded features so pre-reconciliation task links cannot be restored in the same startup sweep.
-              */
+            if (supersededFeatureIds.has(feature.id) || feature.taskId || !autoTriage || feature.status === "blocked") continue;
+            if (feature.status !== "defined" && this.isGeneratedFixFeature(feature)) {
+              await missionStore.updateFeature(feature.id, { status: "blocked", loopState: "blocked", taskId: undefined });
+              fixed++;
               continue;
             }
-            if (feature.status === "done" && this.isGeneratedFixFeature(feature) && !feature.taskId) {
-              /*
-              FNXC:Missions 2026-07-11-12:35:
-              Done generated-fix features with no task ownership are terminal after supersedence clears their board links.
-              Keep any done feature that still has task ownership in startup self-healing so linked task drift can still be repaired.
-              */
-              continue;
-            }
-            if (feature.taskId) {
-              task = await this.store.getTask(feature.taskId);
-            } else {
-              const matchedTask = taskBySliceAndTitle.get(
-                this.getMissionFeatureTitleKey(feature.sliceId, feature.title),
-              );
-              if (matchedTask) {
-                schedulerLog.warn(
-                  `Repairing one-way mission link during reconciliation: task ${matchedTask.id} matched unlinked feature ${feature.id}`,
-                );
-                featureForReconciliation = await missionStore.linkFeatureToTask(feature.id, matchedTask.id);
-                task = matchedTask;
-                totalFixed++;
-                await this.emitStrandedFeatureTriageAudit(mission.id, slice.id, feature.id, matchedTask.id);
-              } else if (
-                missionAutoTriageEnabled
-                && feature.status !== "blocked"
-              ) {
-                if (feature.status !== "defined" && this.isGeneratedFixFeature(feature)) {
-                  try {
-                    schedulerLog.warn(
-                      `Blocking stranded generated fix feature ${feature.id}: no linked task and no title-matched task available`,
-                    );
-                    await missionStore.updateFeature(feature.id, {
-                      status: "blocked",
-                      loopState: "blocked",
-                      taskId: undefined,
-                    });
-                    totalFixed++;
-                  } catch (error) {
-                    schedulerLog.warn(
-                      `Failed to block stranded fix feature ${feature.id} during reconciliation: ${error instanceof Error ? error.message : String(error)}`,
-                    );
-                  }
-                } else if (feature.status === "defined" || feature.status === "triaged" || feature.status === "in-progress") {
-                  try {
-                    const featureToTriage = feature.status === "defined"
-                      ? feature
-                      : await missionStore.updateFeature(feature.id, {
-                        status: "defined",
-                        loopState: "idle",
-                        taskId: undefined,
-                      });
-                    if (featureToTriage.status !== feature.status) {
-                      totalFixed++;
-                    }
-                    featureForReconciliation = await missionStore.triageFeature(featureToTriage.id);
-                    task = featureForReconciliation.taskId
-                      ? await this.store.getTask(featureForReconciliation.taskId)
-                      : undefined;
-                    totalFixed++;
-                    if (featureForReconciliation.taskId) {
-                      await this.emitStrandedFeatureTriageAudit(
-                        mission.id,
-                        slice.id,
-                        featureForReconciliation.id,
-                        featureForReconciliation.taskId,
-                      );
-                    }
-                  } catch (error) {
-                    schedulerLog.warn(
-                      `Failed to triage stranded feature ${feature.id} during reconciliation: ${error instanceof Error ? error.message : String(error)}`,
-                    );
-                  }
-                } else {
-                  schedulerLog.warn(
-                    `Skipping stranded feature ${feature.id} with terminal status ${feature.status}: no linked task and no title-matched task available`,
-                  );
-                }
-              }
-            }
-
-            if (!task) continue;
-
-            const hasLinkedAssertions = (await missionStore.listAssertionsForFeature(featureForReconciliation.id)).length > 0;
-            const reconciliation = await reconcileMissionFeatureState(this.store, task, featureForReconciliation, {
-              hasLinkedAssertions,
-            });
-
-            /*
-            FNXC:SpecLockMissionAlignment 2026-08-10-16:17:
-            Periodic reconciliation must retain the same drift projection as event-driven moves;
-            otherwise a quiet task's alignment disappears until an unrelated status transition.
-            */
-            if (await persistMissionFeatureReconciliation(missionStore, featureForReconciliation, reconciliation)) {
-              totalFixed++;
-            }
-
-            if (reconciliation.kind === "failure") {
-              if (this.options.onTaskFailed) {
-                await this.options.onTaskFailed(task.id);
-                totalFixed++;
-              } else {
-                schedulerLog.warn(`Skipping failed feature reconciliation for ${feature.id} — ${reconciliation.reason}`);
-              }
-              continue;
-            }
-
-            if (reconciliation.kind === "blocked") {
-              schedulerLog.warn(`Skipping feature ${feature.id} reconciliation — ${reconciliation.reason}`);
-              continue;
-            }
-
+            if (feature.status !== "defined" && feature.status !== "triaged" && feature.status !== "in-progress") continue;
+            const ready = feature.status === "defined" ? feature : await missionStore.updateFeature(feature.id, { status: "defined", loopState: "idle", taskId: undefined });
+            if (ready !== feature) fixed++;
+            const triaged = await missionStore.triageFeature(ready.id);
+            fixed++;
+            if (triaged.taskId) await this.emitStrandedFeatureTriageAudit(mission.id, slice.id, triaged.id, triaged.taskId);
           }
         }
       }
-
-      if (totalFixed > 0) {
-        schedulerLog.log(`Mission feature reconciliation: fixed ${totalFixed} inconsistencies`);
-      }
-    } catch (err) {
-      schedulerLog.error("Error during mission feature reconciliation:", err);
+    } catch (error) {
+      schedulerLog.error("Error during active mission recovery reconciliation:", error);
     }
-
-    return totalFixed;
+    return fixed;
   }
 
   private async emitStrandedFeatureTriageAudit(
@@ -3628,10 +3453,6 @@ export class Scheduler {
         `Feature ${featureId} failed to emit stranded-feature triage audit: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-  }
-
-  private getMissionFeatureTitleKey(sliceId: string, title: string): string {
-    return `${sliceId}\0${this.normalizeMissionFeatureTitle(title)}`;
   }
 
   private isGeneratedFixFeature(feature: Pick<MissionFeature, "generatedFromFeatureId" | "generatedFromRunId">): boolean {

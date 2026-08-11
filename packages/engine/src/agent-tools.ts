@@ -35,6 +35,7 @@ import { recordRetry } from "./errors/retry-burned-logger.js";
 import { acquireWorkspaceRepoWorktree, WorkspaceRepoAcquireBusyError } from "./worktree/worktree-acquisition.js";
 import { validateCodeNodeSources } from "./execution/code-node-runner.js";
 import { resolveFeatureRepairTargets } from "./missions/mission-feature-sync.js";
+import { reconcileMissionState } from "./missions/mission-state-reconcile.js";
 
 // ── Tool parameter schemas (canonical definitions) ────────────────────────
 
@@ -4378,6 +4379,7 @@ export const missionCreateParams = Type.Object({
 export const missionUpdateParams = Type.Object({ id: Type.String(), title: Type.Optional(Type.String()), description: Type.Optional(Type.String()) });
 export const missionDeleteParams = Type.Object({ id: Type.String() });
 export const missionSetStatusParams = Type.Object({ id: Type.String(), status: Type.Union(fusionCore.MISSION_STATUSES.map((status) => Type.Literal(status))), reason: Type.Optional(Type.String()) });
+export const missionReconcileParams = Type.Object({ id: Type.Optional(Type.String()), dryRun: Type.Optional(Type.Boolean()) });
 export const milestoneAddParams = Type.Object({ missionId: Type.String(), title: Type.String(), description: Type.Optional(Type.String()) });
 export const milestoneUpdateParams = Type.Object({ id: Type.String(), title: Type.Optional(Type.String()), description: Type.Optional(Type.String()), acceptanceCriteria: Type.Optional(Type.String()) });
 export const milestoneDeleteParams = Type.Object({ milestoneId: Type.String(), force: Type.Optional(Type.Boolean()) });
@@ -4526,6 +4528,10 @@ export function createMissionTools(store: TaskStore, context: MissionToolActorCo
       return missionToolResult(`Set ${mission.id} status to ${mission.status}`, { mission });
     }),
     tool("fn_mission_delete", "Delete Mission", "Delete a mission and its hierarchy.", missionDeleteParams, async ({ id }) => { await store.getMissionStore().deleteMission(id); return missionToolResult(`Deleted ${id}`, { missionId: id }); }),
+    tool("fn_mission_reconcile", "Reconcile Mission", "Reconcile mission state against deterministic delivery ground truth.", missionReconcileParams, async (p) => {
+      const result = await reconcileMissionState({ taskStore: store, missionStore: store.getMissionStore() }, { missionId: p.id, dryRun: p.dryRun === true, source: "tool", actor });
+      return missionToolResult(`Reconciled ${p.id ?? "project"}`, result as unknown as Record<string, unknown>);
+    }),
     tool("fn_milestone_add", "Add Milestone", "Add a milestone to a mission.", milestoneAddParams, async (p) => { const milestone = await store.getMissionStore().addMilestone(p.missionId, { title: p.title.trim(), description: optionalText(p.description) }); return missionToolResult(`Added ${milestone.id}`, { milestone }); }),
     tool("fn_milestone_update", "Update Milestone", "Partially update a milestone.", milestoneUpdateParams, async (p) => { const updates = updateFields(p, ["title", "description", "acceptanceCriteria"]); if (!Object.keys(updates).length) return missionToolResult("No fields to update", {}, true); const milestone = await store.getMissionStore().updateMilestone(p.id, updates); return missionToolResult(`Updated ${milestone.id}`, { milestone }); }),
     tool("fn_milestone_delete", "Delete Milestone", "Delete a milestone and descendants.", milestoneDeleteParams, async (p) => { await store.getMissionStore().deleteMilestone(p.milestoneId, p.force === true); return missionToolResult(`Deleted ${p.milestoneId}`, { milestoneId: p.milestoneId }); }),
