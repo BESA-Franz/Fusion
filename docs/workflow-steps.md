@@ -1008,3 +1008,7 @@ A review node may persist `reviewerAgentId` in its IR. It is exact-node scoped a
 Task creation resolves ownership once at the shared pre-insert boundary used by ordinary and reserved-ID creates. A durable owner must be a non-ephemeral, runtime-enabled executor not paused or errored and permitted by implementation assignment policy. A valid explicit owner wins; otherwise the first reachable execute-node column binding is used, then the deterministic executor pool. Planning and review principals remain work-item-scoped and never rewrite this owner.
 
 `workflowId: null` disables workflow-step materialization only: it still resolves from the executor pool. The only internal exemption is an options-bag reason for terminal, historical, or fixture creation; no HTTP/tool/CLI payload can set it. Resolution outcomes are distinct: `selected` persists an owner; internal `exempt` deliberately persists null; `rejected` fails before insertion; and `unowned` succeeds only when no eligible executor exists, emitting `task:intake-owner-unresolved` for ordinary later assignment.
+
+### Board visibility of pre-release Plan Review
+
+Board hold-lane payloads can expose a transient `releaseGate` verdict. It makes the resolved pre-release Plan Review node, its column/default-on state, and a capacity-boundary continuation observable to Promote controls without duplicating workflow-gate rules in the browser.

@@ -95,6 +95,7 @@ import {
 
   planTaskWorktreePath,
   promoteHeldTask,
+  evaluateTaskReleaseGate,
   performTaskRevert,
   revertWorkspaceTask,
   TaskRevertError,
@@ -1479,12 +1480,14 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         const enrichable = holdRows.slice(0, AWAITING_PLANNING_ENRICH_LIMIT);
         if (holdRows.length > enrichable.length) {
           severityAuditLog.warn(
-            `awaitingPlanning enrichment truncated: ${enrichable.length}/${holdRows.length} hold-lane tasks ` +
+            `awaitingPlanning/releaseGate enrichment truncated: ${enrichable.length}/${holdRows.length} hold-lane tasks ` +
             "annotated (remaining cards fall back to the client step-count heuristic)",
           );
         }
         if (enrichable.length > 0) {
           const flagByTask = new Map<string, boolean>();
+          const releaseGateByTask = new Map<string, import("@fusion/core").TaskReleaseGateVerdict>();
+          const irCache = new Map<string, WorkflowIr>();
           await Promise.all(enrichable.map(async (task) => {
             let promptContent: string | null = null;
             try {
@@ -1496,11 +1499,22 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
               if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") return;
             }
             flagByTask.set(task.id, isTaskAwaitingPlanning(task, promptContent));
+            /*
+            FNXC:PromoteVisibility 2026-08-11-20:38:
+            Share the hold-lane cap with awaitingPlanning and cache IR resolution per selected workflow:
+            exact Promote visibility must not turn a board load into unbounded workflow reads.
+            */
+            const ir = await resolveWorkflowIrForTask(scopedStore, task.id, irCache);
+            const releaseGate = await evaluateTaskReleaseGate(scopedStore, task, { ir });
+            if (releaseGate) releaseGateByTask.set(task.id, releaseGate);
           }));
-          if (flagByTask.size > 0) {
+          if (flagByTask.size > 0 || releaseGateByTask.size > 0) {
             tasks = tasks.map((task) => {
               const awaitingPlanning = flagByTask.get(task.id);
-              return awaitingPlanning === undefined ? task : { ...task, awaitingPlanning };
+              const releaseGate = releaseGateByTask.get(task.id);
+              return awaitingPlanning === undefined && releaseGate === undefined
+                ? task
+                : { ...task, ...(awaitingPlanning === undefined ? {} : { awaitingPlanning }), ...(releaseGate === undefined ? {} : { releaseGate }) };
             });
           }
         }

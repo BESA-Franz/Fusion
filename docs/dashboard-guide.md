@@ -2434,3 +2434,7 @@ Activity includes durable and ephemeral agent sessions from heartbeat, executor,
 ## Plan alignment in Task Detail
 
 The shared Task Detail Definition view shows the persisted spec alignment, latest lock/current-plan versions, and deterministic finding categories. `activeLock` is derived from the live approval fingerprint and current-plan hash; an unavailable or inactive lock is not presented as on-plan. A historical report from a prior lock or plan revision stays in retained history and displays as unavailable until a matching current report exists. Findings are structural; `mission-statement` identifies a changed Mission narrative hash without displaying or judging its prose. The same shared content is used by modal and right-dock task detail hosts.
+
+### Promote release-gate enrichment
+
+`GET /api/tasks` may attach a transient `releaseGate` verdict to hold-lane cards. It includes the resolved release target, pre-release Plan Review facts, and capacity-boundary state, so Promote visibility exactly matches the server while the verdict is fresh. SSE does not carry this field: `useTasks` retains it only while its visible-evidence fingerprint and task row clock match, and for at most `RELEASE_GATE_VERDICT_MAX_AGE_MS` (30 seconds). Otherwise the card uses the conservative client fallback because workflow IR, continuations, and prompt content are not browser-visible.

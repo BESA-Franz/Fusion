@@ -643,6 +643,19 @@ export interface TaskRecommendation {
   createdTaskId?: string;
 }
 
+export interface TaskReleaseGateVerdict {
+  promoteBlocked: boolean;
+  unplannedForExecution: boolean;
+  blockedOnApproval: boolean;
+  reason: "plan-review-pending" | "planning-status" | "needs-replan" | "duplicate-prompt" | "seed-prompt" | "awaiting-approval" | null;
+  readyAtCapacityBoundary: boolean;
+  planReview?: { nodeId: string; column: string; defaultOn: boolean; enabled: boolean; appliesToColumn: boolean; satisfied: boolean };
+  releaseTargetColumn?: string;
+  targetCountsTowardWip?: boolean;
+  evaluatedAt: string;
+  evaluatedForUpdatedAt?: string;
+}
+
 export interface Task {
   id: string;
   /** Immutable lineage identity used for durable commit/task attribution. */
@@ -1188,6 +1201,13 @@ export interface Task {
    * step-count heuristic when the field is absent.
    */
   awaitingPlanning?: boolean;
+  /**
+   * FNXC:PromoteVisibility 2026-08-11-20:38:
+   * GET /api/tasks attaches this best-effort hold-lane verdict only. It is transient: never store it
+   * in task.json or emit it over SSE; consumers must fall back when absent and must expire carried
+   * values under useTasks' evidence fingerprint, row-clock, and TTL contract.
+   */
+  releaseGate?: TaskReleaseGateVerdict;
   /** Explicitly assigned agent ID for task-agent linking. Distinct from Agent.taskId active execution state. */
   assignedAgentId?: string;
   /** Per-task node override. When set, this task routes to the specified node instead of the project's default node. Undefined means use the project default. Use empty string to explicitly clear. */
