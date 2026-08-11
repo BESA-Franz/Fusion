@@ -338,6 +338,37 @@ describe("CLI package.json publishing config", () => {
       },
     );
 
+    /*
+    FNXC:Packaging 2026-08-11-05:52:
+    FN-8978 removed the duplicate TypeScript declaration from CLI devDependencies.
+    Prepack copies remaining devDependencies into the published manifest, so this
+    guard covers the packed output as well as the source manifest.
+    */
+    it("published manifest keeps tsup externals as runtime-only dependencies", () => {
+      const publishedPkg = applyPrepackTransform(pkg);
+      const deps = Object.keys(publishedPkg.dependencies || {});
+      const devDeps = Object.keys(publishedPkg.devDependencies || {});
+
+      for (const external of externals) {
+        if (
+          builtinModules.includes(external) ||
+          external.startsWith("node:") ||
+          external in TRANSITIVE_EXTERNALS
+        ) {
+          continue;
+        }
+
+        expect(
+          deps,
+          `published tsup external "${external}" must be in @runfusion/fusion dependencies — otherwise \`npx runfusion.ai\` fails with ERR_MODULE_NOT_FOUND on a clean install. If this is a transitive dep, add it to TRANSITIVE_EXTERNALS with a reason.`,
+        ).toContain(external);
+        expect(
+          devDeps,
+          `published tsup external "${external}" must not be only a devDependency`,
+        ).not.toContain(external);
+      }
+    });
+
     it("TRANSITIVE_EXTERNALS entries still appear in tsup external (otherwise stale)", () => {
       for (const name of Object.keys(TRANSITIVE_EXTERNALS)) {
         expect(

@@ -441,6 +441,12 @@ const cliBuildConfig = {
     */
     "playwright-core",
     // FNXC:KnowledgeGraph 2026-08-10-10:00: TypeScript 5.9.3 (sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==) stays runtime external.
+    /*
+    FNXC:KnowledgeGraph 2026-08-11-05:52:
+    FN-8978 requires TypeScript to remain a runtime dependency only, never a
+    devDependency or TRANSITIVE_EXTERNALS entry: bundled @fusion/core knowledge-
+    graph extractors import it from dist/bin.js at runtime.
+    */
     "typescript",
   ],
   splitting: false,
