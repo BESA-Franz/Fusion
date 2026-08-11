@@ -93,6 +93,18 @@ describe("CLI package.json publishing config", () => {
   const pkg = loadPackageJson("cli");
   const prepackScript = loadCliPrepackScript();
 
+  /*
+   * FNXC:CliRuntimeContract 2026-08-11-09:30:
+   * Node 22.4 is the supported floor because the CLI uses import attributes and
+   * `node:fs/promises` glob; declaring it prevents unsupported runtimes from
+   * silently reaching the Node 22.4+ exit-13 liveness path FN-8954 repaired.
+   */
+  it("declares the supported Node runtime in both manifests", () => {
+    const rootPkg = loadRootPackageJson();
+    expect(pkg.engines?.node).toBe(">=22.4.0");
+    expect(rootPkg.engines?.node).toBe(pkg.engines.node);
+  });
+
   it('has "bin" field with fn/fusion pointing to committed launcher', () => {
     expect(pkg.bin).toBeDefined();
     expect(pkg.bin.fn).toBe("./bin.mjs");

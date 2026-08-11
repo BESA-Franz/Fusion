@@ -6,7 +6,7 @@ This guide consolidates the detailed testing guidance moved from `AGENTS.md`.
 
 ## The merge gate
 
-CI blocks PRs on exactly four checks (`.github/workflows/pr-checks.yml`): **Lint, Typecheck, Build, Gate**. The Gate job runs the boot smoke (`scripts/boot-smoke.mjs`: CLI `--help` + a real `fn serve` answering `GET /api/health`) and `pnpm test:gate`: 11 static policy validators, 22 curated `engine-core` files, two PostgreSQL canaries, four core unit files, then the CI-shape test. Everything else — the 4-way shards, the engine slow tier, the dashboard inventory guard — runs NON-BLOCKING in `.github/workflows/full-suite.yml` on push to main.
+CI blocks PRs on exactly four checks (`.github/workflows/pr-checks.yml`): **Lint, Typecheck, Build, Gate**. The Gate job runs the boot smoke (`scripts/boot-smoke.mjs`: CLI `--help`, real `fn init` with a durable `.fusion/project.json` marker, then a real `fn serve` answering `GET /api/health`, all against one isolated home) and `pnpm test:gate`: 11 static policy validators, 22 curated `engine-core` files, two PostgreSQL canaries, four core unit files, then the CI-shape test. Everything else — the 4-way shards, the engine slow tier, the dashboard inventory guard — runs NON-BLOCKING in `.github/workflows/full-suite.yml` on push to main.
 
 Gate membership is the explicit allow-list in `packages/engine/vitest.config.ts` (`engine-core` project). Admission requires evidence of value (the test catches real regressions); tests never graduate in by default. A flaky gate test is evicted by deleting its allow-list line — the eviction PR does not need the flaky test to pass. The whole `engine-core` project must stay under ~60s wall-clock.
 
@@ -37,7 +37,7 @@ Use the narrowest command that exercises the behavior you changed, then broaden 
 ```bash
 pnpm test              # gate suite + changed-only affected tests (bounded; never full-suite)
 pnpm test:gate         # the merge gate: curated engine-core suite + CI-shape test
-pnpm smoke:boot        # boot smoke: CLI --help + real serve /api/health
+pnpm smoke:boot        # boot smoke: CLI --help + init marker + real serve /api/health
 pnpm verify:fast       # TEST-FREE: static check:* gates + bootstrap + scoped typecheck/build + CLI build + boot smoke
 pnpm test:full         # full workspace suite — explicit opt-in only
 pnpm lint              # lint all packages

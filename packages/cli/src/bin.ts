@@ -2362,6 +2362,12 @@ async function main() {
   }
 }
 
+/*
+ * FNXC:CliAwaitLiveness 2026-08-11-09:17:
+ * Preserve this await and the skip-main build/test guard. A forced success exit
+ * would mask a non-settling command promise and could terminate long-running
+ * CLI modes before their intended shutdown path completes.
+ */
 if (process.env.FUSION_CLI_SKIP_MAIN !== "1") {
   await main();
 }
