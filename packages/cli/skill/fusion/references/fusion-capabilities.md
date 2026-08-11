@@ -77,6 +77,7 @@ All skill/extension tool invocations in this catalog use the public `fn_*` names
 | `fn_slice_activate` | Activate a pending slice for implementation. Sets status to 'active' and enables task linking for its features. |
 | `fn_feature_link_task` | Link a feature to a fn task for implementation. Updates the feature status to 'triaged' and associates it with the task. If the target task is not on the active board (for example archived, deleted, or never created), the tool returns a clear validation error indicating that only active tasks can be linked. |
 | `fn_feature_set_status` | Set a feature lifecycle status. |
+| `fn_feature_repair_validation` | Clear a stale validation badge or re-run validation. |
 | `fn_feature_update` | Update an existing feature's title, description, or acceptance criteria. Partial patches leave untouched fields intact. |
 | `fn_milestone_update` | Update an existing milestone's title, description, or acceptance criteria (the structured pass/fail bar, distinct from verification's free-form how-to-confirm notes). Partial patches leave untouched fields intact. |
 | `fn_agent_stop` | Stop a running agent — pauses its execution without changing assigned task pause state. Transitions the agent from running/active to paused state. |

@@ -34,6 +34,7 @@ import { emitGoalRetrievalAudit } from "./goals/goal-anchoring-audit.js";
 import { recordRetry } from "./errors/retry-burned-logger.js";
 import { acquireWorkspaceRepoWorktree, WorkspaceRepoAcquireBusyError } from "./worktree/worktree-acquisition.js";
 import { validateCodeNodeSources } from "./execution/code-node-runner.js";
+import { resolveFeatureRepairTargets } from "./missions/mission-feature-sync.js";
 
 // ── Tool parameter schemas (canonical definitions) ────────────────────────
 
@@ -4388,6 +4389,7 @@ export const featureUpdateParams = Type.Object({ id: Type.String(), title: Type.
 export const featureDeleteParams = Type.Object({ featureId: Type.String(), force: Type.Optional(Type.Boolean()) });
 export const featureSetStatusParams = Type.Object({ id: Type.String(), status: Type.Union(fusionCore.FEATURE_STATUSES.map((status) => Type.Literal(status))), reason: Type.Optional(Type.String()) });
 export const featureLinkTaskParams = Type.Object({ featureId: Type.String(), taskId: Type.String() });
+export const featureRepairValidationParams = Type.Object({ id: Type.String(), action: Type.Union([Type.Literal("clear"), Type.Literal("re_run")]), reason: Type.Optional(Type.String()) });
 export const researchFindingPromoteParams = Type.Object({
   runId: Type.String(),
   findingId: Type.String(),
@@ -4532,6 +4534,40 @@ export function createMissionTools(store: TaskStore, context: MissionToolActorCo
     tool("fn_slice_delete", "Delete Slice", "Delete a slice and descendants.", sliceDeleteParams, async (p) => { await store.getMissionStore().deleteSlice(p.sliceId, p.force === true); return missionToolResult(`Deleted ${p.sliceId}`, { sliceId: p.sliceId }); }),
     tool("fn_feature_add", "Add Feature", "Add a feature to a slice.", featureAddParams, async (p) => { const feature = await store.getMissionStore().addFeature(p.sliceId, { title: p.title.trim(), description: optionalText(p.description), acceptanceCriteria: optionalText(p.acceptanceCriteria) }); return missionToolResult(`Added ${feature.id}`, { feature }); }),
     tool("fn_feature_update", "Update Feature", "Partially update a feature.", featureUpdateParams, async (p) => { const updates = updateFields(p, ["title", "description", "acceptanceCriteria"]); if (!Object.keys(updates).length) return missionToolResult("No fields to update", {}, true); const feature = await store.getMissionStore().updateFeature(p.id, updates); return missionToolResult(`Updated ${feature.id}`, { feature }); }),
+    tool("fn_feature_repair_validation", "Repair Feature Validation", "Clear a stale validation badge or re-run validation.", featureRepairValidationParams, async (p) => {
+      const missionStore = store.getMissionStore();
+      if (!("repairFeatureValidationState" in missionStore)) {
+        return missionToolResult("Validation repair requires the PostgreSQL mission store", { code: "POSTGRES_REQUIRED" }, true);
+      }
+      const feature = await missionStore.getFeature(p.id);
+      if (!feature) return missionToolResult(`Feature ${p.id} not found`, { code: "FEATURE_NOT_FOUND", featureId: p.id }, true);
+      const eligibility = fusionCore.featureValidationRepairEligibility(feature);
+      if ((p.action === "clear" && !eligibility.clear) || (p.action === "re_run" && !eligibility.reRun)) {
+        return missionToolResult(`Cannot ${p.action === "clear" ? "clear" : "re-run"} validation for ${feature.id}: current loop state is ${feature.loopState ?? "idle"} and status is ${feature.status}.`, { code: "FEATURE_REPAIR_INELIGIBLE", feature }, true);
+      }
+      if (p.action === "re_run") {
+        const repaired = await missionStore.repairFeatureValidationState(p.id, { action: p.action, actor, reason: p.reason });
+        return missionToolResult(`Re-ran validation for ${p.id}`, { feature: repaired.feature, run: repaired.run });
+      }
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const currentFeature = await missionStore.getFeature(p.id);
+        if (!currentFeature) return missionToolResult(`Feature ${p.id} not found`, { code: "FEATURE_NOT_FOUND", featureId: p.id }, true);
+        const targets = await resolveFeatureRepairTargets(store, currentFeature);
+        try {
+          const repaired = await missionStore.repairFeatureValidationState(p.id, {
+            action: "clear", actor, reason: p.reason, resolvedStatus: targets.status,
+            resolvedLoopState: targets.resumeImplementation ? "implementing" : "idle", groundTruth: targets.groundTruth,
+          });
+          return missionToolResult(`Cleared validation state for ${p.id}`, { feature: repaired.feature ?? repaired });
+        } catch (error) {
+          if (!(error instanceof fusionCore.RepairGroundTruthStaleError) || attempt === 1) {
+            if (error instanceof fusionCore.RepairGroundTruthStaleError) return missionToolResult("Linked task state changed while repairing; re-check the feature and retry.", { code: "FEATURE_REPAIR_STALE" }, true);
+            throw error;
+          }
+        }
+      }
+      return missionToolResult("Linked task state changed while repairing; re-check the feature and retry.", { code: "FEATURE_REPAIR_STALE" }, true);
+    }),
     /* FNXC:MissionStatusWrites 2026-08-10-12:47: Dedicated status tools preserve the linked-task guard; generic partial updates intentionally cannot bypass it. */
     tool("fn_feature_set_status", "Set Feature Status", "Set a feature lifecycle status.", featureSetStatusParams, async (p) => {
       if (!fusionCore.FEATURE_STATUSES.includes(p.status)) return missionToolResult(`Invalid status. Must be one of: ${fusionCore.FEATURE_STATUSES.join(", ")}`, {}, true);

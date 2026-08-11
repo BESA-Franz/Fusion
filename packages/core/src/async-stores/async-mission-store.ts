@@ -14,7 +14,7 @@ import { EventEmitter } from "node:events";
 import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import * as schema from "../postgres/schema/index.js";
 import type { AsyncDataLayer } from "../postgres/data-layer.js";
-import { buildMissionStatusEventMetadata, FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionType, renderValidationCause, selectNextSerialMissionSlice } from "../missions/mission-types.js";
+import { boundMissionEventReason, FEATURE_LOOP_REPAIR_TRANSITIONS, buildMissionStatusEventMetadata, featureValidationRepairEligibility, FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionType, normalizeMissionTransitionActorForEvent, renderValidationCause, selectNextSerialMissionSlice } from "../missions/mission-types.js";
 import type {
   Mission,
   Milestone,
@@ -49,6 +49,7 @@ import type {
   ValidationDiagnostics,
   MissionTransitionActor,
   MissionUpdateOptions,
+  MissionFeatureRepairGroundTruth,
 } from "../missions/mission-types.js";
 import type { Goal } from "../goals/goal-types.js";
 import {
@@ -227,6 +228,38 @@ export class MissionResumeConflictError extends Error {
   constructor(public readonly blockers: Array<{ id: string; reason: string }>) {
     super("Mission resume is blocked by non-resumable lineage stops");
     this.name = "MissionResumeConflictError";
+  }
+}
+
+/** Raised when a stale caller view offers an action no longer supported by the locked feature. */
+export class RepairNotEligibleError extends Error {
+  constructor(featureId: string, action: string) {
+    super(`Feature ${featureId} is not eligible for validation repair action '${action}'`);
+    this.name = "RepairNotEligibleError";
+  }
+}
+
+/** Raised before mutation when caller-derived linked-task ground truth has changed. */
+export class RepairGroundTruthStaleError extends Error {
+  constructor(featureId: string, message = `Ground truth for feature ${featureId} changed while repairing`) {
+    super(message);
+    this.name = "RepairGroundTruthStaleError";
+  }
+}
+
+/** Expected re-run conflict: an existing validation run must retain exclusive ownership. */
+export class RepairValidatorRunInFlightError extends Error {
+  constructor(featureId: string) {
+    super(`Feature ${featureId} already has a running validator run`);
+    this.name = "RepairValidatorRunInFlightError";
+  }
+}
+
+/** Expected re-run input failure retained from the manual validation entry point. */
+export class RepairAssertionsMissingError extends Error {
+  constructor() {
+    super("Feature has no linked assertions. Link assertions before triggering validation.");
+    this.name = "RepairAssertionsMissingError";
   }
 }
 
@@ -1566,34 +1599,171 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
   }
 
   // ════════════════ VALIDATOR RUNS ════════════════
+  /**
+   * Explicit actor-only escape hatch for stale validation badges. It deliberately does not alter
+   * transitionLoopState: ordinary execution remains unable to leave a blocked state.
+   */
+  async repairFeatureValidationState(
+    featureId: string,
+    options: {
+      action: "clear" | "re_run";
+      actor: MissionTransitionActor;
+      reason?: string;
+      resolvedStatus?: FeatureStatus;
+      resolvedLoopState?: FeatureLoopState;
+      groundTruth?: MissionFeatureRepairGroundTruth;
+    },
+  ): Promise<{ feature: MissionFeature; run?: MissionValidatorRun }> {
+    const outcome = await this.layer.transactionImmediate(async (tx) => {
+      const feature = await this.getFeatureForStatusWrite(tx, featureId);
+      if (!feature) throw new Error(`Feature ${featureId} not found`);
+      const eligibility = featureValidationRepairEligibility(feature);
+      if ((options.action === "clear" && !eligibility.clear) || (options.action === "re_run" && !eligibility.reRun)) {
+        throw new RepairNotEligibleError(featureId, options.action);
+      }
+      const now = new Date().toISOString();
+      const priorLoopState = feature.loopState;
+      const priorStatus = feature.status;
+      let groundTruthMetadata: Record<string, unknown> = {};
+
+      if (options.action === "clear" && feature.status === "blocked") {
+        const fence = options.groundTruth;
+        if (!fence || fence.featureId !== featureId || fence.taskId !== (feature.taskId ?? null)) {
+          throw new RepairGroundTruthStaleError(featureId);
+        }
+        let taskVerified = true;
+        if (fence.taskId === null) {
+          if (fence.taskLiveness !== "absent") throw new RepairGroundTruthStaleError(featureId);
+        } else if (this.taskStore) {
+          /*
+          FNXC:MissionValidationRepair 2026-08-11-02:05:
+          This verifier deliberately uses the engine producer's physical absence predicate only:
+          a missing/soft-deleted row or the legacy `archived` column. It must not resolve workflow
+          lanes under the lock; renamed archived lanes become absent only once archived physically.
+          */
+          const rows = await tx.select({ column: schema.project.tasks.column, updatedAt: schema.project.tasks.updatedAt, deletedAt: schema.project.tasks.deletedAt })
+            .from(schema.project.tasks).where(and(eq(schema.project.tasks.projectId, missionProjectId()), eq(schema.project.tasks.id, fence.taskId))).for("update");
+          const task = rows[0];
+          const liveness = task && !task.deletedAt && task.column !== "archived" ? "live" : "absent";
+          if (fence.taskLiveness === "live") {
+            if (liveness !== "live" || task!.column !== fence.taskColumn || task!.updatedAt !== fence.taskUpdatedAt) throw new RepairGroundTruthStaleError(featureId);
+          } else if (liveness === "live") {
+            throw new RepairGroundTruthStaleError(featureId);
+          }
+        } else {
+          /*
+          FNXC:MissionValidationRepair 2026-08-11-00:06:
+          Production AsyncMissionStore construction supplies TaskStore. This fixture-only fallback
+          verifies feature identity but records that linked-task ground truth was not checked.
+          */
+          taskVerified = false;
+        }
+        groundTruthMetadata = {
+          groundTruthTaskId: fence.taskId,
+          groundTruthLaneRole: fence.laneRole,
+          groundTruthTaskLiveness: fence.taskLiveness,
+          groundTruthTaskVerified: taskVerified,
+        };
+      }
+
+      let updated: MissionFeature;
+      let run: MissionValidatorRun | undefined;
+      if (options.action === "clear") {
+        const currentLoop = feature.loopState;
+        const appliesLoop = currentLoop === "blocked" || currentLoop === "needs_fix";
+        const nextLoop = appliesLoop ? options.resolvedLoopState ?? "idle" : currentLoop;
+        if (appliesLoop && !FEATURE_LOOP_REPAIR_TRANSITIONS[currentLoop].includes(nextLoop!)) {
+          throw new Error(`Invalid validation repair transition from '${currentLoop}' to '${nextLoop}'`);
+        }
+        const appliesStatus = feature.status === "blocked";
+        const nextStatus = appliesStatus ? options.resolvedStatus : feature.status;
+        if (appliesStatus && (nextStatus !== "in-progress" && nextStatus !== "triaged" && nextStatus !== "defined")) {
+          throw new Error("Validation repair requires resolvedStatus of in-progress, triaged, or defined");
+        }
+        if (appliesStatus && (nextStatus === "in-progress" || nextStatus === "triaged") && !feature.taskId) {
+          throw new Error(`Feature ${featureId} has no linked task for status '${nextStatus}'`);
+        }
+        /*
+        FNXC:MissionValidationRepair 2026-08-11-01:20:
+        The engine alone classifies lifecycle lanes, but a caller must not pair an arbitrary
+        status with its fence. This narrow relationship check keeps a live completed/custom lane
+        from being repaired as in-progress while preserving core's no-workflow-resolution rule.
+        */
+        if (appliesStatus) {
+          const fence = options.groundTruth!;
+          const matchesLane = (nextStatus === "in-progress" && fence.taskLiveness === "live" && fence.laneRole === "wip")
+            || (nextStatus === "triaged" && fence.taskLiveness === "live" && fence.laneRole === "planner")
+            || (nextStatus === "defined" && fence.taskLiveness === "absent" && fence.laneRole === "none");
+          if (!matchesLane) throw new RepairGroundTruthStaleError(featureId);
+        }
+        if (!appliesLoop && !appliesStatus) throw new RepairNotEligibleError(featureId, options.action);
+        updated = {
+          ...feature,
+          loopState: nextLoop,
+          status: nextStatus!,
+          implementationAttemptCount: 0,
+          ...(feature.lastValidatorStatus === "blocked" || feature.lastValidatorStatus === "failed" ? { lastValidatorStatus: undefined } : {}),
+          updatedAt: now,
+        };
+        await updateFeature(tx, updated);
+      } else {
+        if (feature.lastValidatorRunId) {
+          const latest = await getValidatorRun(tx, feature.lastValidatorRunId);
+          if (latest?.status === "running") throw new RepairValidatorRunInFlightError(featureId);
+        }
+        if ((await listAssertionsForFeature(tx, featureId)).length === 0) {
+          throw new RepairAssertionsMissingError();
+        }
+        run = await this.buildValidatorRun(tx, feature, "manual");
+        await createValidatorRun(tx, run);
+        updated = { ...feature, validatorAttemptCount: run.validatorAttempt, lastValidatorRunId: run.id, loopState: "validating", updatedAt: now };
+        await updateFeature(tx, updated);
+      }
+      const slice = await getSlice(tx, feature.sliceId);
+      if (!slice) throw new Error(`Slice ${feature.sliceId} not found`);
+      const milestone = await getMilestone(tx, slice.milestoneId);
+      if (!milestone) throw new Error(`Milestone ${slice.milestoneId} not found`);
+      const boundedReason = boundMissionEventReason(options.reason);
+      const event: MissionEvent = {
+        id: this.generateId("ME"), missionId: milestone.missionId, eventType: "feature_validation_repaired", description: "feature validation repaired",
+        metadata: {
+          featureId, action: options.action, priorLoopState, priorStatus, priorLastValidatorStatus: feature.lastValidatorStatus,
+          priorImplementationAttemptCount: feature.implementationAttemptCount ?? 0, nextLoopState: updated.loopState,
+          nextStatus: updated.status, statusChanged: updated.status !== feature.status, ...(run ? { validatorRunId: run.id } : {}),
+          actor: normalizeMissionTransitionActorForEvent(options.actor),
+          ...(boundedReason.value !== undefined ? { reason: boundedReason.value } : {}),
+          ...(boundedReason.truncated ? { reasonTruncated: true } : {}), ...groundTruthMetadata,
+        }, timestamp: now, seq: (await getMaxEventSeq(tx)) + 1,
+      };
+      await insertMissionEvent(tx, event);
+      return { feature: updated, run, event };
+    });
+    this.emit("feature:updated", outcome.feature);
+    if (outcome.run) this.emit("validator-run:started", outcome.run);
+    this.emit("mission:event", outcome.event);
+    await this.recomputeSliceStatus(outcome.feature.sliceId);
+    return { feature: outcome.feature, ...(outcome.run ? { run: outcome.run } : {}) };
+  }
+
+  private async buildValidatorRun(tx: QueryHandle, feature: MissionFeature, triggerType?: string, taskId?: string, inputFingerprint?: string): Promise<MissionValidatorRun> {
+    const slice = await getSlice(tx, feature.sliceId);
+    if (!slice) throw new Error(`Slice ${feature.sliceId} not found`);
+    const milestone = await getMilestone(tx, slice.milestoneId);
+    if (!milestone) throw new Error(`Milestone ${slice.milestoneId} not found`);
+    const now = new Date().toISOString();
+    return { id: this.generateId("VR"), featureId: feature.id, milestoneId: milestone.id, sliceId: slice.id, status: "running", triggerType,
+      implementationAttempt: feature.implementationAttemptCount ?? 0, validatorAttempt: (feature.validatorAttemptCount ?? 0) + 1,
+      taskId, inputFingerprint, startedAt: now, createdAt: now, updatedAt: now };
+  }
+
   async startValidatorRun(featureId: string, triggerType?: string, taskId?: string, inputFingerprint?: string): Promise<MissionValidatorRun> {
     const feature = await getFeature(this.db, featureId);
     if (!feature) throw new Error(`Feature ${featureId} not found`);
-    const slice = await getSlice(this.db, feature.sliceId);
-    if (!slice) throw new Error(`Slice ${feature.sliceId} not found`);
-    const milestone = await getMilestone(this.db, slice.milestoneId);
-    if (!milestone) throw new Error(`Milestone ${slice.milestoneId} not found`);
-    const now = new Date().toISOString();
-    const newValidatorAttemptCount = (feature.validatorAttemptCount ?? 0) + 1;
-    const run: MissionValidatorRun = {
-      id: this.generateId("VR"),
-      featureId,
-      milestoneId: milestone.id,
-      sliceId: slice.id,
-      status: "running",
-      triggerType,
-      implementationAttempt: feature.implementationAttemptCount ?? 0,
-      validatorAttempt: newValidatorAttemptCount,
-      taskId,
-      inputFingerprint,
-      startedAt: now,
-      createdAt: now,
-      updatedAt: now,
-    };
+    const run = await this.buildValidatorRun(this.db, feature, triggerType, taskId, inputFingerprint);
     await createValidatorRun(this.db, run);
     this.emit("validator-run:started", run);
     await this.updateFeature(featureId, {
-      validatorAttemptCount: newValidatorAttemptCount,
+      validatorAttemptCount: run.validatorAttempt,
       lastValidatorRunId: run.id,
       loopState: "validating",
     });

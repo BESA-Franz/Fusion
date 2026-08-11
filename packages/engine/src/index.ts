@@ -338,6 +338,7 @@ export {
 export { MeshLeaseManager, type MeshLeaseManagerOptions, type LeaseRecoveryContext } from "./project/mesh-lease-manager.js";
 export { MissionAutopilot, type MissionAutopilotOptions } from "./missions/mission-autopilot.js";
 export { MissionExecutionLoop, type MissionExecutionLoopOptions, type ValidationResult, loopLog } from "./missions/mission-execution-loop.js";
+export { resolveFeatureRepairTargets } from "./missions/mission-feature-sync.js";
 // FNXC:MergerUnification 2026-06-22-00:00: @deprecated must sit on aiMergeTask's own
 // export so IDE/type-aware tooling flags only aiMergeTask, not the helpers it shares with
 // runAiMerge (those are NOT deprecated). A single @deprecated on the multi-member block

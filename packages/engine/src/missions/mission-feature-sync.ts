@@ -76,6 +76,85 @@ on its own, while every workflow that still declares both keeps both.
 */
 export const LEGACY_PLANNER_COLUMNS: readonly string[] = ["triage", "todo"];
 
+type MissionFeatureLifecycleLanes = {
+  lane: { intake?: string; hold?: string; wip?: string; review?: string; complete?: string; archived?: string };
+  declared: Set<string>;
+};
+
+/** Resolve the task workflow once so every mission feature projection uses the same role snapshot. */
+async function resolveMissionFeatureLifecycleLanes(
+  taskStore: Parameters<typeof resolveTaskLifecycleColumns>[0],
+  taskId: string,
+): Promise<MissionFeatureLifecycleLanes> {
+  const ir = await resolveWorkflowIrForTask(taskStore, taskId).catch(() => undefined);
+  const roles = ir ? resolveLifecycleColumns(ir) : undefined;
+  const declaredColumnIds = new Set(
+    ((ir as { columns?: Array<{ id?: unknown }> } | undefined)?.columns ?? [])
+      .map((column) => column?.id)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  const declared = new Set([
+    ...Object.values(roles ?? {}).filter((value): value is string => typeof value === "string"),
+    ...declaredColumnIds,
+  ]);
+  const laneOr = (resolved: string | undefined, legacy: string): string | undefined =>
+    resolved ?? (declared.has(legacy) ? undefined : legacy);
+  return {
+    declared,
+    lane: {
+      intake: laneOr(roles?.intake, "triage"), hold: laneOr(roles?.hold, "todo"),
+      wip: laneOr(roles?.wip, "in-progress"), review: laneOr(roles?.review, "in-review"),
+      complete: laneOr(roles?.complete, "done"), archived: laneOr(roles?.archived, "archived"),
+    },
+  };
+}
+
+/*
+FNXC:MissionValidationRepair 2026-08-10-17:20:
+Classification and its fence must come from one task read and one workflow snapshot. A dangling
+or archived link is intentionally fenced as absent with its non-null id, allowing the store to
+prove it remains absent instead of making the validation badge permanently unrepairable.
+*/
+export async function resolveFeatureRepairTargets(
+  taskStore: Pick<TaskStore, "getTask"> & Parameters<typeof resolveTaskLifecycleColumns>[0],
+  feature: Pick<MissionFeature, "id" | "taskId">,
+): Promise<{ status: "defined" | "triaged" | "in-progress"; resumeImplementation: boolean; groundTruth: import("@fusion/core").MissionFeatureRepairGroundTruth }> {
+  const resolvedAt = new Date().toISOString();
+  const absent = (taskId: string | null): { status: "defined"; resumeImplementation: false; groundTruth: import("@fusion/core").MissionFeatureRepairGroundTruth } => ({
+    status: "defined", resumeImplementation: false,
+    groundTruth: { featureId: feature.id, taskId, taskLiveness: "absent", taskColumn: null, taskUpdatedAt: null, laneRole: "none", resolvedAt },
+  });
+  if (!feature.taskId) return absent(null);
+  const task = await taskStore.getTask(feature.taskId).catch(() => null);
+  /*
+  FNXC:MissionValidationRepair 2026-08-11-02:05:
+  The repair fence may call a link absent only for physical states the core transaction can verify
+  without resolving a workflow: a missing/soft-deleted task or the legacy literal archived row.
+  A renamed archived lifecycle lane remains a live row until archival soft-deletes it; classifying
+  it as absent here would produce a fence the locked verifier must reject.
+  */
+  if (!task || task.deletedAt || task.column === "archived") return absent(feature.taskId);
+
+  const { lane, declared } = await resolveMissionFeatureLifecycleLanes(taskStore, task.id);
+  const planner = task.column === lane.intake || task.column === lane.hold
+    || (LEGACY_PLANNER_COLUMNS.includes(task.column) && !declared.has(task.column));
+  const wip = task.column === lane.wip || task.column === lane.review;
+  const laneRole = planner ? "planner" : wip ? "wip" : "none";
+  /*
+  FNXC:MissionValidationRepair 2026-08-11-01:46:
+  A live task outside planner and WIP/review roles has no repair target. `defined` is reserved
+  for an absent link, so accepting a live completed or custom lane would replace a blocked
+  roadmap state with a false no-work state. Callers surface this actionable refusal rather than
+  persisting a laneRole:none fence the store cannot truthfully apply.
+  */
+  if (laneRole === "none") {
+    throw new Error(`Linked task ${task.id} is in '${task.column}', which is not a planner or active-work lifecycle lane; move it to a supported lane before repairing validation.`);
+  }
+  return {
+    status: planner ? "triaged" : "in-progress", resumeImplementation: wip,
+    groundTruth: { featureId: feature.id, taskId: task.id, taskLiveness: "live", taskColumn: task.column, taskUpdatedAt: task.updatedAt, laneRole, resolvedAt },
+  };
+}
 
 
 export type MissionFeatureSyncDecision =

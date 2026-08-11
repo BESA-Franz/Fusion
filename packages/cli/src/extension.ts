@@ -84,6 +84,7 @@ import {
   createAgentTask,
   evaluateAgentActionGate,
   resolveGateOutcome,
+  resolveFeatureRepairTargets,
 } from "@fusion/engine";
 import * as dashboard from "@fusion/dashboard";
 import { resolve, relative, isAbsolute, sep, basename, extname, join } from "node:path";
@@ -5024,6 +5025,45 @@ export default function kbExtension(pi: ExtensionAPI) {
       if ((["triaged", "in-progress", "done", "blocked"] as const).includes(params.status) && !feature.taskId) return { content: [{ type: "text", text: `Cannot set status to '${params.status}' without a linked task. Use the triage endpoint to create and link a task first, or link an existing task via fn_feature_link_task.` }], isError: true, details: { error: "FEATURE_TASK_REQUIRED" } };
       try { const updated = await missionStore.updateFeatureStatus(params.id, params.status, { actor: missionTransitionActor(ctx), reason: params.reason }); return { content: [{ type: "text", text: `Set ${updated.id} status to ${updated.status}` }], details: { feature: updated } }; }
       catch (error) { const message = error instanceof Error ? error.message : String(error); return { content: [{ type: "text", text: message }], isError: true, details: { error: message } }; }
+    },
+  });
+
+  // ── fn_feature_repair_validation ──────────────────────────────────
+  /* FNXC:MissionValidationRepair 2026-08-10-17:20: CLI mirrors the engine tool so either agent surface performs the same fenced, single-retry repair rather than bypassing store validation. */
+  pi.registerTool({
+    name: "fn_feature_repair_validation", label: "fn: Repair Feature Validation",
+    description: "Clear a stale validation badge or re-run validation.", promptSnippet: "Repair a feature validation badge",
+    promptGuidelines: ["Use Clear for stale blocked badges", "Use re-run only when validation is not already live"],
+    parameters: Type.Object({ id: Type.String(), action: Type.Union([Type.Literal("clear"), Type.Literal("re_run")]), reason: Type.Optional(Type.String()) }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const store = await getStore(ctx.cwd); const missionStore = store.getMissionStore();
+      if (!("repairFeatureValidationState" in missionStore)) return { content: [{ type: "text", text: "Validation repair requires the PostgreSQL mission store" }], isError: true, details: { code: "POSTGRES_REQUIRED" } };
+      const feature = await missionStore.getFeature(params.id);
+      if (!feature) return { content: [{ type: "text", text: `Feature ${params.id} not found` }], isError: true, details: { code: "FEATURE_NOT_FOUND" } };
+      const eligible = fusionCore.featureValidationRepairEligibility(feature);
+      if ((params.action === "clear" && !eligible.clear) || (params.action === "re_run" && !eligible.reRun)) return { content: [{ type: "text", text: `Cannot ${params.action === "clear" ? "clear" : "re-run"} validation for ${feature.id}: current loop state is ${feature.loopState ?? "idle"} and status is ${feature.status}.` }], isError: true, details: { code: "FEATURE_REPAIR_INELIGIBLE" } };
+      try {
+        if (params.action === "re_run") {
+          const repaired = await missionStore.repairFeatureValidationState(params.id, { action: "re_run", actor: missionTransitionActor(ctx), reason: params.reason });
+          return { content: [{ type: "text", text: `Re-ran validation for ${params.id}` }], details: repaired };
+        }
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const current = await missionStore.getFeature(params.id);
+          if (!current) return { content: [{ type: "text", text: `Feature ${params.id} not found` }], isError: true, details: { code: "FEATURE_NOT_FOUND" } };
+          const targets = await resolveFeatureRepairTargets(store, current);
+          try {
+            const repaired = await missionStore.repairFeatureValidationState(params.id, { action: "clear", actor: missionTransitionActor(ctx), reason: params.reason, resolvedStatus: targets.status, resolvedLoopState: targets.resumeImplementation ? "implementing" : "idle", groundTruth: targets.groundTruth });
+            return { content: [{ type: "text", text: `Cleared validation state for ${params.id}` }], details: repaired };
+          } catch (error) {
+            if (!(error instanceof fusionCore.RepairGroundTruthStaleError) || attempt === 1) throw error;
+          }
+        }
+      } catch (error) {
+        if (error instanceof fusionCore.RepairGroundTruthStaleError) return { content: [{ type: "text", text: "Linked task state changed while repairing; re-check the feature and retry." }], isError: true, details: { code: "FEATURE_REPAIR_STALE" } };
+        const message = error instanceof Error ? error.message : String(error);
+        return { content: [{ type: "text", text: message }], isError: true, details: { error: message } };
+      }
+      return { content: [{ type: "text", text: "Linked task state changed while repairing; re-check the feature and retry." }], isError: true, details: { code: "FEATURE_REPAIR_STALE" } };
     },
   });
 

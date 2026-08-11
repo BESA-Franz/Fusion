@@ -525,6 +525,16 @@ Set a feature lifecycle status.
 | `status` | union | ✓ |  |
 | `reason` | string | — |  |
 
+### fn_feature_repair_validation
+
+Clear a stale validation badge or re-run validation.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | ✓ |  |
+| `action` | union | ✓ |  |
+| `reason` | string | — |  |
+
 ### fn_feature_update
 
 Update an existing feature's title, description, or acceptance criteria. Partial patches leave untouched fields intact.

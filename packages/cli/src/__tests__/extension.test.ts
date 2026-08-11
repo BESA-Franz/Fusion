@@ -306,6 +306,7 @@ legacyDescribe("fn pi extension (legacy exhaustive suite)", () => {
         "fn_slice_activate",
         "fn_feature_link_task",
         "fn_feature_update",
+        "fn_feature_repair_validation",
         "fn_feature_set_status",
         "fn_milestone_update",
         "fn_agent_stop",
@@ -2937,6 +2938,29 @@ pgTest("fn pi extension (runnable structured-output regression slice)", () => {
     const invalidMission = await api.tools.get("fn_mission_set_status")!.execute("invalid-mission", { id: mission.details.missionId, status: "invalid" }, undefined, undefined, context);
     expect(invalidMission.isError).toBe(true);
     expect(invalidMission.content[0].text).toContain("Invalid status. Must be one of:");
+  });
+
+  /*
+  FNXC:MissionValidationRepair 2026-08-11-01:46:
+  The pi registration must drive the real cached PostgreSQL store, not merely expose a schema.
+  This preserves the archived-link repair guarantee through the CLI adapter.
+  */
+  it("clears an archived linked feature through the real validation repair tool", async () => {
+    __setCachedStoreForTesting(tmpDir, h.store());
+    const missionStore = h.store().getMissionStore();
+    const mission = await missionStore.createMission({ title: "CLI repair" });
+    const milestone = await missionStore.addMilestone(mission.id, { title: "Milestone" });
+    const slice = await missionStore.addSlice(milestone.id, { title: "Slice" });
+    const feature = await missionStore.addFeature(slice.id, { title: "Feature" });
+    const task = await h.store().createTask({ description: "Archived CLI delivery", column: "done" });
+    await h.store().archiveTask(task.id, { cleanup: false });
+    await missionStore.updateFeature(feature.id, { taskId: task.id, status: "blocked", loopState: "blocked" });
+
+    const result = await api.tools.get("fn_feature_repair_validation")!.execute(
+      "repair-archived", { id: feature.id, action: "clear" }, undefined, undefined, makeCtx(tmpDir),
+    );
+    expect(result.isError).not.toBe(true);
+    expect(await missionStore.getFeature(feature.id)).toMatchObject({ status: "defined", loopState: "idle" });
   });
 
   describe("fn_task_list", () => {

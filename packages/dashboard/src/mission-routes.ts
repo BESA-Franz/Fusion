@@ -21,9 +21,14 @@ import {
   THINKING_LEVELS,
   MissionResumeConflictError,
   TerminalTaskReconciliationError,
+  featureValidationRepairEligibility,
+  RepairGroundTruthStaleError,
+  RepairNotEligibleError,
+  RepairAssertionsMissingError,
+  RepairValidatorRunInFlightError,
 } from "@fusion/core";
-import type { Goal, Settings, ThinkingLevel } from "@fusion/core";
-import { resolvePlanningThinkingLevel } from "@fusion/engine";
+import type { AsyncMissionStore, Goal, Settings, ThinkingLevel } from "@fusion/core";
+import { resolveFeatureRepairTargets, resolvePlanningThinkingLevel } from "@fusion/engine";
 import {
   getScopedStore as resolveScopedRequestStore,
   getProjectContext as resolveSharedProjectContext,
@@ -2450,6 +2455,101 @@ export function createMissionRouter(
         validatorAttempt: run.validatorAttempt,
         startedAt: run.startedAt,
       });
+    })
+  );
+
+  /*
+  FNXC:MissionValidationRepair 2026-08-11-02:05:
+  Dashboard repairs resolve targets from the engine and retry a stale fence once. The route never accepts a client-provided target or falls back to an unfenced write, so an operator cannot persist a status derived from obsolete task state. The store also rechecks eligibility after locking; that race is a 409 rather than a server error.
+  */
+  router.post(
+    "/features/:featureId/repair-validation",
+    catchTypedHandler(async (req, res) => {
+      const { featureId } = req.params;
+      if (!validateFeatureId(featureId)) throw badRequest("Invalid feature ID format");
+
+      /*
+      FNXC:MissionValidationRepair 2026-08-11-01:20:
+      Mission routes use a forwarding Proxy, whose target has no own store methods; `in` therefore
+      tests the empty proxy target and falsely rejects every repair. Read the forwarded method so
+      the PostgreSQL capability guard observes the scoped store without bypassing request scope.
+      */
+      const repairMissionStore = missionStore as AsyncMissionStore;
+      if (typeof repairMissionStore.repairFeatureValidationState !== "function") {
+        throw conflict("Validation repair requires the PostgreSQL mission store");
+      }
+      const feature = await missionStore.getFeature(featureId);
+      if (!feature) throw notFound("Feature not found");
+      const { action, reason } = (req.body ?? {}) as { action?: unknown; reason?: unknown };
+      if (action !== "clear" && action !== "re_run") {
+        throw badRequest("action must be 'clear' or 're_run'");
+      }
+      if (reason !== undefined && typeof reason !== "string") {
+        throw badRequest("reason must be a string");
+      }
+
+      const eligibility = featureValidationRepairEligibility(feature);
+      if (!eligibility[action === "clear" ? "clear" : "reRun"]) {
+        throw conflict(`Validation repair '${action}' is not eligible for status '${feature.status}' and loop state '${feature.loopState ?? "idle"}'`);
+      }
+
+      const repair = async () => {
+        if (action === "re_run") {
+          return repairMissionStore.repairFeatureValidationState(featureId, {
+            action,
+            actor: DASHBOARD_MISSION_ACTOR,
+            reason,
+          });
+        }
+        const currentFeature = await missionStore.getFeature(featureId);
+        if (!currentFeature) throw notFound("Feature not found");
+        const targets = await resolveFeatureRepairTargets(getScopedStore(), currentFeature);
+        return repairMissionStore.repairFeatureValidationState(featureId, {
+          action,
+          actor: DASHBOARD_MISSION_ACTOR,
+          reason,
+          resolvedStatus: targets.status,
+          resolvedLoopState: targets.resumeImplementation ? "implementing" : "idle",
+          groundTruth: targets.groundTruth,
+        });
+      };
+
+      let result;
+      try {
+        result = await repair();
+      } catch (error) {
+        if (error instanceof RepairAssertionsMissingError) throw badRequest(error.message);
+        if (error instanceof RepairValidatorRunInFlightError) throw conflict(error.message);
+        if (error instanceof RepairNotEligibleError) throw conflict(error.message);
+        if (!(error instanceof RepairGroundTruthStaleError) || action !== "clear") throw error;
+        try {
+          result = await repair();
+        } catch (retryError) {
+          if (retryError instanceof RepairAssertionsMissingError) throw badRequest(retryError.message);
+          if (retryError instanceof RepairValidatorRunInFlightError) throw conflict(retryError.message);
+          if (retryError instanceof RepairNotEligibleError) throw conflict(retryError.message);
+          if (retryError instanceof RepairGroundTruthStaleError) {
+            throw conflict("Linked task state changed while repairing; refresh and retry");
+          }
+          throw retryError;
+        }
+      }
+
+      if (action === "re_run") {
+        const run = result.run;
+        if (!run) throw new Error("Validation repair did not create a validator run");
+        res.status(202).json({
+          runId: run.id,
+          featureId: run.featureId,
+          status: run.status,
+          triggerType: run.triggerType,
+          implementationAttempt: run.implementationAttempt,
+          validatorAttempt: run.validatorAttempt,
+          startedAt: run.startedAt,
+        });
+        return;
+      }
+      res.json(result.feature);
     })
   );
 

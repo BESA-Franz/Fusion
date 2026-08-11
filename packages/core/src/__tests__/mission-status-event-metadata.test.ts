@@ -1,12 +1,35 @@
 import { describe, expect, it } from "vitest";
 import {
+  FEATURE_LOOP_REPAIR_TRANSITIONS,
+  FEATURE_LOOP_TRANSITIONS,
   MISSION_EVENT_METADATA_MAX_BYTES,
   boundMissionEventReason,
+  featureValidationRepairEligibility,
   buildMissionStatusEventMetadata,
   normalizeMissionTransitionActorForEvent,
 } from "../missions/mission-types.js";
 
 describe("mission status event metadata", () => {
+  it("keeps execution transitions terminal while exposing only explicit repair edges", () => {
+    expect(FEATURE_LOOP_TRANSITIONS.blocked).toEqual([]);
+    expect(FEATURE_LOOP_TRANSITIONS.passed).toEqual([]);
+    expect(FEATURE_LOOP_REPAIR_TRANSITIONS.blocked).toEqual(["idle", "implementing"]);
+    expect(FEATURE_LOOP_REPAIR_TRANSITIONS.needs_fix).toEqual(["idle", "implementing"]);
+    expect(FEATURE_LOOP_REPAIR_TRANSITIONS.passed).toEqual([]);
+    expect(Object.values(FEATURE_LOOP_REPAIR_TRANSITIONS).flat()).not.toContain("validating");
+  });
+
+  it("uses one eligibility rule for stale badges without preempting live validation", () => {
+    for (const status of ["defined", "triaged", "in-progress", "done"] as const) {
+      expect(featureValidationRepairEligibility({ status, loopState: "blocked" })).toEqual({ clear: true, reRun: true });
+      expect(featureValidationRepairEligibility({ status, loopState: "needs_fix" })).toEqual({ clear: true, reRun: true });
+    }
+    expect(featureValidationRepairEligibility({ status: "blocked", loopState: "idle" })).toEqual({ clear: true, reRun: true });
+    for (const loopState of ["implementing", "validating", "passed"] as const) {
+      expect(featureValidationRepairEligibility({ status: "blocked", loopState })).toEqual({ clear: true, reRun: false });
+    }
+    expect(featureValidationRepairEligibility({ status: "in-progress", loopState: "validating" })).toEqual({ clear: false, reRun: false });
+  });
   it("redacts, bounds, and rejects semantically empty untrusted reasons", () => {
     expect(boundMissionEventReason("Authorization: Bearer sk-live-ABCDEFG1234567890abcdef").value).toContain("[REDACTED]");
     expect(boundMissionEventReason("/private/secret/worktree/file.ts").value).toContain("[external path omitted]");

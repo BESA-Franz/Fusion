@@ -1095,6 +1095,7 @@ export {
   triageAllSliceFeatures,
   triageFeature,
   triggerValidation,
+  repairFeatureValidation,
   unlinkFeatureFromAssertion,
   unlinkFeatureFromTask,
   updateAssertion,

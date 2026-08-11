@@ -1584,6 +1584,13 @@ The sorter and its transitive role/merge/priority helpers are browser-safe.
 export { sortTasksForDisplayColumn } from "./tasks/task-priority.js";
 export type { DoneColumnSortMode, DisplayColumnSortOptions } from "./tasks/task-priority.js";
 
+/*
+FNXC:MissionValidationRepair 2026-08-11-00:10:
+The dashboard aliases `@fusion/core` to this browser-safe leaf, so expose the pure repair
+eligibility rule here. Every visible repair control must consult the same policy as the store.
+*/
+export { featureValidationRepairEligibility } from "./missions/mission-types.js";
+
 export { CONFIG_CHANGED_BY_SYSTEM, CONFIG_CHANGED_BY_API_VERIFIED_TOKEN, CONFIG_CHANGED_BY_API_UNVERIFIED, CONFIG_CHANGED_BY_API_VERIFIED_NODE_KEY } from "./types/agents/agents.js";
 export type { AgentActivityEventType, AgentActivityAttribution, AgentActivityIdProvenance, AgentActivityIdCandidate, AgentActivityAttributionClaim, AgentActivityMetadataValueSpec, AgentActivityEvent, AgentActivityEventInput, AgentActivityQuery } from "./types/agents/agents.js";
 

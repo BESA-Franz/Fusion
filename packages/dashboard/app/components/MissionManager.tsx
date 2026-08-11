@@ -3,7 +3,12 @@ import { useState, useEffect, useCallback, useRef, useMemo, type MouseEvent, typ
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { getErrorMessage, type DriftAlignment, type Goal } from "@fusion/core";
+import {
+  featureValidationRepairEligibility,
+  getErrorMessage,
+  type DriftAlignment,
+  type Goal,
+} from "@fusion/core";
 import {
   X,
   Plus,
@@ -95,6 +100,7 @@ import {
   fetchMilestoneValidation,
   fetchMilestoneValidationTelemetry,
   triggerValidation,
+  repairFeatureValidation,
   fetchValidationLoopState,
   fetchValidationRuns,
   fetchValidationRun,
@@ -731,6 +737,54 @@ function normalizeMissionHierarchy(mission: MissionWithHierarchy): MissionWithHi
   };
 }
 
+/*
+FNXC:MissionValidationRepair 2026-08-11-00:07:
+Both feature presentations must expose the same narrowly-scoped escape from a stale validation badge. This renders only actions allowed by the core predicate, so a live validation or implementation cycle is never pre-empted and the execution loop remains unable to escape blocked on its own.
+*/
+function FeatureValidationRepairActions({
+  feature,
+  busy,
+  onClear,
+  onReRun,
+  t,
+}: {
+  feature: Pick<MissionFeature, "id" | "status" | "loopState">;
+  busy: boolean;
+  onClear: (featureId: string) => void;
+  onReRun: (featureId: string) => void;
+  t: ReturnType<typeof useTranslation>["t"];
+}) {
+  const eligibility = featureValidationRepairEligibility(feature);
+  if (!eligibility.clear && !eligibility.reRun) return null;
+
+  return (
+    <>
+      {eligibility.clear && (
+        <button
+          className="mission-icon-btn mission-icon-btn--repair"
+          onClick={() => onClear(feature.id)}
+          title={t("missions.clearValidationBadge", "Clear validation badge")}
+          aria-label={t("missions.clearValidationBadge", "Clear validation badge")}
+          disabled={busy}
+        >
+          {busy ? <Loader2 size={14} className="spinner" /> : <X size={14} />}
+        </button>
+      )}
+      {eligibility.reRun && (
+        <button
+          className="mission-icon-btn mission-icon-btn--repair"
+          onClick={() => onReRun(feature.id)}
+          title={t("missions.rerunValidation", "Re-run validation")}
+          aria-label={t("missions.rerunValidation", "Re-run validation")}
+          disabled={busy}
+        >
+          {busy ? <Loader2 size={14} className="spinner" /> : <RefreshCw size={14} />}
+        </button>
+      )}
+    </>
+  );
+}
+
 export function MissionManager({ isOpen, isInline = false, onClose, addToast, projectId, workflowId, onSelectTask, availableTasks = [], resumeSessionId, targetMissionId, milestoneSliceResumeSessionId, onMilestoneSliceResumeFetchError, onNavigateToGoal }: MissionManagerProps) {
   const { t } = useTranslation("app");
   const { confirm } = useConfirm();
@@ -1016,6 +1070,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const [validationTelemetry, setValidationTelemetry] = useState<MilestoneValidationTelemetry | null>(null);
   const [validationRoundsExpanded, setValidationRoundsExpanded] = useState(true);
   const [validatingFeatures, setValidatingFeatures] = useState<Set<string>>(new Set());
+  const [repairingValidationFeatures, setRepairingValidationFeatures] = useState<Set<string>>(new Set());
 
   // Feature loop state
   const [featureLoopStates, setFeatureLoopStates] = useState<Map<string, MissionFeatureLoopSnapshot>>(new Map());
@@ -1384,38 +1439,32 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     });
   }, [selectedMilestoneId]);
 
-  const refreshValidationTelemetry = useCallback((milestoneId: string) => {
-    if (!milestoneId || milestoneId !== selectedMilestoneIdRef.current) {
-      return;
-    }
+  const refreshValidationTelemetry = useCallback(async (milestoneId: string) => {
+    if (!milestoneId || milestoneId !== selectedMilestoneIdRef.current) return;
     const generation = beginValidationRequest(milestoneId);
-
-    void fetchMilestoneValidationTelemetry(milestoneId, projectId)
-      .then((telemetry) => {
-        if (selectedMilestoneIdRef.current !== milestoneId
-          || !isCurrentValidationRequest(milestoneId, generation)) {
-          return;
-        }
-        if (!isMilestoneValidationTelemetry(telemetry)) {
-          setValidationTelemetry(null);
-          void loadValidationRollup(milestoneId);
-          return;
-        }
-        setValidationTelemetry(telemetry);
-        setValidationRollupByMilestone((prev) => {
-          const next = new Map(prev);
-          next.set(milestoneId, telemetry.rollup);
-          return next;
-        });
-      })
-      .catch(() => {
-        // Telemetry is supplemental, but the shared generation requires a fresh rollup fallback.
-        if (selectedMilestoneIdRef.current === milestoneId
-          && isCurrentValidationRequest(milestoneId, generation)) {
-          setValidationTelemetry(null);
-          void loadValidationRollup(milestoneId);
-        }
+    try {
+      const telemetry = await fetchMilestoneValidationTelemetry(milestoneId, projectId);
+      if (selectedMilestoneIdRef.current !== milestoneId
+        || !isCurrentValidationRequest(milestoneId, generation)) return;
+      if (!isMilestoneValidationTelemetry(telemetry)) {
+        setValidationTelemetry(null);
+        void loadValidationRollup(milestoneId);
+        return;
+      }
+      setValidationTelemetry(telemetry);
+      setValidationRollupByMilestone((prev) => {
+        const next = new Map(prev);
+        next.set(milestoneId, telemetry.rollup);
+        return next;
       });
+    } catch {
+      // Telemetry is supplemental, but the shared generation requires a fresh rollup fallback.
+      if (selectedMilestoneIdRef.current === milestoneId
+        && isCurrentValidationRequest(milestoneId, generation)) {
+        setValidationTelemetry(null);
+        void loadValidationRollup(milestoneId);
+      }
+    }
   }, [beginValidationRequest, isCurrentValidationRequest, loadValidationRollup, projectId]);
 
   const loadMissionEvents = useCallback(async (
@@ -2486,6 +2535,84 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     }
   }, [projectId]);
 
+
+  const applyValidationRepairSnapshot = useCallback((updated: MissionFeature) => {
+    setSelectedMission((current) => current ? {
+      ...current,
+      milestones: current.milestones.map((milestone) => ({
+        ...milestone,
+        slices: milestone.slices.map((slice) => ({
+          ...slice,
+          features: slice.features.map((feature) => feature.id === updated.id ? { ...feature, ...updated } : feature),
+        })),
+      })),
+    } : current);
+    setValidationTelemetry((current) => current ? {
+      ...current,
+      fixFeatures: current.fixFeatures.map((feature) => feature.id === updated.id ? { ...feature, ...updated } : feature),
+    } : current);
+  }, []);
+
+  const handleClearValidationBadge = useCallback(async (featureId: string) => {
+    try {
+      setRepairingValidationFeatures((prev) => new Set(prev).add(featureId));
+      const repaired = await repairFeatureValidation(featureId, "clear", undefined, projectId);
+      if ("id" in repaired) applyValidationRepairSnapshot(repaired);
+      addToast(t("missions.validationBadgeCleared", "Validation badge cleared"), "success");
+      /*
+      FNXC:MissionValidationRepair 2026-08-11-02:10:
+      A successful repair changes the feature row itself, not only its validation snapshot.
+      Refresh the selected mission and validation telemetry so both the canonical row and generated
+      fix-feature header lose stale badges immediately without a browser reload.
+      */
+      await Promise.all([
+        loadFeatureLoopState(featureId),
+        selectedMission?.id ? loadMissionDetail(selectedMission.id) : Promise.resolve(),
+        selectedMilestoneId ? refreshValidationTelemetry(selectedMilestoneId) : Promise.resolve(),
+      ]);
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.status === 409) {
+        addToast(t("missions.validationStateChanged", "Feature state changed — refreshed"), "error");
+        await loadFeatureLoopState(featureId);
+      } else {
+        addToast(getErrorMessage(err) || t("missions.validationRepairFailed", "Failed to repair validation state"), "error");
+      }
+    } finally {
+      setRepairingValidationFeatures((prev) => {
+        const next = new Set(prev);
+        next.delete(featureId);
+        return next;
+      });
+    }
+  }, [addToast, applyValidationRepairSnapshot, loadFeatureLoopState, loadMissionDetail, projectId, refreshValidationTelemetry, selectedMilestoneId, selectedMission?.id]);
+
+  const handleRerunValidation = useCallback(async (featureId: string) => {
+    try {
+      setRepairingValidationFeatures((prev) => new Set(prev).add(featureId));
+      const repaired = await repairFeatureValidation(featureId, "re_run", undefined, projectId);
+      if ("id" in repaired) applyValidationRepairSnapshot(repaired);
+      addToast(t("missions.validationRerun", "Validation re-run started"), "success");
+      await Promise.all([
+        loadFeatureLoopState(featureId),
+        selectedMission?.id ? loadMissionDetail(selectedMission.id) : Promise.resolve(),
+        selectedMilestoneId ? refreshValidationTelemetry(selectedMilestoneId) : Promise.resolve(),
+      ]);
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.status === 409) {
+        addToast(t("missions.validationStateChanged", "Feature state changed — refreshed"), "error");
+        await loadFeatureLoopState(featureId);
+      } else {
+        addToast(getErrorMessage(err) || t("missions.validationRepairFailed", "Failed to repair validation state"), "error");
+      }
+    } finally {
+      setRepairingValidationFeatures((prev) => {
+        const next = new Set(prev);
+        next.delete(featureId);
+        return next;
+      });
+    }
+  }, [addToast, applyValidationRepairSnapshot, loadFeatureLoopState, loadMissionDetail, projectId, refreshValidationTelemetry, selectedMilestoneId, selectedMission?.id]);
+
   // Load validation runs for a feature
   const loadValidationRuns = useCallback(async (featureId: string) => {
     try {
@@ -3527,6 +3654,17 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                             {fixFeature.loopState}
                                           </span>
                                         )}
+                                        {featureValidationRepairEligibility(fixFeature).clear || featureValidationRepairEligibility(fixFeature).reRun ? (
+                                          <div className="mission-fix-feature__actions">
+                                            <FeatureValidationRepairActions
+                                              feature={fixFeature}
+                                              busy={repairingValidationFeatures.has(fixFeature.id)}
+                                              onClear={handleClearValidationBadge}
+                                              onReRun={handleRerunValidation}
+                                              t={t}
+                                            />
+                                          </div>
+                                        ) : null}
                                       </div>
                                       <div className="mission-fix-feature__meta">
                                         <span>{t("missions.source", "Source:")}</span>
@@ -3819,6 +3957,13 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                                             </span>
                                           )}
                                           <div className="mission-feature__actions">
+                                            <FeatureValidationRepairActions
+                                              feature={feature}
+                                              busy={repairingValidationFeatures.has(feature.id)}
+                                              onClear={handleClearValidationBadge}
+                                              onReRun={handleRerunValidation}
+                                              t={t}
+                                            />
                                             {feature.status === "defined" && !feature.taskId && (
                                               <button
                                                 className="mission-icon-btn"

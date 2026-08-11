@@ -51,6 +51,21 @@ export const FEATURE_LOOP_TRANSITIONS: Readonly<Record<FeatureLoopState, readonl
   blocked: [],
 };
 
+/*
+FNXC:MissionValidationRepair 2026-08-11-00:06:
+The execution loop consults only FEATURE_LOOP_TRANSITIONS, so failed work cannot launder its
+own blocked state. Only repairFeatureValidationState, with an explicit actor, uses these repair
+edges; re_run uses the validator-run path and consults neither transition table.
+*/
+export const FEATURE_LOOP_REPAIR_TRANSITIONS: Readonly<Record<FeatureLoopState, readonly FeatureLoopState[]>> = {
+  idle: [],
+  implementing: [],
+  validating: [],
+  needs_fix: ["idle", "implementing"],
+  passed: [],
+  blocked: ["idle", "implementing"],
+};
+
 /** Status values for a validator run */
 export const VALIDATOR_RUN_STATUSES = ["running", "passed", "failed", "blocked", "error"] as const;
 export type ValidatorRunStatus = (typeof VALIDATOR_RUN_STATUSES)[number];
@@ -285,6 +300,7 @@ export const MISSION_EVENT_TYPES = [
   "mission_started",
   "mission_status_changed",
   "feature_status_changed",
+  "feature_validation_repaired",
   "mission_paused",
   "mission_resumed",
   "autopilot_enabled",
@@ -311,6 +327,39 @@ export interface MissionTransitionActor {
   id: string;
   displayName?: string;
   source: string;
+}
+
+/*
+FNXC:MissionValidationRepair 2026-08-11-00:06:
+Core owns this fence shape so its store can verify caller-derived status without importing the
+engine. An absent linked task is ground truth too: dangling and archived links must repair to
+defined rather than remain permanently blocked. Lane classification stays in the engine to avoid
+duplicating its workflow resolver here.
+*/
+export interface MissionFeatureRepairGroundTruth {
+  featureId: string;
+  taskId: string | null;
+  taskLiveness: "live" | "absent";
+  taskColumn: string | null;
+  taskUpdatedAt: string | null;
+  laneRole: "planner" | "wip" | "none";
+  resolvedAt: string;
+}
+
+/*
+FNXC:MissionValidationRepair 2026-08-11-00:06:
+Blocked and needs-fix loop states are explicit stale-badge repair candidates even when feature
+status remains live. A validating, implementing, or passed loop must not start another validator
+run; passed validation remains available through the normal Validate control.
+*/
+export function featureValidationRepairEligibility(
+  feature: Pick<MissionFeature, "loopState" | "status">,
+): { clear: boolean; reRun: boolean } {
+  const repairableLoop = feature.loopState === "blocked" || feature.loopState === "needs_fix";
+  return {
+    clear: repairableLoop || feature.status === "blocked",
+    reRun: repairableLoop || (feature.status === "blocked" && (feature.loopState === undefined || feature.loopState === "idle")),
+  };
 }
 
 /** Optional attribution supplied to a mission mutation that can arm autonomy. */

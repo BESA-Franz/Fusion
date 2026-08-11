@@ -1776,12 +1776,14 @@ export {
   MISSION_EVENT_TYPES,
   SLICE_PLAN_STATES,
   FEATURE_LOOP_STATES,
+  FEATURE_LOOP_REPAIR_TRANSITIONS,
   VALIDATOR_RUN_STATUSES,
   VALIDATION_DIAGNOSTICS_MAX_EVIDENCE_PER_ASSERTION,
   VALIDATION_DIAGNOSTICS_MAX_TEXT_BYTES,
   MISSION_EVENT_REASON_MAX_BYTES,
   MISSION_EVENT_METADATA_MAX_BYTES,
   boundMissionEventReason,
+  featureValidationRepairEligibility,
   normalizeMissionTransitionActorForEvent,
   buildMissionStatusEventMetadata,
   selectNextSerialMissionSlice,
@@ -1803,6 +1805,7 @@ export type {
   AutopilotState,
   SlicePlanState,
   FeatureLoopState,
+  MissionFeatureRepairGroundTruth,
   ValidatorRunStatus,
   ValidationAssertionVerdict,
   ValidationEvidenceReference,
@@ -1862,7 +1865,7 @@ export type {
 } from "./missions/mission-types.js";
 export { MissionStore } from "./missions/mission-store.js";
 export type { MissionStoreEvents, MissionSummary } from "./missions/mission-store.js";
-export { AsyncMissionStore, MissionRemediationStoppedError, MissionResumeConflictError, TerminalTaskReconciliationError } from "./async-stores/async-mission-store.js";
+export { AsyncMissionStore, MissionRemediationStoppedError, MissionResumeConflictError, RepairGroundTruthStaleError, RepairNotEligibleError, RepairValidatorRunInFlightError, RepairAssertionsMissingError, TerminalTaskReconciliationError } from "./async-stores/async-mission-store.js";
 export type { TerminalTaskReconciliationErrorCode } from "./async-stores/async-mission-store.js";
 export { AsyncIdeationStore } from "./async-stores/async-ideation-store.js";
 export { IDEATION_SESSION_STATUSES, IDEATION_CANDIDATE_ORIGINS } from "./ideation/ideation-types.js";

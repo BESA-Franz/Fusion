@@ -591,6 +591,19 @@ export function triggerValidation(featureId: string, projectId?: string): Promis
   });
 }
 
+/** Repair a stale feature validation state using server-resolved ground truth. */
+export function repairFeatureValidation(
+  featureId: string,
+  action: "clear" | "re_run",
+  reason?: string,
+  projectId?: string,
+): Promise<MissionFeature | { runId: string; featureId: string; status: string; triggerType: string; implementationAttempt: number; validatorAttempt: number; startedAt: string }> {
+  return api(withProjectId(`/missions/features/${encodeURIComponent(featureId)}/repair-validation`, projectId), {
+    method: "POST",
+    body: JSON.stringify({ action, ...(reason ? { reason } : {}) }),
+  });
+}
+
 /** Get validation loop state for a feature */
 export function fetchValidationLoopState(featureId: string, projectId?: string): Promise<MissionFeatureLoopSnapshot> {
   return api<MissionFeatureLoopSnapshot>(withProjectId(`/missions/features/${encodeURIComponent(featureId)}/validation-loop`, projectId));

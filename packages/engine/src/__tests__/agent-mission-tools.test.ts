@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { RepairGroundTruthStaleError, type TaskStore } from "@fusion/core";
+import { createSharedPgTaskStoreTestHarness, pgDescribe, type SharedPgTaskStoreHarness } from "../../../core/src/__test-utils__/pg-test-harness.js";
 import { createMissionTools } from "../agent-tools.js";
 
 /*
@@ -12,8 +14,50 @@ describe("createMissionTools", () => {
     expect(createMissionTools(store).map((tool) => tool.name)).toEqual([
       "fn_mission_list", "fn_mission_show", "fn_mission_create", "fn_mission_update", "fn_mission_set_status", "fn_mission_delete",
       "fn_milestone_add", "fn_milestone_update", "fn_milestone_delete", "fn_slice_add", "fn_slice_activate",
-      "fn_slice_delete", "fn_feature_add", "fn_feature_update", "fn_feature_set_status", "fn_feature_delete", "fn_feature_link_task", "fn_research_promote_finding",
+      "fn_slice_delete", "fn_feature_add", "fn_feature_update", "fn_feature_repair_validation", "fn_feature_set_status", "fn_feature_delete", "fn_feature_link_task", "fn_research_promote_finding",
     ]);
+  });
+
+  it("repairs an eligible validation badge through the attributed store primitive", async () => {
+    const repairFeatureValidationState = vi.fn().mockResolvedValue({ feature: { id: "F-1", status: "in-progress", loopState: "validating" }, run: { id: "VR-1" } });
+    const store = { getMissionStore: () => ({
+      getFeature: vi.fn().mockResolvedValue({ id: "F-1", status: "in-progress", loopState: "blocked" }),
+      repairFeatureValidationState,
+    }) } as never;
+    const tool = createMissionTools(store, { agentId: "agent-1" }).find((candidate) => candidate.name === "fn_feature_repair_validation")!;
+    const result = await tool.execute("call", { id: "F-1", action: "re_run", reason: "resolved" });
+    expect(result.isError).toBeUndefined();
+    expect(repairFeatureValidationState).toHaveBeenCalledWith("F-1", expect.objectContaining({ action: "re_run", reason: "resolved", actor: expect.objectContaining({ type: "agent", id: "agent-1" }) }));
+  });
+
+  it("derives an unfenced caller input into a fenced clear and refuses an ineligible rerun", async () => {
+    const repairFeatureValidationState = vi.fn().mockResolvedValue({ feature: { id: "F-1", status: "defined", loopState: "idle" } });
+    const missionStore = { getFeature: vi.fn().mockResolvedValue({ id: "F-1", status: "blocked", loopState: "blocked" }), repairFeatureValidationState };
+    const store = { getMissionStore: () => missionStore } as never;
+    const tool = createMissionTools(store, { agentId: "agent-1" }).find((candidate) => candidate.name === "fn_feature_repair_validation")!;
+    await expect(tool.execute("call", { id: "F-1", action: "clear", reason: "resolved" })).resolves.toMatchObject({ content: [{ text: "Cleared validation state for F-1" }] });
+    expect(repairFeatureValidationState).toHaveBeenCalledWith("F-1", expect.objectContaining({
+      action: "clear", resolvedStatus: "defined", resolvedLoopState: "idle",
+      groundTruth: expect.objectContaining({ featureId: "F-1", taskId: null, taskLiveness: "absent" }),
+      actor: expect.objectContaining({ type: "agent", id: "agent-1" }),
+    }));
+
+    missionStore.getFeature.mockResolvedValue({ id: "F-1", status: "blocked", loopState: "passed" });
+    const rejected = await tool.execute("call", { id: "F-1", action: "re_run" });
+    expect(rejected.isError).toBe(true);
+    expect(repairFeatureValidationState).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-resolves a stale clear fence exactly once before succeeding", async () => {
+    const repairFeatureValidationState = vi.fn()
+      .mockRejectedValueOnce(new RepairGroundTruthStaleError("F-1"))
+      .mockResolvedValueOnce({ feature: { id: "F-1", status: "defined", loopState: "idle" } });
+    const getFeature = vi.fn().mockResolvedValue({ id: "F-1", status: "blocked", loopState: "blocked" });
+    const store = { getMissionStore: () => ({ getFeature, repairFeatureValidationState }) } as never;
+    const tool = createMissionTools(store, { agentId: "agent-1" }).find((candidate) => candidate.name === "fn_feature_repair_validation")!;
+    await expect(tool.execute("call", { id: "F-1", action: "clear" })).resolves.toMatchObject({ details: { feature: { id: "F-1", status: "defined" } } });
+    expect(getFeature).toHaveBeenCalledTimes(3);
+    expect(repairFeatureValidationState).toHaveBeenCalledTimes(2);
   });
 
   it("sets a linked feature status with attributed raw reason", async () => {
@@ -172,5 +216,76 @@ describe("createMissionTools", () => {
     expect(updateMission).toHaveBeenCalledWith("M-1", { title: "Updated mission" }, {
       actor: { type: "agent", id: "agent-7", displayName: "Planner", source: "engine-agent-tool" },
     });
+  });
+});
+
+/*
+FNXC:MissionValidationRepair 2026-08-11-01:46:
+These use the real PostgreSQL MissionStore behind the production tool adapter. A forwarding mock
+cannot prove that a stale fence retries once or that an archived linked task remains repairable.
+*/
+pgDescribe("mission validation repair agent tool", () => {
+  const h: SharedPgTaskStoreHarness = createSharedPgTaskStoreTestHarness({
+    prefix: "fusion_agent_validation_repair",
+    projectId: "agent-validation-repair-test",
+  });
+  beforeAll(h.beforeAll);
+  beforeEach(h.beforeEach);
+  afterEach(h.afterEach);
+  afterAll(h.afterAll);
+
+  async function blockedFeature(taskId?: string) {
+    const missionStore = h.store().getMissionStore();
+    const mission = await missionStore.createMission({ title: "Tool repair" });
+    const milestone = await missionStore.addMilestone(mission.id, { title: "Milestone" });
+    const slice = await missionStore.addSlice(milestone.id, { title: "Slice" });
+    const feature = await missionStore.addFeature(slice.id, { title: "Feature" });
+    return missionStore.updateFeature(feature.id, { taskId, status: "blocked", loopState: "blocked" });
+  }
+
+  it("clears an archived linked task through the real tool and persists its audit event", async () => {
+    const task = await h.store().createTask({ description: "Archived delivery", column: "done" });
+    await h.store().archiveTask(task.id, { cleanup: false });
+    const feature = await blockedFeature(task.id);
+    const tool = createMissionTools(h.store(), { agentId: "agent-repair" })
+      .find((candidate) => candidate.name === "fn_feature_repair_validation")!;
+
+    const result = await tool.execute("repair", { id: feature.id, action: "clear" });
+    expect(result.isError).not.toBe(true);
+    expect(await h.store().getMissionStore().getFeature(feature.id))
+      .toMatchObject({ status: "defined", loopState: "idle" });
+  });
+
+  it("re-resolves a real stale fence exactly once before clearing", async () => {
+    const task = await h.store().createTask({ description: "Planner delivery", column: "todo" });
+    const feature = await blockedFeature(task.id);
+    const realStore = h.store();
+    const getTask = realStore.getTask.bind(realStore);
+    let reads = 0;
+    const facade = new Proxy(realStore, {
+      get(target, property) {
+        if (property === "getTask") {
+          return async (id: string) => {
+            const snapshot = await getTask(id);
+            reads += 1;
+            if (reads === 1 && snapshot) await realStore.moveTask(id, "in-progress");
+            return snapshot;
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as TaskStore;
+    const repair = vi.spyOn(realStore.getMissionStore(), "repairFeatureValidationState");
+    const tool = createMissionTools(facade, { agentId: "agent-repair" })
+      .find((candidate) => candidate.name === "fn_feature_repair_validation")!;
+
+    const result = await tool.execute("repair-stale", { id: feature.id, action: "clear" });
+    expect(result.isError).not.toBe(true);
+    expect(repair).toHaveBeenCalledTimes(2);
+    // One helper read per bounded attempt proves the first real fence lost its race and the second re-resolved.
+    expect(reads).toBe(2);
+    expect(await realStore.getMissionStore().getFeature(feature.id))
+      .toMatchObject({ status: "in-progress", loopState: "implementing" });
   });
 });

@@ -215,6 +215,7 @@ The canonical per-parameter tool reference lives in `packages/cli/skill/fusion/r
 | `fn_feature_delete` | Delete a feature (with linked-task guard and optional `force`). |
 | `fn_feature_update` | Update feature fields using partial patches. |
 | `fn_feature_set_status` | Set feature status; execution statuses require a linked task. |
+| `fn_feature_repair_validation` | Clear a stale validation badge or re-run an eligible validation. |
 | `fn_feature_link_task` | Link a feature to a task for implementation. |
 | `fn_milestone_delete` | Delete a milestone (with linked-task guard and optional `force`). |
 
@@ -255,6 +256,16 @@ Updates an existing feature's `title`, `description`, or `acceptanceCriteria`. P
 | `acceptanceCriteria` | string | — | Updated acceptance criteria for completing the feature |
 
 Use this to edit existing features without delete-and-re-add cycles.
+
+### Repair feature validation state
+
+`fn_feature_repair_validation` repairs a stale feature validation state without weakening normal execution-loop transitions. Use `clear` to clear an eligible `blocked` or `needs_fix` loop state (and a blocked feature status); use `re_run` to create a new validator run only when it is safe.
+
+The shared eligibility rule is used by the store, agent tool, REST route, and dashboard. A `blocked` or `needs_fix` loop state permits both actions regardless of feature status. A blocked status with no loop state or `idle` also permits both. A blocked status with `validating`, `implementing`, or `passed` permits **Clear only**; `re_run` is refused while a live cycle is active and for passed features. Healthy features expose neither action, and `re_run` also refuses a feature with an in-flight validator run or no linked assertions.
+
+For a status-changing clear, the engine resolves a target status and loop target plus a ground-truth fence. The fence type lives in `@fusion/core` while the engine produces it, preserving core's dependency direction. It captures the linked task identity, lane role, and whether that task was observed `live` or `absent`. A missing, deleted, or archived linked task is an absent ground truth that resolves to `defined`, so it can be repaired rather than permanently rejected.
+
+The store rechecks the fence under its feature-row lock: a live task must still be live and unchanged, while an absent task must remain absent. It retries a stale resolution once. The no-`taskStore` fixture fallback records `groundTruthTaskVerified: false` for a non-null task ID. Callers provide both resolved targets: the store ignores `resolvedLoopState` on a status-only clear and ignores `resolvedStatus` on a loop-only clear, avoiding stale pre-lock branching. The mutation and `feature_validation_repaired` audit event commit in one transaction; clearing resets the implementation retry count, and unlinked features cannot be resumed as `triaged` or `in-progress`. The normal execution loop still cannot escape `blocked` by itself.
 
 ## Mission delete policy (hard delete with linked-task guard)
 
@@ -742,9 +753,9 @@ See also: [Multi-Project](./multi-project.md) and [Task Management](./task-manag
 
 ## Agent and dashboard-chat tools
 
-Mission hierarchy operations are available with the same project-scoped `MissionStore` contract in the pi extension, engine-managed executor/triage/heartbeat agents, and provider-backed dashboard chat. The surface is `fn_mission_list`, `fn_mission_show`, `fn_mission_create`, `fn_mission_update`, `fn_mission_set_status`, `fn_mission_delete`, `fn_milestone_add`, `fn_milestone_update`, `fn_milestone_delete`, `fn_slice_add`, `fn_slice_activate`, `fn_slice_delete`, `fn_feature_add`, `fn_feature_update`, `fn_feature_set_status`, `fn_feature_delete`, and `fn_feature_link_task`.
+Mission hierarchy operations are available with the same project-scoped `MissionStore` contract in the pi extension, engine-managed executor/triage/heartbeat agents, and provider-backed dashboard chat. The surface is `fn_mission_list`, `fn_mission_show`, `fn_mission_create`, `fn_mission_update`, `fn_mission_set_status`, `fn_mission_delete`, `fn_milestone_add`, `fn_milestone_update`, `fn_milestone_delete`, `fn_slice_add`, `fn_slice_activate`, `fn_slice_delete`, `fn_feature_add`, `fn_feature_update`, `fn_feature_set_status`, `fn_feature_repair_validation`, `fn_feature_delete`, and `fn_feature_link_task`.
 
-`fn_mission_list` and `fn_mission_show` are positively classified read-only. All other hierarchy operations mutate persisted project data and remain subject to the engine action gate and permanent-agent permission policy; they are never treated as unknown or exempt tools.
+`fn_mission_list` and `fn_mission_show` are positively classified read-only. All other hierarchy operations, including `fn_feature_repair_validation`, mutate persisted project data and remain subject to the engine action gate and permanent-agent permission policy; they are never treated as unknown or exempt tools.
 
 For example, activate a ready work unit with `fn_slice_activate({ id: "SL-…" })`. Link it to live work with `fn_feature_link_task({ featureId: "F-…", taskId: "FN-…" })`. Linking delegates to `MissionStore.linkFeatureToTask()`: it verifies the task is a live row in the same project, changes the feature to `triaged`, and records the mission/slice linkage on the task. Archived, deleted, missing, and other-project tasks are rejected.
 
