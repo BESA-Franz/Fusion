@@ -83,6 +83,7 @@ import { isTaskStillInPlanningStage } from "./execution/replan-target.js";
 import { classifyPersistedPlanHandoff, LEGACY_NULL_PLAN_HANDOFF_STALE_MS } from "./planning-handoff-recovery.js";
 import { getPromptPath } from "./execution/spec-staleness.js";
 import { evaluateStrandedHoldContinuation, seedPreReleasePlanReviewContinuation } from "./plan-review-continuation.js";
+import { evaluateStrandedContinuationReclaim, RECLAIM_RETIRED_STATE } from "./workflows/stranded-continuation-reclaim.js";
 /*
 FNXC:Workspace 2026-06-22-14:10 (Phase D review G — cycle dissolved):
 `isRepoLanded` is the CANONICAL per-repo landed predicate (Phase C, exported A6). It now lives in
@@ -1744,6 +1745,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       // FNXC:PrincipalHeldPlanning 2026-08-10-08:20: a planning hold from principal routing has no other
       // retry owner, so it must be re-queued before the steps below classify the card as simply idle.
       { name: "reconcile-principal-held-planning", fn: () => this.reconcilePrincipalHeldPlanningContinuations().then(() => undefined) },
+      /*
+      FNXC:StrandedContinuationReclaim 2026-08-11-09:12:
+      Runs AFTER the two narrow continuation sweeps above and before any step that classifies a card as
+      idle. Startup is the highest-yield moment for it: a killed process is exactly what leaves a
+      `running` row with a lease that now has no owner, and until this sweep existed those rows survived
+      every subsequent restart untouched.
+      */
+      { name: "reconcile-stranded-workflow-continuations", fn: () => this.reconcileStrandedWorkflowContinuations().then(() => undefined) },
       { name: "no-progress-no-task-done", fn: () => this.recoverNoProgressNoTaskDoneFailures().then(() => undefined) },
       { name: "completed-tasks", fn: () => this.recoverCompletedTasks().then(() => undefined) },
       { name: "recover-stranded-completed-todo", fn: () => this.recoverStrandedCompletedTodoTasks().then(() => undefined) },
@@ -2858,6 +2867,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           // no benefit.
           { name: "reconcile-stranded-hold-continuations", fn: () => this.reconcileStrandedHoldContinuations() },
           { name: "reconcile-principal-held-planning", fn: () => this.reconcilePrincipalHeldPlanningContinuations() },
+          // FNXC:StrandedContinuationReclaim 2026-08-11-09:12: steady-state half of the startup sweep —
+          // a session can die mid-run without a restart, and the grace window keeps live work untouched.
+          { name: "reconcile-stranded-workflow-continuations", fn: () => this.reconcileStrandedWorkflowContinuations() },
           { name: "recover-mergeable-review", fn: () => this.recoverMergeableReviewTasks() },
           // FNXC:Workspace 2026-06-22-09:30 (Phase D U1) — workspace-mode reconcilers.
           { name: "reconcile-workspace-partial-lands", fn: () => this.reconcileWorkspacePartialLands() },
@@ -7700,6 +7712,135 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       return repaired;
     } catch (error) {
       log.warn(`reconcilePrincipalHeldPlanningContinuations failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 0;
+    }
+  }
+
+  /**
+   * FNXC:StrandedContinuationReclaim 2026-08-11-09:12:
+   * The general reclaim for continuations no dispatcher will ever look at again. See
+   * `workflows/stranded-continuation-reclaim.ts` for the full mechanism; in short, the due-poll selects
+   * only `runnable`/`retrying`, so a row that stops in `running` (dead lease, NULL expiry) or `held`
+   * (reason the claim predicate cannot re-take) is silently terminal, and a soft-deleted task's rows are
+   * never cascaded away.
+   *
+   * This is the SUPERSET sweep that `reconcilePrincipalHeldPlanningContinuations` is the narrow special
+   * case of: that one restores a planning SIGNAL (`needs-replan`) so triage re-routes a held triage-role
+   * plan node, which is the correct repair for its shape and is deliberately left alone here. This sweep
+   * repairs the ROW, moving it back to `runnable` so the ordinary drain claims it on the next tick.
+   *
+   * Scan shape: `listDueWorkflowWorkItems` already filters `leaseExpiresAt IS NULL OR <= now`, so the
+   * one query returns exactly the rows that could be abandoned — no per-task fan-out, and no unbounded
+   * table walk. Every write is compare-and-set fenced on the state the scan observed, so a row a real
+   * dispatcher claimed between scan and write is left untouched rather than reset under a live session.
+   *
+   * @returns Count of rows actually re-queued or retired.
+   */
+  async reconcileStrandedWorkflowContinuations(): Promise<number> {
+    try {
+      if (typeof this.store.listDueWorkflowWorkItems !== "function") return 0;
+      const settings = await this.store.getSettings();
+      const enginePaused = settings.globalPause === true || settings.enginePaused === true;
+      if (enginePaused) return 0;
+      /*
+      FNXC:StrandedContinuationReclaim 2026-08-11-09:12:
+      Ten minutes matches `WorkflowAgentCapacity.LEASE_DURATION_MS`, the longest a healthy claim can go
+      without renewing its durable capacity row. Anything younger may be a live session mid-renewal.
+      */
+      const graceMs = 10 * 60_000;
+      const now = Date.now();
+      const nowIso = new Date(now).toISOString();
+      const live = (taskId: string) => activeSessionRegistry.pathsForTask(taskId).some((path) => activeSessionRegistry.isPathActive(path))
+        || executingTaskLock.has(taskId)
+        || this.options.isTaskActive?.(taskId) === true;
+      const due = await this.store.listDueWorkflowWorkItems({
+        now: nowIso,
+        states: [...ACTIVE_WORKFLOW_WORK_ITEM_STATES],
+      });
+      let repaired = 0;
+      for (const item of due) {
+        try {
+          /*
+          FNXC:StrandedContinuationReclaim 2026-08-11-09:12:
+          `getTask` must see soft-deleted and archived rows, because those are precisely the tasks whose
+          continuations need retiring. A reader that hides them reports `task-missing`, which retires the
+          row too — the same disposition, so the sweep stays correct either way.
+          */
+          const task = await this.store.getTask(item.taskId);
+          const terminalColumns = await resolveTaskLifecycleColumns(this.store, item.taskId).catch(() => undefined);
+          const doneColumn = terminalColumns?.complete ?? "done";
+          const archivedColumn = terminalColumns?.archived ?? "archived";
+          const verdict = evaluateStrandedContinuationReclaim({
+            item,
+            taskMissing: !task,
+            taskTerminal: !!task && (
+              task.deletedAt != null
+              || task.column === archivedColumn
+              || task.column === doneColumn
+              || task.column === "archived"
+              || task.column === "done"
+            ),
+            taskPaused: task?.userPaused === true || task?.paused === true,
+            live: live(item.taskId),
+            enginePaused,
+            stalenessMs: Math.max(0, now - new Date(item.updatedAt).getTime()),
+            graceMs,
+            now,
+          });
+          if (verdict.action === "none") continue;
+          const target = verdict.action === "retire" ? RECLAIM_RETIRED_STATE : "runnable";
+          const written = await this.store.transitionWorkflowWorkItem(item.id, target, {
+            /*
+            FNXC:StrandedContinuationReclaim 2026-08-11-09:12:
+            Clearing the lease and the blocked reason is what makes the row claimable again — leaving
+            either behind reproduces the exact wedge this sweep exists to end (the claim predicate reads
+            `blockedReason`, and a stale `leaseOwner` makes the row look owned to every human reading it).
+            `lastError` is preserved: it is the only surviving evidence of why the row stopped.
+            */
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            blockedReason: null,
+            expectedState: item.state,
+          });
+          // CAS lost: another writer moved the row between the scan and this write. Leave it to them.
+          if (written.state !== target) continue;
+          repaired += 1;
+          if (verdict.action === "requeue") {
+            await this.store.logEntry(
+              item.taskId,
+              `[recovery] workflow continuation re-queued — ${item.nodeId} was stranded in '${item.state}' (${verdict.reason})`,
+            ).catch(() => undefined);
+          }
+          await createRunAuditor(this.store, {
+            runId: generateSyntheticRunId("reconcile-stranded-continuation", item.taskId),
+            agentId: "self-healing",
+            taskId: item.taskId,
+            taskLineageId: task?.lineageId,
+            phase: "reconcile-stranded-continuation",
+          }).database({
+            type: (verdict.action === "retire"
+              ? "workflowWorkItem:reconcile-stranded-retired"
+              : "workflowWorkItem:reconcile-stranded-requeued") as DatabaseMutationType,
+            target: item.id,
+            /* Ids/counts/outcomes only — never `lastError` prose or node config. */
+            metadata: {
+              taskId: item.taskId,
+              workItemId: item.id,
+              nodeId: item.nodeId,
+              kind: item.kind,
+              priorState: item.state,
+              reason: verdict.reason,
+              stalenessMs: Math.max(0, now - new Date(item.updatedAt).getTime()),
+            },
+          });
+        } catch (error) {
+          log.warn(`reconcileStrandedWorkflowContinuations: failed for ${item.id}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      if (repaired > 0) log.log(`Reclaimed ${repaired} stranded workflow continuation(s)`);
+      return repaired;
+    } catch (error) {
+      log.warn(`reconcileStrandedWorkflowContinuations failed: ${error instanceof Error ? error.message : String(error)}`);
       return 0;
     }
   }

@@ -154,13 +154,13 @@ export function validateFencedWorkflowPrincipal(input: {
   })) {
     return staleFence;
   }
-  return available(agent, input.activeSessions ?? new Map())
+  return available(agent)
     ? { status: "routed", route: { agent, role: input.role, authority: input.authority } }
     : { status: "held", role: input.role, reason: "named-principal-unavailable" };
 }
 
 /** A named principal is never silently replaced once a precedence branch names it. */
-function available(agent: Agent | undefined, activeSessions: ReadonlyMap<string, number>): agent is Agent {
+function available(agent: Agent | undefined): agent is Agent {
   /*
    * FNXC:WorkflowAgentRouting 2026-08-07-03:38:
    * Workflow-stage routing may only select durable operator-visible principals.
@@ -172,8 +172,16 @@ function available(agent: Agent | undefined, activeSessions: ReadonlyMap<string,
   // (isWorkflowPrincipalEligible) so "what provisioning must produce" and "what routing accepts"
   // cannot drift apart again — that drift is what left every built-in owner unroutable.
   if (!agent || isEphemeralAgent(agent) || !isWorkflowPrincipalEligible(agent)) return false;
-  const max = agent.runtimeConfig?.maxWorkflowSessions;
-  return typeof max !== "number" || activeSessions.get(agent.id) === undefined || activeSessions.get(agent.id)! < max;
+  /*
+  FNXC:WorkflowAgentRouting 2026-08-11-09:12:
+  Availability is now a pure ELIGIBILITY test — is this a durable principal that may run this role — with
+  no session-count ceiling. `runtimeConfig.maxWorkflowSessions` used to gate here; a role agent at its
+  ceiling reported `role-pool-exhausted`/`named-principal-unavailable` and the node became a durable
+  `held` row that no dispatcher re-polled. With one agent per role that ceiling serialized the entire
+  board. See `WorkflowAgentCapacity.acquire` for the full rationale — the two must stay consistent, since
+  a cap in either place reproduces the same wedge on its own.
+  */
+  return true;
 }
 
 /**
@@ -225,7 +233,7 @@ export function routeWorkflowPrincipal(input: {
     if (!agent || !hasWorkflowRoleCapability(agent, role, { allowEngineerAsExecutor: authority === "task-assignee" })) {
       return undefined;
     }
-    return available(agent, activeSessions)
+    return available(agent)
       ? { status: "routed", route: { agent, role, authority } }
       : { status: "held", role, reason: "named-principal-unavailable" };
   };
@@ -247,7 +255,7 @@ export function routeWorkflowPrincipal(input: {
   if (bound) return bound;
   const pool = input.agents
     .filter((agent) => !input.excludedPoolAgentIds?.has(agent.id)
-      && hasWorkflowRoleCapability(agent, role) && available(agent, activeSessions))
+      && hasWorkflowRoleCapability(agent, role) && available(agent))
     .sort((left, right) => (activeSessions.get(left.id) ?? 0) - (activeSessions.get(right.id) ?? 0)
       || left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
   const agent = pool[0];

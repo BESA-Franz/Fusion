@@ -113,11 +113,17 @@ describe("executor routes workflow stages through durable principals", () => {
 
       expect(agentStore.listAgents).toHaveBeenCalledWith({ includeEphemeral: true });
       expect(store.upsertWorkflowWorkItem).toHaveBeenCalled();
+      /*
+      FNXC:WorkflowAgentRouting 2026-08-11-09:12:
+      `maxProjectSessions` is gone from this call by design — workflow principals have no execution cap,
+      so admission passes no limit at all (see `WorkflowAgentCapacity.acquire`). Asserted as an ABSENCE,
+      not merely dropped from the shape, so silently reintroducing the cap fails here.
+      */
       expect(acquire).toHaveBeenCalledWith(expect.objectContaining({
         projectId: "project-fn-8821",
         agent: expect.objectContaining({ id: "workflow-executor" }),
-        maxProjectSessions: 2,
       }));
+      expect(acquire.mock.calls[0]?.[0]).not.toHaveProperty("maxProjectSessions");
       expect(release).toHaveBeenCalledOnce();
       expect((TaskExecutor as unknown as { processWideGraphRouting: Set<string> }).processWideGraphRouting).not.toContain(live.id);
       expect(store.upsertWorkflowWorkItem).toHaveBeenCalledWith(expect.objectContaining({

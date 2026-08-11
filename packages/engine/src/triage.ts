@@ -2631,7 +2631,9 @@ export class TriageProcessor {
           if (!Array.isArray(agents)) {
             assignedAgent = assignedAgent ?? null;
           } else {
-          let routed = routeWorkflowPrincipal({
+          // FNXC:WorkflowAgentRouting 2026-08-11-09:12: `const` since the capacity re-route loop that
+          // used to reassign this is gone with the principal execution cap.
+          const routed = routeWorkflowPrincipal({
             task: currentTask,
             ir: planningIr,
             node: planningNode,
@@ -2679,43 +2681,21 @@ export class TriageProcessor {
             triageRunContext.agentId = assignedAgent.id;
             workflowCapacityAttemptId = `${triageRunContext.runId}:${planningNode.id}`;
             workflowCapacityProjectId = this.options.agentStore.workflowProjectId ?? this.rootDir;
-            let capacity = await this.workflowAgentCapacity.acquire({
+            /*
+            FNXC:WorkflowAgentRouting 2026-08-11-09:12:
+            Capacity admission no longer refuses (see `WorkflowAgentCapacity.acquire`): workflow
+            principals have no execution cap, so the lease is bookkeeping and the acquire always
+            succeeds. The `agent-capacity` retry loop that used to re-route to another pool member on
+            refusal is DELETED with the cap it existed to work around — with no refusal there is no
+            contender to exclude. The `held` branch is kept as a fail-closed guard for a store-level
+            refusal (a future caller that does pass limits, or a durable-store error path); it parks the
+            card on `needs-replan`, which triage rediscovers, rather than dropping it.
+            */
+            const capacity = await this.workflowAgentCapacity.acquire({
               projectId: workflowCapacityProjectId,
               agent: assignedAgent,
               attemptId: workflowCapacityAttemptId,
-              maxProjectSessions: settings.maxConcurrent,
             });
-            /*
-            FNXC:WorkflowAgentRouting 2026-08-07-07:32:
-            Role-pool selection is optimistic across engine processes. Retry a
-            different pool member only after durable agent-capacity rejects this
-            contender; task owners and other named principals remain fail-closed.
-            */
-            if (capacity.status === "held" && capacity.reason === "agent-capacity"
-              && routed.route.authority === "role-pool") {
-              const excludedPoolAgentIds = new Set<string>();
-              while (capacity.status === "held" && capacity.reason === "agent-capacity"
-                && routed.route.authority === "role-pool") {
-                excludedPoolAgentIds.add(routed.route.agent.id);
-                const retryRoute = routeWorkflowPrincipal({
-                  task: currentTask,
-                  ir: planningIr,
-                  node: planningNode,
-                  agents,
-                  excludedPoolAgentIds,
-                });
-                if (retryRoute.status !== "routed" || retryRoute.route.authority !== "role-pool") break;
-                routed = retryRoute;
-                assignedAgent = routed.route.agent;
-                triageRunContext.agentId = assignedAgent.id;
-                capacity = await this.workflowAgentCapacity.acquire({
-                  projectId: workflowCapacityProjectId,
-                  agent: assignedAgent,
-                  attemptId: workflowCapacityAttemptId,
-                  maxProjectSessions: settings.maxConcurrent,
-                });
-              }
-            }
             if (capacity.status === "held") {
               await this.store.logEntry(task.id, `Planning held: workflow-principal-${capacity.reason}:triage`);
               await this.updatePlanningStateIfStillCurrent(task, { status: "needs-replan" });

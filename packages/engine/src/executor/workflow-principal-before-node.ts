@@ -123,8 +123,6 @@ let routed = hasFencedPrincipal
       agents,
       activeSessions,
     });
-/** Cleared when a stale fence is discarded, so the pool-capacity retry below is no longer fenced off. */
-let fenceStillGoverns = Boolean(hasFencedPrincipal);
 /*
  * FNXC:WorkflowAgentRouting 2026-08-10-07:50:
  * A fence that no longer describes reality is not a wait — the principal is gone, lost the role, or had its
@@ -144,8 +142,6 @@ if (routed.status === "held" && routed.staleFence) {
     agents,
     activeSessions,
   });
-  // The fence is discarded, so a fresh role-pool route may take the cross-engine capacity retry below.
-  fenceStillGoverns = false;
 }
 if (routed.status === "unclassified") return undefined;
 /*
@@ -268,49 +264,24 @@ if (routed.status === "held") {
  */
 const attemptId = `${deps.resolvedRunId ?? `${nodeTask.id}:workflow`}:${nodeInstanceId}`;
 /*
- * FNXC:WorkflowAgentRouting 2026-08-07-05:29:
- * Workflow-stage admission consumes the project workflow budget, while
- * an agent's heartbeat retains its separate maxConcurrentRuns budget.
- * Passing the project limit here closes the direct-graph path, which
- * otherwise enforced only optional per-agent limits.
+ * FNXC:WorkflowAgentRouting 2026-08-11-09:12:
+ * Workflow-stage admission no longer consumes a project workflow budget — workflow principals have NO
+ * execution cap (see `WorkflowAgentCapacity.acquire` for why: with one durable agent per role, capping
+ * principal sessions capped the entire board, and the refusal became a durable `held` row nothing
+ * re-polled). The lease is still taken, because it is what `activeSessions` counts and what the renewal
+ * timer keeps warm; it just cannot refuse. An agent's heartbeat keeps its separate `maxConcurrentRuns`
+ * budget, which was always a different thing.
+ *
+ * The `agent-capacity` re-route loop is DELETED with the cap that motivated it: it existed only to pick
+ * a different pool member after a durable refusal, and there is no longer a refusal to react to. The
+ * `held` branch below survives as a fail-closed guard for a store-level refusal, and still records the
+ * durable held item so the state is inspectable rather than terminalized.
  */
-let capacity = await deps.workflowAgentCapacity.acquire({
+const capacity = await deps.workflowAgentCapacity.acquire({
   projectId: deps.options.agentStore.workflowProjectId ?? deps.store.getRootDir(),
   agent: routed.route.agent,
   attemptId,
-  maxProjectSessions: deps.settings.maxConcurrent,
 });
-/*
- * FNXC:WorkflowAgentRouting 2026-08-07-07:32:
- * A role-pool snapshot is process-local, while admission is durable
- * across engines. If another engine filled the selected agent between
- * selection and the atomic acquire, try the next eligible pool member.
- * Fenced and named principals never take this fallback.
- */
-if (capacity.status === "held" && capacity.reason === "agent-capacity"
-  && routed.route.authority === "role-pool" && !fenceStillGoverns) {
-  const excludedPoolAgentIds = new Set<string>();
-  while (capacity.status === "held" && capacity.reason === "agent-capacity"
-    && routed.route.authority === "role-pool") {
-    excludedPoolAgentIds.add(routed.route.agent.id);
-    const retryRoute = routeWorkflowPrincipal({
-      task: nodeTask,
-      ir: deps.columnAgentIr,
-      node,
-      agents,
-      activeSessions,
-      excludedPoolAgentIds,
-    });
-    if (retryRoute.status !== "routed" || retryRoute.route.authority !== "role-pool") break;
-    routed = retryRoute;
-    capacity = await deps.workflowAgentCapacity.acquire({
-      projectId: deps.options.agentStore.workflowProjectId ?? deps.store.getRootDir(),
-      agent: routed.route.agent,
-      attemptId,
-      maxProjectSessions: deps.settings.maxConcurrent,
-    });
-  }
-}
 if (capacity.status === "held") {
   const reason = `workflow-principal-${capacity.reason}:${routed.route.role}`;
   await holdDirectPrincipalWorkItem(reason, routed.route.agent.id, routed.route.authority);
