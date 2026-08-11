@@ -4424,10 +4424,12 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             try {
               /*
               FNXC:SelfHealingReclaim 2026-08-11-09:38:
-              Prune BEFORE attempting removal. A stale worktree registration (recorded path no longer on disk) makes
-              `git worktree remove --force` fail outright, and this sweep used to prune only AFTER the remove — so a
-              dangling registration reliably produced the very failure pruning would have prevented. Observed on this
-              repo at 89 registered worktrees against 20 present on disk.
+              Prune BEFORE attempting removal, not only after. A stale worktree registration (recorded path no longer
+              on disk) makes `git worktree remove --force` fail outright, so pruning only afterwards lets a dangling
+              registration produce the very failure pruning would have prevented — and the retry does not reach the
+              post-remove prune either, because the removal throws first. Ordering fix only; the trailing prune stays
+              for the registration of the worktree just removed. Best-effort: a prune failure must not itself abort
+              cleanup.
               */
               await execAsync("git worktree prune", {
                 cwd: this.options.rootDir,
