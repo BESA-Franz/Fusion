@@ -1098,6 +1098,7 @@ export {
   triageAllSliceFeatures,
   triageFeature,
   triggerValidation,
+  VALIDATION_ALREADY_RUNNING,
   repairFeatureValidation,
   unlinkFeatureFromAssertion,
   unlinkFeatureFromTask,
@@ -1137,6 +1138,7 @@ export type {
   SliceStatus,
   SliceWithFeatures,
   ValidationRunsResponse,
+  ValidationAlreadyRunningDetail,
 } from "./missions/missions.js";
 /*
  * FNXC:CodeOrganization 2026-07-20-14:00:

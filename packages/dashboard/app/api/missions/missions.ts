@@ -584,7 +584,16 @@ export interface MissionValidatorRun {
   updatedAt: string;
 }
 
-/** Trigger validation for a feature */
+/** API conflict detail returned when a fresh validator run already owns a feature. */
+export const VALIDATION_ALREADY_RUNNING = "VALIDATION_ALREADY_RUNNING" as const;
+export interface ValidationAlreadyRunningDetail {
+  code: typeof VALIDATION_ALREADY_RUNNING;
+  runId: string;
+  featureId: string;
+  startedAt: string;
+}
+
+/** Trigger validation for a feature; may reject with ApiRequestError 409 and ValidationAlreadyRunningDetail. */
 export function triggerValidation(featureId: string, projectId?: string): Promise<{ runId: string; featureId: string; status: string; triggerType: string; implementationAttempt: number; validatorAttempt: number; startedAt: string }> {
   return api(withProjectId(`/missions/features/${encodeURIComponent(featureId)}/validate`, projectId), {
     method: "POST",

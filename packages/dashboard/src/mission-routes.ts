@@ -51,7 +51,6 @@ import type {
   FeatureStatus,
   InterviewState,
   MissionAssertionStatus,
-  FeatureLoopState,
   ValidatorRunStatus,
   ContractAssertionCreateInput,
   ContractAssertionUpdateInput,
@@ -2441,13 +2440,30 @@ export function createMissionRouter(
         throw badRequest("Feature has no linked assertions. Link assertions before triggering validation.");
       }
 
-      // Transition feature to validating state
-      await missionStore.updateFeature(featureId, {
-        loopState: "validating" as FeatureLoopState,
-      });
-
-      // Start a validator run
-      const run = await missionStore.startValidatorRun(featureId, "manual");
+      /*
+      FNXC:MissionValidation 2026-08-11-03:43:
+      A route pre-check races other tabs and engine validation. The admission transaction owns both
+      the feature mutation and the feature-scoped liveness check, returning this stable 409 contract
+      without touching the feature when a fresh run already exists.
+      */
+      const manualAdmissionStore = missionStore as typeof missionStore & {
+        startManualValidatorRun?: (id: string, input?: { triggerType?: string; taskId?: string }) => Promise<
+          | { outcome: "started"; run: { id: string; featureId: string; status: string; triggerType?: string; implementationAttempt: number; validatorAttempt: number; startedAt: string } }
+          | { outcome: "already-running"; run: { id: string; startedAt: string } }
+        >;
+      };
+      const admission = typeof manualAdmissionStore.startManualValidatorRun === "function"
+        ? await manualAdmissionStore.startManualValidatorRun(featureId)
+        : { outcome: "started" as const, run: await missionStore.startValidatorRun(featureId, "manual") };
+      if (admission.outcome === "already-running") {
+        throw conflict("Validation is already running for this feature", {
+          code: "VALIDATION_ALREADY_RUNNING",
+          runId: admission.run.id,
+          featureId,
+          startedAt: admission.run.startedAt,
+        });
+      }
+      const run = admission.run;
 
       res.status(202).json({
         runId: run.id,

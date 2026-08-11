@@ -104,6 +104,7 @@ import {
   fetchMilestoneValidation,
   fetchMilestoneValidationTelemetry,
   triggerValidation,
+  VALIDATION_ALREADY_RUNNING,
   repairFeatureValidation,
   fetchValidationLoopState,
   fetchValidationRuns,
@@ -2529,7 +2530,19 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
         return next;
       });
     } catch (err) {
-      addToast(getErrorMessage(err) || t("missions.validationTriggerFailed", "Failed to trigger validation"), "error");
+      if (err instanceof ApiRequestError
+        && err.status === 409
+        && (err.details as { code?: string } | undefined)?.code === VALIDATION_ALREADY_RUNNING) {
+        addToast(t("missions.validationAlreadyRunning", "Validation is already running for this feature"), "info");
+        try {
+          const snapshot = await fetchValidationLoopState(featureId, projectId);
+          setFeatureLoopStates((prev) => new Map(prev).set(featureId, snapshot));
+        } catch {
+          // FNXC:MissionValidation 2026-08-11-03:43: Preserve the specific conflict message when the live-state refresh races its owning validator.
+        }
+      } else {
+        addToast(getErrorMessage(err) || t("missions.validationTriggerFailed", "Failed to trigger validation"), "error");
+      }
     } finally {
       setValidatingFeatures((prev) => {
         const next = new Set(prev);

@@ -865,6 +865,135 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
     expect(fetched?.inputFingerprint).toBe("fingerprint-round-trip");
   });
 
+  it("atomically admits one fresh manual validator run and preserves rejected feature state", async () => {
+    const m = missions();
+    const mission = await m.createMission({ title: "Manual admission" });
+    const milestone = await m.addMilestone(mission.id, { title: "MS" });
+    const slice = await m.addSlice(milestone.id, { title: "SL" });
+    const feature = await m.addFeature(slice.id, { title: "F" });
+
+    const [first, second] = await Promise.all([
+      m.startManualValidatorRun(feature.id),
+      m.startManualValidatorRun(feature.id),
+    ]);
+    const started = first.outcome === "started" ? first : second;
+    const blocked = first.outcome === "already-running" ? first : second;
+    expect(started).toMatchObject({ outcome: "started" });
+    expect(blocked).toMatchObject({ outcome: "already-running", run: { id: started.run.id } });
+    expect((await m.getValidatorRunsByFeature(feature.id)).filter((run) => run.status === "running")).toHaveLength(1);
+    const beforeRejected = await m.getFeature(feature.id);
+    await expect(m.startManualValidatorRun(feature.id)).resolves.toMatchObject({ outcome: "already-running", run: { id: started.run.id } });
+    expect(await m.getFeature(feature.id)).toEqual(beforeRejected);
+
+    await m.completeValidatorRun(started.run.id, "passed");
+    await expect(m.startManualValidatorRun(feature.id)).resolves.toMatchObject({ outcome: "started" });
+  });
+
+  it("serializes a manual trigger with the engine fallback validator creator", async () => {
+    /*
+    FNXC:MissionValidation 2026-08-11-04:27:
+    FN-8963's feature lock must cover the production non-memo engine fallback as well as the
+    manual route. Either contender may acquire it first, but their concurrent creation attempts
+    must leave exactly one live validator run.
+    */
+    const m = missions();
+    const mission = await m.createMission({ title: "Manual and fallback serialization" });
+    const milestone = await m.addMilestone(mission.id, { title: "MS" });
+    const slice = await m.addSlice(milestone.id, { title: "SL" });
+    const feature = await m.addFeature(slice.id, { title: "F" });
+
+    const [manual, fallback] = await Promise.allSettled([
+      m.startManualValidatorRun(feature.id),
+      m.startValidatorRun(feature.id, "task_completion"),
+    ]);
+
+    expect((await m.getValidatorRunsByFeature(feature.id)).filter((run) => run.status === "running")).toHaveLength(1);
+    expect(
+      (manual.status === "fulfilled" && manual.value.outcome === "started") || fallback.status === "fulfilled",
+    ).toBe(true);
+    if (manual.status === "fulfilled" && manual.value.outcome === "started") {
+      expect(fallback).toMatchObject({ status: "rejected" });
+    } else {
+      expect(manual).toMatchObject({ status: "fulfilled", value: { outcome: "already-running" } });
+    }
+  });
+
+  it("reports the newest fresh run when legacy data has multiple running rows", async () => {
+    const m = missions();
+    const mission = await m.createMission({ title: "Legacy concurrent validation rows" });
+    const milestone = await m.addMilestone(mission.id, { title: "MS" });
+    const slice = await m.addSlice(milestone.id, { title: "SL" });
+    const feature = await m.addFeature(slice.id, { title: "F" });
+    const older = await m.startValidatorRun(feature.id, "task_completion");
+    await h.layer().transactionImmediate(async (tx) => {
+      await tx.update(schema.project.missionValidatorRuns)
+        .set({ startedAt: new Date(Date.now() - 60_000).toISOString() })
+        .where(eq(schema.project.missionValidatorRuns.id, older.id));
+    });
+    const newest = await m.startValidatorRun(feature.id, "task_completion");
+
+    await expect(m.startManualValidatorRun(feature.id))
+      .resolves.toMatchObject({ outcome: "already-running", run: { id: newest.id } });
+    expect((await m.getValidatorRunsByFeature(feature.id)).filter((run) => run.status === "running")).toHaveLength(2);
+  });
+
+  it("manual admission blocks fresh automatic runs but ignores stale runs", async () => {
+    const m = missions();
+    const mission = await m.createMission({ title: "Cross surface admission" });
+    const milestone = await m.addMilestone(mission.id, { title: "MS" });
+    const slice = await m.addSlice(milestone.id, { title: "SL" });
+    const feature = await m.addFeature(slice.id, { title: "F" });
+    const automatic = await m.admitValidatorRun(feature.id, { inputFingerprint: "fp-a", failureBudget: 3, reusePass: false });
+    expect(automatic).toMatchObject({ outcome: "start" });
+    await expect(m.startManualValidatorRun(feature.id)).resolves.toMatchObject({ outcome: "already-running", run: { id: automatic.run!.id } });
+    await expect(m.admitValidatorRun(feature.id, { inputFingerprint: "fp-a", failureBudget: 3, reusePass: false }))
+      .resolves.toMatchObject({ outcome: "running", run: { id: automatic.run!.id } });
+
+    await m.completeValidatorRun(automatic.run!.id, "error");
+    const stale = await m.startValidatorRun(feature.id, "task_completion");
+    await h.layer().transactionImmediate(async (tx) => {
+      await tx.update(schema.project.missionValidatorRuns)
+        .set({ startedAt: new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString() })
+        .where(eq(schema.project.missionValidatorRuns.id, stale.id));
+    });
+    await expect(m.startManualValidatorRun(feature.id)).resolves.toMatchObject({ outcome: "started" });
+  });
+
+  it("characterizes automatic admission's fingerprint-only boundary", async () => {
+    /*
+    FNXC:MissionValidation 2026-08-11-03:43:
+    FN-8976 owns this deliberately unchanged gap: a fingerprint-less manual run is not visible to
+    fingerprint-scoped automatic admission. Manual-after-automatic is guarded above; do not widen
+    admitValidatorRun in the manual endpoint fix.
+    */
+    const m = missions();
+    const mission = await m.createMission({ title: "Fingerprint boundary" });
+    const milestone = await m.addMilestone(mission.id, { title: "MS" });
+    const slice = await m.addSlice(milestone.id, { title: "SL" });
+    const feature = await m.addFeature(slice.id, { title: "F" });
+    await expect(m.startManualValidatorRun(feature.id)).resolves.toMatchObject({ outcome: "started" });
+    await expect(m.admitValidatorRun(feature.id, { inputFingerprint: "fresh-fingerprint", failureBudget: 3, reusePass: false }))
+      .resolves.toMatchObject({ outcome: "start" });
+  });
+
+  it("does not let reuse-pass or budget exhaustion block a manual validator run", async () => {
+    const m = missions();
+    const mission = await m.createMission({ title: "Terminal automatic outcomes" });
+    const milestone = await m.addMilestone(mission.id, { title: "MS" });
+    const slice = await m.addSlice(milestone.id, { title: "SL" });
+    const reuseFeature = await m.addFeature(slice.id, { title: "Reuse" });
+    const passed = await m.startValidatorRun(reuseFeature.id, "task_completion", undefined, "reuse");
+    await m.completeValidatorRun(passed.id, "passed");
+    await expect(m.admitValidatorRun(reuseFeature.id, { inputFingerprint: "reuse", failureBudget: 3, reusePass: true })).resolves.toMatchObject({ outcome: "reuse-pass" });
+    await expect(m.startManualValidatorRun(reuseFeature.id)).resolves.toMatchObject({ outcome: "started" });
+
+    const budgetFeature = await m.addFeature(slice.id, { title: "Budget" });
+    const failed = await m.startValidatorRun(budgetFeature.id, "task_completion", undefined, "budget");
+    await m.completeValidatorRun(failed.id, "failed");
+    await expect(m.admitValidatorRun(budgetFeature.id, { inputFingerprint: "budget", failureBudget: 1, reusePass: false })).resolves.toMatchObject({ outcome: "budget-exhausted" });
+    await expect(m.startManualValidatorRun(budgetFeature.id)).resolves.toMatchObject({ outcome: "started" });
+  });
+
   it("clears all validation-budget provenance when a changed fingerprint is admitted", async () => {
     const m = missions();
     const mission = await m.createMission({ title: "Changed validation input" });

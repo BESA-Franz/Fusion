@@ -665,6 +665,19 @@ export interface MissionFeature {
 // ── Validator Run & Loop Types ──────────────────────────────────────
 
 /** Atomic admission result for an automatic content-addressed validator dispatch. */
+/*
+FNXC:MissionValidation 2026-08-11-03:43:
+Manual validation must share the reaper's six-hour liveness window so a stranded run cannot
+permanently wedge an operator control. Engine parity is pinned outside core because core must not
+import the engine's healing constants.
+*/
+export const VALIDATION_INFLIGHT_STALE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+/** Atomic admission result for a feature-scoped manual validator dispatch. */
+export type MissionManualValidatorRunAdmission =
+  | { outcome: "started"; run: MissionValidatorRun }
+  | { outcome: "already-running"; run: MissionValidatorRun };
+
 export type ValidatorRunAdmissionOutcome = "start" | "running" | "reuse-pass" | "budget-exhausted";
 export interface ValidatorRunAdmission {
   outcome: ValidatorRunAdmissionOutcome;

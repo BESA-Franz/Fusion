@@ -14,13 +14,14 @@ import { EventEmitter } from "node:events";
 import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import * as schema from "../postgres/schema/index.js";
 import type { AsyncDataLayer } from "../postgres/data-layer.js";
-import { boundMissionEventReason, classifyMissionResumeBlockers, FEATURE_LOOP_REPAIR_TRANSITIONS, buildMissionStatusEventMetadata, featureValidationRepairEligibility, FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionType, normalizeMissionTransitionActorForEvent, renderValidationCause, selectNextSerialMissionSlice } from "../missions/mission-types.js";
+import { boundMissionEventReason, classifyMissionResumeBlockers, FEATURE_LOOP_REPAIR_TRANSITIONS, buildMissionStatusEventMetadata, featureValidationRepairEligibility, FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionType, normalizeMissionTransitionActorForEvent, renderValidationCause, selectNextSerialMissionSlice, VALIDATION_INFLIGHT_STALE_MAX_AGE_MS } from "../missions/mission-types.js";
 import type {
   Mission,
   Milestone,
   Slice,
   MissionFeature,
   MissionValidatorRun,
+  MissionManualValidatorRunAdmission,
   ValidatorRunAdmission,
   ValidatorRunAdmissionInput,
   MissionAssertionFailureRecord,
@@ -1822,17 +1823,83 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       taskId, inputFingerprint, startedAt: now, createdAt: now, updatedAt: now };
   }
 
-  async startValidatorRun(featureId: string, triggerType?: string, taskId?: string, inputFingerprint?: string): Promise<MissionValidatorRun> {
-    const feature = await getFeature(this.db, featureId);
-    if (!feature) throw new Error(`Feature ${featureId} not found`);
-    const run = await this.buildValidatorRun(this.db, feature, triggerType, taskId, inputFingerprint);
-    await createValidatorRun(this.db, run);
-    this.emit("validator-run:started", run);
-    await this.updateFeature(featureId, {
-      validatorAttemptCount: run.validatorAttempt,
-      lastValidatorRunId: run.id,
-      loopState: "validating",
+  /*
+  FNXC:MissionValidation 2026-08-11-03:43:
+  Manual validation previously had no in-flight guard: automatic admission is fingerprint-scoped
+  and FN-8947 guarded only repair re-runs. This feature-scoped transaction observes engine-started
+  runs, while runs beyond the reaper window do not wedge the button. A fingerprint-less manual run
+  intentionally remains invisible to fingerprint-scoped automatic admission; FN-8976 owns that
+  tested boundary rather than widening admitValidatorRun here.
+  */
+  async startManualValidatorRun(
+    featureId: string,
+    input: { triggerType?: string; taskId?: string } = {},
+  ): Promise<MissionManualValidatorRunAdmission> {
+    const admission = await this.layer.transactionImmediate<MissionManualValidatorRunAdmission>(async (tx) => {
+      const locked = await tx.select().from(schema.project.missionFeatures).where(and(
+        eq(schema.project.missionFeatures.projectId, missionProjectId()),
+        eq(schema.project.missionFeatures.id, featureId),
+      )).for("update");
+      const feature = locked[0] ? await getFeature(tx, featureId) : undefined;
+      if (!feature) throw new Error(`Feature ${featureId} not found`);
+      const cutoff = Date.now() - VALIDATION_INFLIGHT_STALE_MAX_AGE_MS;
+      const blockingRun = (await listValidatorRunsByFeature(tx, featureId)).find(
+        (run) => run.status === "running" && Date.parse(run.startedAt) >= cutoff,
+      );
+      if (blockingRun) return { outcome: "already-running", run: blockingRun };
+      const run = await this.buildValidatorRun(tx, feature, input.triggerType ?? "manual", input.taskId);
+      await createValidatorRun(tx, run);
+      await updateFeature(tx, {
+        ...feature,
+        validatorAttemptCount: run.validatorAttempt,
+        lastValidatorRunId: run.id,
+        loopState: "validating",
+        updatedAt: run.startedAt,
+      });
+      return { outcome: "started", run };
     });
+    if (admission.outcome === "started") this.emit("validator-run:started", admission.run);
+    return admission;
+  }
+
+  /*
+  FNXC:MissionValidation 2026-08-11-04:27:
+  The engine's non-memo fallback still calls this low-level creator, so it must share the feature
+  row lock with manual admission. Preserve unrestricted automatic seeding and fingerprint behavior,
+  but refuse an engine fallback that arrives after a fresh manual run; otherwise the two paths can
+  serialize as manual-create then fallback-create and leave two running rows.
+  */
+  async startValidatorRun(featureId: string, triggerType?: string, taskId?: string, inputFingerprint?: string): Promise<MissionValidatorRun> {
+    const run = await this.layer.transactionImmediate<MissionValidatorRun>(async (tx) => {
+      const locked = await tx.select().from(schema.project.missionFeatures).where(and(
+        eq(schema.project.missionFeatures.projectId, missionProjectId()),
+        eq(schema.project.missionFeatures.id, featureId),
+      )).for("update");
+      const feature = locked[0] ? await getFeature(tx, featureId) : undefined;
+      if (!feature) throw new Error(`Feature ${featureId} not found`);
+
+      if (triggerType === "task_completion") {
+        const cutoff = Date.now() - VALIDATION_INFLIGHT_STALE_MAX_AGE_MS;
+        const manualRun = (await listValidatorRunsByFeature(tx, featureId)).find(
+          (candidate) => candidate.status === "running"
+            && candidate.triggerType === "manual"
+            && Date.parse(candidate.startedAt) >= cutoff,
+        );
+        if (manualRun) throw new Error(`Validator run ${manualRun.id} is already running for feature ${featureId}`);
+      }
+
+      const created = await this.buildValidatorRun(tx, feature, triggerType, taskId, inputFingerprint);
+      await createValidatorRun(tx, created);
+      await updateFeature(tx, {
+        ...feature,
+        validatorAttemptCount: created.validatorAttempt,
+        lastValidatorRunId: created.id,
+        loopState: "validating",
+        updatedAt: created.startedAt,
+      });
+      return created;
+    });
+    this.emit("validator-run:started", run);
     return run;
   }
 

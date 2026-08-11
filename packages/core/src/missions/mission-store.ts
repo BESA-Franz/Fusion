@@ -17,7 +17,7 @@ const severityAuditLog = createLogger("core-mission-store");
 import { EventEmitter } from "node:events";
 import type { Database } from "../db/db.js";
 import { fromJson, toJson, toJsonNullable } from "../db/db.js";
-import { FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionOrigin, normalizeMissionAssertionScope, normalizeMissionAssertionType, renderValidationCause, selectNextSerialMissionSlice } from "./mission-types.js";
+import { FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionOrigin, normalizeMissionAssertionScope, normalizeMissionAssertionType, renderValidationCause, selectNextSerialMissionSlice, VALIDATION_INFLIGHT_STALE_MAX_AGE_MS } from "./mission-types.js";
 import type { Goal, GoalStatus } from "../goals/goal-types.js";
 import type {
   Mission,
@@ -26,6 +26,7 @@ import type {
   Slice,
   MissionFeature,
   MissionValidatorRun,
+  MissionManualValidatorRunAdmission,
   MissionAssertionFailureRecord,
   MissionFixFeatureLineage,
   MissionFeatureLoopSnapshot,
@@ -2804,6 +2805,64 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
    * @returns The created validator run
    * @throws Error if feature not found
    */
+  /*
+  FNXC:MissionValidation 2026-08-11-03:43:
+  SQLite keeps the same feature-scoped manual admission contract as PostgreSQL. It blocks fresh
+  engine-started runs but lets runs older than the reaper window expire; FN-8976 tracks the known
+  fingerprint-less manual-to-automatic boundary without changing automatic admission here.
+  */
+  startManualValidatorRun(
+    featureId: string,
+    input: { triggerType?: string; taskId?: string } = {},
+  ): MissionManualValidatorRunAdmission {
+    let admission: MissionManualValidatorRunAdmission | undefined;
+    this.db.transaction(() => {
+      const feature = this.getFeature(featureId);
+      if (!feature) throw new Error(`Feature ${featureId} not found`);
+      const cutoff = new Date(Date.now() - VALIDATION_INFLIGHT_STALE_MAX_AGE_MS).toISOString();
+      const rows = this.db.prepare(
+        "SELECT * FROM mission_validator_runs WHERE featureId = ? AND status = 'running' AND startedAt >= ? ORDER BY startedAt DESC, createdAt DESC, id DESC"
+      ).all(featureId, cutoff) as unknown as ValidatorRunRow[];
+      const blockingRun = rows[0] ? this.rowToValidatorRun(rows[0]) : undefined;
+      if (blockingRun) {
+        admission = { outcome: "already-running", run: blockingRun };
+        return;
+      }
+      const slice = this.getSlice(feature.sliceId);
+      if (!slice) throw new Error(`Slice ${feature.sliceId} not found`);
+      const milestone = this.getMilestone(slice.milestoneId);
+      if (!milestone) throw new Error(`Milestone ${slice.milestoneId} not found`);
+      const now = new Date().toISOString();
+      const run: MissionValidatorRun = {
+        id: this.generateValidatorRunId(), featureId, milestoneId: milestone.id, sliceId: slice.id,
+        status: "running", triggerType: input.triggerType ?? "manual",
+        implementationAttempt: feature.implementationAttemptCount ?? 0,
+        validatorAttempt: (feature.validatorAttemptCount ?? 0) + 1,
+        taskId: input.taskId, startedAt: now, createdAt: now, updatedAt: now,
+      };
+      this.db.prepare(`
+        INSERT INTO mission_validator_runs (id, featureId, milestoneId, sliceId, status, triggerType, implementationAttempt, validatorAttempt, taskId, inputFingerprint, startedAt, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(run.id, run.featureId, run.milestoneId, run.sliceId, run.status, run.triggerType ?? "auto", run.implementationAttempt, run.validatorAttempt, run.taskId ?? null, null, run.startedAt, run.createdAt, run.updatedAt);
+      this.updateFeature(featureId, {
+        validatorAttemptCount: run.validatorAttempt,
+        lastValidatorRunId: run.id,
+        loopState: "validating",
+      });
+      admission = { outcome: "started", run };
+    });
+    if (!admission) throw new Error(`Manual validator admission did not resolve for ${featureId}`);
+    this.db.bumpLastModified();
+    if (admission.outcome === "started") this.emit("validator-run:started", admission.run);
+    return admission;
+  }
+
+  /*
+  FNXC:MissionValidation 2026-08-11-04:27:
+  Keep SQLite's non-memo engine fallback aligned with PostgreSQL: it shares manual admission's
+  transaction and cannot append a task-completion run behind a fresh manual run. This does not
+  change automatic fingerprint admission or unrestricted legacy automatic-run seeding.
+  */
   startValidatorRun(featureId: string, triggerType?: string, taskId?: string, inputFingerprint?: string): MissionValidatorRun {
     const feature = this.getFeature(featureId);
     if (!feature) {
@@ -2844,6 +2903,14 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
     };
 
     this.db.transaction(() => {
+      if (triggerType === "task_completion") {
+        const cutoff = new Date(Date.now() - VALIDATION_INFLIGHT_STALE_MAX_AGE_MS).toISOString();
+        const manualRun = this.db.prepare(
+          "SELECT id FROM mission_validator_runs WHERE featureId = ? AND status = 'running' AND triggerType = 'manual' AND startedAt >= ? LIMIT 1"
+        ).get(featureId, cutoff) as { id: string } | undefined;
+        if (manualRun) throw new Error(`Validator run ${manualRun.id} is already running for feature ${featureId}`);
+      }
+
       // Insert the validator run
       this.db.prepare(`
         INSERT INTO mission_validator_runs (id, featureId, milestoneId, sliceId, status, triggerType, implementationAttempt, validatorAttempt, taskId, inputFingerprint, startedAt, createdAt, updatedAt)
