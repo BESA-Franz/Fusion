@@ -17,24 +17,18 @@ describe("classifyMissionResumeBlockers", () => {
       ],
     });
     expect(result.blockers).toEqual([
-      { featureId: "f-budget", reason: "budget-exhausted", source: "feature-stop" },
-      { featureId: "f-budget", reason: "other-stop", source: "lineage-stop" },
-      { featureId: "f-legacy", reason: "legacy-unknown-stop", source: "feature-stop" },
-      { featureId: "f-lineage", reason: "budget-exhausted", source: "lineage-stop" },
-    ]);
-    expect(result.resumeConflictBlockers).toEqual([
-      { id: "f-budget", reason: "budget-exhausted" },
-      { id: "f-budget", reason: "budget-exhausted" },
-      { id: "f-budget", reason: "other-stop" },
-      { id: "f-legacy", reason: "legacy-unknown-stop" },
-      { id: "f-lineage", reason: "budget-exhausted" },
+      expect.objectContaining({ rootFeatureId: "f-budget", reason: "budget-exhausted", source: "feature-row" }),
+      expect.objectContaining({ rootFeatureId: "f-budget", reason: "budget-exhausted", source: "lineage-stop" }),
+      expect.objectContaining({ rootFeatureId: "f-budget", reason: "legacy-unknown-stop", source: "lineage-stop", rawReason: "other-stop" }),
+      expect.objectContaining({ rootFeatureId: "f-legacy", reason: "legacy-unknown-stop", source: "feature-row" }),
+      expect.objectContaining({ rootFeatureId: "f-lineage", reason: "budget-exhausted", source: "lineage-stop" }),
     ]);
     expect(result.clearableFeatureIds).toEqual(["f-operator", "f-budget"]);
   });
 
   it("returns empty projections when there are no stops", () => {
     expect(classifyMissionResumeBlockers({ rootFeatures: [], lineageStops: [] })).toEqual({
-      blockers: [], resumeConflictBlockers: [], clearableFeatureIds: [],
+      blockers: [], clearableFeatureIds: [],
     });
   });
 });

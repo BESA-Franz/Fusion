@@ -48,9 +48,9 @@ describe("MissionManager blocked repair", () => {
   });
 
   it("normalizes canonical, legacy, malformed, and duplicate blocker inputs", () => {
-    expect(normalizeMissionBlockers([{ featureId: "F-2", reason: "later", source: "lineage-stop" }, { id: "F-1", reason: "legacy" }, { id: "F-1", reason: "legacy" }, { nope: true }])).toEqual([
-      { featureId: "F-1", reason: "legacy", source: "unspecified" },
-      { featureId: "F-2", reason: "later", source: "lineage-stop" },
+    expect(normalizeMissionBlockers([{ schemaVersion: 1, kind: "mission-resume-conflict", rootFeatureId: "F-2", reason: "budget-exhausted", source: "lineage-stop" }, { id: "F-1", reason: "legacy" }, { nope: true }])).toEqual([
+      expect.objectContaining({ rootFeatureId: "F-2", reason: "budget-exhausted", source: "lineage-stop" }),
+      expect.objectContaining({ rootFeatureId: "F-1", reason: "legacy-unknown-stop", source: "feature-row", rawReason: "legacy" }),
     ]);
     expect(normalizeMissionBlockers(undefined)).toEqual([]);
     expect(normalizeMissionBlockers(null)).toEqual([]);
@@ -62,14 +62,14 @@ describe("MissionManager blocked repair", () => {
     fetchMissions.mockResolvedValue([blockedSummary]);
     fetchMission.mockResolvedValue(blockedMission);
     fetchMissionsHealth.mockResolvedValue({});
-    fetchMissionBlockedDiagnostics.mockResolvedValue({ blockers: [{ featureId: "F-1", reason: "budget-exhausted", source: "feature-stop" }] });
+    fetchMissionBlockedDiagnostics.mockResolvedValue({ blockers: [{ schemaVersion: 1, kind: "mission-resume-conflict", rootFeatureId: "F-1", reason: "budget-exhausted", source: "feature-row" }] });
     clearMissionBlockedStatus.mockResolvedValue({ mission: { ...blockedMission, status: "planning" }, blockers: [] });
   });
 
   it("renders the clear control on both owning blocked badge surfaces and refreshes it away", async () => {
     renderBlocked();
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Clear blocked status" })).toHaveLength(2));
-    await waitFor(() => expect(screen.getByLabelText("Why blocked")).toHaveTextContent("F-1: budget-exhausted (feature-stop)"));
+    await waitFor(() => expect(screen.getByLabelText("Why blocked")).toHaveTextContent("F-1: budget-exhausted (feature-row)"));
     fetchMission.mockResolvedValueOnce({ ...blockedMission, status: "planning" });
     fetchMissions.mockResolvedValueOnce([{ ...blockedSummary, status: "planning" }]);
     fireEvent.click(screen.getAllByRole("button", { name: "Clear blocked status" })[0]);

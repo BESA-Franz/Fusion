@@ -15,6 +15,7 @@ import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import * as schema from "../postgres/schema/index.js";
 import type { AsyncDataLayer } from "../postgres/data-layer.js";
 import { boundMissionEventReason, classifyMissionResumeBlockers, FEATURE_LOOP_REPAIR_TRANSITIONS, buildMissionStatusEventMetadata, featureValidationRepairEligibility, FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionType, normalizeMissionTransitionActorForEvent, renderValidationCause, ROLLUP_OWNED_MILESTONE_STATUSES, ROLLUP_OWNED_MISSION_STATUSES, selectNextSerialMissionSlice, shouldApplyRecomputedStatus, VALIDATION_INFLIGHT_STALE_MAX_AGE_MS } from "../missions/mission-types.js";
+import { normalizeMissionBlockerReason, toLegacyMissionBlocker } from "../missions/mission-blockers.js";
 import type {
   Mission,
   Milestone,
@@ -52,6 +53,7 @@ import type {
   MissionUpdateOptions,
   MissionFeatureRepairGroundTruth,
   MissionBlockerDescriptor,
+  LegacyMissionBlocker,
   MissionBlockedDiagnostics,
 } from "../missions/mission-types.js";
 import type { Goal } from "../goals/goal-types.js";
@@ -228,9 +230,14 @@ export class MissionRemediationStoppedError extends Error {
 
 /** Stable mission-wide conflict payload for the sole explicit lineage-stop resume seam. */
 export class MissionResumeConflictError extends Error {
-  constructor(public readonly blockers: Array<{ id: string; reason: string }>) {
+  constructor(public readonly descriptors: MissionBlockerDescriptor[]) {
     super("Mission resume is blocked by non-resumable lineage stops");
     this.name = "MissionResumeConflictError";
+  }
+
+  /** @deprecated Remove after dashboard and documentation no longer reference legacyBlockers. */
+  get blockers(): LegacyMissionBlocker[] {
+    return this.descriptors.map(toLegacyMissionBlocker);
   }
 }
 
@@ -703,7 +710,7 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       .where(and(eq(schema.project.missionLineageStops.projectId, missionProjectId()), eq(schema.project.missionLineageStops.missionId, missionId)));
     const stops = lockStops ? await stopsQuery.for("update") : await stopsQuery;
     const roots = allFeatures.filter((feature) => featureMission.get(feature.id) === missionId && !feature.generatedFromFeatureId && feature.loopState === "blocked");
-    return classifyMissionResumeBlockers({ rootFeatures: roots, lineageStops: stops }).blockers;
+    return classifyMissionResumeBlockers({ rootFeatures: roots, lineageStops: stops, missionId }).blockers;
   }
 
   async getMissionBlockedDiagnostics(missionId: string): Promise<MissionBlockedDiagnostics> {
@@ -770,9 +777,9 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       const stops = await tx.select().from(schema.project.missionLineageStops)
         .where(and(eq(schema.project.missionLineageStops.projectId, missionProjectId()), eq(schema.project.missionLineageStops.missionId, id))).for("update");
       const roots = allFeatures.filter((feature) => featureMission.get(feature.id) === id && !feature.generatedFromFeatureId && feature.loopState === "blocked");
-      const classified = classifyMissionResumeBlockers({ rootFeatures: roots, lineageStops: stops });
-      if (classified.resumeConflictBlockers.length > 0) {
-        throw new MissionResumeConflictError(classified.resumeConflictBlockers);
+      const classified = classifyMissionResumeBlockers({ rootFeatures: roots, lineageStops: stops, missionId: id });
+      if (classified.blockers.length > 0) {
+        throw new MissionResumeConflictError(classified.blockers);
       }
       const clearableFeatureIds = new Set(classified.clearableFeatureIds);
       for (const root of roots) {
@@ -2222,11 +2229,7 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       throw new MissionRemediationStoppedError("budget-exhausted");
     }
     if (outcome.kind === "stopped") {
-      throw new MissionRemediationStoppedError(
-        outcome.reason === "budget-exhausted" || outcome.reason === "operator-intervention"
-          ? outcome.reason
-          : "legacy-unknown-stop",
-      );
+      throw new MissionRemediationStoppedError(normalizeMissionBlockerReason(outcome.reason).reason);
     }
     const feature = outcome.feature;
     this.emit("feature:created", feature);

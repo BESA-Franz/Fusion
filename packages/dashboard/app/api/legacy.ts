@@ -1075,6 +1075,7 @@ export {
   fetchMissionBlockedDiagnostics,
   clearMissionBlockedStatus,
   normalizeMissionBlockers,
+  parseMissionResumeConflict,
   fetchMissionAutopilotStatus,
   fetchMissionEvents,
   fetchMissionHealth,

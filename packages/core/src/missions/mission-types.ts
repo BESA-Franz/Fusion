@@ -11,6 +11,7 @@
 
 import type { Goal } from "../goals/goal-types.js";
 import { redactSecrets } from "../secrets/redact-secrets.js";
+import { createMissionBlockerDescriptor, sortMissionBlockerDescriptors } from "./mission-blockers.js";
 
 // ── Status Enums ─────────────────────────────────────────────────────
 
@@ -21,14 +22,29 @@ export type MissionStatus = (typeof MISSION_STATUSES)[number];
 /** Statuses that hierarchy rollup can derive for missions. */
 export const ROLLUP_OWNED_MISSION_STATUSES = ["planning", "active", "complete"] as const satisfies readonly MissionStatus[];
 
-/** The persisted source that prevents a mission from resuming automatically. */
-export type MissionBlockerSource = "feature-stop" | "lineage-stop" | "unspecified";
+/** Version gate for the public mission-resume blocker contract. */
+export const MISSION_BLOCKER_DESCRIPTOR_SCHEMA_VERSION = 1 as const;
 
-/** Canonical, display-safe explanation for a mission-level blocked status. */
+/** Closed fail-safe vocabulary for a non-resumable mission root. */
+export type MissionBlockerReason = "budget-exhausted" | "operator-intervention" | "legacy-unknown-stop";
+
+/** Durable location from which the stop was read. */
+export type MissionBlockerSource = "feature-row" | "lineage-stop";
+
+/** @deprecated v0 resume-conflict wire shape retained for one deprecation window. */
+export interface LegacyMissionBlocker { id: string; reason: string; }
+
+/** Canonical versioned explanation for a mission resume conflict. */
 export interface MissionBlockerDescriptor {
-  featureId: string;
-  reason: string;
+  schemaVersion: 1;
+  kind: "mission-resume-conflict";
+  rootFeatureId: string;
+  reason: MissionBlockerReason;
   source: MissionBlockerSource;
+  missionId?: string;
+  stoppedAt?: string;
+  origin?: string;
+  rawReason?: string;
 }
 
 export interface MissionBlockedDiagnostics {
@@ -41,46 +57,25 @@ export interface MissionBlockedDiagnostics {
 }
 
 /**
- * FNXC:MissionBlockedRepair 2026-08-11-02:56:
- * Diagnostics and the resume gate share this pure classifier so their answer to "why blocked"
- * cannot drift. New surfaces consume its deduped descriptors, while resume retains its historical
- * undeduplicated { id, reason } payload because that 409 response is an existing wire contract.
+ * FNXC:MissionBlockedRepair 2026-08-11-05:07:
+ * Diagnostics and resume share the versioned descriptor so blocked-state repair cannot reinterpret
+ * a persisted reason differently from the all-or-nothing resume gate.
  */
 export function classifyMissionResumeBlockers(input: {
-  rootFeatures: ReadonlyArray<Pick<MissionFeature, "id" | "implementationStopReason">>;
-  lineageStops: ReadonlyArray<{ rootFeatureId: string; reason: string }>;
-}): {
-  blockers: MissionBlockerDescriptor[];
-  resumeConflictBlockers: Array<{ id: string; reason: string }>;
-  clearableFeatureIds: string[];
-} {
-  const featureStops = input.rootFeatures
-    .filter((root) => root.implementationStopReason !== "operator-intervention")
-    .map((root) => ({ id: root.id, reason: root.implementationStopReason ?? "legacy-unknown-stop" }));
-  const lineageStops = input.lineageStops
-    .filter((stop) => stop.reason !== "operator-intervention")
-    .map((stop) => ({ id: stop.rootFeatureId, reason: stop.reason }));
-  // Preserve the legacy append-then-stable-sort algorithm exactly, including duplicates.
-  const resumeConflictBlockers = [...featureStops, ...lineageStops].sort((a, b) => a.id.localeCompare(b.id));
-  const descriptors = [
-    ...featureStops.map((stop) => ({ featureId: stop.id, reason: stop.reason, source: "feature-stop" as const })),
-    ...lineageStops.map((stop) => ({ featureId: stop.id, reason: stop.reason, source: "lineage-stop" as const })),
-  ];
-  const seen = new Set<string>();
-  const blockers = descriptors.filter((descriptor) => {
-    const key = `${descriptor.featureId}\u0000${descriptor.reason}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).sort((a, b) => a.featureId.localeCompare(b.featureId) || a.source.localeCompare(b.source) || a.reason.localeCompare(b.reason));
-  return {
-    blockers,
-    resumeConflictBlockers,
-    clearableFeatureIds: [...new Set([
-      ...input.rootFeatures.filter((root) => root.implementationStopReason === "operator-intervention").map((root) => root.id),
-      ...input.rootFeatures.filter((root) => input.lineageStops.some((stop) => stop.rootFeatureId === root.id)).map((root) => root.id),
-    ])],
-  };
+  rootFeatures: ReadonlyArray<Pick<MissionFeature, "id" | "implementationStopReason" | "implementationStoppedAt" | "implementationStopOrigin">>;
+  lineageStops: ReadonlyArray<{ rootFeatureId: string; reason: string | null; stoppedAt?: string; origin?: string; missionId?: string | null }>;
+  missionId?: string;
+}): { blockers: MissionBlockerDescriptor[]; clearableFeatureIds: string[] } {
+  const blockers = sortMissionBlockerDescriptors([
+    ...input.rootFeatures.filter((root) => root.implementationStopReason !== "operator-intervention")
+      .map((root) => createMissionBlockerDescriptor({ rootFeatureId: root.id, source: "feature-row", missionId: input.missionId, rawReason: root.implementationStopReason, stoppedAt: root.implementationStoppedAt, origin: root.implementationStopOrigin })),
+    ...input.lineageStops.filter((stop) => stop.reason !== "operator-intervention")
+      .map((stop) => createMissionBlockerDescriptor({ rootFeatureId: stop.rootFeatureId, source: "lineage-stop", missionId: stop.missionId ?? input.missionId, rawReason: stop.reason, stoppedAt: stop.stoppedAt, origin: stop.origin })),
+  ]);
+  return { blockers, clearableFeatureIds: [...new Set([
+    ...input.rootFeatures.filter((root) => root.implementationStopReason === "operator-intervention").map((root) => root.id),
+    ...input.rootFeatures.filter((root) => input.lineageStops.some((stop) => stop.rootFeatureId === root.id)).map((root) => root.id),
+  ])] };
 }
 
 /** Status values for a Milestone within a mission */

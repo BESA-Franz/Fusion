@@ -1620,6 +1620,7 @@ export {
   DEFAULT_MISSION_ASSERTION_TYPE,
   normalizeMissionAssertionType,
   MILESTONE_VALIDATION_STATES,
+  MISSION_BLOCKER_DESCRIPTOR_SCHEMA_VERSION,
 } from "./missions/mission-types.js";
 export type {
   MissionStatus,
@@ -1641,7 +1642,9 @@ export type {
   MissionTransitionActorType,
   MissionTransitionActor,
   MissionUpdateOptions,
+  MissionBlockerReason,
   MissionBlockerSource,
+  LegacyMissionBlocker,
   MissionBlockerDescriptor,
   MissionBlockedDiagnostics,
   AutopilotStatus,
@@ -1691,6 +1694,7 @@ export type {
   AssertionUnlinkedPayload,
   MilestoneValidationUpdatedPayload,
 } from "./missions/mission-types.js";
+export { normalizeMissionBlockerReason, createMissionBlockerDescriptor, isMissionBlockerDescriptor, fromLegacyMissionBlocker, toLegacyMissionBlocker, sortMissionBlockerDescriptors } from "./missions/mission-blockers.js";
 export { MissionStore } from "./missions/mission-store.js";
 export { MissionBlockedClearConflictError } from "./async-stores/async-mission-store.js";
 export type { MissionStoreEvents, MissionSummary } from "./missions/mission-store.js";

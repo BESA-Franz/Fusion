@@ -1239,17 +1239,25 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
 
     expect(cleared.mission.status).toBe(await m.computeMissionStatus(mission.id));
     expect(cleared.blockers).toEqual([
-      { featureId: root.id, reason: "budget-exhausted", source: "feature-stop" },
+      expect.objectContaining({ schemaVersion: 1, kind: "mission-resume-conflict", rootFeatureId: root.id, reason: "budget-exhausted", source: "feature-row", missionId: mission.id, stoppedAt, origin: "validator-budget" }),
+      expect.objectContaining({ schemaVersion: 1, kind: "mission-resume-conflict", rootFeatureId: root.id, reason: "budget-exhausted", source: "lineage-stop", missionId: mission.id, stoppedAt, origin: "validator-budget" }),
     ]);
     expect(await m.getFeature(root.id)).toEqual(featureBefore);
     expect(await h.layer().db.select().from(schema.project.missionLineageStops)
       .where(sql`${schema.project.missionLineageStops.rootFeatureId} = ${root.id}`)).toEqual(stopsBefore);
-    await expect(m.resumeMission(mission.id)).rejects.toMatchObject({
-      blockers: [
-        { id: root.id, reason: "budget-exhausted" },
-        { id: root.id, reason: "budget-exhausted" },
-      ],
-    });
+    const resumeError = await m.resumeMission(mission.id).then(
+      () => undefined,
+      (error) => error as MissionResumeConflictError,
+    );
+    expect(resumeError).toBeInstanceOf(MissionResumeConflictError);
+    expect(resumeError?.descriptors).toEqual([
+      expect.objectContaining({ schemaVersion: 1, kind: "mission-resume-conflict", rootFeatureId: root.id, source: "feature-row", reason: "budget-exhausted" }),
+      expect.objectContaining({ schemaVersion: 1, kind: "mission-resume-conflict", rootFeatureId: root.id, source: "lineage-stop", reason: "budget-exhausted", stoppedAt, origin: "validator-budget" }),
+    ]);
+    expect(resumeError?.blockers).toEqual([
+      { id: root.id, reason: "budget-exhausted" },
+      { id: root.id, reason: "budget-exhausted" },
+    ]);
   });
 
   it("records generated-feature deletion as a durable root stop and resumes only explicitly", async () => {

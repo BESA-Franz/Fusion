@@ -10,7 +10,7 @@ const mission = {
   autoAdvance: false, autopilotEnabled: false, autopilotState: "inactive",
   createdAt: "2026-08-11T00:00:00.000Z", updatedAt: "2026-08-11T00:00:00.000Z",
 };
-const canonicalBlocker = { featureId: "F-1", reason: "budget-exhausted", source: "feature-stop" as const };
+const canonicalBlocker = { schemaVersion: 1 as const, kind: "mission-resume-conflict" as const, rootFeatureId: "F-1", reason: "budget-exhausted" as const, source: "feature-row" as const };
 
 function fixture() {
   const missionStore = {

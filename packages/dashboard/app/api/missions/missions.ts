@@ -3,9 +3,18 @@
  * Mission hierarchy, contract assertions, validation loop, and autopilot client API peeled from legacy.ts.
  * Mission interview SSE streams remain in legacy until createResilientEventSource is shared.
  */
-import type { MissionEvent, MissionHealth, MissionEventType, CommitAssociationDiffBackfillReport } from "@fusion/core";
+import {
+  MISSION_BLOCKER_DESCRIPTOR_SCHEMA_VERSION,
+  fromLegacyMissionBlocker,
+  isMissionBlockerDescriptor,
+  type MissionBlockerDescriptor,
+  type MissionEvent,
+  type MissionHealth,
+  type MissionEventType,
+  type CommitAssociationDiffBackfillReport,
+} from "@fusion/core";
 import type { MilestoneValidationTelemetry } from "../../components/mission-types";
-import { api } from "../client/client.js";
+import { api, ApiRequestError } from "../client/client.js";
 import { withProjectId } from "../client/health.js";
 
 // ── Mission API ───────────────────────────────────────────────────────────
@@ -641,25 +650,28 @@ export function fetchValidationRun(runId: string, projectId?: string): Promise<M
   return api(withProjectId(`/missions/validation-runs/${encodeURIComponent(runId)}`, projectId));
 }
 
-export type MissionBlockerSource = "feature-stop" | "lineage-stop" | "unspecified";
-export interface MissionBlockerDescriptor { featureId: string; reason: string; source: MissionBlockerSource; }
-
-/** Normalize canonical diagnostics and the frozen legacy resume-conflict payload into one render shape. */
+/** Normalize diagnostics and legacy v0 entries into the canonical v1 render shape. */
 export function normalizeMissionBlockers(input: unknown): MissionBlockerDescriptor[] {
   if (!Array.isArray(input)) return [];
-  const descriptors = input.flatMap((entry): MissionBlockerDescriptor[] => {
+  return input.flatMap((entry): MissionBlockerDescriptor[] => {
+    if (isMissionBlockerDescriptor(entry)) return [entry];
     if (!entry || typeof entry !== "object") return [];
     const value = entry as Record<string, unknown>;
-    if (typeof value.featureId === "string" && typeof value.reason === "string" && (value.source === "feature-stop" || value.source === "lineage-stop" || value.source === "unspecified")) return [{ featureId: value.featureId, reason: value.reason, source: value.source }];
-    if (typeof value.id === "string" && typeof value.reason === "string") return [{ featureId: value.id, reason: value.reason, source: "unspecified" }];
-    return [];
+    return typeof value.id === "string" && typeof value.reason === "string"
+      ? [fromLegacyMissionBlocker({ id: value.id, reason: value.reason }, "feature-row")]
+      : [];
   });
-  const seen = new Set<string>();
-  return descriptors.filter((descriptor) => {
-    const key = `${descriptor.featureId}\u0000${descriptor.reason}`;
-    if (seen.has(key)) return false;
-    seen.add(key); return true;
-  }).sort((a, b) => a.featureId.localeCompare(b.featureId) || a.source.localeCompare(b.source) || a.reason.localeCompare(b.reason));
+}
+
+/** Parse v1 resume conflicts, upgrading retained v0 mirrors for the deprecation window. */
+export function parseMissionResumeConflict(err: unknown): { blockers: MissionBlockerDescriptor[] } | undefined {
+  if (!(err instanceof ApiRequestError) || (err.details as { code?: unknown } | undefined)?.code !== "MISSION_RESUME_CONFLICT") return undefined;
+  const details = err.details as { blockerSchemaVersion?: unknown; blockers?: unknown; legacyBlockers?: unknown };
+  if (details.blockerSchemaVersion === MISSION_BLOCKER_DESCRIPTOR_SCHEMA_VERSION) {
+    return { blockers: normalizeMissionBlockers(details.blockers) };
+  }
+  if (details.blockerSchemaVersion !== undefined && details.legacyBlockers === undefined) return { blockers: [] };
+  return { blockers: normalizeMissionBlockers(details.legacyBlockers ?? details.blockers) };
 }
 
 export function fetchMissionBlockedDiagnostics(missionId: string, projectId?: string): Promise<{ missionId: string; status: MissionStatus; recomputedStatus: MissionStatus; clearable: boolean; resumable: boolean; blockers: MissionBlockerDescriptor[] }> {

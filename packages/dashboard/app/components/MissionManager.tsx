@@ -90,6 +90,7 @@ import {
   clearMissionBlockedStatus,
   fetchMissionBlockedDiagnostics,
   normalizeMissionBlockers,
+  parseMissionResumeConflict,
   startMission,
   updateMissionAutopilot,
   fetchMissionsHealth,
@@ -2770,10 +2771,12 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       await loadMissionDetail(missionId);
       loadMissions();
     } catch (err) {
-      if (err instanceof ApiRequestError && err.status === 409 && (err.details as { code?: string } | undefined)?.code === "MISSION_RESUME_CONFLICT") {
-        setMissionBlockers(normalizeMissionBlockers((err.details as { blockers?: unknown }).blockers));
+      const conflict = parseMissionResumeConflict(err);
+      if (conflict && conflict.blockers.length > 0) {
+        setMissionBlockers(conflict.blockers);
         setMissionBlockedDiagnosticsError(false);
-        addToast(t("missions.resumeBlocked", "Mission cannot resume until its recorded blockers are resolved."), "error");
+        const rendered = conflict.blockers.map((blocker) => `${blocker.rootFeatureId} — ${blocker.reason}`).join(", ");
+        addToast(t("missions.resumeBlocked", { blockers: rendered, defaultValue: "Mission cannot resume until its recorded blockers are resolved: {{blockers}}" }), "error");
       } else addToast(getErrorMessage(err) || t("missions.resumeFailed", "Failed to resume mission"), "error");
     }
   }, [addToast, loadMissionDetail, loadMissions, projectId, t]);
@@ -3283,7 +3286,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
                         <div className="mission-blocked-repair" aria-label={t("missions.whyBlocked", "Why blocked")}>
                           <strong>{t("missions.whyBlocked", "Why blocked")}</strong>
                           {missionBlockedDiagnosticsError ? <span>{t("missions.blockedDiagnosticsUnknown", "Blocker diagnostics are unavailable.")}</span> : missionBlockers.length === 0 ? <span>{t("missions.noRecordedBlockers", "No recorded blockers.")}</span> : (
-                            <ul>{missionBlockers.map((blocker) => <li key={`${blocker.featureId}\u0000${blocker.reason}`}>{blocker.featureId}: {blocker.reason}{blocker.source !== "unspecified" ? ` (${blocker.source})` : ""}</li>)}</ul>
+                            <ul>{missionBlockers.map((blocker) => <li key={`${blocker.rootFeatureId}\u0000${blocker.source}\u0000${blocker.reason}`}>{blocker.rootFeatureId}: {blocker.reason} ({blocker.source})</li>)}</ul>
                           )}
                           <input className="input" value={missionBlockedReason} onChange={(event) => setMissionBlockedReason(event.target.value)} placeholder={t("missions.clearBlockedReason", "Optional repair reason")} aria-label={t("missions.clearBlockedReason", "Optional repair reason")} />
                         </div>
