@@ -381,6 +381,8 @@ If validation cannot run (unexpected loop state, duplicate trigger, blocked vali
 
 Mission `status` and `autopilotEnabled` transitions are atomically written with a mission activity event. The event records stable actor type/id, optional display name, source, and before/after values; unchanged values create no transition event. Dashboard controls identify an operator, tools identify an agent when they expose a sensitive mutation, and autonomous engine paths identify the system/autopilot.
 
+Automatic hierarchy rollup, including terminal-task delivery reconciliation, owns only `planning`, `active`, and `complete` for missions and milestones. It never rewrites intentional `blocked` or `archived` status during hierarchy churn; a blocked mission stays blocked even after all milestones complete. Those statuses change only through resume, an explicit status write, or the mission clear-blocked path.
+
 ## `autopilotEnabled` vs `autoAdvance`
 
 - **`autopilotEnabled`**: primary control for autopilot behavior — enables background monitoring, orchestration, and automatic slice activation when a slice completes. Also triggers auto-planning (converting features to tasks) when a slice is activated.

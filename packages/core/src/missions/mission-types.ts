@@ -18,6 +18,9 @@ import { redactSecrets } from "../secrets/redact-secrets.js";
 export const MISSION_STATUSES = ["planning", "active", "blocked", "complete", "archived"] as const;
 export type MissionStatus = (typeof MISSION_STATUSES)[number];
 
+/** Statuses that hierarchy rollup can derive for missions. */
+export const ROLLUP_OWNED_MISSION_STATUSES = ["planning", "active", "complete"] as const satisfies readonly MissionStatus[];
+
 /** The persisted source that prevents a mission from resuming automatically. */
 export type MissionBlockerSource = "feature-stop" | "lineage-stop" | "unspecified";
 
@@ -83,6 +86,24 @@ export function classifyMissionResumeBlockers(input: {
 /** Status values for a Milestone within a mission */
 export const MILESTONE_STATUSES = ["planning", "active", "blocked", "complete"] as const;
 export type MilestoneStatus = (typeof MILESTONE_STATUSES)[number];
+
+/** Statuses that hierarchy rollup can derive for milestones. */
+export const ROLLUP_OWNED_MILESTONE_STATUSES = ["planning", "active", "complete"] as const satisfies readonly MilestoneStatus[];
+
+/*
+FNXC:MissionStatusRollup 2026-08-11-04:27:
+Every automatic rollup writer—the recompute helpers in both stores and AsyncMissionStore's
+in-transaction terminal-task reconcile—may move a row only between statuses it can derive.
+blocked/archived are operator or system intent from pause, stop, PATCH, and fn_mission_set_status;
+only explicit resumeMission, clearMissionBlockedStatus, or autopilot completion clears them.
+*/
+export function shouldApplyRecomputedStatus<T extends string>(
+  current: T,
+  computed: T,
+  rollupOwned: readonly T[],
+): boolean {
+  return current !== computed && rollupOwned.includes(current);
+}
 
 /** Status values for a Slice (work unit) */
 export const SLICE_STATUSES = ["pending", "active", "complete"] as const;

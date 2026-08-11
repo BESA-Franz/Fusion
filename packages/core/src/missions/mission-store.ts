@@ -17,7 +17,7 @@ const severityAuditLog = createLogger("core-mission-store");
 import { EventEmitter } from "node:events";
 import type { Database } from "../db/db.js";
 import { fromJson, toJson, toJsonNullable } from "../db/db.js";
-import { FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionOrigin, normalizeMissionAssertionScope, normalizeMissionAssertionType, renderValidationCause, selectNextSerialMissionSlice, VALIDATION_INFLIGHT_STALE_MAX_AGE_MS } from "./mission-types.js";
+import { FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionOrigin, normalizeMissionAssertionScope, normalizeMissionAssertionType, renderValidationCause, ROLLUP_OWNED_MILESTONE_STATUSES, ROLLUP_OWNED_MISSION_STATUSES, selectNextSerialMissionSlice, shouldApplyRecomputedStatus, VALIDATION_INFLIGHT_STALE_MAX_AGE_MS } from "./mission-types.js";
 import type { Goal, GoalStatus } from "../goals/goal-types.js";
 import type {
   Mission,
@@ -4607,6 +4607,12 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
     }
   }
 
+  /*
+  FNXC:MissionStatusRollup 2026-08-11-04:27:
+  FN-8962's audit found this synchronous backend is test-only, but it remains behaviorally aligned
+  with AsyncMissionStore. Its two recompute helpers are its complete rollup-writer set: grep confirms
+  it has no reconcileFeatureDoneWithTerminalTask equivalent, so protected intent cannot drift here.
+  */
   /**
    * Recompute and update the milestone status.
    * Called automatically after slice changes.
@@ -4615,7 +4621,7 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
     const newStatus = this.computeMilestoneStatus(milestoneId);
     const milestone = this.getMilestone(milestoneId);
 
-    if (milestone && milestone.status !== newStatus) {
+    if (milestone && shouldApplyRecomputedStatus(milestone.status, newStatus, ROLLUP_OWNED_MILESTONE_STATUSES)) {
       this.updateMilestone(milestoneId, { status: newStatus });
       // Don't emit here - updateMilestone already emits and triggers mission recompute
     }
@@ -4629,7 +4635,7 @@ export class MissionStore extends EventEmitter<MissionStoreEvents> {
     const newStatus = this.computeMissionStatus(missionId);
     const mission = this.getMission(missionId);
 
-    if (mission && mission.status !== newStatus) {
+    if (mission && shouldApplyRecomputedStatus(mission.status, newStatus, ROLLUP_OWNED_MISSION_STATUSES)) {
       this.updateMission(missionId, { status: newStatus });
       // Don't emit here - updateMission already emits
     }

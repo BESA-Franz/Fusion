@@ -1501,4 +1501,109 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
     expect(triaged.taskId).toMatch(/^ERR-\d+$/);
   });
 
+
+  describe("automatic status rollup ownership", () => {
+    it("preserves blocked and archived missions through hierarchy churn", async () => {
+      const m = missions();
+      const createProtectedHierarchy = async (status: "blocked" | "archived") => {
+        const mission = await m.createMission({ title: `Protected ${status}` });
+        const milestone = await m.addMilestone(mission.id, { title: "MS" });
+        const slice = await m.addSlice(milestone.id, { title: "SL" });
+        await m.updateMission(mission.id, { status });
+        return { mission, milestone, slice };
+      };
+      const renamed = await createProtectedHierarchy("blocked");
+      const eventCount = (await m.getMissionEvents(renamed.mission.id)).events.length;
+      await m.updateMilestone(renamed.milestone.id, { title: "renamed" });
+      expect(await m.getMission(renamed.mission.id)).toMatchObject({ status: "blocked" });
+      expect((await m.getMissionEvents(renamed.mission.id)).events).toHaveLength(eventCount);
+      const sliced = await createProtectedHierarchy("blocked");
+      await m.updateSlice(sliced.slice.id, { title: "edited" });
+      await m.deleteSlice(sliced.slice.id);
+      expect(await m.getMission(sliced.mission.id)).toMatchObject({ status: "blocked" });
+      const deleted = await createProtectedHierarchy("blocked");
+      await m.deleteMilestone(deleted.milestone.id);
+      expect(await m.getMission(deleted.mission.id)).toMatchObject({ status: "blocked" });
+      const archived = await createProtectedHierarchy("archived");
+      await m.updateMilestone(archived.milestone.id, { title: "churn" });
+      expect(await m.getMission(archived.mission.id)).toMatchObject({ status: "archived" });
+    });
+
+    /*
+    FNXC:MissionStatusRollup 2026-08-11-04:41:
+    The recompute transaction locks the mission before calculating its derived status. Hold that
+    calculation while an explicit blocked write queues behind the row lock; releasing the rollup
+    must leave the later operator write intact instead of replaying a stale derived status.
+    */
+    it("does not overwrite an explicit blocked mission queued during a rollup", async () => {
+      const m = missions();
+      const mission = await m.createMission({ title: "Concurrent protected mission" });
+      const milestone = await m.addMilestone(mission.id, { title: "MS" });
+      const originalCompute = (m as any).computeMissionStatusWithHandle.bind(m);
+      let enteredCompute!: () => void;
+      let releaseCompute!: () => void;
+      const computeEntered = new Promise<void>((resolve) => { enteredCompute = resolve; });
+      const computeRelease = new Promise<void>((resolve) => { releaseCompute = resolve; });
+      (m as any).computeMissionStatusWithHandle = async (...args: unknown[]) => {
+        enteredCompute();
+        await computeRelease;
+        return originalCompute(...args);
+      };
+      try {
+        const rollup = m.updateMilestone(milestone.id, { title: "churn" });
+        await computeEntered;
+        const explicitBlock = m.updateMission(mission.id, { status: "blocked" });
+        releaseCompute();
+        await Promise.all([rollup, explicitBlock]);
+      } finally {
+        (m as any).computeMissionStatusWithHandle = originalCompute;
+      }
+      expect(await m.getMission(mission.id)).toMatchObject({ status: "blocked" });
+    });
+
+    it("does not overwrite an explicit blocked milestone queued during a rollup", async () => {
+      const m = missions();
+      const mission = await m.createMission({ title: "Concurrent protected milestone" });
+      const milestone = await m.addMilestone(mission.id, { title: "MS" });
+      const slice = await m.addSlice(milestone.id, { title: "SL" });
+      const originalCompute = (m as any).computeMilestoneStatusWithHandle.bind(m);
+      let enteredCompute!: () => void;
+      let releaseCompute!: () => void;
+      const computeEntered = new Promise<void>((resolve) => { enteredCompute = resolve; });
+      const computeRelease = new Promise<void>((resolve) => { releaseCompute = resolve; });
+      (m as any).computeMilestoneStatusWithHandle = async (...args: unknown[]) => {
+        enteredCompute();
+        await computeRelease;
+        return originalCompute(...args);
+      };
+      try {
+        const rollup = m.updateSlice(slice.id, { title: "churn" });
+        await computeEntered;
+        const explicitBlock = m.updateMilestone(milestone.id, { status: "blocked" });
+        releaseCompute();
+        await Promise.all([rollup, explicitBlock]);
+      } finally {
+        (m as any).computeMilestoneStatusWithHandle = originalCompute;
+      }
+      expect(await m.getMilestone(milestone.id)).toMatchObject({ status: "blocked" });
+    });
+
+    it("preserves blocked milestones during terminal-task reconcile", async () => {
+      const m = missions();
+      const mission = await m.createMission({ title: "Protected reconcile" });
+      const milestone = await m.addMilestone(mission.id, { title: "MS" });
+      const slice = await m.addSlice(milestone.id, { title: "SL" });
+      const feature = await m.addFeature(slice.id, { title: "Delivered" });
+      const task = await h.store().createTask({ description: "done", column: "done" });
+      await m.updateMilestone(milestone.id, { status: "blocked" });
+      const milestoneUpdated = vi.fn();
+      m.on("milestone:updated", milestoneUpdated);
+      await m.reconcileFeatureDoneWithTerminalTask(feature.id, task.id);
+      expect(await m.getFeature(feature.id)).toMatchObject({ status: "done", taskId: task.id });
+      expect(await m.getSlice(slice.id)).toMatchObject({ status: "complete" });
+      expect(await m.getMilestone(milestone.id)).toMatchObject({ status: "blocked" });
+      expect(milestoneUpdated).not.toHaveBeenCalled();
+    });
+  });
+
 });

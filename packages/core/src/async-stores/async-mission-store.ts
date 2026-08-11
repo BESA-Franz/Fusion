@@ -14,7 +14,7 @@ import { EventEmitter } from "node:events";
 import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import * as schema from "../postgres/schema/index.js";
 import type { AsyncDataLayer } from "../postgres/data-layer.js";
-import { boundMissionEventReason, classifyMissionResumeBlockers, FEATURE_LOOP_REPAIR_TRANSITIONS, buildMissionStatusEventMetadata, featureValidationRepairEligibility, FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionType, normalizeMissionTransitionActorForEvent, renderValidationCause, selectNextSerialMissionSlice, VALIDATION_INFLIGHT_STALE_MAX_AGE_MS } from "../missions/mission-types.js";
+import { boundMissionEventReason, classifyMissionResumeBlockers, FEATURE_LOOP_REPAIR_TRANSITIONS, buildMissionStatusEventMetadata, featureValidationRepairEligibility, FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionType, normalizeMissionTransitionActorForEvent, renderValidationCause, ROLLUP_OWNED_MILESTONE_STATUSES, ROLLUP_OWNED_MISSION_STATUSES, selectNextSerialMissionSlice, shouldApplyRecomputedStatus, VALIDATION_INFLIGHT_STALE_MAX_AGE_MS } from "../missions/mission-types.js";
 import type {
   Mission,
   Milestone,
@@ -1414,9 +1414,17 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
       if (reconciledSlice !== slice) await updateSlice(tx, reconciledSlice);
 
       const milestoneStatus = await this.computeMilestoneStatusWithHandle(tx, milestone.id);
-      const reconciledMilestone = milestone.status === milestoneStatus
-        ? milestone
-        : { ...milestone, status: milestoneStatus, updatedAt: now };
+      /*
+      FNXC:MissionStatusRollup 2026-08-11-04:27:
+      This automatic writer bypasses recomputeMilestoneStatus because it must persist within this
+      terminal-task transaction via updateMilestone(tx, ...). Dashboard mission-routes and engine
+      mission-state-reconcile call this path, so it independently applies the shared ownership rule.
+      */
+      const reconciledMilestone = shouldApplyRecomputedStatus(
+        milestone.status,
+        milestoneStatus,
+        ROLLUP_OWNED_MILESTONE_STATUSES,
+      ) ? { ...milestone, status: milestoneStatus, updatedAt: now } : milestone;
       if (reconciledMilestone !== milestone) await updateMilestone(tx, reconciledMilestone);
 
       return {
@@ -2933,16 +2941,55 @@ export class AsyncMissionStore extends EventEmitter<MissionStoreEvents> {
     if (slice && slice.status !== newStatus) await this.updateSlice(sliceId, { status: newStatus });
   }
 
+  /*
+  FNXC:MissionStatusRollup 2026-08-11-04:27:
+  updateMilestone, deleteMilestone, updateSlice, deleteSlice, slice admission, and the engine's
+  recomputeMissionStatusChain reach this cascade. It must not clear blocked/archived intent: even
+  an all-complete blocked mission stays blocked until an explicit clear or resume. Lock the row,
+  compute, and persist in one transaction so an explicit status write cannot race past the guard.
+  The direct atomic milestone write retains updateMilestone's normal mission cascade after commit.
+  The terminal-task transaction has a second milestone writer guarded with this same predicate below.
+  */
   private async recomputeMilestoneStatus(milestoneId: string): Promise<void> {
-    const newStatus = await this.computeMilestoneStatus(milestoneId);
-    const milestone = await getMilestone(this.db, milestoneId);
-    if (milestone && milestone.status !== newStatus) await this.updateMilestone(milestoneId, { status: newStatus });
+    const updated = await this.layer.transactionImmediate(async (tx) => {
+      await tx.select().from(schema.project.milestones).where(eq(schema.project.milestones.id, milestoneId)).for("update");
+      const milestone = await getMilestone(tx, milestoneId);
+      if (!milestone) return undefined;
+      const newStatus = await this.computeMilestoneStatusWithHandle(tx, milestoneId);
+      if (!shouldApplyRecomputedStatus(milestone.status, newStatus, ROLLUP_OWNED_MILESTONE_STATUSES)) return undefined;
+      const updated = { ...milestone, status: newStatus, updatedAt: new Date().toISOString() };
+      await updateMilestone(tx, updated);
+      return updated;
+    });
+    if (!updated) return;
+    this.emit("milestone:updated", updated);
+    await this.recomputeMissionStatus(updated.missionId);
   }
 
   private async recomputeMissionStatus(missionId: string): Promise<void> {
-    const newStatus = await this.computeMissionStatus(missionId);
-    const mission = await getMission(this.db, missionId);
-    if (mission && mission.status !== newStatus) await this.updateMission(missionId, { status: newStatus });
+    const outcome = await this.layer.transactionImmediate(async (tx) => {
+      await tx.select().from(schema.project.missions).where(eq(schema.project.missions.id, missionId)).for("update");
+      const mission = await getMission(tx, missionId);
+      if (!mission) return undefined;
+      const newStatus = await this.computeMissionStatusWithHandle(tx, missionId);
+      if (!shouldApplyRecomputedStatus(mission.status, newStatus, ROLLUP_OWNED_MISSION_STATUSES)) return undefined;
+      const updated = { ...mission, status: newStatus, updatedAt: new Date().toISOString() };
+      await updateMission(tx, updated);
+      const event: MissionEvent = {
+        id: this.generateId("ME"), missionId, eventType: "mission_status_changed",
+        description: `Mission status changed from ${mission.status} to ${updated.status}`,
+        metadata: buildMissionStatusEventMetadata({
+          entity: "mission", field: "status", from: mission.status, to: updated.status, ids: {},
+          actor: { type: "system", id: "mission-store", displayName: "Mission store", source: "mission-store" },
+        }),
+        timestamp: new Date().toISOString(), seq: (await getMaxEventSeq(tx)) + 1,
+      };
+      await insertMissionEvent(tx, event);
+      return { updated, event };
+    });
+    if (!outcome) return;
+    this.emit("mission:updated", outcome.updated);
+    this.emit("mission:event", outcome.event);
   }
 
   /*
