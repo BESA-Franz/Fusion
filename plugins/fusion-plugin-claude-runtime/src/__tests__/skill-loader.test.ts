@@ -5,12 +5,12 @@ import { mkdtempSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  buildGrokSkillRules,
+  buildClaudeSkillRules,
   extractRequestedSkillNames,
   getFusionSkillSourceCandidates,
   resolveBundledComputerUseSkillSource,
   resolveBundledFusionSkillSource,
-  stageGrokSessionSkills,
+  stageClaudeSessionSkills,
 } from "../skill-loader.js";
 
 const disposers: Array<() => void> = [];
@@ -44,14 +44,14 @@ describe("skill-loader", () => {
   });
 
   /*
-  FNXC:GrokAcp 2026-07-12-06:15:
+  FNXC:ClaudeAcp 2026-07-12-06:15:
   Packaged @runfusion/fusion ships skill/** at package root next to dist/plugins/.
   Candidate generation from a synthetic bundled.js URL must reach skill/fusion
   without a monorepo tree.
   */
   it("generates packaged-install candidates for bundled plugin layout", () => {
     const packageRoot = mkdtempSync(join(tmpdir(), "fusion-pkg-"));
-    const pluginDist = join(packageRoot, "dist", "plugins", "fusion-plugin-grok-runtime");
+    const pluginDist = join(packageRoot, "dist", "plugins", "fusion-plugin-claude-runtime");
     mkdirSync(pluginDist, { recursive: true });
     const bundledJs = join(pluginDist, "bundled.js");
     writeFileSync(bundledJs, "// stub\n");
@@ -70,7 +70,7 @@ describe("skill-loader", () => {
 
   it("walks ancestors for packages/cli/skill/fusion layout", () => {
     const repoRoot = mkdtempSync(join(tmpdir(), "fusion-repo-"));
-    const pluginSrc = join(repoRoot, "plugins", "fusion-plugin-grok-runtime", "src");
+    const pluginSrc = join(repoRoot, "plugins", "fusion-plugin-claude-runtime", "src");
     mkdirSync(pluginSrc, { recursive: true });
     const moduleFile = join(pluginSrc, "skill-loader.js");
     writeFileSync(moduleFile, "// stub\n");
@@ -105,7 +105,7 @@ describe("skill-loader", () => {
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(join(skillDir, "SKILL.md"), "---\nname: ce-plan\n---\n# plan\n");
 
-    const staged = stageGrokSessionSkills({
+    const staged = stageClaudeSessionSkills({
       requestedSkillNames: ["fusion", "ce-plan"],
       additionalSkillPaths: [extraRoot],
     });
@@ -117,13 +117,13 @@ describe("skill-loader", () => {
   });
 
   it("still lists requested fusion skill in rules when staging cannot copy files", () => {
-    const staged = stageGrokSessionSkills({
+    const staged = stageClaudeSessionSkills({
       requestedSkillNames: ["fusion"],
       includeFusionSkill: false,
     });
     disposers.push(staged.dispose);
     expect(staged.skillNames).toContain("fusion");
-    const rules = buildGrokSkillRules({ skillNames: staged.skillNames, fusionToolCount: 0 });
+    const rules = buildClaudeSkillRules({ skillNames: staged.skillNames, fusionToolCount: 0 });
     expect(rules).toContain("fusion");
     expect(rules).toContain("Use the Fusion skill workflows");
   });
@@ -136,7 +136,7 @@ describe("skill-loader", () => {
   });
 
   it("builds rules mentioning skills and tool counts", () => {
-    const rules = buildGrokSkillRules({
+    const rules = buildClaudeSkillRules({
       skillNames: ["fusion"],
       toolMode: "coding",
       fusionToolCount: 3,
@@ -148,7 +148,7 @@ describe("skill-loader", () => {
   });
 
   it("stages bundled computer-use only on Darwin", () => {
-    const staged = stageGrokSessionSkills({ platform: "darwin" });
+    const staged = stageClaudeSessionSkills({ platform: "darwin" });
     disposers.push(staged.dispose);
     expect(existsSync(join(staged.pluginDir, "skills", "fusion", "SKILL.md"))).toBe(true);
     expect(existsSync(join(staged.pluginDir, "skills", "computer-use", "SKILL.md"))).toBe(true);
@@ -164,7 +164,7 @@ describe("skill-loader", () => {
       { includeComputerUseSkill: true, requestedSkillNames: ["computer-use"], additionalSkillPaths: [source] },
     ];
     for (const options of cases) {
-      const staged = stageGrokSessionSkills({ ...options, platform: "linux" });
+      const staged = stageClaudeSessionSkills({ ...options, platform: "linux" });
       disposers.push(staged.dispose);
       expect(existsSync(join(staged.pluginDir, "skills", "computer-use"))).toBe(false);
       expect(staged.skillNames).not.toContain("computer-use");
@@ -176,13 +176,13 @@ describe("skill-loader", () => {
     const userSkill = join(root, "computer-use");
     mkdirSync(userSkill, { recursive: true });
     writeFileSync(join(userSkill, "SKILL.md"), "# user skill\n");
-    const staged = stageGrokSessionSkills({ platform: "linux", additionalSkillPaths: [root] });
+    const staged = stageClaudeSessionSkills({ platform: "linux", additionalSkillPaths: [root] });
     disposers.push(staged.dispose);
     expect(existsSync(join(staged.pluginDir, "skills", "computer-use", "SKILL.md"))).toBe(true);
-    const overridden = stageGrokSessionSkills({ platform: "darwin", additionalSkillPaths: [root] });
+    const overridden = stageClaudeSessionSkills({ platform: "darwin", additionalSkillPaths: [root] });
     disposers.push(overridden.dispose);
     expect(readFileSync(join(overridden.pluginDir, "skills", "computer-use", "SKILL.md"), "utf8")).toContain("# user skill");
-    const suppressed = stageGrokSessionSkills({ platform: "darwin", includeComputerUseSkill: false });
+    const suppressed = stageClaudeSessionSkills({ platform: "darwin", includeComputerUseSkill: false });
     disposers.push(suppressed.dispose);
     expect(suppressed.skillNames).not.toContain("computer-use");
   });
@@ -190,7 +190,7 @@ describe("skill-loader", () => {
   it("gates computer-use at source resolution and keeps rules as discovery-only", () => {
     expect(resolveBundledComputerUseSkillSource(import.meta.url, "linux")).toBeNull();
     expect(resolveBundledComputerUseSkillSource(import.meta.url, "darwin")).toBeTruthy();
-    const rules = buildGrokSkillRules({ skillNames: ["fusion", "computer-use"] });
+    const rules = buildClaudeSkillRules({ skillNames: ["fusion", "computer-use"] });
     expect(rules).toContain("computer-use");
     expect(rules).not.toMatch(/fn computer|--/i);
   });

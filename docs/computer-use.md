@@ -151,13 +151,19 @@ No user timeout flag is provided. Default seam timeouts are: permission probe 5 
 
 ## Orca prior art and Fusion differences
 
-This surface was informed by [Orca](https://github.com/stablyai/orca) and its [computer-use CLI documentation](https://www.onorca.dev/docs/cli/computer-use). Orca uses two layers: a native-backed `orca computer` CLI and a thin skill that loads a version-matched guide. Fusion follows the CLI-plus-skill separation; the skill is deliberately out of scope for this command and is delivered separately.
+This surface was informed by [Orca](https://github.com/stablyai/orca) and its [computer-use CLI documentation](https://www.onorca.dev/docs/cli/computer-use). Orca uses two layers: a native-backed `orca computer` CLI and a thin skill that loads a version-matched guide. Fusion follows the CLI-plus-skill separation; the thin discovery skill is shipped separately from this command surface.
 
 Fusion deliberately differs by using macOS OS built-ins instead of native helpers; publishing non-mutating preflight permission checks, an `unknown` status, and the outcome matrix; documenting durable on-disk cross-process snapshots with identity-verified window/locator replay; distinguishing stale, missing, and unresolvable indexes; publishing deterministic failure precedence; and using a versioned envelope with a fixed append-only error enum. `paste-text` and `perform-secondary-action` are not implemented in this release; they remain absent from capabilities rather than being stubs.
 
 ## Use it from an agent
 
-Fusion ships a thin `computer-use` skill alongside the Fusion skill. When Claude-compatible skill installation is configured, both are reconciled into project `.claude/skills/` directories; `fn init` also copies both into supported home skill directories.
+<!-- FNXC:ComputerUseDiscovery 2026-08-11-09:23: FN-8984 requires runtime discovery only on macOS, where the CLI capability is supported. Runtime gates must remain authoritative so a requested name or additional bundled path cannot teach unsupported platforms an unreachable capability. -->
+
+### How agents discover this
+
+On macOS, Claude and Grok runtime sessions stage the shipped `computer-use` discovery skill in their session plugin directory, and Hermes installs it into `<hermes home>/skills/computer-use`. The gate is authoritative: no runtime option, requested skill name, or additional path can stage the bundled skill elsewhere, and the Hermes installer returns `skipped` without touching the Hermes home on other platforms. This avoids spending context or disk on an unsupported CLI capability.
+
+Fusion ships the thin `computer-use` skill alongside the Fusion skill. When Claude-compatible skill installation is configured, both are reconciled into project `.claude/skills/` directories; `fn init` also copies both into supported home skill directories.
 
 The discovery stub intentionally contains no command reference. An agent resolves one `fn` executable for its session and runs `fn skills get computer-use` before automation. That command renders its complete guide in-process from the same binary's command-surface descriptor and reports the same package version as `fn --version`.
 
