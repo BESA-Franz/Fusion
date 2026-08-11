@@ -67,10 +67,14 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   addSteeringComment: { kind: "writer", reason: "persists or mutates TaskStore state" },
   addTaskComment: { kind: "writer", reason: "persists or mutates TaskStore state" },
   appendAgentLogBatch: { kind: "writer", reason: "persists or mutates TaskStore state" },
-  // FNXC:MergeReliability 2026-08-11-21:39: Wedge pending markers persist task-scoped
-  // notification state, so the durable-write ratchet must classify them as writers.
-  clearTaskWedgeNotificationPending: { kind: "writer", reason: "persists or mutates TaskStore state" },
-  markTaskWedgeNotificationPending: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  /*
+  FNXC:MergeReliability 2026-08-11-21:57:
+  Deferred wedge-notification evidence belongs to the task row. These methods persist or remove
+  `wedgeNotification.pending` through `updateTaskAtomic`, so an orphaned merge body reaching either
+  method would mutate state it no longer owns; classify by that durable semantic, not current callers.
+  */
+  clearTaskWedgeNotificationPending: { kind: "writer", reason: "removes deferred wedge-notification evidence from the task row" },
+  markTaskWedgeNotificationPending: { kind: "writer", reason: "persists deferred wedge-notification evidence on the task row" },
   appendCurrentPlanEvidence: { kind: "writer", reason: "persists or mutates TaskStore state" },
   appendSpecDriftReport: { kind: "writer", reason: "persists or mutates TaskStore state" },
   appendSpecDriftReportWhilePlanningLocked: { kind: "writer", reason: "persists or mutates TaskStore state" },
@@ -861,6 +865,27 @@ function isStoreExpr(expr: ts.Expression, aliases: Set<string>): boolean {
     || ts.isPropertyAccessExpression(expr) && ts.isIdentifier(expr.expression) && ["options", "deps"].includes(expr.expression.text) && expr.name.text === "store";
 }
 
+export type InventoryEntry = DerivedCallSite & {
+  owningEntryPoint: string;
+  reachableDataStates: string[];
+  axis1: string;
+  axis1Evidence: string;
+  axis2Provisional: string;
+  axis2Final: string;
+  observedInSuite: string;
+  executionProof: string;
+  followUpTaskId: string;
+};
+export type InventoryManifest = {
+  inventoryStatus: string;
+  scannedModules: string[];
+  closureBoundary: Array<{ module: string; reason: string; followUpTaskId: string }>;
+  writerSurface: string[];
+  writerSurfaceSource: string;
+  writerSurfaceClassification: SurfaceClassification[];
+  entries: InventoryEntry[];
+};
+
 export function deriveMergeDurableWriteCallSites(): { callSites: DerivedCallSite[]; suspects: Suspect[]; scannedModules: string[]; closureBoundary: { module: string; reason: string }[]; writerSurface: string[]; writerSurfaceSource: string } {
   const surface = deriveDurableWriterSurface(); const closure = deriveMergeReachableModules();
   const callSites: DerivedCallSite[] = []; const suspects: Suspect[] = [];
@@ -921,6 +946,57 @@ export function deriveMergeDurableWriteCallSites(): { callSites: DerivedCallSite
     }; visit(sf);
   }
   return { callSites: callSites.sort((a, b) => a.callSiteId.localeCompare(b.callSiteId)), suspects, scannedModules: closure.modules, closureBoundary: closure.boundary, writerSurface: surface.writers, writerSurfaceSource: surface.source };
+}
+
+/**
+ * Rejects a regeneration input that would conceal the two fail-closed derivation failures.
+ * Exported so the guard can pin this contract without mutating the source tree.
+ */
+export function assertInventoryRegenerationInputs(input: { unclassified: string[]; suspects: Suspect[] }): void {
+  if (input.unclassified.length > 0) throw new Error(`cannot regenerate inventory with unclassified TaskStore methods: ${input.unclassified.join(", ")}`);
+  if (input.suspects.length > 0) throw new Error(`cannot regenerate inventory with unresolved durable-write receivers: ${input.suspects.map((suspect) => `${suspect.file}:${suspect.line}`).join(", ")}`);
+}
+
+function pendingInventoryEntry(site: DerivedCallSite): InventoryEntry {
+  return {
+    ...site,
+    owningEntryPoint: "indeterminate",
+    reachableDataStates: ["unobservable:human classification required for new durable write"],
+    axis1: "indeterminate",
+    axis1Evidence: "pending: human classification required for newly derived durable write",
+    axis2Provisional: "unresolved",
+    axis2Final: "unresolved",
+    observedInSuite: "unobservable:human classification required for new durable write",
+    executionProof: "none:human classification required for new durable write",
+    followUpTaskId: "pending:classify",
+  };
+}
+
+/**
+ * Rebuilds derivable inventory structure while carrying human lifecycle verdicts only by an exact
+ * call-site identity. A new call site intentionally receives a red `pending:classify` sentinel.
+ */
+export function buildInventoryManifest(previous: InventoryManifest): InventoryManifest {
+  const surface = deriveDurableWriterSurface();
+  const derived = deriveMergeDurableWriteCallSites();
+  assertInventoryRegenerationInputs({ unclassified: surface.unclassified, suspects: derived.suspects });
+  const priorEntries = new Map(previous.entries.map((entry) => [entry.callSiteId, entry]));
+  const priorBoundaries = new Map(previous.closureBoundary.map((entry) => [entry.module, entry]));
+  return {
+    inventoryStatus: previous.inventoryStatus,
+    scannedModules: derived.scannedModules,
+    closureBoundary: derived.closureBoundary.map((boundary) => ({
+      ...boundary,
+      followUpTaskId: priorBoundaries.get(boundary.module)?.followUpTaskId ?? "pending:classify",
+    })),
+    writerSurface: surface.writers,
+    writerSurfaceSource: surface.source,
+    writerSurfaceClassification: surface.classified,
+    entries: derived.callSites.map((site) => {
+      const prior = priorEntries.get(site.callSiteId);
+      return prior ? { ...prior, ...site } : pendingInventoryEntry(site);
+    }),
+  };
 }
 
 /** Test seam for direct alias-split assertions. It runs the same AST shapes, not a regex. */
