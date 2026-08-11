@@ -596,6 +596,21 @@ export interface TaskWedgeNotificationState {
   lastNotifiedAtByReason?: Record<string, string>;
   /** Monotonic durable-state version used to reject stale whole-object writes. */
   budgetRevision?: number;
+  /*
+  FNXC:TaskWedgeNotifications 2026-08-11-18:28:
+  A parked row may emit no later task update, so a settle hold must survive an engine restart
+  rather than relying solely on an in-memory timer. Supplied self-healing descriptors include
+  stage-derived prose unavailable on the task row, so preserve that operator-facing content here.
+  `since` moves only when the reason changes or stale evidence is deliberately re-stamped.
+  */
+  pending?: {
+    since: string;
+    reasonKey: string;
+    source: "auto" | "supplied";
+    reason: string;
+    action: string;
+    gate?: string;
+  };
   /** Sweep-owned generic terminal-failure recovery state. */
   autoRecovery?: {
     attempts: number;
