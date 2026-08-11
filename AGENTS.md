@@ -276,6 +276,7 @@ Scoped exception (FN-5819/FN-8823): while project auto-merge is On, shared-branc
 `testMode?: boolean` is now available in both project and global settings. If project `testMode === true` (or the resolved default provider is `"mock"` at any tier), every AI lane is forced to `mock/scripted`, overriding per-task and per-lane model selections. The dashboard exposes this via the Settings Modal "Enable test mode" toggle and a persistent "Test mode — no real AI calls" banner.
 
 ### Run Audit
+- FN-8958: `merge:orphan-write-fenced` is emitted once per orphan merge body at its fence's first interaction. Metadata is ids/counts/outcomes-only: `{ taskId, category, interaction, suppressedCount }`; `suppressedCount` is the emit-time count (`1` for `interaction:"suppressed"`, `0` for `interaction:"rejected"`), never a cumulative body total.
 
 - Store-open provenance: every `TaskStore.init()` emits `store:open` with ids/paths-only metadata (`pid`, `ppid`, `execPath`, `entry`, `cwd`, `nodeVersion`). Purpose: attribute shared-DB mutations to the process that opened the store (the FN-7910 Ideas-evacuation writer was unidentifiable without it). Tests reading unfiltered `runAuditEvents` must filter out `store:open` rather than assert exact counts.
 - FN-8948: `mission:reconcile-pass` records a bounded automatic reconciliation result. Metadata contains optional mission ID, source enum, and scan/write/skip/conflict/failure counters only; never roadmap prose, titles, reasons, or secrets.

@@ -162,12 +162,12 @@ describe("FN-8923 orphan merge-body durable writes", () => {
       expect(store.getTask).toHaveBeenCalledOnce();
     });
 
-    it("aborts from the real mid-review seam and records orphan finalization writes", async () => {
+    it("aborts from the real mid-review seam before orphan finalization writes", async () => {
       const directory = createMergeRepo();
       const controller = new AbortController();
       const { store, records } = createRecordingStore(controller, { sharedGroup: true });
       let recordsAtAbort = -1;
-      const result = await runAiMerge(store as never, directory, "FN-8923", { manual: true, signal: controller.signal }, {
+      await expect(runAiMerge(store as never, directory, "FN-8923", { manual: true, signal: controller.signal }, {
         mergeAgent: async (cwd) => { git(cwd, "merge --squash fusion/FN-8923 && git commit -q -m squash"); },
         // This is the abort-at-boundary fixture: review completed, the squash exists, and the
         // production body is about to enter its landing/finalization stretch.
@@ -176,23 +176,22 @@ describe("FN-8923 orphan merge-body durable writes", () => {
           recordsAtAbort = records.length;
           return "REVIEW_VERDICT: approve";
         },
-      });
+      })).rejects.toMatchObject({ name: "MergeAbortedError" });
       const orphanWrites = records.slice(recordsAtAbort);
       expect(recordsAtAbort).toBeGreaterThanOrEqual(0);
-      expect(result.merged).toBe(true);
       // Positive writes are their own execution proof and demonstrate that this is a body that
       // outlived its abort rather than a pre-aborted fixture that stopped at an entry checkpoint.
       // FN-8923 follow-up: FN-8958 flips packages/engine/src/merge/merger-ai.ts::finalizeMerged::store.updateTask::#1.
-      expect(orphanWrites.some(({ writer, args }) => writer === "updateTask" && (args[1] as Record<string, unknown>).mergeDetails)).toBe(true);
+      expect(orphanWrites.some(({ writer, args }) => writer === "updateTask" && (args[1] as Record<string, unknown>).mergeDetails)).toBe(false);
       // FN-8923 follow-up: FN-8958 flips packages/engine/src/merge/auto-merge-finalization.ts::finalizeProvenAutoMergeTask>moved::store.moveTask::#1.
-      expect(orphanWrites.some(({ writer }) => writer === "moveTask")).toBe(true);
+      expect(orphanWrites.some(({ writer }) => writer === "moveTask")).toBe(false);
       // FN-8923 follow-up: FN-8958 flips packages/engine/src/merge/merger-ai.ts::finalizeTask::store.emit::#1.
-      expect(orphanWrites.some(({ writer, args }) => writer === "emit" && args[0] === "task:merged")).toBe(true);
+      expect(orphanWrites.some(({ writer, args }) => writer === "emit" && args[0] === "task:merged")).toBe(false);
       // FN-8923 follow-up: FN-8958 flips packages/engine/src/merge/merger-ai.ts::finalizeMerged::store.recordBranchGroupMemberLanded::#1.
-      expect(orphanWrites.some(({ writer }) => writer === "recordBranchGroupMemberLanded")).toBe(true);
+      expect(orphanWrites.some(({ writer }) => writer === "recordBranchGroupMemberLanded")).toBe(false);
       // FN-8923 follow-up: FN-8958 flips packages/engine/src/merge/merger-ai.ts::runAiMerge>log::store.logEntry::#1.
-      expect(orphanWrites.some(({ writer }) => writer === "logEntry")).toBe(true);
-      expect(orphanWrites.some(({ writer }) => writer === "appendAgentLog")).toBe(true);
+      expect(orphanWrites.some(({ writer }) => writer === "logEntry")).toBe(false);
+      expect(orphanWrites.some(({ writer }) => writer === "appendAgentLog")).toBe(false);
     });
 
     it("attempts the real landOneRepo pre-land boundary", async () => {
@@ -213,14 +212,13 @@ describe("FN-8923 orphan merge-body durable writes", () => {
         // `advanceIntegrationBranchRef` emits this durable audit only after its CAS ref write.
         onIntegrationRefAdvance: () => controller.abort("orphaned after integration ref advance"),
       });
-      const result = await runAiMerge(store as never, directory, "FN-8923", { manual: true, signal: controller.signal }, {
+      await expect(runAiMerge(store as never, directory, "FN-8923", { manual: true, signal: controller.signal }, {
         mergeAgent: async (cwd) => { git(cwd, "merge --squash fusion/FN-8923 && git commit -q -m squash"); },
         reviewAgent: async () => "REVIEW_VERDICT: approve",
-      });
+      })).rejects.toMatchObject({ name: "MergeAbortedError" });
       expect(controller.signal.aborted).toBe(true);
-      expect(result.merged).toBe(true);
       // The post-boundary mergeDetails write proves the production body passed the ref-advance seam.
-      expect(records.some(({ writer, args }) => writer === "updateTask" && (args[1] as Record<string, unknown>).mergeDetails)).toBe(true);
+      expect(records.some(({ writer, args }) => writer === "updateTask" && (args[1] as Record<string, unknown>).mergeDetails)).toBe(false);
     });
 
     it("aborts from the mergeDetails persistence seam before the private finalization tail", async () => {
@@ -230,14 +228,13 @@ describe("FN-8923 orphan merge-body durable writes", () => {
         sharedGroup: true,
         onMergeDetailsPersist: () => controller.abort("orphaned after mergeDetails persistence"),
       });
-      const result = await runAiMerge(store as never, directory, "FN-8923", { manual: true, signal: controller.signal }, {
+      await expect(runAiMerge(store as never, directory, "FN-8923", { manual: true, signal: controller.signal }, {
         mergeAgent: async (cwd) => { git(cwd, "merge --squash fusion/FN-8923 && git commit -q -m squash"); },
         reviewAgent: async () => "REVIEW_VERDICT: approve",
-      });
+      })).rejects.toMatchObject({ name: "MergeAbortedError" });
       expect(controller.signal.aborted).toBe(true);
-      expect(result.merged).toBe(true);
       // `task:merged` is emitted after mergeDetails, proving the private tail was reached through runAiMerge.
-      expect(records.some(({ writer, args }) => writer === "emit" && args[0] === "task:merged")).toBe(true);
+      expect(records.some(({ writer, args }) => writer === "emit" && args[0] === "task:merged")).toBe(false);
     });
 
     it("aborts during a real second workspace-repository land and partitions successor writes", async () => {
@@ -328,13 +325,12 @@ describe("FN-8923 orphan merge-body durable writes", () => {
       expect(successorIsHeldAtProductionSeam).toBe(true);
       releaseOrphan();
       // FNXC:MergeReliability 2026-08-11-00:37: This assertion proves the bodies overlap at a real production seam.
-      const result = await body;
+      await expect(body).rejects.toMatchObject({ name: "MergeAbortedError" });
       expect(successorIsHeldAtProductionSeam).toBe(true);
       releaseSuccessor();
       await successorBody;
       expect(mergeCount).toBe(2);
       expect(successorSignal).toBeDefined();
-      expect(result.repos[0]).toMatchObject({ repo: "repo-a", status: "landed" });
       expect((task.workspaceWorktrees as Record<string, { landedSha?: string }>) ["repo-a"].landedSha).toEqual(expect.any(String));
       const postBoundary = records.slice(recordCountAtAbort);
       const orphanWrites = postBoundary.filter((record) => record.generation === "orphan");
@@ -342,7 +338,7 @@ describe("FN-8923 orphan merge-body durable writes", () => {
       // FNXC:MergeReliability 2026-08-11-00:37: Separate facades prevent successor writes from satisfying orphan assertions.
       expect(successorWrites).toContainEqual(expect.objectContaining({ writer: "updateTask", args: ["FN-8923", { status: "merging" }] }));
       expect(orphanWrites).not.toContainEqual(expect.objectContaining({ writer: "updateTask", args: ["FN-8923", { status: "merging" }] }));
-      expect(orphanWrites.some(({ writer }) => writer === "logEntry")).toBe(true);
+      expect(orphanWrites.some(({ writer }) => writer === "logEntry")).toBe(false);
     });
   });
 });

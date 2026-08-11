@@ -67,6 +67,10 @@ const STORE_METHOD_CLASSIFICATION: Record<string, Omit<SurfaceClassification, "m
   addSteeringComment: { kind: "writer", reason: "persists or mutates TaskStore state" },
   addTaskComment: { kind: "writer", reason: "persists or mutates TaskStore state" },
   appendAgentLogBatch: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  // FNXC:MergeReliability 2026-08-11-21:39: Wedge pending markers persist task-scoped
+  // notification state, so the durable-write ratchet must classify them as writers.
+  clearTaskWedgeNotificationPending: { kind: "writer", reason: "persists or mutates TaskStore state" },
+  markTaskWedgeNotificationPending: { kind: "writer", reason: "persists or mutates TaskStore state" },
   appendCurrentPlanEvidence: { kind: "writer", reason: "persists or mutates TaskStore state" },
   appendSpecDriftReport: { kind: "writer", reason: "persists or mutates TaskStore state" },
   appendSpecDriftReportWhilePlanningLocked: { kind: "writer", reason: "persists or mutates TaskStore state" },
