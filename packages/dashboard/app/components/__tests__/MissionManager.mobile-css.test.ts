@@ -26,6 +26,14 @@ describe("MissionManager mobile styles", () => {
     expect(section).toContain("min-height: 36px;");
   });
 
+  it("keeps reconcile preview controls touch-sized", () => {
+    const section = getMissionMobileSection(loadAllAppCss());
+    expect(section).toContain('.mission-detail__run-controls > [data-testid="mission-reconcile-now"]');
+    expect(section).toContain(".mission-detail__reconcile-actions .mission-btn");
+    expect(section).toContain("min-width: 36px;");
+    expect(section).toContain("min-height: 36px;");
+  });
+
   it("adds responsive tab and activity layout rules", () => {
     const css = loadAllAppCss();
     const section = getMissionMobileSection(css);

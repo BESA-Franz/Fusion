@@ -609,6 +609,37 @@ export function triggerValidation(featureId: string, projectId?: string): Promis
   });
 }
 
+/*
+FNXC:MissionReconcileControl 2026-08-11-06:49:
+The dashboard is a thin client over the single server reconcile authority. It renders the
+returned plan verbatim and must never re-derive reconcile decisions in browser code.
+*/
+export interface MissionReconcilePassResult {
+  missionsScanned: number;
+  featuresScanned: number;
+  statusUpdates: number;
+  badgeRepairs: number;
+  badgeRepairsSkipped: number;
+  terminalRepairs: number;
+  terminalSkipped: number;
+  conflicts: number;
+  failures: number;
+  skippedReason?: "archived";
+  planned?: Array<{ featureId: string; action: "status" | "terminal-done" | "badge-clear" }>;
+}
+
+/** Preview or apply the server-owned mission reconciliation pass. */
+export function reconcileMission(
+  missionId: string,
+  options: { dryRun?: boolean } | undefined,
+  projectId?: string,
+): Promise<MissionReconcilePassResult> {
+  return api<MissionReconcilePassResult>(withProjectId(`/missions/${encodeURIComponent(missionId)}/reconcile`, projectId), {
+    method: "POST",
+    body: JSON.stringify({ dryRun: options?.dryRun === true }),
+  });
+}
+
 /** Repair a stale feature validation state using server-resolved ground truth. */
 export function repairFeatureValidation(
   featureId: string,

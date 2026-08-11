@@ -775,6 +775,12 @@ Mission hierarchy operations are available with the same project-scoped `Mission
 
 The scheduler startup and self-healing maintenance passes, mission autopilot, task moves, and `fn_mission_reconcile({ id?, dryRun? })` use one idempotent reconciliation authority. `POST /api/missions/:missionId/reconcile` exposes the same pass; `dryRun: true` returns planned changes without mutation. Automatic writes are attributed to `mission-reconcile:<startup|self-healing|autopilot|task-move>` and API/tool calls retain their operator or agent actor.
 
+### Mission Manager reconcile control
+
+Mission detail includes **Reconcile now** for an on-demand operator pass. It first requests a zero-write dry-run preview and lists the server-returned planned feature actions. **Apply reconcile** is a separate explicit action; a failed apply leaves that preview available to retry. Archived missions report as skipped and offer no apply action.
+
+Selection changes discard reconcile responses silently, including responses arriving before the newly selected mission detail finishes loading. Leaving a mission also releases its busy and preview state so the next mission is immediately actionable. While a new mission detail is loading, the retained previous header's reconcile controls are inert (disabled and handler-refused), preventing reconciliation of the mission just left.
+
 Correction scans every non-archived mission and slice but never activates or triages work. It maps deterministic task lifecycle lanes, failure state, and assertion validation to feature status, repairs stale validation badges when the store supports its fenced repair primitive, and uses explicit task links only to reconcile shipped archived delivery through the store's `terminal-task-reconcile` attribution. A bounded `mission:reconcile-pass` audit event records IDs, source enums, and counters only. Git history, GitHub polling, FR-41 receipts, and FN-8845 spec-lock drift are deliberately deferred extension inputs.
 
 For example, activate a ready work unit with `fn_slice_activate({ id: "SL-…" })`. Link it to live work with `fn_feature_link_task({ featureId: "F-…", taskId: "FN-…" })`. Linking delegates to `MissionStore.linkFeatureToTask()`: it verifies the task is a live row in the same project, changes the feature to `triaged`, and records the mission/slice linkage on the task. Archived, deleted, missing, and other-project tasks are rejected.

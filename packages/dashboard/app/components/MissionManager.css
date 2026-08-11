@@ -1111,6 +1111,44 @@ Narrow/mobile Missions puts Plan New Mission at the bottom of the list, using th
   color: var(--text-muted);
 }
 
+.mission-detail__reconcile-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: var(--space-sm);
+  border: var(--border) solid;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-warning) 10%, var(--surface));
+  color: var(--text);
+}
+
+.mission-detail__reconcile-summary,
+.mission-detail__reconcile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.mission-detail__reconcile-summary {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.mission-detail__reconcile-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin: 0;
+  padding-inline-start: var(--space-lg);
+  font-size: var(--font-size-sm);
+}
+
+.mission-detail__reconcile-actions {
+  justify-content: flex-start;
+}
+
 .mission-detail__management-actions {
   display: inline-flex;
   align-items: center;
@@ -2796,6 +2834,16 @@ Generated fix features can carry the same stale blocked state as ordinary rows. 
   .mission-fix-feature__actions .mission-icon-btn {
     min-width: 36px;
     min-height: 36px;
+  }
+
+  .mission-detail__run-controls > [data-testid="mission-reconcile-now"],
+  .mission-detail__reconcile-actions .mission-btn {
+    min-width: 36px;
+    min-height: 36px;
+  }
+
+  .mission-detail__reconcile-panel {
+    max-width: 100%;
   }
 
   /* Prevent iOS zoom on focus */

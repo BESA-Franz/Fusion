@@ -107,6 +107,7 @@ import {
   triggerValidation,
   VALIDATION_ALREADY_RUNNING,
   repairFeatureValidation,
+  reconcileMission,
   fetchValidationLoopState,
   fetchValidationRuns,
   fetchValidationRun,
@@ -119,6 +120,7 @@ import {
   api,
   type AiSessionSummary,
   type BranchGroupSummary,
+  type MissionReconcilePassResult,
 } from "../api";
 import type { AutopilotState, MissionInterviewDraftSummary } from "./mission-types";
 import { readCache, SWR_CACHE_KEYS, writeCache } from "../utils/swrCache";
@@ -756,6 +758,58 @@ function normalizeMissionHierarchy(mission: MissionWithHierarchy): MissionWithHi
 FNXC:MissionValidationRepair 2026-08-11-00:07:
 Both feature presentations must expose the same narrowly-scoped escape from a stale validation badge. This renders only actions allowed by the core predicate, so a live validation or implementation cycle is never pre-empted and the execution loop remains unable to escape blocked on its own.
 */
+/*
+FNXC:MissionReconcileControl 2026-08-11-06:49:
+Preview content is the dry-run result from the server authority, not a browser-derived plan.
+Nothing mutates until the operator explicitly applies this panel.
+*/
+function MissionReconcilePreview({
+  result,
+  featureTitles,
+  busy,
+  disabled,
+  onApply,
+  onDismiss,
+  t,
+}: {
+  result: MissionReconcilePassResult;
+  featureTitles: Map<string, string>;
+  busy: "preview" | "apply" | null;
+  disabled: boolean;
+  onApply: () => void;
+  onDismiss: () => void;
+  t: ReturnType<typeof useTranslation>["t"];
+}) {
+  const planned = result.planned ?? [];
+  const isEmpty = planned.length === 0 && result.statusUpdates === 0 && result.badgeRepairs === 0 && result.terminalRepairs === 0;
+  const canApply = result.skippedReason !== "archived" && !isEmpty && planned.length > 0;
+
+  return (
+    <section className="mission-detail__reconcile-panel" aria-label={t("missions.reconcilePreview", "Reconcile preview")}>
+      <div className="mission-detail__reconcile-summary">
+        <span>{t("missions.reconcileStatusUpdates", "Status updates: {{count}}", { count: result.statusUpdates })}</span>
+        <span>{t("missions.reconcileBadgeRepairs", "Badge repairs: {{count}}", { count: result.badgeRepairs })}</span>
+        <span>{t("missions.reconcileTerminalRepairs", "Terminal repairs: {{count}}", { count: result.terminalRepairs })}</span>
+      </div>
+      {result.skippedReason === "archived" ? <p>{t("missions.reconcileArchived", "Mission is archived — nothing reconciled")}</p>
+        : isEmpty ? <p>{t("missions.reconcileUpToDate", "Already up to date")}</p>
+          : <ul className="mission-detail__reconcile-list">{planned.map((entry) => (
+            <li key={`${entry.featureId}:${entry.action}`}>
+              {featureTitles.get(entry.featureId) ?? entry.featureId} — {entry.action}
+            </li>
+          ))}</ul>}
+      <div className="mission-detail__reconcile-actions">
+        {canApply && <button className="mission-btn mission-btn--primary mission-btn--sm" onClick={onApply} disabled={busy !== null || disabled} data-testid="mission-reconcile-apply">
+          {busy === "apply" ? <Loader2 className="spinner" /> : <Check />}<span>{t("missions.applyReconcile", "Apply reconcile")}</span>
+        </button>}
+        <button className="mission-btn mission-btn--ghost mission-btn--sm" onClick={onDismiss} disabled={busy !== null}>
+          <span>{t("common.dismiss", "Dismiss")}</span>
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function FeatureValidationRepairActions({
   feature,
   busy,
@@ -813,6 +867,9 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const initialMissions = readCache<MissionWithSummary[]>(missionsCacheKey);
   const [missions, setMissions] = useState<MissionWithSummary[]>(() => (Array.isArray(initialMissions) ? initialMissions : []));
   const [selectedMission, setSelectedMission] = useState<MissionWithHierarchy | null>(null);
+  const [selectedMissionIntentId, setSelectedMissionIntentId] = useState<string | null>(null);
+  const [reconcileBusy, setReconcileBusy] = useState<"preview" | "apply" | null>(null);
+  const [reconcilePreview, setReconcilePreview] = useState<{ missionId: string; result: MissionReconcilePassResult } | null>(null);
   const [selectedMissionBranchGroup, setSelectedMissionBranchGroup] = useState<BranchGroupSummary | null>(null);
   const [loading, setLoading] = useState(!(Array.isArray(initialMissions) && initialMissions.length > 0));
   const hasHydratedRef = useRef(Array.isArray(initialMissions) && initialMissions.length > 0);
@@ -1113,6 +1170,8 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const missionEventsRef = useRef<MissionEvent[]>([]);
   const missionsRef = useRef<MissionWithSummary[]>([]);
   const selectedMissionRef = useRef<MissionWithHierarchy | null>(null);
+  // Intent changes synchronously on list clicks while committed detail intentionally lags its fetch.
+  const selectedMissionIntentRef = useRef<string | null>(null);
   const selectedMilestoneIdRef = useRef<string | null>(null);
   /*
   FNXC:MissionBranchGroupDetail 2026-08-08-16:58:
@@ -1122,6 +1181,19 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   */
   const missionDetailRequestGenerationRef = useRef(0);
   /*
+  FNXC:MissionReconcileControl 2026-08-11-06:49:
+  Reconcile responses are generation-guarded on success, rejection, and cleanup. A late loser
+  cannot alter a new mission, while a selection boundary owns synchronous busy/preview release.
+  */
+  const reconcileRequestGenerationRef = useRef(0);
+  const invalidateReconcileRequests = useCallback((nextIntentMissionId: string | null) => {
+    reconcileRequestGenerationRef.current += 1;
+    selectedMissionIntentRef.current = nextIntentMissionId;
+    setSelectedMissionIntentId(nextIntentMissionId);
+    setReconcileBusy(null);
+    setReconcilePreview(null);
+  }, []);
+  /*
   FNXC:MissionBranchGroupDetail 2026-08-08-17:07:
   Returning to the mission list, deleting the selected mission, hiding this
   inline view, or unmounting also changes selection. Invalidate in-flight
@@ -1130,7 +1202,8 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   */
   const invalidateMissionDetailRequests = useCallback(() => {
     missionDetailRequestGenerationRef.current += 1;
-  }, []);
+    invalidateReconcileRequests(null);
+  }, [invalidateReconcileRequests]);
   // FNXC:MilestoneValidationFreshness 2026-08-01-20:42: Rollup and telemetry responses share one per-milestone generation so an older request cannot restore a repaired failed badge, while a newer failure remains valid.
   const validationRequestGenerationRef = useRef(new MilestoneValidationFreshnessCoordinator());
   const activeTabRef = useRef<"structure" | "activity">("structure");
@@ -1162,6 +1235,15 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   }, [eventsTotal, missions, selectedMission?.eventCount, selectedMission?.id]);
 
   const displayedMissionEvents = useMemo(() => [...missionEvents].reverse(), [missionEvents]);
+  const reconcileFeatureTitles = useMemo(() => new Map(
+    (selectedMission?.milestones ?? []).flatMap((milestone) => milestone.slices.flatMap((slice) =>
+      slice.features.map((feature) => [feature.id, feature.title] as const),
+    )),
+  ), [selectedMission]);
+
+  useEffect(() => {
+    setReconcilePreview(null);
+  }, [selectedMission?.id]);
 
   // Keep latest state available to long-lived SSE handlers without reconnect churn.
   missionsRef.current = missions;
@@ -1273,6 +1355,14 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   }, [addToast, projectId, t]);
 
   const loadMissionDetail = useCallback(async (missionId: string) => {
+    /*
+    FNXC:MissionReconcileControl 2026-08-11-07:20:
+    Every detail-load entry point, including `targetMissionId` deep links, is a selection boundary.
+    Update intent before fetching so a new deep-linked mission can reconcile once it commits.
+    */
+    if (selectedMissionIntentRef.current !== missionId) {
+      invalidateReconcileRequests(missionId);
+    }
     const requestGeneration = ++missionDetailRequestGenerationRef.current;
     try {
       setDetailLoading(true);
@@ -1283,6 +1373,10 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
       }
 
       const data = normalizeMissionHierarchy(payload as MissionWithHierarchy);
+      if (selectedMissionIntentRef.current === null) {
+        selectedMissionIntentRef.current = data.id;
+        setSelectedMissionIntentId(data.id);
+      }
       setSelectedMission(data);
       if (data.milestones.length > 0) {
         const firstMilestoneId = data.milestones[0].id;
@@ -1336,7 +1430,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
         setDetailLoading(false);
       }
     }
-  }, [addToast, loadAssertionsForMilestone, loadValidationRollup, projectId]);
+  }, [addToast, invalidateReconcileRequests, loadAssertionsForMilestone, loadValidationRollup, projectId]);
 
   /*
   FNXC:MissionBranchGroupDetail 2026-08-08-16:11:
@@ -2867,7 +2961,57 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     }
   }, [addToast, loadMissionDetail, loadMissions, projectId]);
 
+  const isReconcileRequestStale = useCallback((generation: number, missionId: string) =>
+    generation !== reconcileRequestGenerationRef.current || selectedMissionRef.current?.id !== missionId,
+  []);
+
+  const handleReconcilePreview = useCallback(async (missionId: string) => {
+    // The committed selectedMission is not an intent signal during a detail-load switch.
+    if (missionId !== selectedMissionIntentRef.current) return;
+    const generation = ++reconcileRequestGenerationRef.current;
+    setReconcileBusy("preview");
+    try {
+      const result = await reconcileMission(missionId, { dryRun: true }, projectId);
+      if (isReconcileRequestStale(generation, missionId)) return;
+      setReconcilePreview({ missionId, result });
+    } catch (err) {
+      if (isReconcileRequestStale(generation, missionId)) return;
+      addToast(getErrorMessage(err) || t("missions.reconcilePreviewFailed", "Failed to preview reconcile"), "error");
+    } finally {
+      if (!isReconcileRequestStale(generation, missionId)) setReconcileBusy(null);
+    }
+  }, [addToast, isReconcileRequestStale, projectId, t]);
+
+  const handleReconcileApply = useCallback(async (missionId: string) => {
+    // Refuse an apply dispatched from an old header in the synchronous selection window.
+    if (missionId !== selectedMissionIntentRef.current) return;
+    const generation = ++reconcileRequestGenerationRef.current;
+    setReconcileBusy("apply");
+    try {
+      const result = await reconcileMission(missionId, { dryRun: false }, projectId);
+      if (isReconcileRequestStale(generation, missionId)) return;
+      addToast(t("missions.reconcileApplied", "Reconciled: {{status}} status, {{badge}} badge, {{terminal}} terminal repairs", {
+        status: result.statusUpdates, badge: result.badgeRepairs, terminal: result.terminalRepairs,
+      }), "success");
+      setReconcilePreview(null);
+      await loadMissionDetail(missionId);
+      if (isReconcileRequestStale(generation, missionId)) return;
+      void loadMissions();
+    } catch (err) {
+      if (isReconcileRequestStale(generation, missionId)) return;
+      addToast(getErrorMessage(err) || t("missions.reconcileApplyFailed", "Failed to apply reconcile"), "error");
+    } finally {
+      if (!isReconcileRequestStale(generation, missionId)) setReconcileBusy(null);
+    }
+  }, [addToast, isReconcileRequestStale, loadMissionDetail, loadMissions, projectId, t]);
+
   const handleSelectMission = useCallback((mission: Mission) => {
+    /*
+    FNXC:MissionReconcileControl 2026-08-11-06:49:
+    Detail refs lag a direct mission switch until its fetch commits. Record operator intent and
+    invalidate/release synchronously so the retained old header cannot reconcile an abandoned mission.
+    */
+    invalidateReconcileRequests(mission.id);
     setActiveTab("structure");
     setSelectedMilestoneId(null);
     setValidationTelemetry(null);
@@ -2876,7 +3020,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     setEventsFilter("all");
     setExpandedEventMetadata(new Set());
     loadMissionDetail(mission.id);
-  }, [loadMissionDetail]);
+  }, [invalidateReconcileRequests, loadMissionDetail]);
 
   const handleBackToList = useCallback(() => {
     invalidateMissionDetailRequests();
@@ -2908,9 +3052,15 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
   useEffect(() => {
     if (!isActive) {
+      /*
+      FNXC:MissionReconcileControl 2026-08-11-06:49:
+      Inline Mission Manager stays mounted when hidden. Treat that visibility boundary like a
+      deselection so an in-flight reconcile cannot toast or update hidden, abandoned detail.
+      */
+      invalidateMissionDetailRequests();
       previousMobileDetailVisibleRef.current = false;
     }
-  }, [isActive]);
+  }, [invalidateMissionDetailRequests, isActive]);
 
   useEffect(() => {
     const isMobileDetailVisible = isActive && isMobile && Boolean(selectedMission);
@@ -3248,6 +3398,28 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
                   <div className="mission-detail__actions">
                     <div className="mission-detail__run-controls">
+                    <button
+                      className="mission-btn mission-btn--ghost"
+                      onClick={() => handleReconcilePreview(selectedMission.id)}
+                      title={t("missions.reconcileNow", "Reconcile now")}
+                      aria-label={t("missions.reconcileNow", "Reconcile now")}
+                      data-testid="mission-reconcile-now"
+                      disabled={reconcileBusy !== null || selectedMissionIntentId !== selectedMission.id}
+                    >
+                      {reconcileBusy === "preview" ? <Loader2 className="spinner" /> : <RefreshCw />}
+                      <span>{t("missions.reconcileNow", "Reconcile now")}</span>
+                    </button>
+                    {reconcilePreview?.missionId === selectedMission.id && (
+                      <MissionReconcilePreview
+                        result={reconcilePreview.result}
+                        featureTitles={reconcileFeatureTitles}
+                        busy={reconcileBusy}
+                        disabled={selectedMissionIntentId !== selectedMission.id}
+                        onApply={() => handleReconcileApply(selectedMission.id)}
+                        onDismiss={() => setReconcilePreview(null)}
+                        t={t}
+                      />
+                    )}
                     {selectedMission.status === "active" && (
                       <button
                         className="mission-btn mission-btn--danger"
@@ -5508,7 +5680,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
               <Loader2 size={24} className="spinner" />
               <span>{t("missions.loadingMissions", "Loading missions...")}</span>
             </div>
-          ) : detailLoading ? (
+          ) : detailLoading && !selectedMission ? (
             <div className="mission-manager__loading">
               <Loader2 size={24} className="spinner" />
               <span>{t("missions.loadingMissionDetails", "Loading mission details...")}</span>
@@ -5572,7 +5744,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
           )}
 
           <div className="mission-manager__detail-pane">
-            {detailLoading ? (
+            {detailLoading && !selectedMission ? (
               <div className="mission-manager__loading">
                 <Loader2 size={24} className="spinner" />
                 <span>{t("missions.loadingMissionDetails", "Loading mission details...")}</span>
