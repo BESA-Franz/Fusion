@@ -11,7 +11,7 @@
 
 import type { Goal } from "../goals/goal-types.js";
 import { redactSecrets } from "../secrets/redact-secrets.js";
-import { createMissionBlockerDescriptor, sortMissionBlockerDescriptors } from "./mission-blockers.js";
+import { createMissionBlockerDescriptor, dedupeMissionBlockerDescriptors, sortMissionBlockerDescriptors } from "./mission-blockers.js";
 
 // ── Status Enums ─────────────────────────────────────────────────────
 
@@ -30,9 +30,6 @@ export type MissionBlockerReason = "budget-exhausted" | "operator-intervention" 
 
 /** Durable location from which the stop was read. */
 export type MissionBlockerSource = "feature-row" | "lineage-stop";
-
-/** @deprecated v0 resume-conflict wire shape retained for one deprecation window. */
-export interface LegacyMissionBlocker { id: string; reason: string; }
 
 /** Canonical versioned explanation for a mission resume conflict. */
 export interface MissionBlockerDescriptor {
@@ -66,12 +63,12 @@ export function classifyMissionResumeBlockers(input: {
   lineageStops: ReadonlyArray<{ rootFeatureId: string; reason: string | null; stoppedAt?: string; origin?: string; missionId?: string | null }>;
   missionId?: string;
 }): { blockers: MissionBlockerDescriptor[]; clearableFeatureIds: string[] } {
-  const blockers = sortMissionBlockerDescriptors([
+  const blockers = dedupeMissionBlockerDescriptors(sortMissionBlockerDescriptors([
     ...input.rootFeatures.filter((root) => root.implementationStopReason !== "operator-intervention")
       .map((root) => createMissionBlockerDescriptor({ rootFeatureId: root.id, source: "feature-row", missionId: input.missionId, rawReason: root.implementationStopReason, stoppedAt: root.implementationStoppedAt, origin: root.implementationStopOrigin })),
     ...input.lineageStops.filter((stop) => stop.reason !== "operator-intervention")
       .map((stop) => createMissionBlockerDescriptor({ rootFeatureId: stop.rootFeatureId, source: "lineage-stop", missionId: stop.missionId ?? input.missionId, rawReason: stop.reason, stoppedAt: stop.stoppedAt, origin: stop.origin })),
-  ]);
+  ]));
   return { blockers, clearableFeatureIds: [...new Set([
     ...input.rootFeatures.filter((root) => root.implementationStopReason === "operator-intervention").map((root) => root.id),
     ...input.rootFeatures.filter((root) => input.lineageStops.some((stop) => stop.rootFeatureId === root.id)).map((root) => root.id),

@@ -7,6 +7,8 @@ import { request } from "../test-request.js";
 
 const mission = { id: "M-1", title: "Blocked", status: "blocked", interviewState: "completed", autoAdvance: false, autopilotEnabled: false, autopilotState: "inactive", createdAt: "2026-08-11T00:00:00.000Z", updatedAt: "2026-08-11T00:00:00.000Z" };
 const descriptor = { schemaVersion: 1 as const, kind: "mission-resume-conflict" as const, rootFeatureId: "F-1", reason: "budget-exhausted" as const, source: "feature-row" as const, missionId: "M-1" };
+const lineageDescriptor = { ...descriptor, source: "lineage-stop" as const, stoppedAt: "2026-08-11T00:00:00.000Z", origin: "validator-budget" };
+const retiredMirrorKey = ["legacy", "Blockers"].join("");
 
 function fixture(error: Error | undefined) {
   let resumed = false;
@@ -17,15 +19,16 @@ function fixture(error: Error | undefined) {
 }
 
 describe("mission resume conflict route", () => {
-  it("returns a versioned descriptor envelope with a v0 mirror", async () => {
-    const response = await request(fixture(new MissionResumeConflictError([descriptor])).app, "POST", "/api/missions/M-1/resume");
+  it("returns only a versioned canonical descriptor envelope", async () => {
+    const response = await request(fixture(new MissionResumeConflictError([descriptor, lineageDescriptor])).app, "POST", "/api/missions/M-1/resume");
     expect(response.status).toBe(409);
     const details = (response.body as { details: Record<string, unknown> }).details;
     expect(details.code).toBe("MISSION_RESUME_CONFLICT");
     expect(details.blockerSchemaVersion).toBe(1);
-    expect(details.blockers).toEqual([descriptor]);
+    expect(details.blockers).toEqual([descriptor, lineageDescriptor]);
     expect((details.blockers as unknown[]).every(isMissionBlockerDescriptor)).toBe(true);
-    expect(details.legacyBlockers).toEqual([{ id: "F-1", reason: "budget-exhausted" }]);
+    expect(details).not.toHaveProperty(retiredMirrorKey);
+    expect((details.blockers as Array<Record<string, unknown>>).every((blocker) => !("id" in blocker))).toBe(true);
   });
 
   it("does not misclassify unrelated errors as resume conflicts", async () => {

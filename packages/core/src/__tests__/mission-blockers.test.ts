@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   MISSION_BLOCKER_DESCRIPTOR_SCHEMA_VERSION,
-  fromLegacyMissionBlocker,
+  createMissionBlockerDescriptor,
+  dedupeMissionBlockerDescriptors,
   isMissionBlockerDescriptor,
   normalizeMissionBlockerReason,
   sortMissionBlockerDescriptors,
-  toLegacyMissionBlocker,
 } from "../index.js";
 
 describe("mission blocker descriptors", () => {
@@ -18,7 +18,7 @@ describe("mission blocker descriptors", () => {
   });
 
   it("gates descriptors by their versioned shape", () => {
-    const descriptor = fromLegacyMissionBlocker({ id: "F-1", reason: "budget-exhausted" }, "feature-row");
+    const descriptor = createMissionBlockerDescriptor({ rootFeatureId: "F-1", rawReason: "budget-exhausted", source: "feature-row" });
     expect(isMissionBlockerDescriptor(descriptor)).toBe(true);
     expect(isMissionBlockerDescriptor({ id: "F-1", reason: "budget-exhausted" })).toBe(false);
     expect(isMissionBlockerDescriptor({ ...descriptor, schemaVersion: 2 })).toBe(false);
@@ -26,18 +26,26 @@ describe("mission blocker descriptors", () => {
     expect(descriptor.schemaVersion).toBe(MISSION_BLOCKER_DESCRIPTOR_SCHEMA_VERSION);
   });
 
-  it("upgrades v0 entries and retains their v0 projection", () => {
-    const canonical = fromLegacyMissionBlocker({ id: "F-1", reason: "budget-exhausted" }, "feature-row");
-    expect(toLegacyMissionBlocker(canonical)).toEqual({ id: "F-1", reason: "budget-exhausted" });
-    const unknown = fromLegacyMissionBlocker({ id: "F-2", reason: "old-plugin-stop" }, "lineage-stop");
+  it("preserves unknown persisted reasons in canonical descriptors", () => {
+    const unknown = createMissionBlockerDescriptor({ rootFeatureId: "F-2", rawReason: "old-plugin-stop", source: "lineage-stop" });
     expect(unknown).toMatchObject({ reason: "legacy-unknown-stop", rawReason: "old-plugin-stop" });
   });
 
   it("sorts same-root sources deterministically without mutating input", () => {
-    const lineage = fromLegacyMissionBlocker({ id: "F-1", reason: "budget-exhausted" }, "lineage-stop");
-    const feature = fromLegacyMissionBlocker({ id: "F-1", reason: "legacy-unknown-stop" }, "feature-row");
+    const lineage = createMissionBlockerDescriptor({ rootFeatureId: "F-1", rawReason: "budget-exhausted", source: "lineage-stop" });
+    const feature = createMissionBlockerDescriptor({ rootFeatureId: "F-1", rawReason: "legacy-unknown-stop", source: "feature-row" });
     const original = [lineage, feature];
     expect(sortMissionBlockerDescriptors(original)).toEqual([feature, lineage]);
     expect(original).toEqual([lineage, feature]);
+  });
+
+  it("deduplicates sorted descriptors without losing cross-source provenance or mutating input", () => {
+    const feature = createMissionBlockerDescriptor({ rootFeatureId: "F-1", rawReason: "budget-exhausted", source: "feature-row", stoppedAt: "first" });
+    const duplicateLineage = createMissionBlockerDescriptor({ rootFeatureId: "F-1", rawReason: "budget-exhausted", source: "lineage-stop", stoppedAt: "first" });
+    const lineage = createMissionBlockerDescriptor({ rootFeatureId: "F-1", rawReason: "budget-exhausted", source: "lineage-stop", stoppedAt: "second" });
+    const original = [feature, duplicateLineage, lineage];
+
+    expect(dedupeMissionBlockerDescriptors(original)).toEqual([feature, duplicateLineage]);
+    expect(original).toEqual([feature, duplicateLineage, lineage]);
   });
 });

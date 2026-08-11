@@ -15,7 +15,7 @@ import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import * as schema from "../postgres/schema/index.js";
 import type { AsyncDataLayer } from "../postgres/data-layer.js";
 import { boundMissionEventReason, classifyMissionResumeBlockers, FEATURE_LOOP_REPAIR_TRANSITIONS, buildMissionStatusEventMetadata, featureValidationRepairEligibility, FEATURE_LOOP_TRANSITIONS, normalizeMissionAssertionType, normalizeMissionTransitionActorForEvent, renderValidationCause, ROLLUP_OWNED_MILESTONE_STATUSES, ROLLUP_OWNED_MISSION_STATUSES, selectNextSerialMissionSlice, shouldApplyRecomputedStatus, VALIDATION_INFLIGHT_STALE_MAX_AGE_MS } from "../missions/mission-types.js";
-import { normalizeMissionBlockerReason, toLegacyMissionBlocker } from "../missions/mission-blockers.js";
+import { normalizeMissionBlockerReason } from "../missions/mission-blockers.js";
 import type {
   Mission,
   Milestone,
@@ -53,7 +53,6 @@ import type {
   MissionUpdateOptions,
   MissionFeatureRepairGroundTruth,
   MissionBlockerDescriptor,
-  LegacyMissionBlocker,
   MissionBlockedDiagnostics,
 } from "../missions/mission-types.js";
 import type { Goal } from "../goals/goal-types.js";
@@ -235,10 +234,6 @@ export class MissionResumeConflictError extends Error {
     this.name = "MissionResumeConflictError";
   }
 
-  /** @deprecated Remove after dashboard and documentation no longer reference legacyBlockers. */
-  get blockers(): LegacyMissionBlocker[] {
-    return this.descriptors.map(toLegacyMissionBlocker);
-  }
 }
 
 /** Raised when a clear request races a prior clear or targets a non-blocked mission. */

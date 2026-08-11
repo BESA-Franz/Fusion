@@ -5,7 +5,6 @@
  */
 import {
   MISSION_BLOCKER_DESCRIPTOR_SCHEMA_VERSION,
-  fromLegacyMissionBlocker,
   isMissionBlockerDescriptor,
   type MissionBlockerDescriptor,
   type MissionEvent,
@@ -681,28 +680,18 @@ export function fetchValidationRun(runId: string, projectId?: string): Promise<M
   return api(withProjectId(`/missions/validation-runs/${encodeURIComponent(runId)}`, projectId));
 }
 
-/** Normalize diagnostics and legacy v0 entries into the canonical v1 render shape. */
+/** Normalize only server-issued canonical descriptors; ordering and dedupe remain server-owned. */
 export function normalizeMissionBlockers(input: unknown): MissionBlockerDescriptor[] {
-  if (!Array.isArray(input)) return [];
-  return input.flatMap((entry): MissionBlockerDescriptor[] => {
-    if (isMissionBlockerDescriptor(entry)) return [entry];
-    if (!entry || typeof entry !== "object") return [];
-    const value = entry as Record<string, unknown>;
-    return typeof value.id === "string" && typeof value.reason === "string"
-      ? [fromLegacyMissionBlocker({ id: value.id, reason: value.reason }, "feature-row")]
-      : [];
-  });
+  return Array.isArray(input) ? input.filter(isMissionBlockerDescriptor) : [];
 }
 
-/** Parse v1 resume conflicts, upgrading retained v0 mirrors for the deprecation window. */
+/** Parse only recognized versioned resume conflicts and fail closed for every other version. */
 export function parseMissionResumeConflict(err: unknown): { blockers: MissionBlockerDescriptor[] } | undefined {
   if (!(err instanceof ApiRequestError) || (err.details as { code?: unknown } | undefined)?.code !== "MISSION_RESUME_CONFLICT") return undefined;
-  const details = err.details as { blockerSchemaVersion?: unknown; blockers?: unknown; legacyBlockers?: unknown };
-  if (details.blockerSchemaVersion === MISSION_BLOCKER_DESCRIPTOR_SCHEMA_VERSION) {
-    return { blockers: normalizeMissionBlockers(details.blockers) };
-  }
-  if (details.blockerSchemaVersion !== undefined && details.legacyBlockers === undefined) return { blockers: [] };
-  return { blockers: normalizeMissionBlockers(details.legacyBlockers ?? details.blockers) };
+  const details = err.details as { blockerSchemaVersion?: unknown; blockers?: unknown };
+  return details.blockerSchemaVersion === MISSION_BLOCKER_DESCRIPTOR_SCHEMA_VERSION
+    ? { blockers: normalizeMissionBlockers(details.blockers) }
+    : { blockers: [] };
 }
 
 export function fetchMissionBlockedDiagnostics(missionId: string, projectId?: string): Promise<{ missionId: string; status: MissionStatus; recomputedStatus: MissionStatus; clearable: boolean; resumable: boolean; blockers: MissionBlockerDescriptor[] }> {

@@ -1821,7 +1821,6 @@ export type {
   MissionUpdateOptions,
   MissionBlockerReason,
   MissionBlockerSource,
-  LegacyMissionBlocker,
   MissionBlockerDescriptor,
   MissionBlockedDiagnostics,
   AutopilotStatus,
@@ -1871,7 +1870,7 @@ export type {
   AssertionUnlinkedPayload,
   MilestoneValidationUpdatedPayload,
 } from "./missions/mission-types.js";
-export { normalizeMissionBlockerReason, createMissionBlockerDescriptor, isMissionBlockerDescriptor, fromLegacyMissionBlocker, toLegacyMissionBlocker, sortMissionBlockerDescriptors } from "./missions/mission-blockers.js";
+export { normalizeMissionBlockerReason, createMissionBlockerDescriptor, isMissionBlockerDescriptor, sortMissionBlockerDescriptors, dedupeMissionBlockerDescriptors } from "./missions/mission-blockers.js";
 export { MissionStore } from "./missions/mission-store.js";
 export type { MissionStoreEvents, MissionSummary } from "./missions/mission-store.js";
 export { AsyncMissionStore, MissionRemediationStoppedError, MissionResumeConflictError, MissionBlockedClearConflictError, RepairGroundTruthStaleError, RepairNotEligibleError, RepairValidatorRunInFlightError, RepairAssertionsMissingError, TerminalTaskReconciliationError } from "./async-stores/async-mission-store.js";

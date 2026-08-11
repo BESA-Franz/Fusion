@@ -1,12 +1,11 @@
 /*
-FNXC:MissionLineageBudget 2026-08-11-05:07:
-The resume-conflict payload is a versioned contract. Unknown persisted stop reasons normalize
-fail-closed to legacy-unknown-stop, never a resumable reason, while v0 { id, reason } remains only
-for a bounded deprecation window.
+FNXC:MissionBlockedRepair 2026-08-11-08:07:
+FN-8979 retired the v0 { id, reason } mirror after auditing supported consumers. Resume and
+blocked diagnostics share one canonical descriptor vocabulary; future consumers must not re-add
+an id/reason shape.
 */
 import {
   MISSION_BLOCKER_DESCRIPTOR_SCHEMA_VERSION,
-  type LegacyMissionBlocker,
   type MissionBlockerDescriptor,
   type MissionBlockerReason,
   type MissionBlockerSource,
@@ -30,14 +29,23 @@ export function isMissionBlockerDescriptor(value: unknown): value is MissionBloc
   return candidate.schemaVersion === MISSION_BLOCKER_DESCRIPTOR_SCHEMA_VERSION && candidate.kind === "mission-resume-conflict" && typeof candidate.rootFeatureId === "string" && candidate.rootFeatureId.length > 0 && typeof candidate.reason === "string" && KNOWN_REASONS.has(candidate.reason as MissionBlockerReason) && (candidate.source === "feature-row" || candidate.source === "lineage-stop");
 }
 
-export function fromLegacyMissionBlocker(entry: LegacyMissionBlocker, source: MissionBlockerSource): MissionBlockerDescriptor {
-  return createMissionBlockerDescriptor({ rootFeatureId: entry.id, source, rawReason: entry.reason });
-}
-
-export function toLegacyMissionBlocker(descriptor: MissionBlockerDescriptor): LegacyMissionBlocker {
-  return { id: descriptor.rootFeatureId, reason: descriptor.reason };
-}
-
 export function sortMissionBlockerDescriptors(list: readonly MissionBlockerDescriptor[]): MissionBlockerDescriptor[] {
   return [...list].sort((a, b) => a.rootFeatureId.localeCompare(b.rootFeatureId) || (a.source === b.source ? 0 : a.source === "feature-row" ? -1 : 1) || a.reason.localeCompare(b.reason));
+}
+
+/*
+FNXC:MissionBlockedRepair 2026-08-11-08:07:
+Canonical blockers deduplicate on (rootFeatureId, source, reason), exactly matching the Mission
+Manager Why blocked render key. Persisted rows cannot currently collide because lineage stops are
+keyed by (project_id, root_feature_id), so this enforces the exported classifier contract for all
+callers. Cross-source entries preserve provenance; first-after-sort retains stoppedAt, origin, and rawReason.
+*/
+export function dedupeMissionBlockerDescriptors(list: readonly MissionBlockerDescriptor[]): MissionBlockerDescriptor[] {
+  const seen = new Set<string>();
+  return list.filter((descriptor) => {
+    const key = `${descriptor.rootFeatureId}\u0000${descriptor.source}\u0000${descriptor.reason}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

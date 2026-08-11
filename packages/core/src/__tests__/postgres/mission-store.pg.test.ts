@@ -1350,10 +1350,7 @@ pgTest("MissionStore (PostgreSQL backend mode)", () => {
       expect.objectContaining({ schemaVersion: 1, kind: "mission-resume-conflict", rootFeatureId: root.id, source: "feature-row", reason: "budget-exhausted" }),
       expect.objectContaining({ schemaVersion: 1, kind: "mission-resume-conflict", rootFeatureId: root.id, source: "lineage-stop", reason: "budget-exhausted", stoppedAt, origin: "validator-budget" }),
     ]);
-    expect(resumeError?.blockers).toEqual([
-      { id: root.id, reason: "budget-exhausted" },
-      { id: root.id, reason: "budget-exhausted" },
-    ]);
+    expect((resumeError as unknown as Record<string, unknown>).blockers).toBeUndefined();
   });
 
   it("records generated-feature deletion as a durable root stop and resumes only explicitly", async () => {

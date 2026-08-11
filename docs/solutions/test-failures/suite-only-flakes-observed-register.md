@@ -122,3 +122,17 @@ Source: [Runfusion/Fusion issue #2862](https://github.com/Runfusion/Fusion/issue
 | shape C: uncapped default-config PostgreSQL directory ×5 | 153 files / 1263 passed plus 1 skipped each run |
 
 FN-8928 evicted the file from the blocking gate under the AGENTS.md gate rule; default-core discovery preserves its regression coverage. Shape C was clean, so no quarantine escalation was required. A later non-blocking-core failure is an ordinary on-sight quarantine decision. `FNXC:PgTestTemplateDb 2026-07-19-17:20` (run-shared golden template) and `FNXC:PgTestWorkerCap 2026-07-18-18:00` (four-fork PG-gate cap) are already-landed mitigations for this same 15s setup-hook timeout mode.
+
+## 7. Mission store PostgreSQL teardown hook
+
+- **File:** `packages/core/src/__tests__/postgres/mission-store.pg.test.ts`
+- **Exact test:** `MissionStore (PostgreSQL backend mode)` suite `afterAll` hook (`h.afterAll`).
+- **Observed tree/SHA:** `32f677bbc207e421fd260ae2ba22fcefeeef4d86` (FN-8979 worktree).
+- **Observed frequency:** first observation in a direct targeted rerun; 61 tests in the file passed.
+
+| run | result |
+|---|---|
+| targeted file with `--silent=passed-only` | passed (exit 0) |
+| targeted file with dot reporter | **afterAll hook timed out** at 15s; 61 tests passed |
+
+The timeout occurred after all test assertions and is unrelated to FN-8979's canonical mission-blocker contract. This file retains substantial coverage, so this first observation is recorded rather than quarantined. A second sighting requires the normal file-level quarantine decision.

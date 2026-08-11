@@ -21,7 +21,6 @@ import {
   THINKING_LEVELS,
   MissionResumeConflictError,
   MISSION_BLOCKER_DESCRIPTOR_SCHEMA_VERSION,
-  toLegacyMissionBlocker,
   MissionBlockedClearConflictError,
   TerminalTaskReconciliationError,
   featureValidationRepairEligibility,
@@ -3213,16 +3212,15 @@ export function createMissionRouter(
       } catch (error) {
         if (error instanceof MissionResumeConflictError) {
           /*
-          FNXC:MissionLineageBudget 2026-08-11-05:07:
-          blockers is the v1 descriptor contract gated by blockerSchemaVersion; legacyBlockers is
-          deprecated and removed only after no reader depends on it. Unknown future versions must
-          remain non-resumable and ask an operator rather than being guessed by a consumer.
+          FNXC:MissionLineageBudget 2026-08-11-08:07:
+          blockers gated by blockerSchemaVersion are the sole resume-conflict vocabulary after
+          FN-8979 retired the v0 mirror. Consumers unable to interpret the version must report
+          that resume cannot proceed and ask an operator rather than guessing.
           */
           throw conflict("Mission has non-resumable lineage stops", {
             code: "MISSION_RESUME_CONFLICT",
             blockerSchemaVersion: MISSION_BLOCKER_DESCRIPTOR_SCHEMA_VERSION,
             blockers: error.descriptors,
-            legacyBlockers: error.descriptors.map(toLegacyMissionBlocker),
           });
         }
         throw error;

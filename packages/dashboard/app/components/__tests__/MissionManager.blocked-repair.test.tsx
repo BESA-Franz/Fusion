@@ -34,6 +34,10 @@ const blockedMission = {
   createdAt: "2026-08-11T00:00:00.000Z", updatedAt: "2026-08-11T00:00:00.000Z", milestones: [],
 };
 const blockedSummary = { ...blockedMission, summary: { totalMilestones: 0, totalFeatures: 0, completedMilestones: 0, completedFeatures: 0, progressPercent: 0 } };
+const canonicalBlockers = [
+  { schemaVersion: 1 as const, kind: "mission-resume-conflict" as const, rootFeatureId: "F-1", reason: "budget-exhausted" as const, source: "feature-row" as const },
+  { schemaVersion: 1 as const, kind: "mission-resume-conflict" as const, rootFeatureId: "F-1", reason: "budget-exhausted" as const, source: "lineage-stop" as const },
+];
 
 function renderBlocked() {
   return render(<MissionManager isOpen isInline onClose={() => {}} addToast={() => {}} projectId="P-1" targetMissionId="M-1" />);
@@ -47,10 +51,9 @@ describe("MissionManager blocked repair", () => {
     expect(linkedStatusRegion).not.toContain("clearMissionBlockedStatus");
   });
 
-  it("normalizes canonical, legacy, malformed, and duplicate blocker inputs", () => {
+  it("keeps canonical entries and drops v0 or malformed blocker inputs", () => {
     expect(normalizeMissionBlockers([{ schemaVersion: 1, kind: "mission-resume-conflict", rootFeatureId: "F-2", reason: "budget-exhausted", source: "lineage-stop" }, { id: "F-1", reason: "legacy" }, { nope: true }])).toEqual([
       expect.objectContaining({ rootFeatureId: "F-2", reason: "budget-exhausted", source: "lineage-stop" }),
-      expect.objectContaining({ rootFeatureId: "F-1", reason: "legacy-unknown-stop", source: "feature-row", rawReason: "legacy" }),
     ]);
     expect(normalizeMissionBlockers(undefined)).toEqual([]);
     expect(normalizeMissionBlockers(null)).toEqual([]);
@@ -62,7 +65,7 @@ describe("MissionManager blocked repair", () => {
     fetchMissions.mockResolvedValue([blockedSummary]);
     fetchMission.mockResolvedValue(blockedMission);
     fetchMissionsHealth.mockResolvedValue({});
-    fetchMissionBlockedDiagnostics.mockResolvedValue({ blockers: [{ schemaVersion: 1, kind: "mission-resume-conflict", rootFeatureId: "F-1", reason: "budget-exhausted", source: "feature-row" }] });
+    fetchMissionBlockedDiagnostics.mockResolvedValue({ blockers: canonicalBlockers });
     clearMissionBlockedStatus.mockResolvedValue({ mission: { ...blockedMission, status: "planning" }, blockers: [] });
   });
 
@@ -70,6 +73,9 @@ describe("MissionManager blocked repair", () => {
     renderBlocked();
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Clear blocked status" })).toHaveLength(2));
     await waitFor(() => expect(screen.getByLabelText("Why blocked")).toHaveTextContent("F-1: budget-exhausted (feature-row)"));
+    const rows = screen.getByLabelText("Why blocked").querySelectorAll("li");
+    expect(rows).toHaveLength(canonicalBlockers.length);
+    expect(new Set(canonicalBlockers.map((blocker) => `${blocker.rootFeatureId}\u0000${blocker.source}\u0000${blocker.reason}`)).size).toBe(rows.length);
     fetchMission.mockResolvedValueOnce({ ...blockedMission, status: "planning" });
     fetchMissions.mockResolvedValueOnce([{ ...blockedSummary, status: "planning" }]);
     fireEvent.click(screen.getAllByRole("button", { name: "Clear blocked status" })[0]);
@@ -86,14 +92,15 @@ describe("MissionManager blocked repair", () => {
     expect(screen.queryByLabelText("Why blocked")).not.toBeInTheDocument();
   });
 
-  it("keeps clearing available when diagnostics fail or are malformed and normalizes duplicate resume conflicts", async () => {
+  it("keeps clearing available when diagnostics fail or are malformed and renders canonical resume conflicts", async () => {
     fetchMissionBlockedDiagnostics.mockRejectedValueOnce(new Error("offline"));
     renderBlocked();
     await waitFor(() => expect(screen.getByText("Blocker diagnostics are unavailable.")).toBeInTheDocument());
     expect(screen.getAllByRole("button", { name: "Clear blocked status" })).toHaveLength(2);
-    resumeMission.mockRejectedValueOnce(new ApiRequestError("conflict", 409, { code: "MISSION_RESUME_CONFLICT", blockers: [{ id: "F-1", reason: "budget-exhausted" }, { id: "F-1", reason: "budget-exhausted" }] }));
+    resumeMission.mockRejectedValueOnce(new ApiRequestError("conflict", 409, { code: "MISSION_RESUME_CONFLICT", blockerSchemaVersion: 1, blockers: canonicalBlockers }));
     fireEvent.click(screen.getAllByRole("button", { name: "Resume mission" })[0]);
     await waitFor(() => expect(screen.getByLabelText("Why blocked")).toHaveTextContent("F-1: budget-exhausted"));
+    expect(screen.getByLabelText("Why blocked").querySelectorAll("li")).toHaveLength(canonicalBlockers.length);
     expect(screen.getByLabelText("Why blocked")).not.toHaveTextContent("undefined");
   });
 
