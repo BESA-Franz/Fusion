@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { builtinModules } from "node:module";
+import { execFileSync } from "node:child_process";
 import { parse } from "yaml";
 import { applyPrepackTransform } from "../../scripts/prepare-publish-manifest.mjs";
 
@@ -511,5 +512,24 @@ describe("Workflow YAML validity", () => {
     const parsed = loadWorkflowYaml("version.yml");
     expect(parsed).toBeDefined();
     expect(parsed.name).toBe("Version & Release");
+  });
+});
+
+describe("shipped agent skills", () => {
+  it("keeps computer-use in the published skill tree", () => {
+    /* FNXC:ComputerUseSkill 2026-08-11-07:19: package files globs, manifest transform, and the
+     * actual npm pack file list together prevent a source-only skill from being mistaken for shipped. */
+    const cli = loadPackageJson("cli");
+    expect(cli.pi.skills).toContain("./skill");
+    expect(cli.files).toContain("skill/**");
+    expect(applyPrepackTransform(cli).files).toContain("skill/**");
+    const packageDir = join(workspaceRoot, "packages", "cli");
+    const packed = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+      cwd: packageDir,
+      encoding: "utf8",
+    })) as Array<{ files: Array<{ path: string }> }>;
+    const packedPaths = new Set(packed[0]!.files.map((file) => file.path));
+    expect(packedPaths).toContain("skill/fusion/SKILL.md");
+    expect(packedPaths).toContain("skill/computer-use/SKILL.md");
   });
 });

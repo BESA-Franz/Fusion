@@ -3,7 +3,7 @@ import { MacosComputerAdapter } from "./computer/adapter-macos.js";
 import { resolveComputerAdapter, type ComputerClock } from "./computer/adapter-registry.js";
 import type { ComputerAdapter, ResolvedComputerElement, ResolvedComputerWindow } from "./computer/adapter.js";
 import { createComputerSnapshotStore, type ComputerSnapshotStore } from "./computer/snapshot-store.js";
-import { COMPUTER_SUBCOMMANDS, ComputerUseError, failureEnvelope, isValidSnapshotId, parseAppTarget, successEnvelope, validateResult, type AppRef, type CommandName, type ComputerSubcommand } from "./computer/contract.js";
+import { COMPUTER_COMMAND_SURFACE, COMPUTER_SUBCOMMANDS, ComputerUseError, failureEnvelope, isValidSnapshotId, parseAppTarget, successEnvelope, validateResult, type AppRef, type CommandName, type ComputerSubcommand } from "./computer/contract.js";
 
 export interface ComputerCommandOptions { platform?: string; projectRoot?: string; adapter?: ComputerAdapter; store?: ComputerSnapshotStore; clock?: ComputerClock; stdout?: (text: string) => void; stderr?: (text: string) => void; stdin?: () => Promise<string>; }
 export type ComputerHandler = (args: string[], options: ComputerCommandOptions) => Promise<unknown>;
@@ -162,12 +162,12 @@ export async function runComputer(args: string[], options: ComputerCommandOption
   const subIndex = args.findIndex((item) => item !== "--json");
   const sub = subIndex < 0 ? undefined : args[subIndex];
   if (args.includes("--help") || args.includes("-h")) {
-    emit("fn computer <capabilities|permissions|list-apps|list-windows|get-app-state|click|set-value|type-text|press-key|hotkey|scroll|drag>\nUse snapshot → act → snapshot; --snapshot-id fences the latest capture.", false, options);
+    emit(`fn computer <${Object.keys(COMPUTER_COMMAND_SURFACE).join("|")}>\nUse snapshot → act → snapshot; --snapshot-id fences the latest capture.`, false, options);
     return 0;
   }
   if (!sub) return json
     ? fail("computer", new ComputerUseError("INVALID_ARGUMENTS", "A computer subcommand is required."), true, options)
-    : (emit("fn computer <capabilities|permissions|list-apps|list-windows|get-app-state|click|set-value|type-text|press-key|hotkey|scroll|drag>\nUse snapshot → act → snapshot; --snapshot-id fences the latest capture.", false, options), 0);
+    : (emit(`fn computer <${Object.keys(COMPUTER_COMMAND_SURFACE).join("|")}>\nUse snapshot → act → snapshot; --snapshot-id fences the latest capture.`, false, options), 0);
   if (!(COMPUTER_SUBCOMMANDS as readonly string[]).includes(sub)) return fail("computer", new ComputerUseError("INVALID_ARGUMENTS", `Unknown computer subcommand: ${sub}.`), json, options);
   const name = sub as ComputerSubcommand;
   const handlerArgs = args.filter((_item, index) => index !== subIndex && _item !== "--json");

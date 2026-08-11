@@ -154,3 +154,11 @@ No user timeout flag is provided. Default seam timeouts are: permission probe 5 
 This surface was informed by [Orca](https://github.com/stablyai/orca) and its [computer-use CLI documentation](https://www.onorca.dev/docs/cli/computer-use). Orca uses two layers: a native-backed `orca computer` CLI and a thin skill that loads a version-matched guide. Fusion follows the CLI-plus-skill separation; the skill is deliberately out of scope for this command and is delivered separately.
 
 Fusion deliberately differs by using macOS OS built-ins instead of native helpers; publishing non-mutating preflight permission checks, an `unknown` status, and the outcome matrix; documenting durable on-disk cross-process snapshots with identity-verified window/locator replay; distinguishing stale, missing, and unresolvable indexes; publishing deterministic failure precedence; and using a versioned envelope with a fixed append-only error enum. `paste-text` and `perform-secondary-action` are not implemented in this release; they remain absent from capabilities rather than being stubs.
+
+## Use it from an agent
+
+Fusion ships a thin `computer-use` skill alongside the Fusion skill. When Claude-compatible skill installation is configured, both are reconciled into project `.claude/skills/` directories; `fn init` also copies both into supported home skill directories.
+
+The discovery stub intentionally contains no command reference. An agent resolves one `fn` executable for its session and runs `fn skills get computer-use` before automation. That command renders its complete guide in-process from the same binary's command-surface descriptor and reports the same package version as `fn --version`.
+
+This is an anti-drift contract: dispatch keys, parser flag literals, required/mutually-exclusive validation, and emitted error codes are independently checked against the descriptor; the rendered guide then includes every command, flag, and error code without truncation. The delivered parser still does not reject unknown flags or invalid enum choices, and a flag literal's source presence does not itself prove a handler honors it.

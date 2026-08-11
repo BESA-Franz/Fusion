@@ -153,7 +153,7 @@ async function loadCommandHandlers() {
   const { runPluginCreate, runPluginNew } = await import("./commands/plugin-scaffold.js");
   const { runPluginDev } = await import("./commands/plugin-dev.js");
   const { runPluginPublish } = await import("./commands/plugin-publish.js");
-  const { runSkillsSearch, runSkillsInstall } = await import("./commands/skills.js");
+  const { runSkillsSearch, runSkillsInstall, runSkillsGet } = await import("./commands/skills.js");
   const { runComputer } = await import("./commands/computer.js");
   const { runResearchCreate, runResearchList, runResearchShow, runResearchExport, runResearchCancel, runResearchRetry } = await import("./commands/research.js");
   const { runExperimentFinalize } = await import("./commands/experiment-finalize.js");
@@ -288,6 +288,7 @@ async function loadCommandHandlers() {
     runPluginPublish,
     runSkillsSearch,
     runSkillsInstall,
+    runSkillsGet,
     runComputer,
     runResearchCreate,
     runResearchList,
@@ -497,6 +498,7 @@ PR:
   fn skills install <owner/repo>      Install skills from a source
   fn skills install <owner/repo> --skill <name>
                                       Install a specific skill
+  fn skills get <skill-name>           Print a built-in version-matched guide
   fn computer <subcommand> [--json]  Inspect and automate supported desktop applications
                                       See fn computer --help for snapshot → act → snapshot commands
 
@@ -846,6 +848,7 @@ async function main() {
     runPluginPublish,
     runSkillsSearch,
     runSkillsInstall,
+    runSkillsGet,
     runComputer,
     runResearchCreate,
     runResearchList,
@@ -2314,6 +2317,7 @@ async function main() {
           console.log("  fn skills install <owner/repo>      Install skills from a source");
           console.log("  fn skills install <owner/repo> --skill <name>");
           console.log("                                      Install a specific skill");
+          console.log("  fn skills get <skill-name>           Print a built-in version-matched guide");
           console.log("\nExamples:");
           console.log("  fn skills search react");
           console.log("  fn skills search firebase --limit 5");
@@ -2365,8 +2369,14 @@ async function main() {
           break;
         }
 
+        if (subcommand === "get") {
+          const exitCode = await runSkillsGet(args.slice(2));
+          if (exitCode !== 0) process.exit(exitCode);
+          break;
+        }
+
         console.error(`Unknown subcommand: skills ${subcommand}`);
-        console.log("Try: fn skills search | install");
+        console.log("Try: fn skills search | install | get");
         process.exit(1);
         break;
       }

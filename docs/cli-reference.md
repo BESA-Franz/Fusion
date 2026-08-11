@@ -1353,9 +1353,13 @@ Browse and install agent skills from [skills.sh](https://skills.sh).
 ```bash
 fn skills search <query> [--limit <n>]
 fn skills install <owner/repo> [--skill <name>]
+fn skills get <skill-name>
 ```
 
-Subcommands: `search`, `install`.
+`fn skills get computer-use` prints Fusion's in-process, version-matched computer-use guide. Unknown or missing names exit non-zero and list known built-in skills.
+
+
+Subcommands: `search`, `install`, `get`.
 
 | Option | Description |
 |---|---|

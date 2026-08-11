@@ -20,6 +20,58 @@ export const COMPUTER_SUBCOMMANDS = Object.freeze([
   "click", "set-value", "type-text", "press-key", "hotkey", "scroll", "drag",
 ] as const);
 export type ComputerSubcommand = (typeof COMPUTER_SUBCOMMANDS)[number];
+
+export type ComputerFlagValueKind = "string" | "integer" | "boolean";
+export interface ComputerCommandFlag {
+  flag: `--${string}`;
+  valueKind: ComputerFlagValueKind;
+  required: boolean;
+  mutuallyExclusiveWith?: `--${string}`;
+  choices?: readonly string[];
+  description: string;
+}
+export interface ComputerCommandSurfaceEntry {
+  description: string;
+  flags: readonly ComputerCommandFlag[];
+  /** Cross-flag rules enforced by the hand-written validator. */
+  requirements?: readonly string[];
+}
+
+/**
+ * FNXC:ComputerUseSkill 2026-08-11-07:19:
+ * This descriptor is the single source for computer help and the in-process skill guide. Guards 1,
+ * 2a, 2b, 3, and 6 independently connect it to dispatch, parser literals, emitted error codes, and
+ * complete rendering. The shipped parser deliberately neither rejects undeclared flags nor invalid
+ * enum choices, and source presence does not prove a flag remains honored. Error codes stay solely
+ * in COMPUTER_ERROR_CODES so guide rendering never introduces a tautological duplicate.
+ */
+export const COMPUTER_COMMAND_SURFACE = Object.freeze({
+  capabilities: { description: "Report platform support and available automation capabilities.", flags: [] },
+  permissions: { description: "Report accessibility and screen-recording permission state.", flags: [] },
+  "list-apps": { description: "List running applications available for selection.", flags: [] },
+  "list-windows": { description: "List windows for an application.", flags: [{ flag: "--app", valueKind: "string", required: true, description: "Bundle id, exact app name, or pid target." }] },
+  "get-app-state": { description: "Capture an app window and its accessible elements.", flags: [
+    { flag: "--app", valueKind: "string", required: true, description: "Application target." },
+    { flag: "--window-id", valueKind: "string", required: false, mutuallyExclusiveWith: "--window-index", description: "Window identifier." },
+    { flag: "--window-index", valueKind: "integer", required: false, mutuallyExclusiveWith: "--window-id", description: "Window position." },
+    { flag: "--no-screenshot", valueKind: "boolean", required: false, description: "Skip screenshot capture." },
+    { flag: "--restore-window", valueKind: "boolean", required: false, description: "Restore a minimized window." },
+  ] },
+  click: { description: "Click a captured element.", flags: [
+    { flag: "--app", valueKind: "string", required: true, description: "Application target." }, { flag: "--element-index", valueKind: "integer", required: true, description: "Snapshot element index." },
+    { flag: "--snapshot-id", valueKind: "string", required: false, description: "Snapshot fence." }, { flag: "--window-id", valueKind: "string", required: false, mutuallyExclusiveWith: "--window-index", description: "Window identifier." }, { flag: "--window-index", valueKind: "integer", required: false, mutuallyExclusiveWith: "--window-id", description: "Window position." },
+  ] },
+  "set-value": { description: "Set a captured editable element value.", flags: [
+    { flag: "--app", valueKind: "string", required: true, description: "Application target." }, { flag: "--element-index", valueKind: "integer", required: true, description: "Snapshot element index." },
+    { flag: "--value", valueKind: "string", required: false, mutuallyExclusiveWith: "--value-stdin", description: "Literal value." }, { flag: "--value-stdin", valueKind: "boolean", required: false, mutuallyExclusiveWith: "--value", description: "Read value from stdin." },
+    { flag: "--snapshot-id", valueKind: "string", required: false, description: "Snapshot fence." }, { flag: "--window-id", valueKind: "string", required: false, mutuallyExclusiveWith: "--window-index", description: "Window identifier." }, { flag: "--window-index", valueKind: "integer", required: false, mutuallyExclusiveWith: "--window-id", description: "Window position." },
+  ], requirements: ["Supply exactly one of --value or --value-stdin."] },
+  "type-text": { description: "Type text into an app or captured element.", flags: [{ flag: "--app", valueKind: "string", required: true, description: "Application target." }, { flag: "--text", valueKind: "string", required: false, mutuallyExclusiveWith: "--text-stdin", description: "Literal text." }, { flag: "--text-stdin", valueKind: "boolean", required: false, mutuallyExclusiveWith: "--text", description: "Read text from stdin." }, { flag: "--element-index", valueKind: "integer", required: false, description: "Optional snapshot element index." }, { flag: "--snapshot-id", valueKind: "string", required: false, description: "Snapshot fence." }, { flag: "--window-id", valueKind: "string", required: false, mutuallyExclusiveWith: "--window-index", description: "Window identifier." }, { flag: "--window-index", valueKind: "integer", required: false, mutuallyExclusiveWith: "--window-id", description: "Window position." }], requirements: ["Supply exactly one of --text or --text-stdin.", "--snapshot-id and window flags require --element-index."] },
+  "press-key": { description: "Press a key in an app or captured element.", flags: [{ flag: "--app", valueKind: "string", required: true, description: "Application target." }, { flag: "--key", valueKind: "string", required: true, description: "Key to press." }, { flag: "--element-index", valueKind: "integer", required: false, description: "Optional snapshot element index." }, { flag: "--snapshot-id", valueKind: "string", required: false, description: "Snapshot fence." }, { flag: "--window-id", valueKind: "string", required: false, mutuallyExclusiveWith: "--window-index", description: "Window identifier." }, { flag: "--window-index", valueKind: "integer", required: false, mutuallyExclusiveWith: "--window-id", description: "Window position." }], requirements: ["--snapshot-id and window flags require --element-index."] },
+  hotkey: { description: "Send a key chord to an app.", flags: [{ flag: "--app", valueKind: "string", required: true, description: "Application target." }, { flag: "--keys", valueKind: "string", required: true, description: "Plus-separated key chord." }], requirements: ["This command takes no snapshot or window flags."] },
+  scroll: { description: "Scroll an app or captured element.", flags: [{ flag: "--app", valueKind: "string", required: true, description: "Application target." }, { flag: "--direction", valueKind: "string", required: true, choices: ["up", "down", "left", "right"], description: "Scroll direction." }, { flag: "--amount", valueKind: "integer", required: false, description: "Scroll amount." }, { flag: "--element-index", valueKind: "integer", required: false, description: "Optional snapshot element index." }, { flag: "--snapshot-id", valueKind: "string", required: false, description: "Snapshot fence." }, { flag: "--window-id", valueKind: "string", required: false, mutuallyExclusiveWith: "--window-index", description: "Window identifier." }, { flag: "--window-index", valueKind: "integer", required: false, mutuallyExclusiveWith: "--window-id", description: "Window position." }], requirements: ["--snapshot-id and window flags require --element-index."] },
+  drag: { description: "Drag between coordinates or two captured elements.", flags: [{ flag: "--app", valueKind: "string", required: true, description: "Application target." }, { flag: "--from-x", valueKind: "integer", required: false, description: "Starting x coordinate." }, { flag: "--from-y", valueKind: "integer", required: false, description: "Starting y coordinate." }, { flag: "--to-x", valueKind: "integer", required: false, description: "Ending x coordinate." }, { flag: "--to-y", valueKind: "integer", required: false, description: "Ending y coordinate." }, { flag: "--from-element-index", valueKind: "integer", required: false, description: "Starting element index." }, { flag: "--to-element-index", valueKind: "integer", required: false, description: "Ending element index." }, { flag: "--snapshot-id", valueKind: "string", required: false, description: "Snapshot fence for element drag." }, { flag: "--window-id", valueKind: "string", required: false, mutuallyExclusiveWith: "--window-index", description: "Window identifier." }, { flag: "--window-index", valueKind: "integer", required: false, mutuallyExclusiveWith: "--window-id", description: "Window position." }], requirements: ["Choose exactly one form: all four coordinate flags, or both element-index flags.", "Coordinate drag takes no --snapshot-id or window flags."] },
+} as const satisfies Record<ComputerSubcommand, ComputerCommandSurfaceEntry>);
 export type CommandName = `computer.${ComputerSubcommand}` | "computer";
 export const SNAPSHOT_STALE_REASONS = Object.freeze(["not-found", "superseded", "expired", "pid-changed", "window-mismatch", "window-gone"] as const);
 export type SnapshotStaleReason = (typeof SNAPSHOT_STALE_REASONS)[number];
