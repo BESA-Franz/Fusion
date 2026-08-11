@@ -8628,6 +8628,29 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
   }
 
   /**
+   * FNXC:MergeRecoveryConsent 2026-08-11-11:46:
+   * Every self-healing path that can create merge work must preserve the same
+   * operator consent boundary. Standalone effective Off tasks remain parked for
+   * manual integration, while a live shared-group member may still advance only
+   * when project/task policy permits its intermediate member-to-group merge.
+   */
+  private async canRecoverMergeRequest(task: Task, settings: Settings): Promise<boolean> {
+    if (hasSharedBranchMemberAutoMergeHold(task, settings)) return false;
+
+    const groupId = task.branchContext?.groupId?.trim();
+    if (groupId) {
+      const branchGroup = await this.store.getBranchGroup(groupId);
+      const projectDefaultBranch = await resolveIntegrationBranch(this.options.rootDir, settings);
+      if (isLiveSharedBranchGroupMemberIntegration(task, branchGroup, projectDefaultBranch)) {
+        return true;
+      }
+    }
+
+    return allowsAutoMergeProcessing(task, settings)
+      && resolveEffectiveAutoMerge(task, settings) !== false;
+  }
+
+  /**
    * Recover `in-review` tasks that are fully mergeable but never had
    * `mergeTask()` invoked.
    *
@@ -8695,38 +8718,9 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
       */
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
 
-      /*
-      FNXC:SharedBranchMemberHold 2026-08-05-23:14:
-      Recovery is a merge requester, not merely cleanup. It must use the same
-      member→group admission rule as ProjectEngine: an open intermediate group
-      keeps mission-policy/inherited Off flowing, while an operator-authored Off
-      remains a durable manual hold. Filtering only with allowsAutoMergeProcessing
-      stranded mission members whenever the project switch was Off and, conversely,
-      would enqueue a user hold when the project switch was On.
-      */
-      const canRecoverMergeableReviewTask = async (task: Task): Promise<boolean> => {
-        if (hasSharedBranchMemberAutoMergeHold(task, settings)) return false;
-
-        const groupId = task.branchContext?.groupId?.trim();
-        const branchGroup = groupId ? await this.store.getBranchGroup(groupId) : null;
-        const projectDefaultBranch = await resolveIntegrationBranch(this.options.rootDir, settings);
-        if (isLiveSharedBranchGroupMemberIntegration(task, branchGroup, projectDefaultBranch)) {
-          return true;
-        }
-
-        /*
-        FNXC:SharedBranchMemberHold 2026-08-05-23:22:
-        A stale or default-branch group is not an intermediate member integration.
-        Its false task value must retain the standalone manual-hold path even when
-        the project switch is On; recovery must not turn that durable hold into a
-        fresh merge request merely because it runs after the graph paused.
-        */
-        return allowsAutoMergeProcessing(task, settings)
-          && resolveEffectiveAutoMerge(task, settings) !== false;
-      };
       const mergeAdmission = await Promise.all(tasks.map(async (task) => [
         task.id,
-        await canRecoverMergeableReviewTask(task),
+        await this.canRecoverMergeRequest(task, settings),
       ] as const));
       const mergeAdmissionByTaskId = new Map(mergeAdmission);
       const mergeable = tasks.filter((t) =>
@@ -12224,7 +12218,6 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
       if (task.paused) continue;
       const limboReviewLanes = await ownLimboReviewLanes(task);
       if (!limboReviewLanes.has(task.column)) continue;
-      if (!allowsAutoMergeProcessing(task, settings)) continue;
       if (await this.isFalseCompletionHandoffExhaustionWhileMergeOwned(task)) {
         await this.store.updateTask(task.id, {
           status: null,
@@ -12237,6 +12230,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
         );
         continue;
       }
+      if (!(await this.canRecoverMergeRequest(task, settings))) continue;
       if (task.status != null || task.mergeDetails != null || task.review != null || task.reviewState != null) continue;
       if (this.options.isTaskActive?.(task.id)) continue;
       if (await this.isMergeLaneOwned(task.id)) continue;
