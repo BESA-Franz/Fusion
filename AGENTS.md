@@ -144,6 +144,8 @@ pnpm verify:workspace  # deep opt-in verification (lint -> test:full -> build); 
 
 `pnpm verify:fast` is the recommended **test-free verification** path: bootstrap missing/stale workspace dist artifacts, typecheck + build scoped to the changed packages (it reuses `pnpm test`'s changed-package resolution), an always-on `@runfusion/fusion` CLI build required by the source-checkout boot smoke, plus the boot smoke once, with **no test run**. It is deterministic and flake-free, suitable as a project `testCommand`/verification command when you want non-test verification; the full suite stays available and runs non-blocking. It is additive and does not change `pnpm test`, the gate, or CI. See `docs/testing.md`.
 
+The Claude and Grok runtime skill loaders are intentionally duplicated clones and must remain a clean Claude↔Grok rename-diff. `scripts/check-runtime-skill-loader-drift.mjs` enforces that ratchet in `pretest`, `pretest:full`, and the merge gate: a one-sided edit fails the gate. Do not relocate either loader because its skill-source discovery is layout-sensitive.
+
 <!--
 FNXC:FleetClaims 2026-08-02-23:59: The "Check whether a file is claimed before converting it" rule
 (scripts/check-file-claimed.mjs, added 2026-07-31 for the lifecycle-migration fleet) is REMOVED.
