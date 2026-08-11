@@ -2446,6 +2446,14 @@ export interface Settings extends GlobalSettings, ProjectSettings {
    *  is aborted and the failure consumes one attempt of the bounded planning retry budget.
    *  Default: {@link DEFAULT_PLANNING_TIMEOUT_MS}. */
   planningTimeoutMs?: number;
+  /** Ceiling on consecutive Plan Review REVISE → replan cycles before the task is parked at
+   *  `awaiting-approval` with `awaitingApprovalReason: "plan-review-replan-cap"`.
+   *
+   *  FNXC:PlanReviewReplan 2026-08-10-18:32:
+   *  Workflow-native. Applies to the UNBOUNDED default only: an explicit `planReviewMaxRevisions`
+   *  or node `maxRevisions` budget is a stricter, earlier gate and wins. Unset uses
+   *  {@link DEFAULT_PLAN_REVIEW_REPLAN_CAP}; `0` parks on the first REVISE. */
+  planReviewReplanCap?: number;
   /** Index signature for dynamic settings access */
   [key: string]: unknown;
 }

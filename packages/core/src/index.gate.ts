@@ -95,6 +95,7 @@ export { isActiveNearDuplicateColumn, isNearDuplicateCanonicalInactive } from ".
 export { resolveNearDuplicateCanonicalFlags } from "./duplicates/near-duplicate-canonical-flags.js";
 export type { NearDuplicateCanonicalState } from "./duplicates/near-duplicate-canonical.js";
 export * from "./tasks/frontend-ux-policy.js";
+export * from "./tasks/terminal-failure-auto-recovery.js";
 export * from "./tasks/original-description-policy.js";
 export * from "./planner/planning-plan-md.js";
 export * from "./tasks/file-scope-classification.js";
@@ -294,6 +295,7 @@ export {
   BUILTIN_OVERSIGHT_SETTINGS,
   DEFAULT_PLANNER_OVERSEER_EXECUTOR_STUCK_AFTER_MS,
   DEFAULT_PLANNING_TIMEOUT_MS,
+  DEFAULT_PLAN_REVIEW_REPLAN_CAP,
   PLANNER_HEARTBEAT_PATROL_ENABLED_SETTING_ID,
   renderTriagePolicyPlaceholders,
 } from "./workflows/builtin-workflow-settings.js";

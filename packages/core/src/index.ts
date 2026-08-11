@@ -130,6 +130,7 @@ types/policy for severity-routed notes before they reach steering inject.
 export * from "./planner/overseer-advice.js";
 export * from "./planner/overseer-emission-guard.js";
 export * from "./tasks/frontend-ux-policy.js";
+export * from "./tasks/terminal-failure-auto-recovery.js";
 export * from "./tasks/original-description-policy.js";
 export * from "./planner/planning-plan-md.js";
 export * from "./tasks/file-scope-classification.js";
@@ -339,6 +340,7 @@ export {
   BUILTIN_OVERSIGHT_SETTINGS,
   DEFAULT_MAX_POST_REVIEW_FIXES,
   DEFAULT_PLANNING_TIMEOUT_MS,
+  DEFAULT_PLAN_REVIEW_REPLAN_CAP,
   DEFAULT_PLANNER_OVERSEER_EXECUTOR_STUCK_AFTER_MS,
   PLANNER_HEARTBEAT_PATROL_ENABLED_SETTING_ID,
   renderTriagePolicyPlaceholders,
