@@ -376,6 +376,71 @@ describe("reviewStep — model settings threading", () => {
 
     expect(result.verdict).toBe("APPROVE");
   });
+
+  it("extracts a trailing REVISE payload after unpaired prose braces", async () => {
+    mockedCreateFnAgent.mockResolvedValue(createMockSession(
+      "Implementation looks solid overall. IndexOfAny('{','[') needs one change.\n" +
+      '{"verdict":"REVISE","notes":"fix the parser"}',
+    ));
+
+    const result = await reviewStep("/tmp/worktree", "FN-100", 1, "Test Step", "plan", "# prompt");
+
+    expect(result.verdict).toBe("REVISE");
+  });
+
+  it("recovers a quote-desynced multi-finding payload beneath brace-bearing trailing prose", async () => {
+    const payload = JSON.stringify({
+      verdict: "REVISE",
+      notes: 'full { note } with "quotes"',
+      findings: Array.from({ length: 12 }, (_, index) => ({ id: `finding-${index}`, title: "t", body: "b" })),
+    }, null, 2);
+    mockedCreateFnAgent.mockResolvedValue(createMockSession(
+      `{"example":true}\nodd quote "\n${payload}\nuse } to close\n} } } } } }\n{"example":1}`,
+    ));
+
+    const result = await reviewStep("/tmp/worktree", "FN-100", 1, "Test Step", "plan", "# prompt");
+
+    expect(result.verdict).toBe("REVISE");
+  });
+
+  it("lets an explicit verdict heading beat a JSON example", async () => {
+    mockedCreateFnAgent.mockResolvedValue(createMockSession(
+      '## Verdict: REVISE\nExample: {"verdict":"APPROVE"}',
+    ));
+
+    const result = await reviewStep("/tmp/worktree", "FN-100", 1, "Test Step", "plan", "# prompt");
+
+    expect(result.verdict).toBe("REVISE");
+  });
+
+  it.each([
+    'looks good\n{"verdict":"REVISE","notes":"truncated',
+    'looks good\n{"verdict":"PASS"}',
+  ])("returns UNAVAILABLE rather than laundering unreadable structured verdict intent", async (review) => {
+    mockedCreateFnAgent.mockResolvedValue(createMockSession(review));
+    const result = await reviewStep("/tmp/worktree", "FN-100", 1, "Test Step", "plan", "# prompt");
+    expect(result.verdict).toBe("UNAVAILABLE");
+  });
+
+  /*
+   * FNXC:ReviewLeniency 2026-08-11-19:37:
+   * A real explicit verdict heading remains authoritative even when an unrelated
+   * truncated JSON payload exposes a quoted verdict key. The anti-laundering
+   * guard applies only to Strategy 4 prose approval, never Strategies 1–2.
+   */
+  it("keeps an explicit APPROVE heading authoritative over truncated JSON verdict intent", async () => {
+    mockedCreateFnAgent.mockResolvedValue(createMockSession(
+      '## Verdict: APPROVE\nlooks good\n{"verdict":"REVISE","notes":"truncated',
+    ));
+    const result = await reviewStep("/tmp/worktree", "FN-100", 1, "Test Step", "plan", "# prompt");
+    expect(result.verdict).toBe("APPROVE");
+  });
+
+  it("preserves lenient prose approval without a structured verdict key", async () => {
+    mockedCreateFnAgent.mockResolvedValue(createMockSession("looks good"));
+    const result = await reviewStep("/tmp/worktree", "FN-100", 1, "Test Step", "plan", "# prompt");
+    expect(result.verdict).toBe("APPROVE");
+  });
 });
 
 describe("reviewStep — spec review type", () => {

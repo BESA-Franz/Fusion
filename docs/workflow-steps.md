@@ -610,7 +610,7 @@ Use a JSON object with this schema:
 
 - Valid `verdict` values are exactly: `APPROVE`, `APPROVE_WITH_NOTES`, `REVISE`.
 - `notes` is optional and defaults to `""` when missing or non-string.
-- The parser checks fenced and inline JSON candidates, and the **last valid candidate wins**.
+- The parser checks fenced and inline JSON candidates, and the **last valid candidate wins**. Inline scanning keeps every balanced object (including nested objects) and is string-aware. If that scan detects desynchronization from arbitrary prose (an unpaired brace, quote, or stray close), it also recovers recent full JSON lines and `JSON.parse`-arbitrated brace slices across a generous trailing window. Fairly allocated close/open-anchor budgets preserve payloads with braces or escaped quotes in strings, many findings, and brace-bearing prose after the payload; recovery is based on scanner desync, not whether the payload happens to be near the end.
 
 Accepted shapes:
 
@@ -630,7 +630,7 @@ Additional example:
 
 #### Prose Fallback
 
-Legacy prose is still supported when structured JSON is missing:
+Legacy prose is still supported when structured JSON is missing. A visible but unreadable quoted JSON `"verdict":` key is never converted into a prose approval: prompt-gate parsing reports `malformed`, while reviewer and plan-review lanes return retryable `UNAVAILABLE`. Plain prose with no structured verdict key remains lenient:
 
 - Output beginning with `REQUEST REVISION` (case-insensitive) maps to `REVISE`.
   - Remaining prose becomes `notes`.

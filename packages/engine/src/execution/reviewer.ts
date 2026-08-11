@@ -1110,13 +1110,25 @@ export function proseSignalsClearApproval(rawOutput: string): boolean {
 
 /*
 FNXC:ReviewLeniency 2026-07-01-23:30:
-Some models emit PROSE followed by a trailing JSON payload — e.g. a paragraph of reasoning, then `{"verdict":"APPROVE","notes":"..."}` at the very end. Extract balanced top-level `{...}` objects in document order, string/escape aware so a brace inside prose or a notes string does not miscount. Callers prefer the LAST candidate as the authoritative trailing verdict. Shared by extractVerdict (reviewer/plan-review) and parseWorkflowStepVerdict (code-review + browser-verification gate).
+Some models emit PROSE followed by a trailing JSON payload — e.g. a paragraph of reasoning, then `{"verdict":"APPROVE","notes":"..."}` at the very end. Extract every balanced `{...}` object in close order, string/escape aware so a brace inside prose or a notes string does not miscount. Callers prefer the LAST candidate as the authoritative trailing verdict. Shared by extractVerdict (reviewer/plan-review) and parseWorkflowStepVerdict (code-review + browser-verification gate).
+
+FNXC:ReviewLeniency 2026-08-11-18:44:
+Balance tracking moved the prose-brace failure mode to unpaired braces or quotes. Emit every balanced object and, only after scanner desync, recover JSON.parse-arbitrated slices. Recovery must use scanner state rather than an empty-candidate or trailing-anchor test: desync can emit bogus candidates and prose after the payload can move its close far from the end. Quote-blind rescans are forbidden because braces inside JSON strings truncate payloads. Generous fair close/open budgets prevent prose closes or multi-finding opens from starving the payload; callers must keep preferring the last candidate.
 */
 export function extractJsonObjectCandidates(text: string): string[] {
-  const out: string[] = [];
+  const MAX_PRIMARY_CANDIDATES = 200;
+  const MAX_TRAILING_LINES = 50;
+  const MAX_RECOVERY_WINDOW = 64_000;
+  const MAX_CLOSE_ANCHORS = 200;
+  const MAX_OPEN_ANCHORS = 500;
+  const MIN_OPENS_PER_ANCHOR = 8;
+  const MAX_RECOVERY_CANDIDATES = 4_000;
+  const primary: string[] = [];
   const starts: number[] = [];
   let inString = false;
   let escaped = false;
+  let ignoredStrayClose = false;
+
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
     if (inString) {
@@ -1129,10 +1141,71 @@ export function extractJsonObjectCandidates(text: string): string[] {
     else if (ch === "{") starts.push(i);
     else if (ch === "}") {
       const start = starts.pop();
-      if (start !== undefined && starts.length === 0) out.push(text.slice(start, i + 1));
+      if (start === undefined) {
+        ignoredStrayClose = true;
+      } else {
+        primary.push(text.slice(start, i + 1));
+        if (primary.length > MAX_PRIMARY_CANDIDATES) primary.shift();
+      }
     }
   }
-  return out;
+
+  if (!inString && starts.length === 0 && !ignoredStrayClose && primary.length > 0) return primary;
+
+  const recoveryPreferred: string[] = [];
+  const seen = new Set<string>();
+  const add = (candidate: string) => {
+    if (candidate.length > MAX_RECOVERY_WINDOW || seen.has(candidate)) return;
+    seen.add(candidate);
+    recoveryPreferred.push(candidate);
+  };
+
+  // A full JSON payload on any recent non-empty line needs no brace interpretation.
+  let nonEmptyLines = 0;
+  for (const line of text.split(/\r?\n/).reverse()) {
+    const candidate = line.trim();
+    if (!candidate) continue;
+    nonEmptyLines += 1;
+    if (candidate.startsWith("{") && candidate.endsWith("}")) add(candidate);
+    if (nonEmptyLines >= MAX_TRAILING_LINES) break;
+  }
+
+  const windowStart = Math.max(0, text.length - MAX_RECOVERY_WINDOW);
+  const closes: number[] = [];
+  for (let i = text.length - 1; i >= windowStart && closes.length < MAX_CLOSE_ANCHORS; i -= 1) {
+    if (text[i] === "}") closes.push(i);
+  }
+  const opensByClose = closes.map((close) => {
+    const opens: number[] = [];
+    const earliest = Math.max(windowStart, close - MAX_RECOVERY_WINDOW);
+    for (let i = close - 1; i >= earliest && opens.length < MAX_OPEN_ANCHORS; i -= 1) {
+      if (text[i] === "{") opens.push(i);
+    }
+    return opens.reverse(); // widest slices first
+  });
+
+  let spans = 0;
+  const addSpan = (open: number, close: number) => {
+    if (spans >= MAX_RECOVERY_CANDIDATES) return;
+    spans += 1;
+    add(text.slice(open, close + 1));
+  };
+  // Phase A gives each close anchor a chance before a bogus one consumes the cap.
+  for (let closeIndex = 0; closeIndex < closes.length && spans < MAX_RECOVERY_CANDIDATES; closeIndex += 1) {
+    for (const open of opensByClose[closeIndex].slice(0, MIN_OPENS_PER_ANCHOR)) addSpan(open, closes[closeIndex]);
+  }
+  // Phase B deepens every anchor in the same newest-first order.
+  for (let closeIndex = 0; closeIndex < closes.length && spans < MAX_RECOVERY_CANDIDATES; closeIndex += 1) {
+    for (const open of opensByClose[closeIndex].slice(MIN_OPENS_PER_ANCHOR)) addSpan(open, closes[closeIndex]);
+  }
+
+  // Callers iterate last→first, so append recovery candidates in reverse preference.
+  return [...primary, ...recoveryPreferred.reverse()];
+}
+
+/** Detects visible JSON verdict intent without treating ordinary prose as structured output. */
+export function textHasStructuredVerdictKey(rawOutput: string): boolean {
+  return /"verdict"\s*:/.test(rawOutput);
 }
 
 /*
@@ -1196,7 +1269,16 @@ function extractVerdict(review: string): ReviewVerdict {
   // (and carries no revise/reject/negated-approval signal). Treat as APPROVE so
   // an imperfectly-structured approval passes instead of collapsing to a
   // synthetic UNAVAILABLE retry/block. See proseSignalsClearApproval.
-  if (proseSignalsClearApproval(review)) {
+  /*
+  FNXC:ReviewLeniency 2026-08-11-18:44:
+  A quoted JSON verdict key that Strategy 3 could not classify must not be laundered
+  into a prose APPROVE. This shared detector also guards workflow-step gates; here
+  suppression deliberately falls through to retryable UNAVAILABLE. Explicit heading
+  and line strategies above remain authoritative, and fail-closed gates are untouched.
+  */
+  if (textHasStructuredVerdictKey(review)) {
+    reviewerLog.warn(`Structured verdict key was present but unparseable (${review.length} chars). Returning UNAVAILABLE.`);
+  } else if (proseSignalsClearApproval(review)) {
     reviewerLog.log(`Verdict extracted via lenient prose approval (${review.length} chars) → APPROVE`);
     return "APPROVE";
   }
