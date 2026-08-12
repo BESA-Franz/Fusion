@@ -2402,7 +2402,19 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
             <div
               ref={modelMenuPortalRef}
               className="model-nested-menu model-nested-menu--portal"
-              onMouseDown={(e) => e.preventDefault()}
+              onMouseDown={(e) => {
+                /*
+                FNXC:QuickAddModels 2026-08-12-21:51:
+                React synthetic mouse events cross createPortal boundaries, so this composer-focus guard
+                must exempt form controls and the portaled model dropdown or preventDefault suppresses
+                focus for its filter input. Plain menu chrome still preserves the quick-entry focus.
+                */
+                const target = e.target as Element;
+                if (target.closest("input, textarea, select, [contenteditable], .model-combobox-dropdown--portal")) {
+                  return;
+                }
+                e.preventDefault();
+              }}
               data-testid="model-nested-menu"
               style={{
                 position: "fixed",
