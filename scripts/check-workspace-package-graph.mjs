@@ -13,7 +13,18 @@ import { parse as parseYaml } from "yaml";
 
 export const DEPENDENCY_BLOCKS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
 const PACKAGE_DIRECTORY_PREFIXES = ["packages/", "plugins/"];
-const EXCLUDED_PACKAGE_PATHS = ["**/node_modules/**", "**/dist/**"];
+/*
+FNXC:WorkspaceBootstrap 2026-08-09-17:05:
+Exclude build-artifact directories that only exist locally, never in a cold
+checkout. `packages/desktop/deploy/` is the gitignored electron-builder staging
+closure produced by `@fusion/desktop build` (pnpm deploy) and carries a copy of
+desktop's package.json; without this exclusion its manifest tripped the
+unglobbed-package violation on any machine that had run a desktop packaging build,
+breaking pretest/gate locally while CI (clean checkout, no deploy dir) stayed green.
+A gitignored dir is absent from the isolated worktree this validator guards, so it
+is correctly out of scope alongside node_modules/dist.
+*/
+const EXCLUDED_PACKAGE_PATHS = ["**/node_modules/**", "**/dist/**", "packages/desktop/deploy/**"];
 
 function isWorkspaceProtocol(value) {
   return typeof value === "string" && value.startsWith("workspace:");
