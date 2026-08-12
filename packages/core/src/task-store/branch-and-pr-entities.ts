@@ -31,20 +31,24 @@ import { join } from "node:path";
 import { MoveTaskInternalOptions, MoveTaskOptions, storeLog } from "../store.js";
 import { resolveProjectColumnsForRoles } from "../project-lane-vocabulary.js";
 
+/*
+FNXC:BranchGroupProjectIsolation 2026-08-12-14:30:
+TaskStore is the production branch-group boundary, so every wrapper must forward its bound project id to the optional helper predicate. Omitting it makes owner-connected PostgreSQL reads and mutations cross project partitions despite scoped helper implementations.
+*/
 export async function getBranchGroupImpl(store: TaskStore, id: string): Promise<BranchGroup | null> {
     // FNXC:RuntimeWorkflowAsync 2026-06-24-16:21:
         const layer = store.asyncLayer!;
-    return getBranchGroupAsync(layer.db, id);
+    return getBranchGroupAsync(layer.db, id, layer.projectId);
 }
 
 export async function getBranchGroupBySourceImpl(store: TaskStore, sourceType: BranchGroup["sourceType"], sourceId: string): Promise<BranchGroup | null> {
         const layer = store.asyncLayer!;
-    return getBranchGroupBySourceAsync(layer.db, sourceType, sourceId);
+    return getBranchGroupBySourceAsync(layer.db, sourceType, sourceId, layer.projectId);
 }
 
 export async function getBranchGroupByBranchNameImpl(store: TaskStore, branchName: string): Promise<BranchGroup | null> {
         const layer = store.asyncLayer!;
-    return getBranchGroupByBranchNameAsync(layer.db, branchName);
+    return getBranchGroupByBranchNameAsync(layer.db, branchName, layer.projectId);
 }
 
 export async function ensureBranchGroupForSourceImpl(store: TaskStore,
@@ -56,12 +60,13 @@ export async function ensureBranchGroupForSourceImpl(store: TaskStore,
     FNXC:SqliteDualPathCleanup 2026-07-26-14:07:
     Branch-group ensure is PostgreSQL-only via ensureBranchGroupForSourceAsync (UNIQUE branchName reuse lives in the async helper).
     */
-    return ensureBranchGroupForSourceAsync(store.asyncLayer!.db, sourceType, sourceId, init);
+    const layer = store.asyncLayer!;
+    return ensureBranchGroupForSourceAsync(layer.db, sourceType, sourceId, init, layer.projectId);
 }
 
 export async function listBranchGroupsImpl(store: TaskStore, options?: { status?: BranchGroup["status"] }): Promise<BranchGroup[]> {
         const layer = store.asyncLayer!;
-    return listBranchGroupsAsync(layer.db, options);
+    return listBranchGroupsAsync(layer.db, options, layer.projectId);
 }
 
 /*

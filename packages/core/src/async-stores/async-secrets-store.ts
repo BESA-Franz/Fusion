@@ -43,10 +43,10 @@ const severityAuditLog = createLogger("core-async-secrets-store");
  *   it in place of the sync store at the flip.
  */
 import { randomUUID } from "node:crypto";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { isPostgresUniqueError } from "../db/postgres-errors.js";
 import * as schema from "../postgres/schema/index.js";
-import type { AsyncDataLayer, DbTransaction } from "../postgres/data-layer.js";
+import { projectScopeFor, type AsyncDataLayer, type DbTransaction } from "../postgres/data-layer.js";
 import {
   createSecretCipher,
   SecretCryptoError,
@@ -141,6 +141,16 @@ function tableForScope(scope: SecretScope): ProjectSecretsTable {
     : (schema.central.secretsGlobal as unknown as ProjectSecretsTable);
 }
 
+/**
+ * FNXC:ProjectSecretsIsolation 2026-08-12-14:15:
+ * project.secrets IDs are only unique within their owning project after the
+ * composite-key migration. Keep the central/global leg predicate-free because
+ * central.secrets_global is intentionally shared across projects.
+ */
+function scopeForSecretTable(scope: SecretScope, table: ProjectSecretsTable, projectId?: string) {
+  return scope === "project" ? projectScopeFor(table.projectId, projectId) : undefined;
+}
+
 function isAccessPolicy(value: string): value is SecretAccessPolicy {
   return value === "auto" || value === "prompt" || value === "deny";
 }
@@ -188,12 +198,13 @@ export async function getSecretMetadata(
   handle: QueryHandle,
   id: string,
   scope: SecretScope,
+  projectId?: string,
 ): Promise<SecretRecord | null> {
   const table = tableForScope(scope);
   const rows = await handle
     .select(metadataColumns(table))
     .from(table)
-    .where(eq(table.id, id))
+    .where(and(eq(table.id, id), scopeForSecretTable(scope, table, projectId)))
     .limit(1);
   const row = rows[0] as SecretRow | undefined;
   return row ? rowToRecord(row, scope) : null;
@@ -207,17 +218,19 @@ export async function getSecretMetadata(
 export async function listSecrets(
   handle: QueryHandle,
   scope?: SecretScope,
+  projectId?: string,
 ): Promise<SecretRecord[]> {
   if (scope) {
     const table = tableForScope(scope);
     const rows = await handle
       .select(metadataColumns(table))
       .from(table)
+      .where(scopeForSecretTable(scope, table, projectId))
       .orderBy(asc(sql`lower(${table.key})`));
     return (rows as SecretRow[]).map((row) => rowToRecord(row, scope));
   }
-  const project = await listSecrets(handle, "project");
-  const global = await listSecrets(handle, "global");
+  const project = await listSecrets(handle, "project", projectId);
+  const global = await listSecrets(handle, "global", projectId);
   return [...project, ...global];
 }
 
@@ -239,6 +252,7 @@ export async function createSecret(
     envExportable?: boolean;
     envExportKey?: string | null;
   },
+  projectId?: string,
 ): Promise<SecretRecord> {
   const key = input.key.trim();
   if (!key) {
@@ -255,6 +269,7 @@ export async function createSecret(
 
   try {
     await handle.insert(table).values({
+      ...(input.scope === "project" && projectId?.trim() ? { projectId } : {}),
       id,
       key,
       valueCiphertext: encrypted.ciphertext,
@@ -275,7 +290,7 @@ export async function createSecret(
     throw error;
   }
 
-  const created = await getSecretMetadata(handle, id, input.scope);
+  const created = await getSecretMetadata(handle, id, input.scope, projectId);
   if (!created) {
     throw new SecretsStoreError({ code: "not-found", message: "Secret insert succeeded but row could not be read back" });
   }
@@ -302,8 +317,9 @@ export async function updateSecret(
     envExportable?: boolean;
     envExportKey?: string | null;
   },
+  projectId?: string,
 ): Promise<SecretRecord> {
-  const existing = await getSecretMetadata(handle, id, scope);
+  const existing = await getSecretMetadata(handle, id, scope, projectId);
   if (!existing) {
     throw new SecretsStoreError({ code: "not-found", message: "Secret not found" });
   }
@@ -340,7 +356,7 @@ export async function updateSecret(
   }
 
   try {
-    await handle.update(table).set(updates).where(eq(table.id, id));
+    await handle.update(table).set(updates).where(and(eq(table.id, id), scopeForSecretTable(scope, table, projectId)));
   } catch (error) {
     if (isPostgresUniqueError(error)) {
       throw new SecretsStoreError({ code: "duplicate-key", message: "Secret key already exists" });
@@ -348,7 +364,7 @@ export async function updateSecret(
     throw error;
   }
 
-  const updated = await getSecretMetadata(handle, id, scope);
+  const updated = await getSecretMetadata(handle, id, scope, projectId);
   if (!updated) {
     throw new SecretsStoreError({ code: "not-found", message: "Secret update succeeded but row could not be read back" });
   }
@@ -364,13 +380,14 @@ export async function deleteSecret(
   handle: QueryHandle,
   id: string,
   scope: SecretScope,
+  projectId?: string,
 ): Promise<void> {
-  const existing = await getSecretMetadata(handle, id, scope);
+  const existing = await getSecretMetadata(handle, id, scope, projectId);
   if (!existing) {
     throw new SecretsStoreError({ code: "not-found", message: "Secret not found" });
   }
   const table = tableForScope(scope);
-  await handle.delete(table).where(eq(table.id, id));
+  await handle.delete(table).where(and(eq(table.id, id), scopeForSecretTable(scope, table, projectId)));
 }
 
 /**
@@ -385,6 +402,7 @@ export async function revealSecret(
   id: string,
   scope: SecretScope,
   reader: { agentId?: string | null; userId?: string | null },
+  projectId?: string,
 ): Promise<{ key: string; plaintextValue: string }> {
   const table = tableForScope(scope);
   const rows = await handle
@@ -394,7 +412,7 @@ export async function revealSecret(
       nonce: table.nonce,
     })
     .from(table)
-    .where(eq(table.id, id))
+    .where(and(eq(table.id, id), scopeForSecretTable(scope, table, projectId)))
     .limit(1);
   const row = rows[0] as SecretCipherRow | undefined;
   if (!row) {
@@ -419,7 +437,7 @@ export async function revealSecret(
   await handle
     .update(table)
     .set({ lastReadAt: now, lastReadBy, updatedAt: now })
-    .where(eq(table.id, id));
+    .where(and(eq(table.id, id), scopeForSecretTable(scope, table, projectId)));
 
   return { key: row.key, plaintextValue };
 }
@@ -472,11 +490,11 @@ export class AsyncSecretsStore {
   }
 
   listSecrets(scope?: SecretScope): Promise<SecretRecord[]> {
-    return listSecrets(this.layer.db, scope);
+    return listSecrets(this.layer.db, scope, this.layer.projectId);
   }
 
   async getSecretMetadata(id: string, scope: SecretScope): Promise<SecretRecord | null> {
-    return getSecretMetadata(this.layer.db, id, scope);
+    return getSecretMetadata(this.layer.db, id, scope, this.layer.projectId);
   }
 
   async createSecret(input: {
@@ -488,7 +506,7 @@ export class AsyncSecretsStore {
     envExportable?: boolean;
     envExportKey?: string | null;
   }): Promise<SecretRecord> {
-    const created = await createSecret(this.layer.db, this.cipher, input);
+    const created = await createSecret(this.layer.db, this.cipher, input, this.layer.projectId);
     this.emitAudit({ mutationType: "secret:create", scope: input.scope, secretId: created.id, key: created.key });
     return created;
   }
@@ -505,17 +523,17 @@ export class AsyncSecretsStore {
       envExportKey?: string | null;
     },
   ): Promise<SecretRecord> {
-    const updated = await updateSecret(this.layer.db, this.cipher, id, scope, patch);
+    const updated = await updateSecret(this.layer.db, this.cipher, id, scope, patch, this.layer.projectId);
     this.emitAudit({ mutationType: "secret:update", scope, secretId: updated.id, key: updated.key });
     return updated;
   }
 
   async deleteSecret(id: string, scope: SecretScope): Promise<void> {
-    const existing = await getSecretMetadata(this.layer.db, id, scope);
+    const existing = await getSecretMetadata(this.layer.db, id, scope, this.layer.projectId);
     if (!existing) {
       throw new SecretsStoreError({ code: "not-found", message: "Secret not found" });
     }
-    await deleteSecret(this.layer.db, id, scope);
+    await deleteSecret(this.layer.db, id, scope, this.layer.projectId);
     this.emitAudit({ mutationType: "secret:delete", scope, secretId: id, key: existing.key });
   }
 
@@ -524,7 +542,7 @@ export class AsyncSecretsStore {
     scope: SecretScope,
     reader: { agentId?: string | null; userId?: string | null },
   ): Promise<{ key: string; plaintextValue: string }> {
-    const revealed = await revealSecret(this.layer.db, this.cipher, id, scope, reader);
+    const revealed = await revealSecret(this.layer.db, this.cipher, id, scope, reader, this.layer.projectId);
     this.emitAudit({ mutationType: "secret:read", scope, secretId: id, key: revealed.key, actor: reader });
     return revealed;
   }

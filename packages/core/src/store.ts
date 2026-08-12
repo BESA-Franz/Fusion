@@ -2544,7 +2544,11 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   /** PostgreSQL-authoritative audit reader; sync fallback remains for test doubles. */
   async getRunAuditEventsAsync(options: RunAuditEventFilter = {}): Promise<RunAuditEvent[]> {
     if (this.asyncLayer) {
-      const events = await queryRunAuditEvents(this.asyncLayer.db, options);
+      const events = await queryRunAuditEvents(
+        this.asyncLayer.db,
+        options,
+        this.asyncLayer.projectId,
+      );
       return events.map((event) => ({
         ...event,
         taskId: event.taskId ?? undefined,

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { count, eq, desc, and } from "drizzle-orm";
 import type { Database } from "../db/db.js";
 import { fromJson } from "../db/db.js";
-import type { AsyncDataLayer } from "../postgres/data-layer.js";
+import { projectScopeFor, type AsyncDataLayer } from "../postgres/data-layer.js";
 import * as asyncApprovalRequestStore from "../async-stores/async-approval-request-store.js";
 import * as schema from "../postgres/schema/index.js";
 import { appendAgentActivityEvent } from "../task-store/async/async-agent-activity.js";
@@ -204,11 +204,11 @@ export class ApprovalRequestStore {
 }
 
   async get(id: string): Promise<ApprovalRequest | null> {
-        return asyncApprovalRequestStore.getApprovalRequest(this.asyncLayer!.db, id);
+        return asyncApprovalRequestStore.getApprovalRequest(this.asyncLayer!.db, id, this.asyncLayer!.projectId);
 }
 
   async list(input: ApprovalRequestListInput = {}): Promise<ApprovalRequest[]> {
-        return asyncApprovalRequestStore.listApprovalRequests(this.asyncLayer!.db, input);
+        return asyncApprovalRequestStore.listApprovalRequests(this.asyncLayer!.db, input, this.asyncLayer!.projectId);
 }
 
   async getPendingCountsByActor(): Promise<Map<string, number>> {
@@ -219,7 +219,7 @@ export class ApprovalRequestStore {
         requestCount: count(),
       })
       .from(table)
-      .where(eq(table.status, "pending"))
+      .where(and(eq(table.status, "pending"), projectScopeFor(table.projectId, this.asyncLayer!.projectId)))
       .groupBy(table.requesterActorId);
     return new Map(rows.map((row) => [row.actorId, Number(row.requestCount)]));
 }
@@ -231,7 +231,15 @@ export class ApprovalRequestStore {
     */
     if (this.backendMode) {
       const table = schema.project.approvalRequests;
-      const conditions = [eq(table.requesterActorId, input.requesterActorId)];
+      /*
+      FNXC:ApprovalProjectIsolation 2026-08-12-14:15:
+      Approval request IDs and dedupe keys can repeat in another project after
+      the composite-key migration, so every runtime lookup stays on this layer's project.
+      */
+      const conditions = [
+        eq(table.requesterActorId, input.requesterActorId),
+        projectScopeFor(table.projectId, this.asyncLayer!.projectId),
+      ];
       if (input.taskId !== undefined) {
         conditions.push(eq(table.taskId, input.taskId));
       }
@@ -281,6 +289,6 @@ export class ApprovalRequestStore {
 }
 
   async getAuditHistory(requestId: string): Promise<ApprovalRequestAuditEvent[]> {
-        return asyncApprovalRequestStore.getApprovalAuditHistory(this.asyncLayer!.db, requestId);
+        return asyncApprovalRequestStore.getApprovalAuditHistory(this.asyncLayer!.db, requestId, this.asyncLayer!.projectId);
 }
 }

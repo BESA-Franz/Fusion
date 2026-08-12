@@ -36,7 +36,7 @@ import {and, asc, eq, inArray, isNotNull, isNull, sql} from "drizzle-orm";
 import {recoverExpiredMergeQueueLeases as recoverExpiredMergeQueueLeasesAsync} from "../task-store/async/async-merge-coordination.js";
 import {updateBranchGroup as updateBranchGroupAsync, updatePrEntity as updatePrEntityAsync} from "../task-store/async/async-branch-groups.js";
 import {recordCompletionHandoff as recordCompletionHandoffAsync, getCompletionHandoffMarker as getCompletionHandoffMarkerAsync} from "../task-store/async/async-workflow-workitems.js";
-import { taskProjectScope } from "../postgres/data-layer.js";
+import { projectScopeFor, taskProjectScope } from "../postgres/data-layer.js";
 import type { AsyncDataLayer, DbTransaction } from "../postgres/data-layer.js";
 import {getActivityLog as getActivityLogAsync} from "../task-store/async/async-audit.js";
 import {insertArtifactRow as insertArtifactRowAsync} from "../task-store/async/async-comments-attachments.js";
@@ -197,7 +197,7 @@ export async function _maybeAutoArchiveSameAgentDuplicateBackendImpl(store: Task
 
 export async function updateBranchGroupImpl(store: TaskStore, id: string, patch: BranchGroupUpdate): Promise<BranchGroup> {
         const layer = store.asyncLayer!;
-    return updateBranchGroupAsync(layer.db, id, patch);
+    return updateBranchGroupAsync(layer.db, id, patch, layer.projectId);
 }
 
 export async function updatePrEntityImpl(store: TaskStore, id: string, patch: PrEntityUpdate): Promise<PrEntity> {
@@ -982,7 +982,10 @@ async function deleteAttachmentArtifactRows(store: TaskStore, taskId: string, fi
       .map((artifact) => artifact.id);
     if (linkedArtifactIds.length === 0) return;
     for (const artifactId of linkedArtifactIds) {
-      await layer.db.delete(schema.project.artifacts).where(eq(schema.project.artifacts.id, artifactId));
+      await layer.db.delete(schema.project.artifacts).where(and(
+        eq(schema.project.artifacts.id, artifactId),
+        projectScopeFor(schema.project.artifacts.projectId, layer.projectId),
+      ));
     }
     return;
 }
@@ -994,7 +997,10 @@ async function getArtifactsForAttachmentCleanup(store: TaskStore, taskId: string
     const rows = await layer.db
       .select()
       .from(schema.project.artifacts)
-      .where(eq(schema.project.artifacts.taskId, taskId));
+      .where(and(
+        eq(schema.project.artifacts.taskId, taskId),
+        projectScopeFor(schema.project.artifacts.projectId, layer.projectId),
+      ));
     return rows as unknown as Artifact[];
 }
 

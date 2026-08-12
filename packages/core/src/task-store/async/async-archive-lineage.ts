@@ -30,7 +30,7 @@
  */
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import * as schema from "../../postgres/schema/index.js";
-import type { AsyncDataLayer, DbTransaction } from "../../postgres/data-layer.js";
+import { projectScopeFor, type AsyncDataLayer, type DbTransaction } from "../../postgres/data-layer.js";
 import { ACTIVE_TASK_FILTER } from "./async-persistence.js";
 import { findLiveLineageChildren, projectPartition, removeLineageReferences, type LineageRemovalOutcome } from "./async-lifecycle.js";
 import { assertLineageCandidatesUnchanged } from "../lineage-approval-invalidation.js";
@@ -419,6 +419,7 @@ export async function listLiveTaskDocuments(
 export async function listLiveArtifacts(
   db: AsyncDataLayer["db"] | DbTransaction,
   taskId: string,
+  projectId?: string,
 ): Promise<Record<string, unknown>[]> {
   const rows = await db
     .select({
@@ -440,11 +441,16 @@ export async function listLiveArtifacts(
     .from(schema.project.artifacts)
     .innerJoin(
       schema.project.tasks,
-      eq(schema.project.tasks.id, schema.project.artifacts.taskId),
+      and(
+        eq(schema.project.tasks.id, schema.project.artifacts.taskId),
+        eq(schema.project.tasks.projectId, schema.project.artifacts.projectId),
+      ),
     )
     .where(
       and(
         eq(schema.project.artifacts.taskId, taskId),
+        projectScopeFor(schema.project.artifacts.projectId, projectId),
+        projectScopeFor(schema.project.tasks.projectId, projectId),
         ACTIVE_TASK_FILTER,
         sql`${schema.project.tasks.column} != 'archived'`,
       ),
@@ -481,10 +487,14 @@ export async function listAllTaskDocuments(
 export async function listAllArtifacts(
   db: AsyncDataLayer["db"] | DbTransaction,
   taskId: string,
+  projectId?: string,
 ): Promise<Record<string, unknown>[]> {
   const rows = await db
     .select()
     .from(schema.project.artifacts)
-    .where(eq(schema.project.artifacts.taskId, taskId));
+    .where(and(
+      eq(schema.project.artifacts.taskId, taskId),
+      projectScopeFor(schema.project.artifacts.projectId, projectId),
+    ));
   return rows as unknown as Record<string, unknown>[];
 }

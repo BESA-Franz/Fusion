@@ -1905,7 +1905,7 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
     Backend-mode Reliability must use the authoritative async run-audit reader. The synchronous reader is a SQLite/test compatibility surface and intentionally degrades to an empty result under PostgreSQL.
     */
     const runAuditEventsPromise: Promise<RunAuditEvent[]> = asyncLayer
-      ? queryRunAuditEvents(asyncLayer.db, auditFilter).then((events) => events.map((event) => ({
+      ? queryRunAuditEvents(asyncLayer.db, auditFilter, asyncLayer.projectId).then((events) => events.map((event) => ({
           ...event,
           domain: event.domain as RunAuditEvent["domain"],
           mutationType: event.mutationType as RunAuditEvent["mutationType"],

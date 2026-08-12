@@ -1177,7 +1177,14 @@ export async function getVerificationCacheHitImpl(store: TaskStore,
     const rows = await store.asyncLayer!.db
       .select({ recordedAt: table.recordedAt, taskId: table.taskId })
       .from(table)
+      /*
+      FNXC:ProjectSchemaOwnership 2026-08-12-14:14:
+      Verification cache keys are only unique within their project partition.
+      Read through the owning layer's project scope so an identical tree and
+      command tuple from another project cannot skip this project's verification.
+      */
       .where(and(
+        projectScopeFor(table.projectId, store.asyncLayer!.projectId),
         eq(table.treeSha, treeSha),
         eq(table.testCommand, normalizedTest),
         eq(table.buildCommand, normalizedBuild),

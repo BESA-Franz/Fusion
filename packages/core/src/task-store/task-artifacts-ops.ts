@@ -835,7 +835,7 @@ export function insertArtifactRowImpl(store: TaskStore, input: ArtifactCreateInp
 
 export async function getArtifactImpl(store: TaskStore, id: string): Promise<Artifact | null> {
         const layer = store.asyncLayer!;
-    return getArtifactAsync(layer.db, id);
+    return getArtifactAsync(layer.db, id, layer.projectId);
 }
 
 /**
