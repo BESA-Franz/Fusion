@@ -321,7 +321,10 @@ export async function updateWorkflowDefinitionImpl(store: TaskStore, id: string,
         ir: downgradeIrToV1IfPure(next.ir),
         layout: next.layout,
         updatedAt: next.updatedAt,
-      }).where(eq(schema.project.workflows.id, id));
+      }).where(and(
+        eq(schema.project.workflows.id, id),
+        projectScopeFor(schema.project.workflows.projectId, layer.projectId),
+      ));
     
       store.workflowDefinitionsCache = null;
       return next;
@@ -381,12 +384,26 @@ export async function deleteWorkflowDefinitionImpl(store: TaskStore, id: string)
     const occupantTaskIds = await store.listWorkflowOccupantTaskIds(id, false);
 
     
-    // FNXC:PostgresCutover 2026-06-28: async deletes for backend mode
-    const deleted = await layer.db.delete(schema.project.workflows).where(eq(schema.project.workflows.id, id)).returning();
+    /*
+    FNXC:WorkflowDefinitionProjectPartition 2026-08-12-03:02:
+    Before project ownership predicates, deleting a colliding workflow ID removed a foreign
+    workflow and its settings/prompt overrides under owner connections that bypass RLS. Keep
+    every delete in this transaction on the same bound partition.
+    */
+    const deleted = await layer.db.delete(schema.project.workflows).where(and(
+      eq(schema.project.workflows.id, id),
+      projectScopeFor(schema.project.workflows.projectId, layer.projectId),
+    )).returning();
     if (deleted.length === 0) throw new Error(`Workflow '${id}' not found`);
     store.workflowDefinitionsCache = null;
-    await layer.db.delete(schema.project.workflowSettings).where(eq(schema.project.workflowSettings.workflowId, id));
-    await layer.db.delete(schema.project.workflowPromptOverrides).where(eq(schema.project.workflowPromptOverrides.workflowId, id));
+    await layer.db.delete(schema.project.workflowSettings).where(and(
+      eq(schema.project.workflowSettings.workflowId, id),
+      projectScopeFor(schema.project.workflowSettings.projectId, layer.projectId),
+    ));
+    await layer.db.delete(schema.project.workflowPromptOverrides).where(and(
+      eq(schema.project.workflowPromptOverrides.workflowId, id),
+      projectScopeFor(schema.project.workflowPromptOverrides.projectId, layer.projectId),
+    ));
   
 
     // Cascade: clear the project default when it pointed at this workflow.

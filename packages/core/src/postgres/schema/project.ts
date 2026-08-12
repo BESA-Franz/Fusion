@@ -706,8 +706,18 @@ export const workflowSteps = projectSchema.table("workflow_steps", {
   index("idxWorkflowStepsProjectCreatedAt").on(t.projectId, t.createdAt),
 ]);
 
+/*
+FNXC:WorkflowDefinitionProjectPartition 2026-08-12-03:02:
+Migration 0006 physically partitions workflows by project_id. WF-<n> identifiers use a
+per-project counter, so collisions are normal; owner connections set fusion.project_bypass,
+so RLS cannot protect unscoped application queries. The post-0006 harness confirms the physical
+column, RLS policy, trigger, and ordered key are already exact, so no reconciliation migration is
+needed. Model that composite identity here while keeping the database default so trigger-stamped
+inserts can omit projectId.
+*/
 export const workflows = projectSchema.table("workflows", {
-  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(),
   name: text("name").notNull(),
   description: text("description").notNull().default(""),
   icon: text("icon"),
@@ -716,7 +726,10 @@ export const workflows = projectSchema.table("workflows", {
   kind: text("kind").notNull().default("workflow"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
-}, (t) => [index("idxWorkflowsCreatedAt").on(t.createdAt)]);
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.id] }),
+  index("idxWorkflowsCreatedAt").on(t.createdAt),
+]);
 
 export const taskWorkflowSelection = projectSchema.table("task_workflow_selection", {
   projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
