@@ -120,6 +120,12 @@ The legacy `fn_agent_set_instructions` extension tool remains available for back
 
 At least one instruction field must be provided. The legacy tool uses the same direct/indirect-report authorization model for agent callers and persists changes through `AgentStore.updateAgent`, so instruction edits are captured as normal agent config revisions.
 
+### Manager evaluation tools
+
+`fn_agent_read_evaluations` lets a manager read a named direct or indirect report's rating summary, commented ratings, reflection history, latest reflection, and performance summary. `fn_agent_evaluation_followup` records a 1–5 coaching rating for that same scoped report; the report reads the rating through its existing self-improvement loop. Agent callers may not target themselves, peers, ancestors, or unrelated agents. CLI/user calls without `ctx.agentId` are privileged operator calls and may read or record a follow-up for any durable agent. The follow-up remains subject to the normal agent action policy gate.
+
+These tools complement, but do not replace, the existing self-only `fn_read_evaluations`: an agent's self-improvement cycle still reads only its own data. Use `fn_task_create` or `fn_delegate_task` to route implementation work discovered from feedback.
+
 ## Agent Field Parity Matrix
 
 Every first-class editable agent field has a defined create/edit/import/template behavior. This ensures consistent round-tripping across all surfaces.
@@ -694,7 +700,7 @@ Operators can disable this per agent in **Agent Detail → Settings → Heartbea
 
 When `selfImproveEnabled !== false`, heartbeat runs periodically enter a self-improvement phase once `selfImproveIntervalMs` has elapsed since `lastSelfImproveAt` (or first run with available ratings). During that phase the agent is prompted to:
 
-1. Call `fn_read_evaluations` to inspect ratings/reflections
+1. Call the self-only `fn_read_evaluations` to inspect its own ratings/reflections (managers use `fn_agent_read_evaluations` for scoped report visibility and `fn_agent_evaluation_followup` for coaching)
 2. Identify recurring quality issues and trends
 3. Call `fn_update_identity` to adjust its own `soul`, `instructionsText`, or `memory`
 4. Record concise improvement decisions

@@ -8,6 +8,7 @@ import {
   createTaskStoreForBackend,
   drizzleSql,
   AgentStore,
+  ReflectionStore,
   isEphemeralAgent,
   evaluateImplementationTaskBind,
   AGENT_VALID_TRANSITIONS,
@@ -24,6 +25,7 @@ import {
   type InsightStatus,
   type InsightRunStatus,
   type InsightRunTrigger,
+  type Agent,
   type AgentCapability,
   type AgentUpdateInput,
   getTaskDuplicateLineage,
@@ -679,6 +681,68 @@ Agent tools must construct AgentStore in backend mode so agent data lives in Pos
 async function getAgentStore(cwd: string): Promise<AgentStore> {
   const projectStore = await getStore(cwd);
   return new AgentStore({ rootDir: getFusionDir(cwd), asyncLayer: requireProjectLayer(projectStore, "CLI AgentStore") });
+}
+
+type ManagerEvaluationToolErrorResult = {
+  content: Array<{ type: "text"; text: string }>;
+  isError: true;
+  details: Record<string, unknown>;
+};
+
+type ManagerEvaluationTargetResolution =
+  | { kind: "error"; response: ManagerEvaluationToolErrorResult }
+  | { kind: "allowed"; target: Agent; callerAgentId?: string };
+
+/** Resolve and authorize a manager's evaluation target under the shared org-subtree boundary. */
+async function resolveManagerEvaluationTarget(
+  agentStore: AgentStore,
+  agentId: string,
+  ctx: ExtensionCallerContext,
+): Promise<ManagerEvaluationTargetResolution> {
+  const target = await agentStore.resolveAgent(agentId);
+  if (!target) {
+    return {
+      kind: "error",
+      response: {
+        content: [{ type: "text" as const, text: `Agent '${agentId}' not found` }],
+        isError: true as const,
+        details: { outcome: "not_found", error: "Agent not found", agentId },
+      },
+    };
+  }
+  if (isEphemeralAgent(target)) {
+    return {
+      kind: "error",
+      response: {
+        content: [{ type: "text" as const, text: `ERROR: Cannot evaluate ephemeral/runtime agent ${target.id}` }],
+        isError: true as const,
+        details: { outcome: "invalid", field: "agent_id", agentId: target.id },
+      },
+    };
+  }
+
+  const callerAgentId = typeof ctx.agentId === "string" && ctx.agentId ? ctx.agentId : undefined;
+  if (callerAgentId) {
+    const chain = await agentStore.getChainOfCommand(target.id);
+    const callerIndex = chain.findIndex((agent) => agent.id === callerAgentId);
+    if (callerAgentId === target.id || callerIndex < 1) {
+      return {
+        kind: "error",
+        response: {
+          content: [{ type: "text" as const, text: "ERROR: You can only access evaluations for your own direct or indirect reports." }],
+          isError: true as const,
+          details: {
+            outcome: "denied",
+            agentId: target.id,
+            callerAgentId,
+            rule: "direct-or-indirect-reports-only",
+          },
+        },
+      };
+    }
+  }
+
+  return { kind: "allowed", target, callerAgentId };
 }
 
 function emitSecretAudit(
@@ -5887,6 +5951,169 @@ export default function kbExtension(pi: ExtensionAPI) {
           text: `Updated ${updated.name} (${updated.id}) instructions: ${updatedFields.join(", ")}`,
         }],
         details: { outcome: "updated", agentId: updated.id, updatedFields },
+      };
+    },
+  });
+
+  // ── fn_agent_read_evaluations ──────────────────────────────────
+
+  /**
+   * FNXC:AgentEvaluations 2026-08-12-22:11:
+   * Manager agents need cross-agent evaluation visibility for direct and indirect reports,
+   * while peers, ancestors, and self remain private. This intentionally reuses
+   * getChainOfCommand so the management-subtree boundary has one auditable rule.
+   * Reads use AgentStore and ReflectionStore rather than duplicating evaluation storage.
+   */
+  pi.registerTool({
+    name: "fn_agent_read_evaluations",
+    label: "fn: Read Report Evaluations",
+    description: "Read ratings, feedback, reflections, and performance data for a direct or indirect report.",
+    promptSnippet: "Review evaluation and reflection results for an agent in your management subtree",
+    promptGuidelines: [
+      "Use to review evaluation data for a direct or indirect report in your management subtree",
+      "Agent callers cannot target themselves, peers, ancestors, or agents outside their subtree",
+      "Operator and CLI calls are privileged and may read any durable agent",
+    ],
+    parameters: Type.Object({
+      agent_id: Type.String({ description: "Target agent ID or resolvable name" }),
+      rating_limit: Type.Optional(Type.Number({ minimum: 1, maximum: 50, description: "Maximum ratings to return (default 10)" })),
+      reflection_limit: Type.Optional(Type.Number({ minimum: 1, maximum: 20, description: "Maximum reflections to return (default 5)" })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const agentStore = await getAgentStore(ctx.cwd);
+      await agentStore.init();
+      const resolved = await resolveManagerEvaluationTarget(agentStore, params.agent_id, ctx as ExtensionCallerContext);
+      if (resolved.kind === "error") return resolved.response;
+
+      const ratingLimit = params.rating_limit ?? 10;
+      const reflectionLimit = params.reflection_limit ?? 5;
+      const reflectionStore = new ReflectionStore({ rootDir: getFusionDir(ctx.cwd) });
+      await reflectionStore.init();
+      const [summary, ratings, latestReflection, reflections, performance] = await Promise.all([
+        agentStore.getRatingSummary(resolved.target.id),
+        agentStore.getRatings(resolved.target.id, { limit: ratingLimit }),
+        reflectionStore.getLatestReflection(resolved.target.id),
+        reflectionStore.getReflections(resolved.target.id, reflectionLimit),
+        reflectionStore.getPerformanceSummary(resolved.target.id),
+      ]);
+
+      const hasRatings = ratings.length > 0 || summary.totalRatings > 0;
+      const hasReflections = Boolean(latestReflection) || reflections.length > 0;
+      if (!hasRatings && !hasReflections) {
+        return {
+          content: [{ type: "text" as const, text: `${resolved.target.name} (${resolved.target.id})\n\nNo evaluation data available yet.` }],
+          details: { outcome: "empty", agentId: resolved.target.id, agentName: resolved.target.name, summary, ratings, reflections, latestReflection, performance },
+        };
+      }
+
+      const formatScore = (score: number | null | undefined) =>
+        typeof score === "number" && Number.isFinite(score) ? score.toFixed(2) : "n/a";
+      const lines: string[] = [
+        `Evaluation Summary: ${resolved.target.name} (${resolved.target.id})`,
+        `- Average score: ${formatScore(summary.averageScore)}`,
+        `- Trend: ${summary.trend}`,
+        `- Total ratings: ${summary.totalRatings}`,
+      ];
+      const categoryEntries = Object.entries(summary.categoryAverages ?? {});
+      if (categoryEntries.length > 0) {
+        lines.push("", "Category averages:");
+        categoryEntries.forEach(([category, score]) => lines.push(`- ${category}: ${formatScore(score)}`));
+      }
+      const commentedRatings = ratings.filter((rating) => rating.comment?.trim());
+      if (commentedRatings.length > 0) {
+        lines.push("", "Recent rating comments:");
+        commentedRatings.slice(0, 5).forEach((rating) => lines.push(`- [${rating.score}/5] ${rating.comment!.trim()}`));
+      }
+      if (latestReflection) {
+        lines.push("", "Latest reflection:", `- Summary: ${latestReflection.summary}`);
+        if (latestReflection.insights.length > 0) {
+          lines.push("- Insights:");
+          latestReflection.insights.forEach((insight) => lines.push(`  - ${insight}`));
+        }
+        if (latestReflection.suggestedImprovements.length > 0) {
+          lines.push("- Suggested improvements:");
+          latestReflection.suggestedImprovements.forEach((item) => lines.push(`  - ${item}`));
+        }
+      }
+      if (reflections.length > 0) {
+        lines.push("", "Recent reflection history:");
+        reflections.slice(0, 5).forEach((reflection) => lines.push(`- ${reflection.timestamp}: ${reflection.summary}`));
+      }
+
+      return {
+        content: [{ type: "text" as const, text: lines.join("\n") }],
+        details: { outcome: "read", agentId: resolved.target.id, agentName: resolved.target.name, summary, ratings, reflections, latestReflection, performance },
+      };
+    },
+  });
+
+  // ── fn_agent_evaluation_followup ───────────────────────────────
+
+  /*
+   * FNXC:AgentEvaluations 2026-08-12-22:11:
+   * Follow-ups reuse AgentStore.addRating, the same evaluation row read by the report's
+   * self-improvement loop and dashboard rating routes, instead of creating a parallel
+   * feedback channel. Task-level routing remains with fn_delegate_task and fn_task_create.
+   */
+  pi.registerTool({
+    name: "fn_agent_evaluation_followup",
+    label: "fn: Record Evaluation Follow-up",
+    description: "Record a coaching evaluation follow-up for a direct or indirect report to read through its self-improvement loop.",
+    promptSnippet: "Record coaching feedback for an agent in your management subtree",
+    promptGuidelines: [
+      "Use to record actionable coaching feedback for a direct or indirect report",
+      "Agent callers cannot target themselves, peers, ancestors, or agents outside their subtree",
+      "Create or delegate separate implementation work with fn_task_create or fn_delegate_task",
+    ],
+    parameters: Type.Object({
+      agent_id: Type.String({ description: "Target agent ID or resolvable name" }),
+      score: Type.Number({ minimum: 1, maximum: 5, description: "Evaluation score from 1 to 5" }),
+      comment: Type.String({ minLength: 1, maxLength: 4000, description: "Coaching or follow-up note" }),
+      category: Type.Optional(Type.String({ maxLength: 100, description: "Optional evaluation category" })),
+      task_id: Type.Optional(Type.String({ description: "Optional related task ID" })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      // FNXC:ToolPermissionGates 2026-08-12-22:11: This mutation intentionally falls through the exempt fallback as task_agent_mutation; do not classify it as a read-only coordination tool.
+      const gated = await applyAgentPolicyGateForExtensionTool(
+        "fn_agent_evaluation_followup",
+        params as Record<string, unknown>,
+        ctx as ExtensionCallerContext,
+      );
+      if (gated) return gated;
+
+      const agentStore = await getAgentStore(ctx.cwd);
+      await agentStore.init();
+      const resolved = await resolveManagerEvaluationTarget(agentStore, params.agent_id, ctx as ExtensionCallerContext);
+      if (resolved.kind === "error") return resolved.response;
+
+      if (!Number.isFinite(params.score) || params.score < 1 || params.score > 5) {
+        return {
+          content: [{ type: "text" as const, text: "ERROR: score must be a finite value from 1 to 5" }],
+          isError: true,
+          details: { outcome: "invalid", field: "score" },
+        };
+      }
+      const comment = params.comment.trim();
+      if (!comment) {
+        return {
+          content: [{ type: "text" as const, text: "ERROR: comment must not be empty" }],
+          isError: true,
+          details: { outcome: "invalid", field: "comment" },
+        };
+      }
+
+      const raterType = resolved.callerAgentId ? "agent" as const : "user" as const;
+      const rating = await agentStore.addRating(resolved.target.id, {
+        raterType,
+        ...(resolved.callerAgentId ? { raterId: resolved.callerAgentId } : {}),
+        score: params.score,
+        ...(params.category !== undefined ? { category: params.category } : {}),
+        comment,
+        ...(params.task_id !== undefined ? { taskId: params.task_id } : {}),
+      });
+      return {
+        content: [{ type: "text" as const, text: `Recorded evaluation follow-up for ${resolved.target.name} (${resolved.target.id}).` }],
+        details: { outcome: "recorded", agentId: resolved.target.id, ratingId: rating.id, score: rating.score, raterType },
       };
     },
   });

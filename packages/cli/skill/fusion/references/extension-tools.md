@@ -680,6 +680,28 @@ Set the instructionsText and/or instructionsPath of one of the caller's direct o
 | `instructions_text` | string | — | Inline instructions. Pass an empty string to clear. |
 | `instructions_path` | string | — | Path to a markdown instructions file. Pass an empty string to clear. |
 
+### fn_agent_read_evaluations
+
+Read ratings, feedback, reflections, and performance data for a direct or indirect report.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `agent_id` | string | ✓ | Target agent ID or resolvable name |
+| `rating_limit` | number | — | Maximum ratings to return (default 10) |
+| `reflection_limit` | number | — | Maximum reflections to return (default 5) |
+
+### fn_agent_evaluation_followup
+
+Record a coaching evaluation follow-up for a direct or indirect report to read through its self-improvement loop.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `agent_id` | string | ✓ | Target agent ID or resolvable name |
+| `score` | number | ✓ | Evaluation score from 1 to 5 |
+| `comment` | string | ✓ | Coaching or follow-up note |
+| `category` | string | — | Optional evaluation category |
+| `task_id` | string | — | Optional related task ID |
+
 ### fn_agent_delete
 
 Delete a non-ephemeral agent.

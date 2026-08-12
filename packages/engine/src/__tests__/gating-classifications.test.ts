@@ -130,6 +130,7 @@ describe("gating-classifications parity", () => {
       [
         "find",
         "fn_agent_org_chart",
+        "fn_agent_read_evaluations",
         "fn_agent_show",
         "fn_artifact_list",
         "fn_artifact_register",

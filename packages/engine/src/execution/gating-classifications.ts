@@ -247,7 +247,13 @@ export const READONLY_FN_TOOLS: ReadonlySet<string> = new Set([
   "fn_post_room_message",
   "fn_update_identity",
   "fn_reflect_on_performance",
+  /*
+  FNXC:ToolGovernance 2026-08-12-22:11:
+  fn_agent_read_evaluations is a subtree-scoped read. Authorization is enforced by
+  the extension tool's getChainOfCommand boundary, not by this action classifier.
+  */
   "fn_read_evaluations",
+  "fn_agent_read_evaluations",
 ]);
 
 export const COORDINATION_EXEMPT_TOOLS = [
@@ -308,6 +314,8 @@ export const COORDINATION_EXEMPT_TOOLS = [
   "fn_post_room_message",
   "fn_memory_append",
   "fn_read_evaluations",
+  // FNXC:ToolGovernance 2026-08-12-22:11: The manager read is subtree-authorized in extension.ts; follow-up remains absent so it falls back to task_agent_mutation policy.
+  "fn_agent_read_evaluations",
   "fn_update_identity",
   "fn_reflect_on_performance",
 ] as const;
