@@ -2,6 +2,85 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
+## 0.76.0-beta.1
+
+### Highlights
+
+- Breaking: the retired ephemeralAgentsEnabled setting and v0 mission resume blockers are gone
+- Fixes the deadlock that left every task stuck: built-in workflow agents were unroutable
+- Fusion no longer hangs on startup when a project has 1,000+ tasks
+- Reviews block only on high-priority findings, cutting repeat plan and code review rounds
+- Durable project memory: recall, Memory Keeper consolidation, and MCP memory tools
+
+### Breaking
+
+- Removed the retired ephemeral-agent compatibility setting and its control; stale values are discarded on settings read and update.
+- Removed the deprecated v0 mission resume blockers in favor of canonical blocker descriptors, which now deduplicate per root feature, source, and reason.
+
+### New
+
+- Durable project recall for decisions, preferences, and solutions, plus the Memory Keeper agent that consolidates the knowledge graph on a schedule and shows its consolidation history in Agent Detail.
+- Fusion memory tools exposed through the built-in MCP server, with provenance-tagged memory semantics and automatic recall capture from task, research, and insight sources.
+- Every agent lane is steered to search memory before starting work.
+- Live agent activity: a durable org-wide history and stream, a live activity and handoff view in Agents, and a Command Center timeline you can scroll back through.
+- Reviews now block only on high-priority findings. New per-workflow settings control the blocking threshold (plan review defaults to high, code review to critical); set either to "any" to restore blocking on every REVISE. Non-blocking findings land in the spec as review advisory notes.
+- Plan Review can close stale or duplicate work before implementation starts, and approved plans are locked with deterministic execution drift reporting.
+- Opt-in GitHub-native pull request auto-merge, required named GitHub checks before Fusion merges, and signed GitHub CI signal ingestion so verified check results update merge gates without waiting for polling.
+- Route task execution and review through one validated external Git checkout that Fusion never modifies or deletes.
+- macOS computer use: `fn computer` for desktop app discovery, snapshots, actions, and permission reporting, a version-matched computer-use agent skill, and automatic skill discovery in macOS runtime sessions.
+- Mission management gains a "Reconcile now" control with dry-run preview, automatic reconciliation from delivery task ground truth, agent tools to set mission and feature status with attributed audit events, and operator controls to clear stale blocked badges and re-run repairable validations.
+- Planning a GitHub issue creates a task linked to that issue as a tracked source, and Planning Mode can import issue and comment screenshots.
+- Agent mail gains structural reports, inline approvals, chat-to-report handoff, roadmap items you can drag in and open in Roadmaps, and approvals raised during planning.
+- `fn knowledge-graph build` generates a committable code knowledge graph.
+- Português (Brasil) is available as a dashboard, terminal UI, and translation target language.
+
+### Fixed
+
+- Tasks no longer spin against unroutable built-in workflow agents; a principal hold now backs off from 15s to 5m instead of re-dispatching about 3.5 times a second and writing roughly 19k audit rows an hour with nothing executing.
+- Queued tasks start again after the board fills up: continuations parked by capacity are picked up by the drain instead of sitting runnable with no state change.
+- Four other long stalls fixed, covering principal routing, dependency auto-unblock clearing a needs-replan signal, stranded planning holds, and unbounded workflow run ids.
+- Stranded workflow continuations left running or held are re-queued automatically, and workflow principal session caps are removed.
+- Startup no longer wedges on "starting": spec-drift reconciliation is bounded to 4 concurrent reconciles with backoff, so a 1,082-task project opens 3-10 database connections during boot instead of saturating the cluster.
+- Planning failures retry with 60s/120s/300s backoff and park after 3 attempts instead of looping forever, and a new planning turn timeout (default 90 minutes) bounds hung sessions.
+- Provider request timeouts are treated as transient and retried with backoff instead of re-admitting the card every poll.
+- The Plan Review replan cap setting is now actually read; lowering it takes effect, with a default of 15 and 0 parking on the first REVISE.
+- A stale worktree base no longer fails a task: a declined refresh holds the task instead of blocking execution, and reacquired worktrees are refreshed against the current integration branch.
+- Reacquired and fresh worktrees rebase onto the configured integration branch, task-pinned worktrees recover when an incomplete directory occupies their path, and worktree conflict cleanup no longer crashes before its active-session safety check.
+- Tasks are no longer failed as branch conflicts when their branch was already merged, and "Failed to create chat session" on model chats is fixed.
+- Auto-merge no longer attempts branch-protected, behind, conflicting, or unknown pull requests; branch-protection blocks are reported honestly and pause for operator action instead of surfacing as merge conflicts.
+- Automated pull request heads are refreshed before creation and merge, timed-out merges recover without stale status blocking retries, and canceled AI merge bodies cannot overwrite successor merge state.
+- "Needs operator action" alerts no longer fire for tasks that are running normally or intentionally held; terminal failures retry automatically first and alerts wait out a settle window.
+- Promote appears only on cards the server would actually release: hidden while a task is still being planned or blocked on plan review and approval holds.
+- Completed tasks always show a Recommendations tab, including an empty state, and executors are prompted to produce those recommendations again after a refactor dropped the request.
+- Activity Log records every settings change rather than four keys, with redaction, honest provenance for API and system writes, engine heartbeat noise excluded, and paging on the revision API.
+- Durable agent data, agent ratings, custom workflows, and project-bound workflow and chat data stay isolated per project on shared PostgreSQL.
+- Grok ACP starts again with released Grok CLI v1.0.0 by making --no-auto-update opt-in.
+- CLI commands no longer abort mid-command on Node 22.4+, so `fn init` completes; Node >=22.4.0 is now declared.
+- Tunnels restart automatically with backoff after a crash instead of staying failed until manually restarted.
+- Reviewer verdicts and findings survive review prose containing stray braces, and resolved findings stay visible without allowing no-op revision requests.
+- The engine log stops repeating dispatch-blocked and symbol-lock-loss lines every poll for a stuck task.
+- The model list no longer hangs when a provider catalog stalls.
+- Chat attachment thumbnails clear as soon as the message is accepted.
+- Task cards distinguish the assigned agent from the agent that created the task.
+- The Agents Overview active agents list scrolls on mobile instead of clipping.
+- Newly created tasks get an eligible executor owner automatically, and explicit engineer and operator-override assignment works again in CLI tools.
+- Mission fixes: planned follow-ups resume after their source task completes, paused missions stay paused through status roll-up, duplicate manual validation runs are prevented, and automatic validation waits for an in-flight manual run.
+- Pull request and review updates stay visible in open task details.
+- Plan writes no longer fail permanently after a plan-evidence version collision, and approved plans stay accurate when parent lineage is removed.
+- Duplicate redirects are recognized in task titles and with custom task prefixes, and duplicate conflict responses are restored for ordinary intake.
+- Plan-review replan and review fix handoffs work again in projects with auto-merge off, including shared-branch tasks.
+- Direct DATABASE_URL connections can finalize planning lifecycle locks.
+- Required pull-request check settings labels are available in every dashboard locale.
+
+### Performance
+
+- Scheduler hold-release sweeps and health probes stay responsive under PostgreSQL load through batched workflow-selection reads, a per-project sweep guard, and sweep and probe deadlines.
+
+### Internal
+
+- Plugin hot reload no longer leaves scratch files behind in plugin folders.
+- The published CLI manifest declares TypeScript once, as a runtime dependency.
+
 ## 0.76.0-beta.0
 
 ### Highlights
