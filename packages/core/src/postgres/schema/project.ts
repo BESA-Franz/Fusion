@@ -2433,9 +2433,13 @@ export const approvalRequests = projectSchema.table("approval_requests", {
   index("idxApprovalRequestsTaskCreatedAt").on(t.taskId, t.createdAt),
 ]);
 
+/*
+FNXC:MultiProjectIsolation 2026-08-12-15:37:
+Migrations 0000 and 0003 created approval audit events with an empty-string default and id-only identity. Migration 0006 rewrote the live table to the trigger/GUC-owned partition default and `(project_id, id)` key; this declaration mirrors that physical ownership shape.
+*/
 export const approvalRequestAuditEvents = projectSchema.table("approval_request_audit_events", {
-  projectId: text("project_id").notNull().default(""),
-  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(),
   requestId: text("request_id").notNull(),
   eventType: text("event_type").notNull(),
   actorId: text("actor_id").notNull(),
@@ -2444,6 +2448,7 @@ export const approvalRequestAuditEvents = projectSchema.table("approval_request_
   note: text("note"),
   createdAt: text("created_at").notNull(),
 }, (t) => [
+  primaryKey({ columns: [t.projectId, t.id] }),
   index("idxApprovalRequestAuditRequestCreatedAt").on(t.requestId, t.createdAt, t.id),
   index("idxApprovalRequestAuditProjectCreatedAt").on(t.projectId, t.createdAt),
 ]);

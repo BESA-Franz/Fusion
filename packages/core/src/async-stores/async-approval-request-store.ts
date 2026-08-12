@@ -120,7 +120,7 @@ function rowToAuditEvent(row: ApprovalRequestAuditEventRow): ApprovalRequestAudi
  * Append an audit event row inside the given transaction handle.
  *
  * FNXC:ApprovalAnalyticsIsolation 2026-07-14-01:04:
- * Audit events must carry the bound layer's project ID at write time because request IDs alone do not provide a reliable tenant ownership join for Command Center intervention analytics.
+ * Audit events must carry the bound layer's project ID at write time because request IDs alone do not provide a reliable tenant ownership join for Command Center intervention analytics. The live `(project_id, id)` key also permits deterministic audit IDs to collide safely across partitions; preserve the explicit value so the ownership trigger observes blank writes unchanged.
  */
 async function appendAuditEvent(
   tx: DbTransaction,
@@ -358,6 +358,9 @@ export async function markApprovalRequestCompleted(
 
 /**
  * Get the audit history for a request, ordered by createdAt ASC.
+ *
+ * FNXC:ApprovalAuditProjectIsolation 2026-08-12-15:37:
+ * Owner and superuser connections can enable `fusion.project_bypass`, so RLS cannot backstop this bare request-id lookup. Scope in SQL from the public ApprovalRequestStore layer binding; projectScopeFor intentionally treats blank and whitespace-only bindings as unbound even though fusion_assign_project_id preserves whitespace writes literally.
  */
 export async function getApprovalAuditHistory(
   handle: QueryHandle,
