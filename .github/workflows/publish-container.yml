@@ -1,6 +1,9 @@
 name: Publish Fusion container
 
 on:
+  push:
+    branches:
+      - codex/fusion-container-0056
   workflow_dispatch:
     inputs:
       tag:
