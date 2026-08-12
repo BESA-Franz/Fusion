@@ -3392,29 +3392,38 @@ export class Scheduler {
         const hierarchy = await missionStore.getMissionWithHierarchy(mission.id);
         if (!hierarchy) continue;
         for (const slice of hierarchy.milestones.flatMap((milestone) => milestone.slices).filter((slice) => slice.status === "active")) {
-          const superseded = await missionStore.reconcileSupersededGeneratedFixFeatures(slice.id);
-          fixed += superseded.supersededCount;
-          if (superseded.supersededCount > 0) {
-            const refreshed = await missionStore.getSlice(slice.id);
-            if (refreshed?.status === "complete") { await this.onSliceComplete(refreshed); continue; }
-          }
-          const listFeatures = (missionStore as unknown as { listFeatures?: (sliceId: string) => Promise<MissionFeature[]> }).listFeatures;
-          const features = listFeatures ? await listFeatures(slice.id) : slice.features;
-          const supersededFeatureIds = new Set(superseded.featureIds ?? []);
-          const autoTriage = mission.autopilotEnabled === true || mission.autoAdvance === true;
-          for (const feature of features) {
-            if (supersededFeatureIds.has(feature.id) || feature.taskId || !autoTriage || feature.status === "blocked") continue;
-            if (feature.status !== "defined" && this.isGeneratedFixFeature(feature)) {
-              await missionStore.updateFeature(feature.id, { status: "blocked", loopState: "blocked", taskId: undefined });
-              fixed++;
-              continue;
+          try {
+            const superseded = await missionStore.reconcileSupersededGeneratedFixFeatures(slice.id);
+            fixed += superseded.supersededCount;
+            if (superseded.supersededCount > 0) {
+              const refreshed = await missionStore.getSlice(slice.id);
+              if (refreshed?.status === "complete") { await this.onSliceComplete(refreshed); continue; }
             }
-            if (feature.status !== "defined" && feature.status !== "triaged" && feature.status !== "in-progress") continue;
-            const ready = feature.status === "defined" ? feature : await missionStore.updateFeature(feature.id, { status: "defined", loopState: "idle", taskId: undefined });
-            if (ready !== feature) fixed++;
-            const triaged = await missionStore.triageFeature(ready.id);
-            fixed++;
-            if (triaged.taskId) await this.emitStrandedFeatureTriageAudit(mission.id, slice.id, triaged.id, triaged.taskId);
+            const listFeatures = (missionStore as unknown as { listFeatures?: (sliceId: string) => Promise<MissionFeature[]> | MissionFeature[] }).listFeatures;
+            /*
+            FNXC:MissionAutoReconcile 2026-08-12-21:58:
+            Mission-store methods use their receiver, so optional-capability probing must invoke listFeatures with missionStore.
+            Per-slice containment logs a failed slice but lets remaining slices and missions reconcile in the same pass.
+            */
+            const features = listFeatures ? await listFeatures.call(missionStore, slice.id) : slice.features;
+            const supersededFeatureIds = new Set(superseded.featureIds ?? []);
+            const autoTriage = mission.autopilotEnabled === true || mission.autoAdvance === true;
+            for (const feature of features) {
+              if (supersededFeatureIds.has(feature.id) || feature.taskId || !autoTriage || feature.status === "blocked") continue;
+              if (feature.status !== "defined" && this.isGeneratedFixFeature(feature)) {
+                await missionStore.updateFeature(feature.id, { status: "blocked", loopState: "blocked", taskId: undefined });
+                fixed++;
+                continue;
+              }
+              if (feature.status !== "defined" && feature.status !== "triaged" && feature.status !== "in-progress") continue;
+              const ready = feature.status === "defined" ? feature : await missionStore.updateFeature(feature.id, { status: "defined", loopState: "idle", taskId: undefined });
+              if (ready !== feature) fixed++;
+              const triaged = await missionStore.triageFeature(ready.id);
+              fixed++;
+              if (triaged.taskId) await this.emitStrandedFeatureTriageAudit(mission.id, slice.id, triaged.id, triaged.taskId);
+            }
+          } catch (error) {
+            schedulerLog.error(`Error during active mission recovery reconciliation for slice ${slice.id}:`, error);
           }
         }
       }
