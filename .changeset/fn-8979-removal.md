@@ -1,5 +1,5 @@
 ---
-"@runfusion/fusion": major
+"@runfusion/fusion": minor
 ---
 
 summary: Remove deprecated v0 mission resume blockers in favor of canonical descriptors.
