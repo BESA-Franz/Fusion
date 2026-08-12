@@ -678,8 +678,13 @@ export const taskLifecycleConsumerDeadLetters = projectSchema.table("task_lifecy
 }, (t) => [primaryKey({ columns: [t.projectId, t.consumerId, t.eventId] })]);
 
 // ── Workflow step definitions ────────────────────────────────────────
+/*
+FNXC:MultiProjectIsolation 2026-08-12-02:12:
+Migration 0006 physically partitions workflow steps by project_id and rewrites their key. Declare that ownership here so bound stores can scope colliding per-project ws-<n> identifiers without exposing projectId in public WorkflowStep payloads.
+*/
 export const workflowSteps = projectSchema.table("workflow_steps", {
-  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(),
   templateId: text("template_id"),
   name: text("name").notNull(),
   description: text("description").notNull(),
@@ -696,7 +701,10 @@ export const workflowSteps = projectSchema.table("workflow_steps", {
   migratedFragmentId: text("migrated_fragment_id"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
-});
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.id] }),
+  index("idxWorkflowStepsProjectCreatedAt").on(t.projectId, t.createdAt),
+]);
 
 export const workflows = projectSchema.table("workflows", {
   id: text("id").primaryKey(),
@@ -1714,6 +1722,10 @@ export const missionEvents = projectSchema.table("mission_events", {
 ]);
 
 // ── Plugins / routines / insights ───────────────────────────────────
+/*
+FNXC:MultiProjectIsolation 2026-08-12-02:12:
+Audit FN-8997 confirmed 0006 physically partitions this legacy compatibility table, but no runtime Drizzle read/write path reaches it: sqlite migration redirects plugin rows to central registry tables. Keep this declaration intentionally unscoped rather than introducing unused ORM surface.
+*/
 export const plugins = projectSchema.table("plugins", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
@@ -2406,7 +2418,11 @@ export const chatRooms = projectSchema.table("chat_rooms", {
   name: text("name").notNull(),
   slug: text("slug").notNull(),
   description: text("description"),
-  projectId: text("project_id"),
+  /*
+  FNXC:MultiProjectIsolation 2026-08-12-02:12:
+  Migration 0006 backfills, defaults, and requires the trigger/GUC-owned partition key. Keep it distinct from ownerProjectId, which is a nullable domain attribute introduced by migration 0011.
+  */
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
   // FNXC:MultiProjectIsolation 2026-07-15-23:40: domain "project" field, split from the trigger/GUC-owned project_id RLS partition (migration 0011).
   ownerProjectId: text("owner_project_id"),
   createdBy: text("created_by"),
@@ -2421,18 +2437,28 @@ export const chatRooms = projectSchema.table("chat_rooms", {
   index("idxChatRoomsStatus").on(t.status),
 ]);
 
+/*
+FNXC:MultiProjectIsolation 2026-08-12-02:12:
+Migration 0006 gives memberships a project-local composite key. The explicit column enables bound member predicates, including the first leg of duplicate room-id isolation.
+*/
 export const chatRoomMembers = projectSchema.table("chat_room_members", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
   roomId: text("room_id").notNull(),
   agentId: text("agent_id").notNull(),
   role: text("role").notNull().default("member"),
   addedAt: text("added_at").notNull(),
 }, (t) => [
-  primaryKey({ columns: [t.roomId, t.agentId] }),
-  index("idxChatRoomMembersAgentId").on(t.agentId),
+  primaryKey({ columns: [t.projectId, t.roomId, t.agentId] }),
+  index("idxChatRoomMembersAgentId").on(t.projectId, t.agentId),
 ]);
 
+/*
+FNXC:MultiProjectIsolation 2026-08-12-02:12:
+Migration 0006 makes message ids project-local. Declare the partition so room/message reads and mutations cannot cross a duplicated room or message id.
+*/
 export const chatRoomMessages = projectSchema.table("chat_room_messages", {
-  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(),
   roomId: text("room_id").notNull(),
   role: text("role").notNull(),
   content: text("content").notNull(),
@@ -2443,8 +2469,9 @@ export const chatRoomMessages = projectSchema.table("chat_room_messages", {
   mentions: jsonb("mentions"),
   createdAt: text("created_at").notNull(),
 }, (t) => [
-  index("idxChatRoomMessagesRoomCreatedAt").on(t.roomId, t.createdAt),
-  index("idxChatRoomMessagesRoomId").on(t.roomId),
+  primaryKey({ columns: [t.projectId, t.id] }),
+  index("idxChatRoomMessagesRoomCreatedAt").on(t.projectId, t.roomId, t.createdAt),
+  index("idxChatRoomMessagesRoomId").on(t.projectId, t.roomId),
 ]);
 
 /**

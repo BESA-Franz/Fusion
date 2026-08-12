@@ -25,7 +25,7 @@ import "../builtin-traits.js";
 import {normalizeWorkflowIcon, type WorkflowDefinition, type WorkflowDefinitionInput} from "../workflows/workflow-definition-types.js";
 import {normalizeTaskPriority} from "../tasks/task-priority.js";
 import type {AsyncDataLayer, DbTransaction} from "../postgres/data-layer.js";
-import {recordRunAuditEventWithinTransaction} from "../postgres/data-layer.js";
+import {projectScopeFor, recordRunAuditEventWithinTransaction} from "../postgres/data-layer.js";
 import {EvalStore} from "../eval/eval-store.js";
 import {AsyncEvalStore} from "../async-stores/async-eval-store.js";
 import {BackwardCompat, ProjectRequiredError} from "../central/migration.js";
@@ -712,6 +712,7 @@ export async function listWorkflowStepsImpl(store: TaskStore): Promise<import(".
     const pgRows = await store.asyncLayer!.db
       .select()
       .from(table)
+      .where(projectScopeFor(table.projectId, store.asyncLayer!.projectId))
       .orderBy(table.createdAt);
     const storedPgSteps = pgRows
       .map((row) => store.applyLegacyWorkflowStepOverrides(store.toStoredWorkflowStep({
@@ -751,13 +752,13 @@ export async function getWorkflowStepImpl(store: TaskStore, id: string): Promise
     const byIdRows = await store.asyncLayer!.db
       .select()
       .from(table)
-      .where(eq(table.id, id))
+      .where(and(eq(table.id, id), projectScopeFor(table.projectId, store.asyncLayer!.projectId)))
       .limit(1);
     if (byIdRows[0]) return mapRow(byIdRows[0]);
     const byTemplateRows = await store.asyncLayer!.db
       .select()
       .from(table)
-      .where(eq(table.templateId, id))
+      .where(and(eq(table.templateId, id), projectScopeFor(table.projectId, store.asyncLayer!.projectId)))
       .orderBy(table.createdAt)
       .limit(1);
     if (byTemplateRows[0]) return mapRow(byTemplateRows[0]);

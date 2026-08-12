@@ -514,7 +514,7 @@ export async function deleteWorkflowStepImpl(store: TaskStore, id: string): Prom
         const layer = store.asyncLayer!;
     const deletedRows = await layer.db
       .delete(schema.project.workflowSteps)
-      .where(eq(schema.project.workflowSteps.id, id))
+      .where(and(eq(schema.project.workflowSteps.id, id), projectScopeFor(schema.project.workflowSteps.projectId, layer.projectId)))
       .returning({ id: schema.project.workflowSteps.id });
     if (deletedRows.length === 0) {
       throw new Error(`Workflow step '${id}' not found`);

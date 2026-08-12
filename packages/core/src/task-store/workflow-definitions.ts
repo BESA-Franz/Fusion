@@ -654,7 +654,7 @@ export async function purgeTaskWorkflowSelectionRowsAsyncImpl(store: TaskStore, 
     if (Array.isArray(parsed)) {
       for (const stepId of parsed) {
         if (typeof stepId === "string") {
-          await layer.db.delete(schema.project.workflowSteps).where(eq(schema.project.workflowSteps.id, stepId));
+          await layer.db.delete(schema.project.workflowSteps).where(and(eq(schema.project.workflowSteps.id, stepId), projectScopeFor(schema.project.workflowSteps.projectId, layer.projectId)));
         }
       }
     }
@@ -679,7 +679,7 @@ export async function cleanupOrphanedMaterializedStepsImpl(store: TaskStore, ste
     const layer = store.getAsyncLayer();
     if (layer) {
       try {
-        await layer.db.delete(schema.project.workflowSteps).where(inArray(schema.project.workflowSteps.id, stepIds));
+        await layer.db.delete(schema.project.workflowSteps).where(and(inArray(schema.project.workflowSteps.id, stepIds), projectScopeFor(schema.project.workflowSteps.projectId, layer.projectId)));
       } catch {
         // Best-effort cleanup.
       }
