@@ -1910,7 +1910,11 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         if (
           deterministicGuard.action === "duplicate"
           && deterministicGuard.existing
-          && deterministicGuard.existing.proposalClaimId === trusted?.proposalClaimId
+          && typeof trusted?.proposalClaimId === "string"
+          && trusted.proposalClaimId.length > 0
+          && typeof deterministicGuard.existing.proposalClaimId === "string"
+          && deterministicGuard.existing.proposalClaimId.length > 0
+          && deterministicGuard.existing.proposalClaimId === trusted.proposalClaimId
         ) {
           /*
           FNXC:TaskRecommendations 2026-08-08-05:27:
@@ -1918,6 +1922,11 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           A second process can observe its newly-created child while checking the normal content
           guard; reuse that immutable same-recommendation winner and repair the parent link rather
           than surfacing the ordinary duplicate conflict reserved for distinct recommendations.
+
+          FNXC:TaskRecommendations 2026-08-12-00:58:
+          Reuse is reserved for a named proposal claim on both the trusted request and canonical.
+          Comparing absent ids made every ordinary deterministic duplicate return 200 and skipped
+          the duplicate-blocker classification that preserves legitimate done or archived creates.
           */
           const trustedCreateResult = await trusted?.onCreated?.(deterministicGuard.existing);
           res.status(200).json(trusted?.responseForCreated?.(deterministicGuard.existing, trustedCreateResult) ?? deterministicGuard.existing);
