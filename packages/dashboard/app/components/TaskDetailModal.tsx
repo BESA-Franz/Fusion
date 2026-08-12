@@ -1217,18 +1217,35 @@ export function TaskDetailContent({
   }, [activeTab, task.column, isDoneColumn, detailFlagsAreForThisTask]);
 
   /*
-  FNXC:TaskRecommendations 2026-08-09-01:21:
-  Completed tasks always expose Recommendations, even when the executor produced no records, so
-  operators can distinguish an empty result from unavailable functionality. Reconcile away only
-  after this task's resolved complete-role result says the card left completion; waiting preserves
-  a deliberate tab selection while workflow metadata is still unresolved.
+  FNXC:TaskRecommendations 2026-08-12-23:01:
+  Empty Recommendations tabs on nearly every completed card are operator noise, so visibility now
+  requires captured content; TaskRecommendationsTab keeps its empty branch as a defensive fallback
+  if an open tab's snapshot empties. A task switch briefly merges the prior full-detail snapshot into
+  the next slim prop before effects clear it, so read recommendations only from a snapshot proven to
+  belong to this task. Reconciliation needs that same positive identity proof rather than
+  detailLoading: rejected fetches, stale switch state, and hidden kept-alive hosts can all report not
+  loading while this task's recommendation answer remains unknown. As with PR and Summary, waiting
+  preserves an operator or deep-link tab selection until the answer is safe to act on.
   */
-  const hasRecommendations = isDoneColumn;
+  const detailSnapshotIsForThisTask = fullDetail?.id === task.id;
+  const taskOwnedRecommendations = detailSnapshotIsForThisTask
+    ? workingTask.recommendations
+    : task.recommendations;
+  const hasRecommendations = isDoneColumn && (taskOwnedRecommendations?.length ?? 0) > 0;
   useEffect(() => {
-    if (detailFlagsAreForThisTask && activeTab === "recommendations" && !hasRecommendations) {
+    if (!detailFlagsAreForThisTask) return;
+    if (!detailSnapshotIsForThisTask) return;
+    if (activeTab === "recommendations" && !hasRecommendations) {
       setActiveTab("definition");
     }
-  }, [activeTab, detailFlagsAreForThisTask, hasRecommendations]);
+  }, [
+    activeTab,
+    detailFlagsAreForThisTask,
+    detailSnapshotIsForThisTask,
+    fullDetail?.id,
+    hasRecommendations,
+    task.id,
+  ]);
 
   // Reset planner-chat focus when the operator opens a different task.
   useEffect(() => {
