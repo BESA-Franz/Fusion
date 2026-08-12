@@ -681,7 +681,12 @@ The full **New Task** dialog includes a compact **GitHub issue or PR** picker ne
 
 ## Chat View
 
-Chat view provides project-scoped conversations with agents.
+Chat view provides project-scoped conversations with agents. The default conversation list contains only active sessions; use **Archived conversations** to view archived sessions, restore one to the active list, or explicitly delete it. Archive is the default removal action, while delete remains a separate destructive action.
+
+## Mailbox archive
+
+Mailbox Inbox, Outbox, and agent lists exclude archived correspondence and unread badges ignore it. Select **Archived** to review archived messages and restore them; Archive is the default removal action and Delete remains available as an explicit destructive action.
+
 
 - Direct Chat, Chat Room responders, and task-detail Planner Chat have coding workspace tools at the interactive project checkout: `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`. They can make user-directed edits and run shell investigation; a bound durable agent remains subject to its permanent-agent file-write and command-execution permission policy. These Chat sessions keep the checkout branch sticky unless you explicitly ask to switch it. Planning/mission interviews and WhatsApp plugin chat remain readonly.
 

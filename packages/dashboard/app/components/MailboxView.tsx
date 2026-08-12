@@ -8,6 +8,7 @@ import {
   Inbox as InboxIcon,
   Bot,
   Trash2,
+  Archive,
   CheckCheck,
   Loader2,
   RefreshCw,
@@ -23,6 +24,8 @@ import {
   fetchAllAgentMailbox,
   markMessageRead,
   markAllMessagesRead,
+  archiveMessage,
+  unarchiveMessage,
   deleteMessage,
   fetchConversation,
   fetchAgents,
@@ -57,7 +60,7 @@ import { getRelativeTimeBucket } from "../utils/relativeTimeAgo";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
-type MailboxTab = "inbox" | "outbox" | "agents" | "approvals";
+type MailboxTab = "inbox" | "outbox" | "archived" | "agents" | "approvals";
 
 interface MailboxViewProps {
   projectId?: string;
@@ -240,9 +243,11 @@ export function MailboxView({
   const consumedComposePrefillNonceRef = useRef<number | null>(null);
   const [structuralFilter, setStructuralFilter] = useState<"all" | "structural">("all");
   const [outbox, setOutbox] = useState<OutboxResponse | null>(null);
+  const [archivedInbox, setArchivedInbox] = useState<InboxResponse | null>(null);
   const [unreadCount, setUnreadCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
+  const [pendingDeleteMessageId, setPendingDeleteMessageId] = useState<string | null>(null);
   const [conversationMessages, setConversationMessages] = useState<Message[]>([]);
   const [showComposer, setShowComposer] = useState(false);
   const [composeRecipient, setComposeRecipient] = useState<{ id: string; type: ParticipantType } | null>(null);
@@ -456,6 +461,28 @@ export function MailboxView({
     }
   }, [projectId, onUnreadCountChange, captureMailboxScroll]);
 
+  const loadArchivedInbox = useCallback(async () => {
+    captureMailboxScroll();
+    setIsLoading(true);
+    try {
+      /*
+      FNXC:MessageArchive 2026-08-12-22:38:
+      The archive is a restore surface for every mailbox source, including sent and agent mail.
+      Combine the source-specific archive queries and deduplicate IDs so archiving never strands a message outside its restore view.
+      */
+      const [inbox, outbox, agentMailbox] = await Promise.all([
+        fetchInbox({ limit: 50, archived: true }, projectId),
+        fetchOutbox({ limit: 50, archived: true }, projectId),
+        fetchAllAgentMailbox(projectId, { archived: true }),
+      ]);
+      const messages = [...inbox.messages, ...outbox.messages, ...agentMailbox.messages]
+        .filter((message, index, all) => all.findIndex(({ id }) => id === message.id) === index);
+      setArchivedInbox({ messages, total: messages.length, unreadCount: 0 });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [projectId, captureMailboxScroll]);
+
   const loadOutbox = useCallback(async () => {
     captureMailboxScroll();
     setIsLoading(true);
@@ -546,11 +573,12 @@ export function MailboxView({
   useEffect(() => {
     if (activeTab === "inbox") loadInbox();
     else if (activeTab === "outbox") loadOutbox();
+    else if (activeTab === "archived") loadArchivedInbox();
     else if (activeTab === "agents") loadAgents();
     else if (activeTab === "approvals") {
       void loadApprovals(approvalSubTab);
     }
-  }, [activeTab, loadInbox, loadOutbox, loadAgents, loadApprovals, approvalSubTab]);
+  }, [activeTab, loadInbox, loadOutbox, loadArchivedInbox, loadAgents, loadApprovals, approvalSubTab]);
 
   // Load agent mailbox when selected
   useEffect(() => {
@@ -746,14 +774,45 @@ export function MailboxView({
     }
   }, [projectId, addToast, onUnreadCountChange]);
 
+  /*
+  FNXC:MessageArchive 2026-08-12-22:14:
+  Archive is the default mailbox removal action. Delete remains an explicit destructive choice.
+  */
+  const handleArchiveMessage = useCallback(async (id: string) => {
+    consumeCurrentDeepLink();
+    try {
+      await archiveMessage(id, projectId);
+      dismissMessage();
+      if (activeTab === "archived") loadArchivedInbox();
+      else if (activeTab === "outbox") loadOutbox();
+      else if (activeTab === "inbox") loadInbox();
+      else if (selectedAgentId === ALL_AGENTS_MAILBOX_ID) loadAllAgentsMailbox();
+      else if (selectedAgentId) loadAgentMailbox(selectedAgentId);
+      refreshUnreadCount();
+      addToast?.("Message archived", "success");
+    } catch { addToast?.("Failed to archive message", "error"); }
+  }, [projectId, activeTab, selectedAgentId, loadArchivedInbox, loadInbox, loadOutbox, loadAgentMailbox, loadAllAgentsMailbox, refreshUnreadCount, addToast, consumeCurrentDeepLink, dismissMessage]);
+
+  const handleUnarchiveMessage = useCallback(async (id: string) => {
+    try {
+      await unarchiveMessage(id, projectId);
+      dismissMessage();
+      loadArchivedInbox();
+      refreshUnreadCount();
+      addToast?.("Message restored", "success");
+    } catch { addToast?.("Failed to restore message", "error"); }
+  }, [projectId, loadArchivedInbox, refreshUnreadCount, addToast, dismissMessage]);
+
   const handleDeleteMessage = useCallback(async (id: string) => {
     consumeCurrentDeepLink();
+    setPendingDeleteMessageId(null);
     try {
       await deleteMessage(id, projectId);
       dismissMessage();
       // Refresh current tab
       if (activeTab === "inbox") loadInbox();
       else if (activeTab === "outbox") loadOutbox();
+    else if (activeTab === "archived") loadArchivedInbox();
       else if (selectedAgentId === ALL_AGENTS_MAILBOX_ID) loadAllAgentsMailbox();
       else if (selectedAgentId) loadAgentMailbox(selectedAgentId);
       addToast?.("Message deleted", "success");
@@ -942,14 +1001,30 @@ export function MailboxView({
                 <span>{t("mailbox.reply", "Reply")}</span>
               </button>
             )}
-            <button
-              className="btn btn-sm btn-secondary"
-              onClick={() => handleDeleteMessage(selectedMessage.id)}
-              data-testid="mailbox-delete"
-            >
-              <Trash2 size={14} />
-              <span>{t("mailbox.delete", "Delete")}</span>
-            </button>
+            {selectedMessage.archived ? (
+              <button className="btn btn-sm btn-secondary" onClick={() => handleUnarchiveMessage(selectedMessage.id)} data-testid="mailbox-unarchive">
+                <Archive size={14} /><span>Restore</span>
+              </button>
+            ) : (
+              <button className="btn btn-sm btn-secondary" onClick={() => handleArchiveMessage(selectedMessage.id)} data-testid="mailbox-archive">
+                <Archive size={14} /><span>Archive</span>
+              </button>
+            )}
+            {pendingDeleteMessageId === selectedMessage.id ? (
+              <>
+                {/* FNXC:MessageArchive 2026-08-12-22:51: Hard deletion needs a second deliberate click because archive is the default safe removal action. */}
+                <button className="btn btn-sm btn-secondary" onClick={() => void handleDeleteMessage(selectedMessage.id)} data-testid="mailbox-delete-confirm">
+                  <Trash2 size={14} /><span>{t("mailbox.confirmDelete", "Confirm delete")}</span>
+                </button>
+                <button className="btn btn-sm btn-secondary" onClick={() => setPendingDeleteMessageId(null)} data-testid="mailbox-delete-cancel">
+                  <span>{t("common.cancel", "Cancel")}</span>
+                </button>
+              </>
+            ) : (
+              <button className="btn btn-sm btn-secondary" onClick={() => setPendingDeleteMessageId(selectedMessage.id)} data-testid="mailbox-delete">
+                <Trash2 size={14} /><span>{t("mailbox.delete", "Delete")}</span>
+              </button>
+            )}
           </div>
         </div>
         <div className="mailbox-message-participants">
@@ -1059,6 +1134,17 @@ export function MailboxView({
 
   const renderListPane = () => (
     <>
+      {activeTab === "archived" && (
+        <div className="mailbox-list" data-testid="mailbox-archived-list">
+          {isLoading && !archivedInbox && <MailboxSkeleton />}
+          {archivedInbox?.messages.length === 0 && <div className="mailbox-empty" data-testid="mailbox-archived-empty">No archived messages</div>}
+          {archivedInbox?.messages.map((message) => (
+            <button type="button" className="mailbox-item" key={message.id} onClick={() => void handleOpenMessage(message)} data-testid={`mailbox-item-${message.id}`}>
+              <span className="mailbox-item-preview">{message.content}</span>
+            </button>
+          ))}
+        </div>
+      )}
       {activeTab === "inbox" && (
         <div className="mailbox-list" data-testid="mailbox-inbox-list">
           <div className="mailbox-structural-filter" role="group" aria-label="Inbox filter">
@@ -1490,6 +1576,7 @@ export function MailboxView({
               onClick={() => {
                 if (activeTab === "inbox") loadInbox();
                 else if (activeTab === "outbox") loadOutbox();
+    else if (activeTab === "archived") loadArchivedInbox();
                 else if (activeTab === "approvals") loadApprovals(approvalSubTab);
                 else if (selectedAgentId === ALL_AGENTS_MAILBOX_ID) loadAllAgentsMailbox();
                 else if (selectedAgentId) loadAgentMailbox(selectedAgentId);
@@ -1523,6 +1610,7 @@ export function MailboxView({
           <Send size={14} />
           <span>{t("mailbox.outbox", "Outbox")}</span>
         </button>
+        <button className={`btn btn-sm btn-secondary mailbox-tab ${activeTab === "archived" ? "active" : ""}`} onClick={() => handleSelectTab("archived")} data-testid="mailbox-tab-archived">Archived</button>
         <button
           className={`btn btn-sm btn-secondary mailbox-tab ${activeTab === "agents" ? "active" : ""}`}
           onClick={() => handleSelectTab("agents")}

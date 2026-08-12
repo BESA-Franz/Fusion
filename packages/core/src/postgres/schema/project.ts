@@ -2098,12 +2098,14 @@ export const messages = projectSchema.table("messages", {
   content: text("content").notNull(),
   type: text("type").notNull(),
   read: integer("read").default(0),
+  archived: integer("archived").default(0),
   metadata: jsonb("metadata"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (t) => [
   primaryKey({ columns: [t.projectId, t.id] }),
   index("idxMessagesTo").on(t.toId, t.toType, t.read),
+  index("idxMessagesToArchived").on(t.toId, t.toType, t.archived),
   index("idxMessagesFrom").on(t.fromId, t.fromType),
   index("idxMessagesCreatedAt").on(t.createdAt),
 ]);

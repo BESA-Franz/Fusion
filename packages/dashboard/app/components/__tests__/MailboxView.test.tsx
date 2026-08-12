@@ -72,6 +72,7 @@ vi.mock("lucide-react", () => ({
   Inbox: () => <span data-testid="icon-inbox">Inbox</span>,
   Bot: () => <span data-testid="icon-bot">Bot</span>,
   Trash2: () => <span data-testid="icon-trash">Trash</span>,
+  Archive: () => <span data-testid="icon-archive">Archive</span>,
   Check: () => <span data-testid="icon-check">Check</span>,
   CheckCheck: () => <span data-testid="icon-checkcheck">CheckCheck</span>,
   Loader2: ({ className }: { className?: string }) => (
@@ -1219,7 +1220,10 @@ describe("MailboxView", () => {
 
   it.each([
     ["the in-pane Back button", async () => fireEvent.click(screen.getByTestId("mailbox-back-to-list"))],
-    ["delete", async () => fireEvent.click(screen.getByTestId("mailbox-delete"))],
+    ["delete", async () => {
+      fireEvent.click(screen.getByTestId("mailbox-delete"));
+      fireEvent.click(screen.getByTestId("mailbox-delete-confirm"));
+    }],
     ["an agent tab switch", async () => fireEvent.click(screen.getByTestId("mailbox-tab-outbox"))],
   ])("consumes the message entry before %s", async (_label, close) => {
     mockUseViewportMode.mockReturnValue("mobile");
@@ -1575,7 +1579,11 @@ describe("MailboxView", () => {
     await act(async () => {
       fireEvent.click(deleteButton);
     });
+    expect(mockDeleteMessage).not.toHaveBeenCalled();
 
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("mailbox-delete-confirm"));
+    });
     await waitFor(() => {
       expect(mockDeleteMessage).toHaveBeenCalledWith("msg-001", undefined);
     });

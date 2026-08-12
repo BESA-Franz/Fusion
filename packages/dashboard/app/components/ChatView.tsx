@@ -626,6 +626,9 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     selectSession,
     createSession,
     archiveSession,
+    archivedSessions,
+    refreshArchivedSessions,
+    unarchiveSession,
     renameSession,
     pinSession,
     pinnedCount,
@@ -679,6 +682,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     return getPersistedChatDraft(initialDraftKey);
   });
   const [contextMenu, setContextMenu] = useState<{ sessionId: string; anchorX: number; anchorY: number; anchorRight: boolean; x: number; y: number } | null>(null);
+  const [showArchivedSessions, setShowArchivedSessions] = useState(false);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   /*
   FNXC:ChatSidebar 2026-07-17-00:12:
@@ -2491,6 +2495,11 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
     [archiveSession, addToast],
   );
 
+  const handleRestoreArchived = useCallback(async (id: string) => {
+    try { await unarchiveSession(id); addToast(t("chat.conversationRestored", "Conversation restored"), "success"); }
+    catch { addToast(t("chat.failedToRestoreConversation", "Failed to restore conversation"), "error"); }
+  }, [unarchiveSession, addToast, t]);
+
   const openRenameDialog = useCallback(
     (id: string) => {
       const session = filteredSessions.find((item) => item.id === id) ?? (activeSession?.id === id ? activeSession : null);
@@ -3211,8 +3220,9 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
   FNXC:ChatHeader 2026-06-22-18:44:
   Very narrow chat headers collapse Direct/Rooms to icons while retaining aria-selected tabs and text labels for wider headers. The segmented control must stay height-aligned with the ViewHeader action row, so icon+label markup is stable and CSS hides only the label.
   */
-  const pinnedFilteredSessions = filteredSessions.filter((session) => session.pinnedAt != null);
-  const unpinnedFilteredSessions = filteredSessions.filter((session) => session.pinnedAt == null);
+  const visibleSidebarSessions = showArchivedSessions ? archivedSessions : filteredSessions;
+  const pinnedFilteredSessions = visibleSidebarSessions.filter((session) => session.pinnedAt != null);
+  const unpinnedFilteredSessions = visibleSidebarSessions.filter((session) => session.pinnedAt == null);
   const contextMenuSession = contextMenu
     ? filteredSessions.find((session) => session.id === contextMenu.sessionId) ?? (activeSession?.id === contextMenu.sessionId ? activeSession : undefined)
     : undefined;
@@ -3301,6 +3311,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               >
                 {session.pinnedAt ? <PinOff size={14} /> : <Pin size={14} />}
               </button>
+              <button type="button" className="btn-icon chat-mobile-session-archive" data-testid={`chat-mobile-session-archive-${session.id}`} aria-label={t("chat.archive", "Archive")} onClick={() => void handleArchive(session.id)}><Archive size={14} /></button>
               <button
                 type="button"
                 className="btn-icon chat-mobile-session-rename"
@@ -3495,10 +3506,11 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
               </label>
             </div>
             {/* Session list section */}
+            <div className="chat-archived-toggle"><button type="button" className="btn btn-sm btn-secondary" data-testid="chat-archived-toggle" onClick={() => { const next = !showArchivedSessions; setShowArchivedSessions(next); if (next) void refreshArchivedSessions(); }}>{showArchivedSessions ? "Active conversations" : "Archived conversations"}</button></div>
             <div className="chat-session-list chat-sidebar-list">
               {sessionsLoading ? (
                 <div className="chat-empty-state chat-empty-state--padded">{t("chat.loadingConversations", "Loading...")}</div>
-              ) : filteredSessions.length === 0 ? (
+              ) : ((showArchivedSessions ? archivedSessions : filteredSessions).length === 0) ? (
                 <div className="chat-empty-state chat-empty-state--padded">{t("chat.noConversationsYet", "No conversations yet")}</div>
               ) : (
                 <>
@@ -3534,7 +3546,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                         e.preventDefault();
                         openSessionMenu(session.id, e.clientX, e.clientY);
                       }}
-                      data-testid={`chat-session-${session.id}`}
+                      data-testid={showArchivedSessions ? `chat-archived-session-${session.id}` : `chat-session-${session.id}`}
                     >
                       {/*
                       FNXC:ChatSidebar 2026-07-16-00:00:
@@ -3579,6 +3591,7 @@ export function ChatView({ projectId, addToast, floating = false, compactLayout 
                           {t("chat.matchedInMessage", "Matched: \"{{preview}}\"", { preview: session.matchedMessagePreview })}
                         </div>
                       ) : null}
+                      {showArchivedSessions ? <button type="button" className="btn btn-sm btn-secondary" data-testid={`chat-archived-restore-${session.id}`} onClick={(event) => { event.stopPropagation(); void handleRestoreArchived(session.id); }}>Restore</button> : null}
                       <div className="chat-session-meta">
                         <span className="chat-session-meta-model">
                           {sessionResolvedModel?.provider ? <ProviderIcon provider={sessionResolvedModel.provider} size="sm" /> : null}

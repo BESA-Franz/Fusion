@@ -168,7 +168,7 @@ describe("useChat", () => {
     const { result } = renderHook(() => useChat("proj-123"));
 
     await waitFor(() => {
-      expect(mockFetchChatSessions).toHaveBeenCalledWith("proj-123");
+      expect(mockFetchChatSessions).toHaveBeenCalledWith("proj-123", "active");
     });
 
     await waitFor(() => {
@@ -210,7 +210,7 @@ describe("useChat", () => {
     });
 
     await waitFor(() => {
-      expect(mockFetchChatSessions).toHaveBeenCalledWith(projectId);
+      expect(mockFetchChatSessions).toHaveBeenCalledWith(projectId, "active");
     });
   });
 
@@ -390,13 +390,13 @@ describe("useChat", () => {
     });
 
     await waitFor(() => {
-      expect(mockFetchChatSessions).toHaveBeenCalledWith("p1");
+      expect(mockFetchChatSessions).toHaveBeenCalledWith("p1", "active");
     });
 
     rerender({ projectId: "p2" });
 
     await waitFor(() => {
-      expect(mockFetchChatSessions).toHaveBeenCalledWith("p2");
+      expect(mockFetchChatSessions).toHaveBeenCalledWith("p2", "active");
     });
     expect(mockFetchChatSessions).toHaveBeenCalledTimes(2);
   });
@@ -943,6 +943,31 @@ describe("useChat", () => {
     await waitFor(() => {
       expect(result.current.sessions).toHaveLength(0);
     });
+  });
+
+  it("keeps archived sessions out of the default refresh and restores them from the archived list", async () => {
+    const active = makeSession({ id: "session-active", agentId: "agent-001", title: "Active" });
+    const archived = makeSession({ id: "session-archived", agentId: "agent-002", title: "Archived", status: "archived" });
+    mockFetchChatSessions.mockResolvedValue({ sessions: [active, archived] });
+    mockUpdateChatSession.mockResolvedValue({ session: active });
+
+    const { result } = renderHook(() => useChat("proj-archive"));
+
+    await waitFor(() => {
+      expect(mockFetchChatSessions).toHaveBeenCalledWith("proj-archive", "active");
+      expect(result.current.sessions.map((session) => session.id)).toEqual(["session-active"]);
+    });
+
+    await act(async () => {
+      await result.current.refreshArchivedSessions();
+    });
+    expect(mockFetchChatSessions).toHaveBeenCalledWith("proj-archive", "archived");
+    expect(result.current.archivedSessions.map((session) => session.id)).toEqual(["session-archived"]);
+
+    await act(async () => {
+      await result.current.unarchiveSession("session-archived");
+    });
+    expect(mockUpdateChatSession).toHaveBeenCalledWith("session-archived", { status: "active" }, "proj-archive");
   });
 
   it("renames a session optimistically, trims the API title, and updates the active header state", async () => {
@@ -3245,7 +3270,7 @@ describe("useChat", () => {
     const { result } = renderHook(() => useChat("proj-123"));
 
     await waitFor(() => {
-      expect(mockFetchChatSessions).toHaveBeenCalledWith("proj-123");
+      expect(mockFetchChatSessions).toHaveBeenCalledWith("proj-123", "active");
     });
 
     expect(() => {

@@ -151,6 +151,13 @@ export interface Message {
   type: MessageType;
   /** Whether the recipient has read this message */
   read: boolean;
+  /*
+  FNXC:MessageArchive 2026-08-12-22:14:
+  Archive is the default non-destructive removal action; delete remains an explicit
+  operator choice. Default message reads exclude archived correspondence.
+  */
+  /** Whether the message is archived */
+  archived: boolean;
   /** Optional extra data */
   metadata?: MessageMetadata;
   /** ISO-8601 timestamp of creation */
@@ -183,6 +190,8 @@ export interface MessageFilter {
   type?: MessageType;
   /** Filter by read status */
   read?: boolean;
+  /** Filter by archived status; omitted excludes archived messages. */
+  archived?: boolean;
   /** Maximum number of messages to return */
   limit?: number;
   /** Number of messages to skip (for pagination) */

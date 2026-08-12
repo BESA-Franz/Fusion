@@ -100,6 +100,7 @@ import {
   AGENT_RATINGS_PROJECT_PARTITION_VERSION,
   PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION,
   PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION,
+  MESSAGE_ARCHIVE_SCHEMA_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -133,7 +134,8 @@ describe("schema-applier: immutable migration identities", () => {
     expect(AGENT_RATINGS_PROJECT_PARTITION_VERSION).toBe("0055");
     expect(PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION).toBe("0056");
     expect(PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION).toBe("0057");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0057");
+    expect(MESSAGE_ARCHIVE_SCHEMA_VERSION).toBe("0058");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0058");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -1806,6 +1808,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       AGENT_RATINGS_PROJECT_PARTITION_VERSION,
   PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION,
       PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION,
+      MESSAGE_ARCHIVE_SCHEMA_VERSION,
     ]);
     expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
   });
@@ -1889,6 +1892,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       AGENT_RATINGS_PROJECT_PARTITION_VERSION,
   PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION,
       PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION,
+      MESSAGE_ARCHIVE_SCHEMA_VERSION,
     ]);
   });
 
@@ -2105,6 +2109,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       AGENT_RATINGS_PROJECT_PARTITION_VERSION,
   PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION,
       PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION,
+      MESSAGE_ARCHIVE_SCHEMA_VERSION,
     ]);
   });
 
@@ -2202,6 +2207,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       AGENT_RATINGS_PROJECT_PARTITION_VERSION,
   PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION,
       PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION,
+      MESSAGE_ARCHIVE_SCHEMA_VERSION,
     ]);
   });
 
@@ -2299,6 +2305,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       AGENT_RATINGS_PROJECT_PARTITION_VERSION,
   PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION,
       PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION,
+      MESSAGE_ARCHIVE_SCHEMA_VERSION,
     ]);
   });
 });

@@ -1287,6 +1287,7 @@ export type {
  */
 export {
   addAgentRating,
+  archiveMessage,
   createProposedTask,
   decideApproval,
   deleteAgentRating,
@@ -1311,6 +1312,7 @@ export {
   resetAgentBudget,
   sendMessage,
   triggerAgentReflection,
+  unarchiveMessage,
 } from "./chat/messaging.js";
 export type {
   AgentMailboxResponse,

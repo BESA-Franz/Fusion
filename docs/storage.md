@@ -535,7 +535,7 @@ The `tasks.cumulativeActiveMs` and `tasks.executionCompletedAt` columns are the 
 | `todo_lists` | Project-scoped todo list metadata (`projectId`, title, created/updated timestamps). |
 | `todo_items` | Todo list items (`listId` FK) with completion state, completion timestamp, and deterministic `sortOrder`. |
 | `ai_sessions` *(migration-created)* | Persisted AI interactive sessions (planning/interview/subtask) with status and conversation history. Deletion is final within a bounded tombstone window (FN-7949) — see below. |
-| `messages` *(migration-created)* | Inter-agent/user message mailbox storage. |
+| `messages` *(migration-created)* | Inter-agent/user message mailbox storage with an `archived` flag; archived mail is retained for restore but excluded from default mailbox reads and unread counts. |
 | `agentRatings` *(migration-created)* | Agent performance ratings (1-5), optional reviewer metadata, and run/task attribution. |
 | `chat_sessions` *(migration-created)* | Chat session metadata (agent/project/model/status/title timestamps). |
 | `chat_messages` *(migration-created)* | Chat message history per session (`role`, `content`, thinking output, metadata). |
