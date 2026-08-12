@@ -98,11 +98,6 @@ function getPlanningLifecycleLockTransportFailure(task: Task): PlanningLifecycle
     : null;
 }
 
-function isPlanningLifecycleLockTransportError(error: unknown): error is Error {
-  return error instanceof fusionCore.PlanningLifecycleLockTransportError
-    || (error instanceof Error && error.name === "PlanningLifecycleLockTransportError");
-}
-
 /*
 FNXC:PlanReviewReplan 2026-08-10-18:32 (TOMBSTONE — do not re-add):
 `PLAN_REVIEW_GATE_REPLAN_CAP = 8` is DELETED. It belonged to the out-of-graph triage Plan Review gate
@@ -159,7 +154,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { ModelFallbackExhaustedError, describeModel, formatModelMarkerDetails, promptWithFallback } from "./pi.js";
 import { hasAdvancedPastPlanning, isTaskStillInPlanningStage, resolvePlannerLanesForTaskAsync } from "./execution/replan-target.js";
-import { classifyPersistedPlanHandoff, LEGACY_NULL_PLAN_HANDOFF_STALE_MS } from "./planning-handoff-recovery.js";
+import {
+  classifyPersistedPlanHandoff,
+  isPlanningLifecycleLockTransportError,
+  LEGACY_NULL_PLAN_HANDOFF_STALE_MS,
+} from "./planning-handoff-recovery.js";
 import {
   createResolvedAgentSession,
   extractRuntimeHint,
@@ -4910,11 +4909,13 @@ export class TriageProcessor {
     FNXC:SpecLock 2026-08-09-07:36:
     Planning finalization writes PROMPT.md without going through updateTask({ prompt }), so it must
     capture the same canonical evidence before any approval path can release the task. This remains
-    before the release boundary: a database/parser failure leaves the planning hold intact.
+    before the release boundary: a database/parser failure leaves the planning hold intact. The
+    finalizer already owns the planning lifecycle lock, so evidence capture must use the lock-assuming
+    seam instead of reacquiring the non-reentrant PostgreSQL advisory lock.
     */
     const supportsSpecLock = (this.store as unknown as { isBackendMode?: () => boolean }).isBackendMode?.() === true;
     if (supportsSpecLock) {
-      await this.store.captureCurrentPlanEvidence(task.id, written);
+      await this.store.captureCurrentPlanEvidenceWhilePlanningLocked(task.id, written);
     }
 
     let taskIntentSignature: ReturnType<typeof extractIntentSignature> = {

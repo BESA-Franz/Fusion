@@ -143,7 +143,7 @@ vi.mock("../merger.js", () => ({
 
 import { SelfHealingManager, isBranchAheadOfBase, MAX_AUTO_MERGE_RETRIES } from "../self-healing.js";
 import { HEARTBEAT_ERROR_RECOVERY_METADATA_KEY, HEARTBEAT_ERROR_RETRY_EXHAUSTED_PAUSE_REASON, HEARTBEAT_ERROR_UNRECOVERABLE_PAUSE_REASON, readHeartbeatErrorRetryCount } from "../agent-heartbeat.js";
-import { TaskDeletedError, TaskNotFoundError, type TaskStore, type Settings, type Task, type AgentStore, type Agent, type NotificationProvider } from "@fusion/core";
+import { PlanningLifecycleLockTransportError, TaskDeletedError, TaskNotFoundError, type TaskStore, type Settings, type Task, type AgentStore, type Agent, type NotificationProvider } from "@fusion/core";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -9491,7 +9491,189 @@ describe("SelfHealingManager", () => {
     });
   });
 
-  describe("recoverOrphanedPlanningTasks", () => {
+  describe("planning handoff and orphan recovery", () => {
+    it("finalizes a recoverable written plan before clearing it for re-planning", async () => {
+      const task = {
+        id: "FN-PLAN-HANDOFF",
+        column: "todo",
+        status: "planning",
+        worktree: "/tmp/fusion-planning-worktree",
+        paused: false,
+        log: [],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      } as unknown as Task;
+      const recoverApprovedTriageTask = vi.fn().mockResolvedValue(true);
+      (store.listTasks as ReturnType<typeof vi.fn>).mockResolvedValue([task]);
+      const recovery = new SelfHealingManager(store, {
+        rootDir: "/tmp/test-project",
+        getPlanningTaskIds: () => new Set<string>(),
+        recoverApprovedTriageTask,
+      });
+      vi.setSystemTime(new Date("2026-01-01T00:05:00.000Z"));
+
+      await expect(recovery.recoverApprovedTriageTasks()).resolves.toBe(1);
+      expect(recoverApprovedTriageTask).toHaveBeenCalledWith(task);
+      expect(store.updateTask).not.toHaveBeenCalled();
+
+      recovery.stop();
+    });
+
+    it("backs off a planning-lock transport failure before retrying the retained handoff", async () => {
+      const task = {
+        id: "FN-PLAN-HANDOFF-RETRY",
+        column: "todo",
+        status: "planning",
+        paused: false,
+        log: [],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      } as unknown as Task & { recoveryRetryCount?: number | null; nextRecoveryAt?: string | null };
+      const recoverApprovedTriageTask = vi.fn()
+        .mockRejectedValueOnce(new PlanningLifecycleLockTransportError("lock transport unavailable"))
+        .mockResolvedValueOnce(true);
+      const retryingStore = createMockStore({
+        listTasks: vi.fn(async () => [task]),
+        getTask: vi.fn(async () => task),
+        updateTaskAtomic: vi.fn(async (_id: string, updater: (live: Task) => Partial<Task> | null) => {
+          const patch = updater(task);
+          if (patch) Object.assign(task, patch);
+          return task;
+        }),
+      });
+      const recovery = new SelfHealingManager(retryingStore, {
+        rootDir: "/tmp/test-project",
+        getPlanningTaskIds: () => new Set<string>(),
+        recoverApprovedTriageTask,
+      });
+      vi.setSystemTime(new Date("2026-01-01T00:05:00.000Z"));
+
+      await expect(recovery.recoverApprovedTriageTasks()).resolves.toBe(0);
+      expect(task.status).toBe("planning");
+      expect(task.recoveryRetryCount).toBe(1);
+      expect(Date.parse(task.nextRecoveryAt!)).toBeGreaterThan(Date.now());
+      expect(retryingStore.logEntry).toHaveBeenCalledWith(
+        task.id,
+        expect.stringContaining("Planning lifecycle lock transport failure during approved triage recovery — retry 1/3"),
+      );
+
+      await expect(recovery.recoverOrphanedPlanningTasks()).resolves.toBe(0);
+      expect(recoverApprovedTriageTask).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date(Date.parse(task.nextRecoveryAt!) + 1));
+      await expect(recovery.recoverApprovedTriageTasks()).resolves.toBe(1);
+      expect(recoverApprovedTriageTask).toHaveBeenCalledTimes(2);
+
+      recovery.stop();
+    });
+
+    it("parks a retained handoff after the planning-lock transport retry budget is exhausted", async () => {
+      const task = {
+        id: "FN-PLAN-HANDOFF-EXHAUSTED",
+        column: "todo",
+        status: "planning",
+        paused: false,
+        log: [],
+        recoveryRetryCount: 3,
+        nextRecoveryAt: "2026-01-01T00:04:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      } as unknown as Task;
+      const recoverApprovedTriageTask = vi.fn().mockRejectedValue(
+        new PlanningLifecycleLockTransportError("lock transport unavailable"),
+      );
+      const exhaustedStore = createMockStore({
+        listTasks: vi.fn(async () => [task]),
+        getTask: vi.fn(async () => task),
+        updateTaskAtomic: vi.fn(async (_id: string, updater: (live: Task) => Partial<Task> | null) => {
+          const patch = updater(task);
+          if (patch) Object.assign(task, patch);
+          return task;
+        }),
+      });
+      const recovery = new SelfHealingManager(exhaustedStore, {
+        rootDir: "/tmp/test-project",
+        getPlanningTaskIds: () => new Set<string>(),
+        recoverApprovedTriageTask,
+      });
+      vi.setSystemTime(new Date("2026-01-01T00:05:00.000Z"));
+
+      await expect(recovery.recoverApprovedTriageTasks()).resolves.toBe(0);
+      expect(task.status).toBe("failed");
+      expect(task.error).toContain("PLANNING_LIFECYCLE_LOCK_RECOVERY_EXHAUSTED");
+      expect(exhaustedStore.logEntry).toHaveBeenCalledWith(task.id, expect.stringContaining("PLANNING_LIFECYCLE_LOCK_RECOVERY_EXHAUSTED"));
+
+      recovery.stop();
+    });
+
+    it("clears and logs when canonical written-plan recovery returns false", async () => {
+      const task = {
+        id: "FN-PLAN-HANDOFF-NOT-RECOVERABLE",
+        column: "todo",
+        status: "planning",
+        paused: false,
+        log: [],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      } as unknown as Task;
+      const recoverApprovedTriageTask = vi.fn().mockResolvedValue(false);
+      const fallbackStore = createMockStore({
+        listTasks: vi.fn(async () => [task]),
+        getTask: vi.fn(async () => task),
+      });
+      const recovery = new SelfHealingManager(fallbackStore, {
+        rootDir: "/tmp/test-project",
+        getPlanningTaskIds: () => new Set<string>(),
+        recoverApprovedTriageTask,
+      });
+      vi.setSystemTime(new Date("2026-01-01T00:05:00.000Z"));
+
+      await expect(recovery.recoverApprovedTriageTasks()).resolves.toBe(0);
+      await expect(recovery.recoverOrphanedPlanningTasks()).resolves.toBe(1);
+      expect(recoverApprovedTriageTask).toHaveBeenCalledWith(task);
+      expect(recoverApprovedTriageTask).toHaveBeenCalledTimes(1);
+      expect(fallbackStore.updateTask).toHaveBeenCalledWith(task.id, { status: null });
+      expect(fallbackStore.logEntry).toHaveBeenCalledWith(
+        task.id,
+        "Auto-recovered orphaned planning task — agent session lost, cleared for re-planning",
+      );
+
+      recovery.stop();
+    });
+
+    it("does not log a clear when the guarded fallback loses the planning-stage race", async () => {
+      const task = {
+        id: "FN-PLAN-HANDOFF-GUARDED",
+        column: "todo",
+        status: "planning",
+        paused: false,
+        log: [],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      } as unknown as Task;
+      const recoverApprovedTriageTask = vi.fn().mockResolvedValue(false);
+      const guardedStore = createMockStore({
+        listTasks: vi.fn(async () => [task]),
+        updateTaskAtomic: vi.fn(async (_id: string, updater: (live: Task) => Partial<Task> | null) => updater({
+          ...task,
+          column: "in-progress",
+          status: null,
+          firstExecutionAt: "2026-01-01T00:01:00.000Z",
+        } as Task)),
+      });
+      const recovery = new SelfHealingManager(guardedStore, {
+        rootDir: "/tmp/test-project",
+        getPlanningTaskIds: () => new Set<string>(),
+        recoverApprovedTriageTask,
+      });
+      vi.setSystemTime(new Date("2026-01-01T00:05:00.000Z"));
+
+      await expect(recovery.recoverApprovedTriageTasks()).resolves.toBe(0);
+      await expect(recovery.recoverOrphanedPlanningTasks()).resolves.toBe(0);
+      expect(recoverApprovedTriageTask).toHaveBeenCalledWith(task);
+      expect(guardedStore.logEntry).not.toHaveBeenCalledWith(
+        task.id,
+        "Auto-recovered orphaned planning task — agent session lost, cleared for re-planning",
+      );
+
+      recovery.stop();
+    });
+
     it("clears status for orphaned planning tasks without a recoverable prompt", async () => {
       const getPlanning = vi.fn().mockReturnValue(new Set<string>());
 

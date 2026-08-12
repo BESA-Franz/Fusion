@@ -78,7 +78,11 @@ import { finalizeProvenAutoMergeTask, validateWorkflowDoneMergeProof } from "./m
 import { AutoRecoveryDispatcher } from "./healing/auto-recovery.js";
 import { activeSessionRegistry, executingTaskLock } from "./agents/active-session-registry.js";
 import { isTaskStillInPlanningStage } from "./execution/replan-target.js";
-import { classifyPersistedPlanHandoff, LEGACY_NULL_PLAN_HANDOFF_STALE_MS } from "./planning-handoff-recovery.js";
+import {
+  classifyPersistedPlanHandoff,
+  isPlanningLifecycleLockTransportError,
+  LEGACY_NULL_PLAN_HANDOFF_STALE_MS,
+} from "./planning-handoff-recovery.js";
 import { getPromptPath } from "./execution/spec-staleness.js";
 import { evaluateStrandedHoldContinuation, seedPreReleasePlanReviewContinuation } from "./plan-review-continuation.js";
 import { evaluateStrandedContinuationReclaim, RECLAIM_RETIRED_STATE } from "./workflows/stranded-continuation-reclaim.js";
@@ -123,7 +127,7 @@ import {
   MAX_TERMINAL_FAILURE_AUTO_RETRIES,
   TERMINAL_FAILURE_CLAIM_APPLY_GRACE_MS,
 } from "@fusion/core";
-import { BASE_DELAY_MS, computeRecoveryDecision, MAX_DELAY_MS } from "./healing/recovery-policy.js";
+import { BASE_DELAY_MS, computeRecoveryDecision, formatDelay, MAX_DELAY_MS, MAX_RECOVERY_RETRIES } from "./healing/recovery-policy.js";
 
 export {
   COMPLETED_BLOCKED_PAUSE_REASON,
@@ -477,6 +481,13 @@ export interface SelfHealingOptions {
 }
 
 const APPROVED_TRIAGE_RECOVERY_GRACE_MS = 60_000;
+
+function isRecoveryRetryDue(task: Pick<Task, "nextRecoveryAt">, now: number): boolean {
+  if (!task.nextRecoveryAt) return true;
+  const retryAt = Date.parse(task.nextRecoveryAt);
+  return !Number.isFinite(retryAt) || retryAt <= now;
+}
+
 const STARVED_REFINEMENT_RECOVERY_GRACE_MS = 10 * 60_000;
 const STARVED_PEER_PROGRESS_THRESHOLD = 3;
 const STARVED_REFINEMENT_ESCALATION_COOLDOWN_MS = STARVED_REFINEMENT_RECOVERY_GRACE_MS * 4;
@@ -14901,6 +14912,50 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
    * This catches the mirror-image of executor recovery: planning completed,
    * but the final transition to `todo` / `awaiting-approval` never happened.
    */
+  private async recordPlanningHandoffTransportFailure(task: Task, error: Error): Promise<void> {
+    const decision = computeRecoveryDecision({
+      recoveryRetryCount: task.recoveryRetryCount,
+      nextRecoveryAt: task.nextRecoveryAt,
+    });
+    const exhaustedMessage =
+      `PLANNING_LIFECYCLE_LOCK_RECOVERY_EXHAUSTED: canonical planning handoff failed after `
+      + `${MAX_RECOVERY_RETRIES} retries — last error: ${error.message}`;
+    const patch = decision.shouldRetry
+      ? {
+          status: "planning" as const,
+          error: null,
+          recoveryRetryCount: decision.nextState.recoveryRetryCount,
+          nextRecoveryAt: decision.nextState.nextRecoveryAt,
+        }
+      : {
+          status: "failed" as const,
+          error: exhaustedMessage,
+          recoveryRetryCount: null,
+          nextRecoveryAt: null,
+        };
+    let persisted = false;
+
+    if (typeof this.store.updateTaskAtomic === "function") {
+      await this.store.updateTaskAtomic(task.id, (live) => {
+        if (!isTaskStillInPlanningStage(live)) return null;
+        persisted = true;
+        return patch;
+      });
+    } else {
+      const live = await this.store.getTask(task.id);
+      if (live && isTaskStillInPlanningStage(live)) {
+        await this.store.updateTask(task.id, patch);
+        persisted = true;
+      }
+    }
+
+    if (!persisted) return;
+    const action = decision.shouldRetry
+      ? `Planning lifecycle lock transport failure during approved triage recovery — retry ${decision.nextState.recoveryRetryCount}/${MAX_RECOVERY_RETRIES} in ${formatDelay(decision.delayMs)}: ${error.message}`
+      : exhaustedMessage;
+    await this.store.logEntry(task.id, action).catch(() => undefined);
+  }
+
   async recoverApprovedTriageTasks(): Promise<number> {
     const recoverFn = this.options.recoverApprovedTriageTask;
     if (!recoverFn) return 0;
@@ -14934,6 +14989,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
           requirePersistedSteps: true,
         });
         return handoffKind != null
+          && isRecoveryRetryDue(task, now)
           && now - new Date(task.updatedAt).getTime() >= APPROVED_TRIAGE_RECOVERY_GRACE_MS;
       });
 
@@ -14962,8 +15018,16 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
         // progress, so its exact classifier owns that one compatibility shape.
         if (handoffKind !== "legacy-null" && !isTaskStillInPlanningStage(recoveryTask)) continue;
         log.log(`Recovering specified triage task ${task.id}: ${task.title || task.description?.slice(0, 60) || "(untitled)"}`);
-        const success = await recoverFn(recoveryTask);
-        if (success) recovered++;
+        try {
+          const success = await recoverFn(recoveryTask);
+          if (success) recovered++;
+        } catch (error) {
+          if (isPlanningLifecycleLockTransportError(error)) {
+            await this.recordPlanningHandoffTransportFailure(recoveryTask, error);
+            continue;
+          }
+          log.warn(`Recoverable planning handoff for ${task.id} could not be finalized: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
 
       if (recovered > 0) {
@@ -15386,16 +15450,25 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
         t.status === "planning" &&
         !t.paused &&
         !planningIds.has(t.id) &&
+        isRecoveryRetryDue(t, now) &&
         now - new Date(t.updatedAt).getTime() >= APPROVED_TRIAGE_RECOVERY_GRACE_MS
       );
 
       if (orphaned.length === 0) return 0;
 
-      log.warn(`Found ${orphaned.length} orphaned planning triage task(s) without a recoverable prompt`);
+      log.warn(`Found ${orphaned.length} orphaned planning triage task(s)`);
 
       let recovered = 0;
       for (const task of orphaned) {
         try {
+          /*
+          FNXC:PlanningLifecycleLockReentry 2026-08-12-03:18:
+          Canonical written-plan recovery runs immediately before this fallback in
+          both startup and steady-state pipelines. It finalizes a retained prompt
+          or records bounded transport backoff, which makes that task ineligible
+          here. A remaining candidate has no releasable prompt, so guarded clearing
+          for replanning is safe and does not repeat the canonical recovery call.
+          */
           log.log(`Recovering orphaned planning task ${task.id}: ${task.title || task.description?.slice(0, 60) || "(untitled)"}`);
           // FNXC:Triage 2026-07-29-12:00:
           // FN-8361 closes the stale listTasks → updateTask race: only clear planning
@@ -15949,4 +16022,3 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
     }
   }
 }
-
