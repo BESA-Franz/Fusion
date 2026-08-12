@@ -1171,8 +1171,15 @@ export const taskDocuments = projectSchema.table("task_documents", {
   index("idxTaskDocumentsTaskId").on(t.taskId),
 ]);
 
+/*
+FNXC:MultiProjectIsolation 2026-08-12-13:45:
+Migration 0006 physically partitions these declarations, but the Drizzle schema drifted and could
+not express their project_id-leading identities. Keep the database current_setting default so
+bound and unbound trigger-stamped inserts omit projectId; FN-9000 owns runtime predicates.
+*/
 export const artifacts = projectSchema.table("artifacts", {
-  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(),
   type: text("type").notNull(),
   title: text("title").notNull(),
   description: text("description"),
@@ -1187,7 +1194,8 @@ export const artifacts = projectSchema.table("artifacts", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (t) => [
-  foreignKey({ columns: [t.taskId], foreignColumns: [tasks.id] }).onDelete("cascade"),
+  primaryKey({ columns: [t.projectId, t.id] }),
+  foreignKey({ name: "artifacts_task_id_fkey", columns: [t.projectId, t.taskId], foreignColumns: [tasks.projectId, tasks.id] }).onDelete("cascade"),
   index("idxArtifactsTaskId").on(t.taskId),
   index("idxArtifactsAuthorId").on(t.authorId),
   index("idxArtifactsType").on(t.type),
@@ -1391,7 +1399,8 @@ export const evalRunEvents = projectSchema.table("eval_run_events", {
 
 // ── Secrets (project-scoped) ─────────────────────────────────────────
 export const secrets = projectSchema.table("secrets", {
-  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(),
   key: text("key").notNull(),
   valueCiphertext: bytea("value_ciphertext").notNull(),
   nonce: bytea("nonce").notNull(),
@@ -1404,7 +1413,8 @@ export const secrets = projectSchema.table("secrets", {
   lastReadAt: text("last_read_at"),
   lastReadBy: text("last_read_by"),
 }, (t) => [
-  unique("secrets_key_unique").on(t.key),
+  primaryKey({ columns: [t.projectId, t.id] }),
+  unique("secrets_key_unique").on(t.projectId, t.key),
   check("secrets_access_policy_check", sql`${t.accessPolicy} IN ('auto', 'prompt', 'deny')`),
   check("secrets_env_exportable_check", sql`${t.envExportable} IN (0, 1)`),
 ]);
@@ -1451,10 +1461,11 @@ export const missions = projectSchema.table("missions", {
 }, (t) => [primaryKey({ columns: [t.projectId, t.id] })]);
 
 export const branchGroups = projectSchema.table("branch_groups", {
-  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(),
   sourceType: text("source_type").notNull(),
   sourceId: text("source_id").notNull(),
-  branchName: text("branch_name").notNull().unique(),
+  branchName: text("branch_name").notNull(),
   worktreePath: text("worktree_path"),
   autoMerge: integer("auto_merge").notNull().default(0),
   prState: text("pr_state").notNull().default("none"),
@@ -1470,6 +1481,8 @@ export const branchGroups = projectSchema.table("branch_groups", {
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
   closedAt: bigint("closed_at", { mode: "number" }),
 }, (t) => [
+  primaryKey({ columns: [t.projectId, t.id] }),
+  unique("branch_groups_branch_name_key").on(t.projectId, t.branchName),
   check("branch_groups_source_type_check", sql`${t.sourceType} IN ('mission','planning','new-task')`),
   check("branch_groups_pr_state_check", sql`${t.prState} IN ('none','open','merged','closed')`),
   check("branch_groups_status_check", sql`${t.status} IN ('open','finalized','abandoned')`),
@@ -1905,12 +1918,14 @@ export const usageEvents = projectSchema.table("usage_events", {
 ]);
 
 export const pluginActivations = projectSchema.table("plugin_activations", {
-  id: integer("id").generatedAlwaysAsIdentity().primaryKey(),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: integer("id").generatedAlwaysAsIdentity().notNull(),
   pluginId: text("plugin_id").notNull(),
   source: text("source").notNull(),
   pluginVersion: text("plugin_version"),
   activatedAt: text("activated_at").notNull(),
 }, (t) => [
+  primaryKey({ columns: [t.projectId, t.id] }),
   index("idxPluginActivationsActivatedAt").on(t.activatedAt),
   index("idxPluginActivationsPluginId").on(t.pluginId),
 ]);
@@ -2178,7 +2193,8 @@ export const cliSessions = projectSchema.table("cli_sessions", {
 ]);
 
 export const chatMessages = projectSchema.table("chat_messages", {
-  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(),
   sessionId: text("session_id").notNull(),
   role: text("role").notNull(),
   content: text("content").notNull(),
@@ -2187,6 +2203,7 @@ export const chatMessages = projectSchema.table("chat_messages", {
   createdAt: text("created_at").notNull(),
   attachments: jsonb("attachments"),
 }, (t) => [
+  primaryKey({ columns: [t.projectId, t.id] }),
   index("idxChatMessagesSessionId").on(t.sessionId),
   index("idxChatMessagesCreatedAt").on(t.createdAt),
 ]);
@@ -2218,7 +2235,8 @@ export const chatTokenUsage = projectSchema.table("chat_token_usage", {
 ]);
 
 export const runAuditEvents = projectSchema.table("run_audit_events", {
-  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(),
   timestamp: text("timestamp").notNull(),
   taskId: text("task_id"),
   agentId: text("agent_id").notNull(),
@@ -2228,6 +2246,7 @@ export const runAuditEvents = projectSchema.table("run_audit_events", {
   target: text("target").notNull(),
   metadata: jsonb("metadata"),
 }, (t) => [
+  primaryKey({ columns: [t.projectId, t.id] }),
   index("idxRunAuditEventsRunIdTimestamp").on(t.runId, t.timestamp),
   index("idxRunAuditEventsTaskIdTimestamp").on(t.taskId, t.timestamp),
   index("idxRunAuditEventsTimestamp").on(t.timestamp),
@@ -2340,13 +2359,14 @@ export const missionLineageStops = projectSchema.table("mission_lineage_stops", 
 ]);
 
 export const verificationCache = projectSchema.table("verification_cache", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
   treeSha: text("tree_sha").notNull(),
   testCommand: text("test_command").notNull().default(""),
   buildCommand: text("build_command").notNull().default(""),
   recordedAt: text("recorded_at").notNull(),
   taskId: text("task_id"),
 }, (t) => [
-  primaryKey({ columns: [t.treeSha, t.testCommand, t.buildCommand] }),
+  primaryKey({ columns: [t.projectId, t.treeSha, t.testCommand, t.buildCommand] }),
   index("idxVerificationCacheRecordedAt").on(t.recordedAt),
 ]);
 
@@ -2387,7 +2407,8 @@ export const importTranslationCache = projectSchema.table("import_translation_ca
 ]);
 
 export const approvalRequests = projectSchema.table("approval_requests", {
-  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  id: text("id").notNull(),
   status: text("status").notNull(),
   requesterActorId: text("requester_actor_id").notNull(),
   requesterActorType: text("requester_actor_type").notNull(),
@@ -2406,6 +2427,7 @@ export const approvalRequests = projectSchema.table("approval_requests", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (t) => [
+  primaryKey({ columns: [t.projectId, t.id] }),
   index("idxApprovalRequestsStatusCreatedAt").on(t.status, t.createdAt),
   index("idxApprovalRequestsRequesterCreatedAt").on(t.requesterActorId, t.createdAt),
   index("idxApprovalRequestsTaskCreatedAt").on(t.taskId, t.createdAt),

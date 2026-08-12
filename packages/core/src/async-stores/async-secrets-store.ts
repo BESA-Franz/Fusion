@@ -118,24 +118,22 @@ export class SecretsStoreError extends Error {
 }
 
 /**
- * FNXC:SecretsStore 2026-06-24-20:12:
- * The columns both secrets tables share. project.secrets and
- * central.secrets_global have identical column shapes but are distinct Drizzle
- * table objects (different schema/name literal). The helpers operate on the
- * project.secrets table type and the global table is cast at the dispatch
- * boundary since the two are structurally identical column-for-column.
+ * FNXC:SecretsStore 2026-08-12-13:45:
+ * Migration 0006 partitions project.secrets with project_id while
+ * central.secrets_global remains global. The shared helpers deliberately cast
+ * the central ref at this dispatch boundary; FN-9000 adds project-only
+ * predicates without leaking a project_id reference into the central leg.
  */
 type ProjectSecretsTable = typeof schema.project.secrets;
 
 /**
- * Resolve the Drizzle table ref for a scope. Both tables share the same column
- * shape, so the call sites are identical once the table ref is selected.
- * FNXC:SecretsStore 2026-06-24-20:10:
- * Under the shared PostgreSQL backend a single connection serves both schemas,
- * so the dual-database injection collapses to a scope-to-table dispatch. The
- * central.secrets_global table is structurally identical to project.secrets
- * (same columns, same types), so it is cast to the project table type at the
- * dispatch boundary; the helper bodies then compile against one table type.
+ * Resolve the Drizzle table ref for a scope. The deliberate shape bridge keeps
+ * current shared helper bodies stable until project-only scoping arrives.
+ * FNXC:SecretsStore 2026-08-12-13:45:
+ * A shared PostgreSQL connection serves both schemas. project.secrets now
+ * models its 0006 partition while central.secrets_global does not have that
+ * column, so the cast is a dispatch-only compatibility bridge, not evidence
+ * that their physical shapes are identical.
  */
 function tableForScope(scope: SecretScope): ProjectSecretsTable {
   return scope === "project"
