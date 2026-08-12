@@ -1,0 +1,46 @@
+name: Publish Fusion container
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Immutable container tag to publish
+        required: true
+        default: v0.76.0-besa-0056
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: ghcr.io/besa-franz/fusion
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push pinned image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          provenance: false
+          tags: ${{ env.IMAGE_NAME }}:${{ inputs.tag }}
+
+      - name: Make the linked container package public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api --method PUT /user/packages/container/fusion/visibility -f visibility=public
+
+      - name: Verify the published manifest
+        run: docker buildx imagetools inspect "${IMAGE_NAME}:${{ inputs.tag }}"

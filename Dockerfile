@@ -56,7 +56,7 @@ COPY . .
 RUN pnpm build
 
 FROM node:22-slim AS runner
-LABEL org.opencontainers.image.source="https://github.com/gsxdsm/fusion"
+LABEL org.opencontainers.image.source="https://github.com/BESA-Franz/Fusion"
 LABEL org.opencontainers.image.description="AI-orchestrated task board"
 
 ENV NODE_ENV=production
