@@ -2427,7 +2427,11 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
               }}
             >
               {activeModelSubmenu === null ? (
-                // Top-level menu with Plan/Executor/Reviewer choices
+                /*
+                 * FNXC:QuickAddModelMenu 2026-08-12-22:04:
+                 * Top-level model rows use bare role names and matching icon alignment because
+                 * .model-menu-item-label has no gap. Submenu headers retain the "<Role> Model" form.
+                 */
                 <div className="model-menu-items">
                   <button
                     type="button"
@@ -2480,9 +2484,22 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
                     </span>
                     <ChevronRight size={12} style={{ marginLeft: "auto", color: "var(--text-dim)" }} />
                   </button>
-                  <button type="button" className={`model-menu-item ${hasMergerOverride ? "model-menu-item--active" : ""}`} onClick={() => setActiveModelSubmenu("merger")} data-testid="model-menu-merger">
-                    <span className="model-menu-item-label"><Brain size={12} /> {t("tasks.mergerModel", "Merger Model")}</span>
-                    <span className="model-menu-item-value">{hasMergerOverride ? getModelBadgeLabel(mergerProvider, mergerModelId) : t("tasks.usingDefault", "Using default")}</span><ChevronRight size={12} style={{ marginLeft: "auto", color: "var(--text-dim)" }} />
+                  <button
+                    type="button"
+                    className={`model-menu-item ${hasMergerOverride ? "model-menu-item--active" : ""}`}
+                    onClick={() => setActiveModelSubmenu("merger")}
+                    data-testid="model-menu-merger"
+                  >
+                    <span className="model-menu-item-label">
+                      <Brain size={12} style={{ verticalAlign: "middle", marginRight: 6 }} />
+                      {t("tasks.modelMerger", "Merger")}
+                    </span>
+                    <span className="model-menu-item-value">
+                      {hasMergerOverride
+                        ? getModelBadgeLabel(mergerProvider, mergerModelId)
+                        : t("tasks.usingDefault", "Using default")}
+                    </span>
+                    <ChevronRight size={12} style={{ marginLeft: "auto", color: "var(--text-dim)" }} />
                   </button>
                 </div>
               ) : (
