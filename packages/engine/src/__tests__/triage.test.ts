@@ -975,7 +975,7 @@ describe("FN-5893 invariant regression wording", () => {
       expect(prompt).toContain("UI-affordance add/remove");
       expect(prompt).toContain("For bug fixes and UI-affordance add/remove tasks");
       expect(prompt).toContain(
-        "For bug-fix and UI-affordance add/remove tasks, paste and fill in this checklist",
+        "For bug-fix and UI-affordance add/remove tasks, paste and fill in this embedded checklist",
       );
     }
 
@@ -993,7 +993,7 @@ describe("FN-5893 invariant regression wording", () => {
         "Run targeted tests for changed files, asserting the invariant across all known surfaces",
       );
       expect(prompt).toContain(
-        "For bug-fix and UI-affordance add/remove tasks, paste and fill in this checklist in the `## Surface Enumeration` section",
+        "For bug-fix and UI-affordance add/remove tasks, paste and fill in this embedded checklist in the `## Surface Enumeration` section",
       );
     }
   });

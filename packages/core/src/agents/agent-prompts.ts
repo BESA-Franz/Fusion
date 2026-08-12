@@ -293,7 +293,7 @@ Write PROMPT.md with Original Description, Before → After Transformation, Miss
 
 ## Surface Enumeration
 For bug fixes and UI-affordance add/remove tasks, the spec MUST include a \`## Surface Enumeration\` section. The workflow Plan Review gate validates this before execution when plan review is enabled.
-For bug-fix and UI-affordance add/remove tasks, paste and fill in this checklist in the \`## Surface Enumeration\` section from docs/testing.md:
+For bug-fix and UI-affordance add/remove tasks, paste and fill in this embedded checklist in the \`## Surface Enumeration\` section. The canonical \`docs/testing.md\` is a helpful reference when it exists, but it is optional: if the repository does not contain it, use this checklist and continue; a missing reference document is never a blocker.
 - [ ] Providers / bridges / execution paths touched by the invariant; include every provider/bridge for streaming and agent paths.
 - [ ] desktop + mobile breakpoints / platforms; the fix must prove the invariant across all known surfaces.
 - [ ] empty/undefined/populated data states plus duplicate / populated data states where relevant.
@@ -373,7 +373,7 @@ Follow this structure exactly:
 
 ## Surface Enumeration
 
-{Required for bug-fix tasks and UI-affordance add/remove tasks (adding, removing, or restructuring icons, buttons, chevrons/arrows, toggles, badges, menu entries, click targets): a checklist enumerating every surface the fixed invariant must hold across. Include every provider/bridge for streaming and agent paths; desktop AND mobile breakpoints; empty/undefined/duplicate/populated data states; and every hook/component/module that shares the affected logic. For UI-affordance add/remove tasks, enumerate every component that renders the affordance by searching the codebase for the icon/class/testid — not just the component the user pointed at. Explicitly check for leftover shells after removal (empty buttons, orphaned click targets, now-unused wrappers, dangling aria-labels) across both desktop and mobile breakpoints. Use the canonical checklist in docs/testing.md as the starting point.}
+{Required for bug-fix tasks and UI-affordance add/remove tasks (adding, removing, or restructuring icons, buttons, chevrons/arrows, toggles, badges, menu entries, click targets): a checklist enumerating every surface the fixed invariant must hold across. Include every provider/bridge for streaming and agent paths; desktop AND mobile breakpoints; empty/undefined/duplicate/populated data states; and every hook/component/module that shares the affected logic. For UI-affordance add/remove tasks, enumerate every component that renders the affordance by searching the codebase for the icon/class/testid — not just the component the user pointed at. Explicitly check for leftover shells after removal (empty buttons, orphaned click targets, now-unused wrappers, dangling aria-labels) across both desktop and mobile breakpoints. Use the canonical checklist in \`docs/testing.md\` as the starting point when that file exists; otherwise use this embedded checklist and continue without blocking on missing documentation.}
 
 ## Symptom Verification
 
@@ -415,7 +415,7 @@ Follow this structure exactly:
 - [ ] {Specific, verifiable outcome}
 - [ ] Run targeted tests for changed files, asserting the invariant across all known surfaces (enumerate every provider/bridge, desktop + mobile breakpoints, and empty/undefined/populated data states)
 
-For bug-fix and UI-affordance add/remove tasks, paste and fill in this checklist in the \`## Surface Enumeration\` section:
+For bug-fix and UI-affordance add/remove tasks, paste and fill in this embedded checklist in the \`## Surface Enumeration\` section. The canonical \`docs/testing.md\` is an optional reference when it exists; use this embedded checklist and continue when it is absent, never treating the missing document as a blocker:
 - [ ] Providers / bridges / execution paths touched by the invariant
 - [ ] Desktop + mobile breakpoints / platforms that exercise the behavior
 - [ ] Empty / undefined / duplicate / populated data states
@@ -534,7 +534,7 @@ tests. Manual verification is NOT a test.
 
 - Each implementation step should include writing tests for the code being changed
 - For bug fixes and UI-affordance add/remove tasks, the spec MUST include a \`## Surface Enumeration\` section. The workflow Plan Review gate validates this before execution when plan review is enabled; missing coverage is a blocking REVISE.
-- For bug fixes and UI-affordance add/remove tasks, populate \`## Surface Enumeration\` with this checklist from \`docs/testing.md\`: providers/bridges/execution paths; desktop + mobile breakpoints/platforms; empty/undefined/duplicate/populated data states; shared hooks/components/modules/helpers; every component that renders the affordance; leftover shells after removal.
+- For bug fixes and UI-affordance add/remove tasks, populate \`## Surface Enumeration\` with the embedded checklist: providers/bridges/execution paths; desktop + mobile breakpoints/platforms; empty/undefined/duplicate/populated data states; shared hooks/components/modules/helpers; every component that renders the affordance; leftover shells after removal. Read \`docs/testing.md\` for additional guidance only when it exists; never block planning because that optional reference document is absent.
 - For bug fixes and UI-affordance add/remove tasks, regression tests must assert the invariant across all known surfaces — enumerate every provider/bridge, desktop + mobile breakpoints, empty/undefined/populated data states, and for UI-affordance changes every component rendering the affordance plus leftover shells after removal — not just the reported repro (see FN-5787/FN-5789/FN-5803, FN-5751, and FN-6115/FN-6118/FN-6123)
 - For bug-class/bug-fix tasks, the spec MUST include a \`## Symptom Verification\` section with **Original symptom**, **Exact reproduction**, and **Assertion it is gone**. The final verification step must perform symptom-based acceptance: reproduce the original failure and prove it is gone with a real automated test. Green build/tests alone are insufficient. Feature/docs/non-bug tasks are not required to carry \`## Symptom Verification\`.
 - The final Testing step runs lint, impacted/package-scoped tests first, and project typecheck when the repo exposes one. Run workspace-wide suites only when explicitly required by the task/workflow or during final integration after impacted checks pass.

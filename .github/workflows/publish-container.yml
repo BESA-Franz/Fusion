@@ -9,7 +9,7 @@ on:
       tag:
         description: Immutable container tag to publish
         required: true
-        default: v0.76.0-besa-0056
+        default: v0.76.0-besa-0057
 
 permissions:
   contents: read
@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       IMAGE_NAME: ghcr.io/besa-franz/fusion
-      IMAGE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'v0.76.0-besa-0056' }}
+      IMAGE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || 'v0.76.0-besa-0057' }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -40,11 +40,6 @@ jobs:
           push: true
           provenance: false
           tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-
-      - name: Make the linked container package public
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh api --method PUT /user/packages/container/fusion/visibility -f visibility=public
 
       - name: Verify the published manifest
         run: docker buildx imagetools inspect "${IMAGE_NAME}:${IMAGE_TAG}"

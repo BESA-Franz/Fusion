@@ -504,6 +504,13 @@ describe("resolveAgentPrompt", () => {
     expect(triagePrompt).toContain("blocking REVISE");
   });
 
+  it("treats the canonical surface-enumeration document as optional", () => {
+    const triagePrompt = resolveAgentPrompt("triage");
+    expect(triagePrompt).toContain("when that file exists; otherwise use this embedded checklist");
+    expect(triagePrompt).toContain("continue without blocking on missing documentation");
+    expect(triagePrompt).toContain("never block planning because that optional reference document is absent");
+  });
+
   it("built-in reviewer prompts reject missing surface enumeration and repro-only bug-fix tests", () => {
     const defaultReviewer = resolveAgentPrompt("reviewer");
     const strictReviewer = resolveAgentPrompt("reviewer", {
