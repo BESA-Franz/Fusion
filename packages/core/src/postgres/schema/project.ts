@@ -373,9 +373,14 @@ export const config = projectSchema.table("config", {
   // now keyed per-project on `project_id` (the effective PK). `id` is retained
   // for column-shape parity (always 1) but is no longer the PK and no longer
   // CHECK-constrained. Single-project / SQLite-parity callers leave project_id
-  // at its '' default (one row), preserving the pre-isolation behavior.
+  // through the database ownership trigger, preserving the pre-isolation behavior.
+  /*
+  FNXC:MultiProjectIsolation 2026-08-12-15:43:
+  Migration 0006 owns config's project_id default and leaves its catalog PK as (project_id).
+  Drizzle emits DEFAULT while the database GUC/trigger selects the effective ownership partition.
+  */
   id: integer("id").default(1),
-  projectId: text("project_id").notNull().default("").primaryKey(),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`).primaryKey(),
   nextId: integer("next_id").default(1),
   nextWorkflowStepId: integer("next_workflow_step_id").default(1),
   // FNXC:SqliteFinalRemoval 2026-06-28:
@@ -832,9 +837,13 @@ export const taskCommitAssociations = projectSchema.table("task_commit_associati
 export const automations = projectSchema.table("automations", {
   /*
    * FNXC:AutomationIsolation 2026-07-13-22:37:
-   * Automations are partitioned by the AsyncDataLayer's project ID because embedded PostgreSQL consolidates the per-project SQLite files into one table. The composite key deliberately permits the same automation ID in two projects without allowing either project's CRUD or cron-claim path to address the other row. The empty default preserves an explicit partition for legacy and project-agnostic callers until startup stamps migrated rows.
+   * Automations are partitioned by the AsyncDataLayer's project ID because embedded PostgreSQL consolidates the per-project SQLite files into one table. The composite key deliberately permits the same automation ID in two projects without allowing either project's CRUD or cron-claim path to address the other row.
+   *
+   * FNXC:MultiProjectIsolation 2026-08-12-15:43:
+   * Migration 0006 owns the default through the database GUC/trigger; Drizzle emits DEFAULT
+   * without replacing the physical legacy fallback or the fail-closed bound writer contract.
    */
-  projectId: text("project_id").notNull().default(""),
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
   id: text("id").notNull(),
   name: text("name").notNull(),
   description: text("description"),
@@ -1952,8 +1961,13 @@ export const knowledgePages = projectSchema.table("knowledge_pages", {
 ]);
 
 export const deployments = projectSchema.table("deployments", {
-  id: integer("id").generatedAlwaysAsIdentity().primaryKey(),
-  projectId: text("project_id").notNull().default(""),
+  id: integer("id").generatedAlwaysAsIdentity().notNull(),
+  /*
+  FNXC:MultiProjectIsolation 2026-08-12-15:43:
+  Migration 0006 rebuilt deployments_pkey as (project_id, id). Drizzle emits DEFAULT while the
+  database GUC/trigger keeps ownership stamping and the physical legacy fallback authoritative.
+  */
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
   deploymentId: text("deployment_id").notNull(),
   service: text("service"),
   environment: text("environment"),
@@ -1964,6 +1978,7 @@ export const deployments = projectSchema.table("deployments", {
   meta: jsonb("meta"),
   createdAt: text("created_at").notNull(),
 }, (t) => [
+  primaryKey({ columns: [t.projectId, t.id], name: "deployments_pkey" }),
   uniqueIndex("idxDeploymentsProjectDeploymentId").on(t.projectId, t.deploymentId),
   index("idxDeploymentsProjectDeployedAt").on(t.projectId, t.deployedAt),
   index("idxDeploymentsDeployedAt").on(t.deployedAt),
@@ -1977,7 +1992,12 @@ required checks cannot admit stale or cross-project results; received_at support
 */
 export const githubCheckStates = projectSchema.table("github_check_states", {
   id: integer("id").generatedAlwaysAsIdentity().notNull(),
-  projectId: text("project_id").notNull().default(""),
+  /*
+  FNXC:MultiProjectIsolation 2026-08-12-15:43:
+  Migration 0048 post-dated 0006, so FN-9004 reconciles its physical default to the ownership
+  expression. Drizzle emits DEFAULT while the database GUC/trigger remains the stamping authority.
+  */
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
   repo: text("repo").notNull(),
   headSha: text("head_sha").notNull(),
   checkName: text("check_name").notNull(),
@@ -1998,9 +2018,14 @@ export const githubCheckStates = projectSchema.table("github_check_states", {
 ]);
 
 export const incidents = projectSchema.table("incidents", {
-  id: integer("id").generatedAlwaysAsIdentity().primaryKey(),
-  projectId: text("project_id").notNull().default(""),
-  incidentId: text("incident_id").notNull().unique(),
+  id: integer("id").generatedAlwaysAsIdentity().notNull(),
+  /*
+  FNXC:MultiProjectIsolation 2026-08-12-15:43:
+  Migration 0006 rebuilt incident keys with project_id first. Drizzle emits DEFAULT while the
+  database GUC/trigger retains ownership stamping and its physical legacy fallback.
+  */
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  incidentId: text("incident_id").notNull(),
   groupingKey: text("grouping_key").notNull(),
   title: text("title").notNull(),
   severity: text("severity"),
@@ -2014,6 +2039,8 @@ export const incidents = projectSchema.table("incidents", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (t) => [
+  primaryKey({ columns: [t.projectId, t.id], name: "incidents_pkey" }),
+  unique("incidents_incident_id_key").on(t.projectId, t.incidentId),
   index("idxIncidentsProjectOpenedAt").on(t.projectId, t.openedAt),
   index("idxIncidentsProjectStatus").on(t.projectId, t.status),
   index("idxIncidentsGroupingKey").on(t.groupingKey),
