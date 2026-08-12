@@ -1,5 +1,5 @@
 ---
-"@runfusion/fusion": major
+"@runfusion/fusion": minor
 ---
 
 summary: Remove the retired ephemeral-agent compatibility setting and control.
