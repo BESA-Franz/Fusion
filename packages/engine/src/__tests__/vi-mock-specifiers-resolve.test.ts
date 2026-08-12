@@ -21,7 +21,6 @@ const KNOWN_DEAD_SPECIFIERS = [
   { file: "__tests__/merge-single-flight-invariant.test.ts", specifier: "../notifier.js" },
   { file: "__tests__/merge-single-flight-invariant.test.ts", specifier: "../cron-runner.js" },
   { file: "__tests__/merger-ai-no-commits-deps-skip.test.ts", specifier: "../merge-dependency-sync.js" },
-  { file: "__tests__/mission-execution-loop.test.ts", specifier: "../agent-session-helpers.js" },
   { file: "__tests__/triage-duplicate-verdict-session-recovery.test.ts", specifier: "../reviewer.js" },
   { file: "__tests__/triage-plan-admission-throttle-audit.test.ts", specifier: "../reviewer.js" },
   { file: "__tests__/triage-planning-worktree-session-registration.test.ts", specifier: "../reviewer.js" },
@@ -36,8 +35,10 @@ function walk(directory: string): string[] {
 }
 
 function resolves(fromFile: string, specifier: string): boolean {
+  const direct = join(dirname(fromFile), specifier);
   const base = join(dirname(fromFile), specifier.replace(/\.js$/, ""));
-  return [".ts", ".tsx", ".js"].some((extension) => existsSync(`${base}${extension}`))
+  return existsSync(direct)
+    || [".ts", ".tsx", ".js", ".mjs"].some((extension) => existsSync(`${base}${extension}`))
     || existsSync(join(base, "index.ts"));
 }
 
@@ -78,7 +79,7 @@ function skipTrivia(source: string, start: number): number {
   return index;
 }
 
-function firstMockArgument(source: string, start: number): string {
+function firstArgument(source: string, start: number): string {
   let index = skipTrivia(source, start);
   const argumentStart = index;
   const quote = source[index];
@@ -105,12 +106,9 @@ function firstMockArgument(source: string, start: number): string {
   return source.slice(argumentStart, index).trim();
 }
 
-/*
-FNXC:TestHarnessIntegrity 2026-08-10-11:43:
-The guard must inspect every lexical `vi.mock` call, including calls nested in setup blocks or with legal
-whitespace/comments around property access. Skipping prose and strings prevents examples from becoming calls.
-*/
-function mockCallOpenParen(source: string, start: number): number | undefined {
+const VITEST_SPECIFIER_METHODS = new Set(["mock", "doMock", "unmock", "importActual", "importMock"]);
+
+function vitestCallOpenParen(source: string, start: number): number | undefined {
   if (!source.startsWith("vi", start) || /[A-Za-z0-9_$]/.test(source[start - 1] ?? "")) return undefined;
 
   let index = start + "vi".length;
@@ -118,15 +116,51 @@ function mockCallOpenParen(source: string, start: number): number | undefined {
   index = skipTrivia(source, index);
   if (source[index++] !== ".") return undefined;
   index = skipTrivia(source, index);
-  if (!source.startsWith("mock", index)) return undefined;
-  index += "mock".length;
-  if (/[A-Za-z0-9_$]/.test(source[index] ?? "")) return undefined;
+  const method = /^[A-Za-z_$][A-Za-z0-9_$]*/.exec(source.slice(index))?.[0];
+  if (!method || !VITEST_SPECIFIER_METHODS.has(method)) return undefined;
+  index += method.length;
   index = skipTrivia(source, index);
+  if (source[index] === "<") {
+    let nesting = 0;
+    while (index < source.length) {
+      const character = source[index];
+      if (character === '"' || character === "'" || character === "`") {
+        index = skipQuoted(source, index, character);
+        continue;
+      }
+      if (character === "<") nesting += 1;
+      else if (character === ">" && --nesting === 0) {
+        index += 1;
+        break;
+      }
+      index += 1;
+    }
+    index = skipTrivia(source, index);
+  }
   return source[index] === "(" ? index : undefined;
 }
 
-function mockArguments(source: string): string[] {
-  const arguments_: string[] = [];
+function literalExpression(expression: string): string | undefined {
+  const literal = /^(?:"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)')$/.exec(expression);
+  return literal?.[1] ?? literal?.[2];
+}
+
+function isWordAt(source: string, start: number, word: string): boolean {
+  return source.startsWith(word, start)
+    && !/[A-Za-z0-9_$]/.test(source[start - 1] ?? "")
+    && !/[A-Za-z0-9_$]/.test(source[start + word.length] ?? "");
+}
+
+/*
+FNXC:TestHarnessIntegrity 2026-08-12-01:13:
+The cb57093d03 folder refactor showed that inspecting only `vi.mock` targets misses broken factory siblings.
+Guard every Vitest module API, `typeof import(...)` type position, and plain test import while skipping quoted
+fixtures so illustrative source snippets never become false module dependencies.
+*/
+type SpecifierExpression = { expression: string; inspectNonLiteral: boolean };
+
+function testSpecifierExpressions(source: string): SpecifierExpression[] {
+  const expressions: SpecifierExpression[] = [];
   for (let index = 0; index < source.length;) {
     const character = source[index];
     if (character === '"' || character === "'" || character === "`") {
@@ -138,32 +172,82 @@ function mockArguments(source: string): string[] {
       continue;
     }
 
-    const openParen = mockCallOpenParen(source, index);
-    if (openParen === undefined) {
-      index += 1;
+    const viOpenParen = vitestCallOpenParen(source, index);
+    if (viOpenParen !== undefined) {
+      expressions.push({ expression: firstArgument(source, viOpenParen + 1), inspectNonLiteral: true });
+      index += "vi".length;
       continue;
     }
-    arguments_.push(firstMockArgument(source, openParen + 1));
-    index = openParen + 1;
+
+    if (isWordAt(source, index, "import")) {
+      let importStart = skipTrivia(source, index + "import".length);
+      if (source[importStart] === "(") {
+        expressions.push({ expression: firstArgument(source, importStart + 1), inspectNonLiteral: false });
+      } else if (source[importStart] === '"' || source[importStart] === "'") {
+        // Side-effect imports have no `from` clause but are still module dependencies.
+        const quote = source[importStart];
+        expressions.push({ expression: source.slice(importStart, skipQuoted(source, importStart, quote)), inspectNonLiteral: false });
+      } else {
+        // Static imports can contain bindings and `type`; only `from` introduces their module literal.
+        for (let cursor = importStart; cursor < source.length;) {
+          const token = source[cursor];
+          if (token === ";" || token === "\n") break;
+          if (isWordAt(source, cursor, "from")) {
+            const quoteIndex = skipTrivia(source, cursor + "from".length);
+            const quote = source[quoteIndex];
+            if (quote === '"' || quote === "'") expressions.push({ expression: source.slice(quoteIndex, skipQuoted(source, quoteIndex, quote)), inspectNonLiteral: false });
+            break;
+          }
+          if (token === '"' || token === "'" || token === "`") {
+            cursor = skipQuoted(source, cursor, token);
+            continue;
+          }
+          cursor += 1;
+        }
+      }
+      index = importStart;
+      continue;
+    }
+    index += 1;
   }
-  return arguments_;
+  return expressions;
 }
 
-describe("relative vi.mock specifiers", () => {
-  it("inspects every lexical call while excluding mock prose and lookalikes", () => {
-    expect(mockArguments(`
+describe("relative engine test specifiers", () => {
+  it("inspects Vitest APIs while excluding prose and lookalikes", () => {
+    expect(testSpecifierExpressions(`
       // vi.mock("ignored-comment")
       const prose = "vi.mock('ignored-string')";
       vi.mock("../first.js", factory);
-      setup(() => { vi /* legal trivia */ . mock ( '../nested.js', factory ); });
+      setup(() => { vi /* legal trivia */ . doMock ( '../nested.js', factory ); });
+      vi.unmock("../unmock.js");
+      vi.importActual<typeof import("../type-actual.js")>("../actual.js");
+      vi.importMock("../import-mock.js");
       vi.mock(dynamicSpecifier, factory);
       vi.mocked(value);
-    `)).toEqual(['"../first.js"', "'../nested.js'", "dynamicSpecifier"]);
+    `).map((entry) => entry.expression)).toEqual([
+      '"../first.js"', "'../nested.js'", '"../unmock.js"', '"../actual.js"',
+      '"../type-actual.js"', '"../import-mock.js"', "dynamicSpecifier",
+    ]);
+  });
+
+  it("inspects type-position, static, and dynamic imports but ignores template fixtures", () => {
+    expect(testSpecifierExpressions(`
+      import value from "../static.js";
+      import type { Value } from '../static-type.js';
+      import "../side-effect.js";
+      const lazy = await import("../dynamic.js");
+      const original = importOriginal<typeof import("../original.js")>();
+      type Builtin = typeof import("node:fs");
+      const sample = \`import value from "../fixture-only.js"\`;
+    `).map((entry) => entry.expression)).toEqual([
+      '"../static.js"', "'../static-type.js'", '"../side-effect.js"', '"../dynamic.js"', '"../original.js"', '"node:fs"',
+    ]);
   });
 
   it("resolves relative literals and ratchets the remaining moved-module exceptions downward", () => {
-    expect(KNOWN_DEAD_SPECIFIERS).toHaveLength(12);
-    expect(new Set(KNOWN_DEAD_SPECIFIERS.map((entry) => entry.file))).toHaveLength(8);
+    expect(KNOWN_DEAD_SPECIFIERS).toHaveLength(11);
+    expect(new Set(KNOWN_DEAD_SPECIFIERS.map((entry) => entry.file))).toHaveLength(7);
     expect(KNOWN_DEAD_SPECIFIERS.some((entry) => entry.file === "__tests__/self-healing-query-filter-blindness.test.ts")).toBe(false);
 
     const allowed = new Set(KNOWN_DEAD_SPECIFIERS.map((entry) => `${entry.file}\0${entry.specifier}`));
@@ -173,14 +257,13 @@ describe("relative vi.mock specifiers", () => {
     for (const file of walk(ENGINE_SRC)) {
       if (![".ts", ".tsx"].includes(extname(file))) continue;
       const fileName = relative(ENGINE_SRC, file);
-      if (fileName === GUARD_FILE) continue;
-      for (const expression of mockArguments(readFileSync(file, "utf8"))) {
-        const literal = /^(?:"([^"]+)"|'([^']+)')$/.exec(expression);
-        if (!literal) {
-          inspectionFailures.push(`${fileName}: unresolvable-by-inspection ${expression}`);
+      if (fileName === GUARD_FILE || !fileName.includes("__tests__/")) continue;
+      for (const entry of testSpecifierExpressions(readFileSync(file, "utf8"))) {
+        const specifier = literalExpression(entry.expression);
+        if (!specifier) {
+          if (entry.inspectNonLiteral) inspectionFailures.push(`${fileName}: unresolvable-by-inspection ${entry.expression}`);
           continue;
         }
-        const specifier = literal[1] ?? literal[2];
         if (!specifier.startsWith(".")) continue;
         const key = `${fileName}\0${specifier}`;
         if (!resolves(file, specifier)) {

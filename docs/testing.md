@@ -340,9 +340,24 @@ every entry needs a non-empty `reason` (empty reasons are rejected). Skip-list p
 ## Test-inventory harness
 
 Engine test-harness integrity also includes
-`packages/engine/src/__tests__/vi-mock-specifiers-resolve.test.ts`. It resolves
-literal relative `vi.mock` paths and ratchets the explicit moved-module exceptions
-downward; run it after moving an engine module.
+`packages/engine/src/__tests__/vi-mock-specifiers-resolve.test.ts`.
+
+<!-- FNXC:TestHarnessIntegrity 2026-08-12-01:35: Engine tests are excluded from the engine TypeScript project, so typecheck cannot catch a stale test-only module path. The lexical harness guard keeps folder refactors fail-closed without treating fixture prose as code. -->
+
+### Engine relative-specifier guard
+
+The guard resolves literal relative specifiers in `vi.mock`, `vi.doMock`,
+`vi.unmock`, `vi.importActual`, and `vi.importMock`; `typeof import("…")` type
+positions (including `importOriginal<typeof import("…")>()`); and static or dynamic
+imports in engine test files. It intentionally ignores package aliases, `node:`
+specifiers, non-literal dynamic imports, and quoted/template fixture samples.
+
+The engine tsconfig excludes its tests directory, so typecheck is not a substitute
+for this check. When a folder refactor moves a module, update the `vi.mock` target
+**and** every `importActual`, `unmock`, `typeof import(...)`, and ordinary-import
+sibling in the same change. The guard ratchets explicitly allowlisted historical
+dead `vi.mock` targets downward; do not add newly discovered stale paths to that
+allowlist.
 
 `scripts/check-test-inventory.mjs` is the standard coverage-superset verification
 step. Node stdlib only.
