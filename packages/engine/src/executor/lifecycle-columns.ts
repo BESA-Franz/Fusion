@@ -25,7 +25,7 @@
  * which is the half-conversion shape: the correct target reached through a check that could
  * not see it. Each site now resolves once and uses the same value for both.
  */
-import type { TaskStore } from "@fusion/core";
+import type { TaskStore, WorkflowSelectionCache } from "@fusion/core";
 import {
   resolveCompleteColumn,
   resolveLifecycleColumns,
@@ -53,12 +53,12 @@ export async function resolveTerminalColumnsFor(
   store: TaskStore,
   taskId: string,
   /*
-  FNXC:WorkflowLifecycleColumns 2026-07-30-21:40 (#2787 review — greptile P2):
-  Optional CALLER-OWNED IR cache, matching the contract on `resolveTaskLifecycleColumns`. Sweeps that
-  call this once per card on a whole board must read one IR per WORKFLOW, not one per task; callers
-  resolving a single task pass nothing and are unaffected.
+  FNXC:WorkflowLifecycleColumns 2026-08-12-00:20:
+  Optional caller-owned IR and selection caches let sweeps read one IR per workflow and one
+  selection per task. Single-task callers pass neither and retain the original behavior.
   */
   irCache?: Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>,
+  selectionCache?: WorkflowSelectionCache,
 ): Promise<readonly string[]> {
   /*
   FNXC:WorkflowLifecycleColumns 2026-07-30-21:40 (PR #2568 review — greptile):
@@ -82,7 +82,7 @@ export async function resolveTerminalColumnsFor(
   column, which is the failure the conversion exists to prevent.
   */
   try {
-    const resolved = resolveTerminalColumns(await resolveWorkflowIrForTask(store, taskId, irCache));
+    const resolved = resolveTerminalColumns(await resolveWorkflowIrForTask(store, taskId, irCache, selectionCache));
     return [...new Set([...resolved, ...LEGACY_TERMINAL_COLUMNS])];
   } catch {
     return LEGACY_TERMINAL_COLUMNS;

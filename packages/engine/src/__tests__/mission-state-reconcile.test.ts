@@ -2,6 +2,147 @@ import { describe, expect, it, vi } from "vitest";
 import { reconcileMissionState } from "../missions/mission-state-reconcile.js";
 
 describe("reconcileMissionState", () => {
+  it("keeps a source feature active while an approved Decision-A follow-up is live", async () => {
+    const parent = {
+      id: "FN-1", title: "Delivery", column: "done", status: undefined,
+      missionId: "M-1", sliceId: "SL-1", updatedAt: "2026-08-11T00:00:00.000Z",
+    };
+    const followUp = {
+      id: "FN-2", title: "Follow-up", column: "todo", status: "queued",
+      missionId: "M-1", sliceId: "SL-1", updatedAt: "2026-08-11T00:01:00.000Z",
+      sourceMetadata: { missionLineage: { missionId: "M-1", sliceId: "SL-1", featureId: "F-1" } },
+    };
+    const feature = {
+      id: "F-1", title: "Delivery", sliceId: "SL-1", taskId: parent.id, status: "done",
+      createdAt: "2026-08-11T00:00:00.000Z", updatedAt: "2026-08-11T00:00:00.000Z",
+    };
+    const updateFeatureStatus = vi.fn();
+    const missionStore = {
+      listMissions: vi.fn().mockResolvedValue([{ id: "M-1", status: "complete" }]),
+      getMissionWithHierarchy: vi.fn().mockResolvedValue({
+        id: "M-1", milestones: [{ slices: [{ id: "SL-1", features: [feature] }] }],
+      }),
+      listAssertionsForFeature: vi.fn().mockResolvedValue([]),
+      updateFeatureStatus,
+    };
+    const taskStore = {
+      listTasks: vi.fn().mockResolvedValue([parent, followUp]),
+      getTask: vi.fn().mockResolvedValue(parent),
+      getLatestSpecDriftReport: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await reconcileMissionState({ taskStore: taskStore as never, missionStore }, { source: "self-healing" });
+
+    expect(updateFeatureStatus).toHaveBeenCalledWith(
+      feature.id,
+      "in-progress",
+      { actor: { type: "system", id: "mission-reconcile", source: "mission-reconcile:self-healing" } },
+    );
+  });
+
+  it("does not retain a historical source after a same-slice follow-up rehome", async () => {
+    const parent = {
+      id: "FN-1", title: "Delivery", column: "done", status: undefined,
+      missionId: "M-1", sliceId: "SL-1", updatedAt: "2026-08-11T00:00:00.000Z",
+    };
+    const followUp = {
+      id: "FN-2", title: "Rehomed", column: "todo", status: "queued",
+      missionId: "M-1", sliceId: "SL-1", updatedAt: "2026-08-11T00:01:00.000Z",
+      sourceMetadata: { missionLineage: { missionId: "M-1", sliceId: "SL-1", featureId: "F-1" } },
+    };
+    const sourceFeature = {
+      id: "F-1", title: "Delivery", sliceId: "SL-1", taskId: parent.id, status: "in-progress",
+      createdAt: "2026-08-11T00:00:00.000Z", updatedAt: "2026-08-11T00:00:00.000Z",
+    };
+    const currentFeature = {
+      id: "F-2", title: "Rehomed", sliceId: "SL-1", taskId: followUp.id, status: "triaged",
+      createdAt: "2026-08-11T00:01:00.000Z", updatedAt: "2026-08-11T00:01:00.000Z",
+    };
+    const updateFeatureStatus = vi.fn();
+    const missionStore = {
+      listMissions: vi.fn().mockResolvedValue([{ id: "M-1", status: "active" }]),
+      getMissionWithHierarchy: vi.fn().mockResolvedValue({
+        id: "M-1", milestones: [{ slices: [{ id: "SL-1", features: [sourceFeature, currentFeature] }] }],
+      }),
+      listAssertionsForFeature: vi.fn().mockResolvedValue([]),
+      updateFeatureStatus,
+    };
+    const tasks = new Map([[parent.id, parent], [followUp.id, followUp]]);
+    const taskStore = {
+      listTasks: vi.fn().mockResolvedValue([parent, followUp]),
+      getTask: vi.fn((taskId: string) => Promise.resolve(tasks.get(taskId))),
+      getLatestSpecDriftReport: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await reconcileMissionState({ taskStore: taskStore as never, missionStore }, { source: "self-healing" });
+
+    expect(updateFeatureStatus).toHaveBeenCalledWith(
+      sourceFeature.id,
+      "done",
+      { actor: { type: "system", id: "mission-reconcile", source: "mission-reconcile:self-healing" } },
+    );
+    expect(updateFeatureStatus).not.toHaveBeenCalledWith(
+      sourceFeature.id,
+      "in-progress",
+      expect.anything(),
+    );
+  });
+
+  it("allows a source feature to complete after every Decision-A follow-up reaches a custom terminal lane", async () => {
+    const parent = {
+      id: "FN-1", title: "Delivery", column: "shipped", status: undefined,
+      missionId: "M-1", sliceId: "SL-1", updatedAt: "2026-08-11T00:00:00.000Z",
+    };
+    const followUp = {
+      id: "FN-2", title: "Follow-up", column: "shipped", status: undefined,
+      missionId: "M-1", sliceId: "SL-1", updatedAt: "2026-08-11T00:01:00.000Z",
+      sourceMetadata: { missionLineage: { missionId: "M-1", sliceId: "SL-1", featureId: "F-1" } },
+    };
+    const feature = {
+      id: "F-1", title: "Delivery", sliceId: "SL-1", taskId: parent.id, status: "in-progress",
+      createdAt: "2026-08-11T00:00:00.000Z", updatedAt: "2026-08-11T00:00:00.000Z",
+    };
+    const updateFeatureStatus = vi.fn();
+    const missionStore = {
+      listMissions: vi.fn().mockResolvedValue([{ id: "M-1", status: "active" }]),
+      getMissionWithHierarchy: vi.fn().mockResolvedValue({
+        id: "M-1", milestones: [{ slices: [{ id: "SL-1", features: [feature] }] }],
+      }),
+      listAssertionsForFeature: vi.fn().mockResolvedValue([]),
+      updateFeatureStatus,
+    };
+    const taskStore = {
+      listTasks: vi.fn().mockResolvedValue([parent, followUp]),
+      getTask: vi.fn((taskId: string) => Promise.resolve(taskId === parent.id ? parent : followUp)),
+      getLatestSpecDriftReport: vi.fn().mockResolvedValue(undefined),
+      getTaskWorkflowSelectionsAsync: vi.fn().mockResolvedValue(new Map([
+        [parent.id, { workflowId: "custom:delivery", stepIds: [] }],
+        [followUp.id, { workflowId: "custom:delivery", stepIds: [] }],
+      ])),
+      getTaskWorkflowSelectionAsync: vi.fn().mockResolvedValue({ workflowId: "custom:delivery", stepIds: [] }),
+      getWorkflowDefinition: vi.fn().mockResolvedValue({
+        ir: {
+          version: "v2", id: "custom:delivery", nodes: [], edges: [],
+          columns: [
+            { id: "todo", label: "Todo", traits: [{ trait: "hold" }] },
+            { id: "shipped", label: "Shipped", traits: [{ trait: "complete" }] },
+            { id: "stored", label: "Stored", traits: [{ trait: "archived" }] },
+          ],
+        },
+      }),
+    };
+
+    await reconcileMissionState({ taskStore: taskStore as never, missionStore }, { source: "self-healing" });
+
+    expect(updateFeatureStatus).toHaveBeenCalledWith(
+      feature.id,
+      "done",
+      { actor: { type: "system", id: "mission-reconcile", source: "mission-reconcile:self-healing" } },
+    );
+    expect(taskStore.getTaskWorkflowSelectionsAsync).toHaveBeenCalledOnce();
+    expect(taskStore.getTaskWorkflowSelectionAsync).not.toHaveBeenCalledWith(followUp.id);
+  });
+
   it("retains the orthogonal alignment projection when lifecycle status is already current", async () => {
     const task = {
       id: "FN-1", title: "Delivery", column: "in-progress", status: "in-progress",

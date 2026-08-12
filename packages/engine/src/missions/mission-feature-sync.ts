@@ -51,6 +51,8 @@ export async function resolveMissionFeatureAlignment(
 
 export interface MissionFeatureSyncContext {
   hasLinkedAssertions?: boolean;
+  /** FNXC:MissionFollowupLifecycle 2026-08-12-00:20: Live Decision-A follow-ups keep their source feature active until the whole delivery boundary is terminal. */
+  hasLiveLineageDescendants?: boolean;
   /*
   FNXC:WorkflowLifecycleColumns 2026-07-30-11:20 (U11):
   The task's resolved planner lanes (intake + hold). Supplied by the CALLER, which
@@ -296,12 +298,17 @@ export async function reconcileMissionFeatureState(
       return { kind: "blocked", reason: blocker, alignment };
     }
 
-    if (hasUnvalidatedAssertions) {
+    const pendingCompletionReason = context.hasLiveLineageDescendants === true
+      ? "lineage follow-ups"
+      : hasUnvalidatedAssertions
+        ? "assertion validation"
+        : undefined;
+    if (pendingCompletionReason) {
       if (feature.status !== "in-progress") {
         return {
           kind: "update",
           status: "in-progress",
-          reason: `task ${task.id} completed; awaiting assertion validation`,
+          reason: `task ${task.id} completed; awaiting ${pendingCompletionReason}`,
           alignment,
         };
       }

@@ -1,8 +1,10 @@
-import type { MissionFeature, MissionFeatureRepairGroundTruth, MissionTransitionActor, Task, TaskStore } from "@fusion/core";
+import type { MissionFeature, MissionFeatureRepairGroundTruth, MissionTransitionActor, Task, TaskStore, WorkflowSelectionCache } from "@fusion/core";
 import { TerminalTaskReconciliationError, resolveLifecycleColumns, resolveWorkflowIrForTask } from "@fusion/core";
 import { createRunAuditor, generateSyntheticRunId } from "../util/run-audit.js";
+import { resolveTerminalColumnsFor } from "../executor/lifecycle-columns.js";
 import { resolvePlannerLanesForTask } from "../planner-lane-resolution.js";
 import { reconcileMissionFeatureState } from "./mission-feature-sync.js";
+import { parsePersistedMissionLineage } from "./mission-symbol-admission.js";
 
 export type MissionReconcileSource = "startup" | "self-healing" | "autopilot" | "task-move" | "api" | "tool";
 type TerminalCapability = { reconcileFeatureDoneWithTerminalTask(featureId: string, taskId: string): Promise<MissionFeature> };
@@ -45,6 +47,7 @@ function actorFor(source: MissionReconcileSource, supplied?: MissionTransitionAc
   return { type: "system", id: "mission-reconcile", source: `mission-reconcile:${source}` };
 }
 function titleKey(sliceId: string, title: string): string { return `${sliceId}\0${title.trim().replace(/\s+/g, " ").toLowerCase()}`; }
+function lineageKey(missionId: string, sliceId: string, featureId: string): string { return `${missionId}\0${sliceId}\0${featureId}`; }
 function hasRepairCapability(store: unknown): store is RepairCapability {
   return typeof (store as Record<string, unknown> | null | undefined)?.repairFeatureValidationState === "function";
 }
@@ -84,15 +87,78 @@ export async function reconcileMissionState(
   // FNXC:MissionAutoReconcile 2026-08-11-05:20: TaskStore methods use their receiver; optional-capability probing must not detach listTasks from deps.taskStore.
   const liveTasks = listTasks ? await listTasks.call(deps.taskStore, { slim: true, includeArchived: false }) : [];
   const selectedIds = new Set(selected.map((mission) => mission.id));
-  const byTitle = new Map<string, Task | null>();
-  for (const task of liveTasks) {
-    if (!task.sliceId || !task.title || !task.missionId || !selectedIds.has(task.missionId)) continue;
-    const key = titleKey(task.sliceId, task.title);
-    byTitle.set(key, byTitle.has(key) ? null : task);
-  }
+  type MissionHierarchy = { milestones: Array<{ slices: Array<{ id: string; features: MissionFeature[] }> }> };
+  /*
+  FNXC:MissionFollowupLifecycle 2026-08-12-00:20:
+  Persisted Decision-A lineage is provenance only. Index current hierarchy ownership before
+  projecting descendants so a canonically rehomed task cannot keep its former feature open,
+  including when both features share a slice or happen to reuse an id elsewhere.
+  */
+  const selectedHierarchies: Array<{ mission: { id: string; status: string }; hierarchy: MissionHierarchy }> = [];
+  const canonicalTaskIds = new Set<string>();
+  const knownFeatureLineages = new Set<string>();
   for (const mission of selected) {
-    const hierarchy = await missionApi.getMissionWithHierarchy(mission.id) as { milestones: Array<{ slices: Array<{ id: string; features: MissionFeature[] }> }> } | undefined;
+    const hierarchy = await missionApi.getMissionWithHierarchy(mission.id) as MissionHierarchy | undefined;
     if (!hierarchy) continue;
+    selectedHierarchies.push({ mission, hierarchy });
+    for (const slice of hierarchy.milestones.flatMap((milestone) => milestone.slices)) {
+      for (const feature of slice.features) {
+        knownFeatureLineages.add(lineageKey(mission.id, slice.id, feature.id));
+        if (feature.taskId) canonicalTaskIds.add(feature.taskId);
+      }
+    }
+  }
+  const byTitle = new Map<string, Task | null>();
+  const featuresWithLiveLineageDescendants = new Set<string>();
+  const lineageCandidates: Array<{ task: Task; key: string }> = [];
+  for (const task of liveTasks) {
+    if (!task.sliceId || !task.missionId || !selectedIds.has(task.missionId)) continue;
+    const lineage = parsePersistedMissionLineage(task);
+    if (
+      lineage
+      && lineage.missionId === task.missionId
+      && lineage.sliceId === task.sliceId
+      && !canonicalTaskIds.has(task.id)
+      && knownFeatureLineages.has(lineageKey(lineage.missionId, lineage.sliceId, lineage.featureId))
+    ) {
+      lineageCandidates.push({ task, key: lineageKey(lineage.missionId, lineage.sliceId, lineage.featureId) });
+    }
+    if (task.title) {
+      const key = titleKey(task.sliceId, task.title);
+      byTitle.set(key, byTitle.has(key) ? null : task);
+    }
+  }
+  const terminalIrCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
+  const selectionCache: WorkflowSelectionCache = new Map();
+  const lineageTaskIds = lineageCandidates.map(({ task }) => task.id);
+  if (lineageTaskIds.length > 0) {
+    let needsPerTaskFallback = !deps.taskStore.getTaskWorkflowSelectionsAsync;
+    try {
+      if (deps.taskStore.getTaskWorkflowSelectionsAsync) {
+        const selections = await deps.taskStore.getTaskWorkflowSelectionsAsync(lineageTaskIds);
+        for (const taskId of lineageTaskIds) selectionCache.set(taskId, selections.get(taskId));
+      }
+    } catch {
+      needsPerTaskFallback = true;
+    }
+    if (needsPerTaskFallback) {
+      await Promise.all(lineageTaskIds.map(async (taskId) => {
+        try { selectionCache.set(taskId, await deps.taskStore.getTaskWorkflowSelectionAsync(taskId)); } catch { /* FNXC:MissionFollowupLifecycle 2026-08-12-00:20: Preserve fail-soft default workflow resolution after a selection read failure. */ }
+      }));
+    }
+  }
+  const lineageBatchSize = 8;
+  for (let index = 0; index < lineageCandidates.length; index += lineageBatchSize) {
+    const batch = lineageCandidates.slice(index, index + lineageBatchSize);
+    const live = await Promise.all(batch.map(async ({ task, key }) => ({
+      key,
+      isLive: !task.deletedAt && !(await resolveTerminalColumnsFor(deps.taskStore, task.id, terminalIrCache, selectionCache)).includes(task.column),
+    })));
+    for (const candidate of live) {
+      if (candidate.isLive) featuresWithLiveLineageDescendants.add(candidate.key);
+    }
+  }
+  for (const { mission, hierarchy } of selectedHierarchies) {
     result.missionsScanned++;
     for (const slice of hierarchy.milestones.flatMap((milestone) => milestone.slices)) {
       const featureTitleCounts = new Map<string, number>();
@@ -122,7 +188,11 @@ export async function reconcileMissionState(
         if (!terminalCandidate && task) {
           const assertions = missionApi.listAssertionsForFeature ? await missionApi.listAssertionsForFeature(feature.id) : [];
           const plannerColumns = await resolvePlannerLanesForTask(deps.taskStore, task.id) ?? [];
-          const decision = await reconcileMissionFeatureState(deps.taskStore, task, feature, { hasLinkedAssertions: assertions.length > 0, plannerColumns });
+          const decision = await reconcileMissionFeatureState(deps.taskStore, task, feature, {
+            hasLinkedAssertions: assertions.length > 0,
+            hasLiveLineageDescendants: featuresWithLiveLineageDescendants.has(lineageKey(mission.id, slice.id, feature.id)),
+            plannerColumns,
+          });
           const needsRepair = feature.status === "blocked" || feature.loopState === "blocked" || feature.loopState === "needs_fix";
           if (decision.kind === "update" && feature.status !== decision.status) {
             if (options.dryRun) result.planned!.push({ featureId: feature.id, action: "status" });
