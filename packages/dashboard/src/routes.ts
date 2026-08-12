@@ -121,8 +121,12 @@ export interface ModelRegistryLike {
    * FNXC:ModelCatalog 2026-07-16-17:55:
    * pi 0.80.8 refreshes asynchronously, so the models endpoint must wait for it
    * before reading getAvailable() and surface any refresh failure to the caller.
+   *
+   * FNXC:ModelCatalog 2026-08-12-20:46:
+   * Pi 0.84.1 returns refresh metadata instead of void. Preserve it as unknown because
+   * the route needs only completion while structural compatibility must track the SDK.
    */
-  refresh(): Promise<void>;
+  refresh(): Promise<unknown>;
   /** Optional runtime passthrough lets request refreshes use the engine abort-aware path. */
   modelRuntime?: {
     refresh: (options?: { allowNetwork?: boolean; signal?: AbortSignal; force?: boolean }) => Promise<unknown>;

@@ -55,12 +55,12 @@ function assertRuntimeDepsAreNotOptionalPeers(pkg: any, label: string): void {
     ).not.toBe(true);
   }
 
-  // FNXC:DesktopPackaging 2026-07-26-22:55: Exact matched Pi runtime pin — keep in sync with
-  // pnpm-workspace.yaml overrides and check-pi-versions-pinned.mjs (currently 0.82.1).
+  // FNXC:DesktopPackaging 2026-08-12-20:46: Exact matched Pi runtime pin — keep in sync with
+  // pnpm-workspace.yaml overrides and check-pi-versions-pinned.mjs (currently 0.84.1).
   for (const dependencyName of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai"]) {
     expect(dependencies, `${label}: ${dependencyName} must remain a required runtime dependency`).toHaveProperty(
       dependencyName,
-      "0.82.1",
+      "0.84.1",
     );
     expect(dependencies[dependencyName], `${label}: ${dependencyName} must be a clean exact semver`).toMatch(
       EXACT_SEMVER,
