@@ -2438,3 +2438,9 @@ The shared Task Detail Definition view shows the persisted spec alignment, lates
 ### Promote release-gate enrichment
 
 `GET /api/tasks` may attach a transient `releaseGate` verdict to hold-lane cards. It includes the resolved release target, pre-release Plan Review facts, and capacity-boundary state, so Promote visibility exactly matches the server while the verdict is fresh. SSE does not carry this field: `useTasks` retains it only while its visible-evidence fingerprint and task row clock match, and for at most `RELEASE_GATE_VERDICT_MAX_AGE_MS` (30 seconds). Otherwise the card uses the conservative client fallback because workflow IR, continuations, and prompt content are not browser-visible.
+
+### Model catalog refresh resilience
+
+`GET /api/models` bounds each catalog refresh to 15 seconds and continues serving the registry's retained `getAvailable()` rows when a provider stalls or fails. Refreshes are single-flight per registry instance: a timed-out operation can continue in the provider runtime, but Fusion never starts another concurrently. A successful refresh is fresh for 60 seconds from its successful settlement; a failed refresh uses a separate 60-second retry window measured from its attempt start, so a failure is never reported as fresh. After a failed refresh settles, the next attempt starts only after both settlement and that retry interval.
+
+Saving or removing API keys, completing OAuth login/manual-code flows, logging out, and removing credential instances invalidate that registry's generation and clear both windows. If a credential change happens while an uncancellable refresh is already running, the model list temporarily serves its retained rows rather than overlapping the refresh. Once that old refresh settles, the first following request starts a current-credential refresh with no additional cache-window wait.

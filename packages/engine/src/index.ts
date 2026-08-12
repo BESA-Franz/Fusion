@@ -10,7 +10,10 @@ export type { AgentActionGateContext, AgentActionGateDecision } from "./agents/a
 export { createFusionAuthStorage, createFusionModelRegistry } from "./auth/auth-storage.js";
 export {
   DEFAULT_MODEL_REGISTRY_REFRESH_TIMEOUT_MS,
+  boundExistingModelRegistryRefresh,
   refreshFusionModelRegistry,
+  startFusionModelRegistryRefresh,
+  type BoundExistingModelRegistryRefreshOptions,
   type ModelRegistryRefreshOutcome,
   type RefreshableModelRegistry,
   type RefreshFusionModelRegistryOptions,

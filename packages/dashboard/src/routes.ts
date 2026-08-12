@@ -110,6 +110,7 @@ const TASK_DETAIL_ACTIVITY_LOG_LIMIT = 500;
  * intentionally remain exported from this file for existing tests/importers.
  */
 export { __resetBatchImportRateLimiter } from "./routes/register-git-github.js";
+export { __resetModelRegistryRefreshCacheForTests } from "./model-registry-refresh-cache.js";
 
 /**
  * Minimal interface matching pi 0.80.8+ ModelRuntime's ModelRegistry
@@ -122,6 +123,10 @@ export interface ModelRegistryLike {
    * before reading getAvailable() and surface any refresh failure to the caller.
    */
   refresh(): Promise<void>;
+  /** Optional runtime passthrough lets request refreshes use the engine abort-aware path. */
+  modelRuntime?: {
+    refresh: (options?: { allowNetwork?: boolean; signal?: AbortSignal; force?: boolean }) => Promise<unknown>;
+  };
   /** Get models that have auth configured. */
   getAvailable(): Array<{ id: string; name: string; provider: string; reasoning: boolean; contextWindow: number }>;
   /** Optional pi ModelRegistry surface used for supplemental model registration. */
