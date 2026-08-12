@@ -387,6 +387,15 @@ const NOT_SURFACED_ALLOWLIST: Record<string, string> = {
   mergerCredentialInstanceId: "inline companion for the project merger model picker; unset inherits the provider default",
   mergerFallbackCredentialInstanceId: "inline companion for the project merger fallback model picker; unset inherits the provider default",
 
+  /*
+  FNXC:SettingsDefaults 2026-08-12-01:00:
+  FN-8993 classifies this CLI/engine-owned graph output path as not surfaced: it has
+  zero dashboard render sites and i18n keys, while only `fn knowledge-graph build`
+  and the memory-consolidation tick consume it. Operators can find its default in
+  docs/settings-reference.md and docs/knowledge-graph.md rather than a Settings field.
+  */
+  knowledgeGraphDir: "CLI/engine-owned knowledge-graph output directory (fn knowledge-graph build --dir); no Settings UI field renders it",
+
   // Internal/engine bookkeeping, session state, or reliability telemetry — not
   // rendered as a plain user-facing description field anywhere in Settings.
   globalPause: "engine-managed pause flag, not a plain description field",
@@ -657,6 +666,30 @@ describe("FN-7505 settings default-value description guard", () => {
       unaccounted,
       `Settings keys with no default-value description mapping and no allowlist reason:\n${unaccounted.join("\n")}`,
     ).toEqual([]);
+  });
+
+  /*
+  FNXC:SettingsDefaults 2026-08-12-01:00:
+  FN-8993 prevents knowledgeGraphDir from silently returning to the unaccounted-default
+  census failure. The CLI/engine-owned path belongs only in the not-surfaced allowlist.
+  */
+  it("pins FN-8993 knowledgeGraphDir as an allowlisted, non-Settings field", () => {
+    expect(
+      DEFAULT_SETTINGS,
+      "FN-8993 requires knowledgeGraphDir to remain a DEFAULT_SETTINGS key",
+    ).toHaveProperty("knowledgeGraphDir");
+    expect(
+      NOT_SURFACED_ALLOWLIST.knowledgeGraphDir,
+      "FN-8993 requires knowledgeGraphDir's non-empty not-surfaced allowlist reason",
+    ).toEqual(expect.any(String));
+    expect(
+      NOT_SURFACED_ALLOWLIST.knowledgeGraphDir,
+      "FN-8993 requires a non-empty knowledgeGraphDir allowlist reason",
+    ).not.toBe("");
+    expect(
+      SETTING_DESCRIPTION_KEYS,
+      "FN-8993 requires knowledgeGraphDir to stay out of SETTING_DESCRIPTION_KEYS",
+    ).not.toHaveProperty("knowledgeGraphDir");
   });
 
   it("does not allowlist a key that is also mapped to a description (would mask real coverage gaps)", () => {
