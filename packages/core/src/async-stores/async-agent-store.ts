@@ -19,7 +19,10 @@
  *   - `agent_api_keys`         — API key records (data jsonb, revokedAt)
  *   - `agent_config_revisions` — config revision history (data jsonb)
  *   - `agent_blocked_states`   — blocked-task dedup snapshots (data jsonb)
- *   - `agent_ratings`          — agent ratings (score CHECK 1..5)
+ *   - `agent_ratings`          — project-owned agent ratings (score CHECK 1..5)
+ *
+ * FNXC:AgentRatingsProjectIsolation 2026-08-12-01:00:
+ * Rating helpers receive an optional trailing project id. Blank or undefined bindings preserve compatibility behavior: writes are trigger-stamped while reads and deletes remain unscoped.
  *
  * SQLite → PostgreSQL notes (VAL-SCHEMA-004):
  *   - The `data` and `metadata` columns on `agents` (and the `data` columns on
@@ -861,6 +864,9 @@ function mapRatingRow(row: AgentRatingRow): AgentRating {
 /**
  * Get ratings for an agent (newest first), optionally filtered by category
  * and capped at `limit`.
+ *
+ * FNXC:AgentRatingsProjectIsolation 2026-08-12-01:00:
+ * A bound project id scopes the read; an absent or blank id deliberately remains an unscoped compatibility read.
  */
 export async function getRatings(
   handle: QueryHandle,
@@ -888,6 +894,9 @@ export async function getRatings(
 
 /**
  * Delete a rating by id.
+ *
+ * FNXC:AgentRatingsProjectIsolation 2026-08-12-01:00:
+ * Bound deletion is constrained to its rating partition, while an unbound compatibility store retains the prior unscoped behavior.
  */
 export async function deleteRating(
   handle: QueryHandle,

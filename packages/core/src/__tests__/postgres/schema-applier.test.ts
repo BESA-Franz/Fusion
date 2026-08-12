@@ -97,6 +97,7 @@ import {
   MEMORY_RECALL_RECORDS_VERSION,
   MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
   AGENT_RATING_PROJECT_ISOLATION_VERSION,
+  AGENT_RATINGS_PROJECT_PARTITION_VERSION,
 } from "../../postgres/schema-applier.js";
 import { ProjectPartitionRekeyError, rekeyFallbackProjectPartition } from "../../postgres/migration-stamping.js";
 import type { PluginSchemaInitHook } from "../../postgres/plugin-schema-hook.js";
@@ -127,7 +128,8 @@ describe("schema-applier: immutable migration identities", () => {
     expect(MEMORY_RECALL_RECORDS_VERSION).toBe("0052");
     expect(MISSION_FEATURE_SPEC_ALIGNMENT_VERSION).toBe("0053");
     expect(AGENT_RATING_PROJECT_ISOLATION_VERSION).toBe("0054");
-    expect(SCHEMA_BASELINE_VERSION).toBe("0054");
+    expect(AGENT_RATINGS_PROJECT_PARTITION_VERSION).toBe("0055");
+    expect(SCHEMA_BASELINE_VERSION).toBe("0055");
   });
 
   it("keeps monitor and approval isolation assigned to version 0003", () => {
@@ -1797,6 +1799,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       MEMORY_RECALL_RECORDS_VERSION,
       MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
       AGENT_RATING_PROJECT_ISOLATION_VERSION,
+      AGENT_RATINGS_PROJECT_PARTITION_VERSION,
     ]);
     expect((await applySchemaBaseline(ctx.db, { pluginHooks: [] })).applied).toBe(false);
   });
@@ -1877,6 +1880,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       MEMORY_RECALL_RECORDS_VERSION,
       MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
       AGENT_RATING_PROJECT_ISOLATION_VERSION,
+      AGENT_RATINGS_PROJECT_PARTITION_VERSION,
     ]);
   });
 
@@ -2090,6 +2094,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       MEMORY_RECALL_RECORDS_VERSION,
       MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
       AGENT_RATING_PROJECT_ISOLATION_VERSION,
+      AGENT_RATINGS_PROJECT_PARTITION_VERSION,
     ]);
   });
 
@@ -2184,6 +2189,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       MEMORY_RECALL_RECORDS_VERSION,
       MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
       AGENT_RATING_PROJECT_ISOLATION_VERSION,
+      AGENT_RATINGS_PROJECT_PARTITION_VERSION,
     ]);
   });
 
@@ -2278,6 +2284,7 @@ pgDescribe("schema-applier: automation project-isolation upgrade", () => {
       MEMORY_RECALL_RECORDS_VERSION,
       MISSION_FEATURE_SPEC_ALIGNMENT_VERSION,
       AGENT_RATING_PROJECT_ISOLATION_VERSION,
+      AGENT_RATINGS_PROJECT_PARTITION_VERSION,
     ]);
   });
 });
@@ -2333,6 +2340,63 @@ pgDescribe("schema-applier: VAL-SCHEMA-006 AUTOINCREMENT → identity with seque
     `)) as unknown as Array<{ id: number }>;
     expect(rows.length).toBe(2);
     expect(rows[1].id).toBeGreaterThan(rows[0].id);
+  });
+});
+
+pgDescribe("schema-applier: agent ratings project partition", () => {
+  let ctx: TestContext | null = null;
+
+  afterEach(async () => {
+    await teardownDb(ctx);
+    ctx = null;
+  });
+
+  it("creates the composite rating key and reapplying is a no-op", async () => {
+    /*
+    FNXC:AgentRatingsProjectIsolation 2026-08-12-01:00:
+    Fresh baselines and repaired upgrades must agree that duplicate rating IDs are legal only across project partitions. Reapplying after bookkeeping must not mutate the healthy schema.
+    */
+    ctx = await setupFreshDb();
+    await applySchemaBaseline(ctx.db);
+    const columns = (await ctx.db.execute(sql`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'project' AND table_name = 'agent_ratings' AND column_name = 'project_id'
+    `)) as unknown as Array<{ column_name: string }>;
+    expect(columns).toEqual([{ column_name: "project_id" }]);
+    const keys = (await ctx.db.execute(sql`
+      SELECT a.attname AS column_name
+      FROM pg_constraint c
+      JOIN unnest(c.conkey) WITH ORDINALITY AS k(attnum, ordinal) ON true
+      JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+      WHERE c.conrelid = 'project.agent_ratings'::regclass AND c.contype = 'p'
+      ORDER BY k.ordinal
+    `)) as unknown as Array<{ column_name: string }>;
+    expect(keys).toEqual([{ column_name: "project_id" }, { column_name: "id" }]);
+    await expect(applySchemaBaseline(ctx.db)).resolves.toMatchObject({ applied: false });
+  });
+
+  it("repairs a drifted key that contains project_id but omits rating id", async () => {
+    /*
+    FNXC:AgentRatingsProjectPartition 2026-08-12-01:30:
+    Historical drift can leave (project_id, agent_id) as the primary key. The
+    upgrade must replace it because only (project_id, id) protects rating identity.
+    */
+    ctx = await setupFreshDb();
+    await applySchemaBaseline(ctx.db);
+    await ctx.db.execute(sql`ALTER TABLE project.agent_ratings DROP CONSTRAINT agent_ratings_pkey`);
+    await ctx.db.execute(sql`ALTER TABLE project.agent_ratings ADD CONSTRAINT agent_ratings_pkey PRIMARY KEY (project_id, agent_id)`);
+    await ctx.db.execute(sql`DELETE FROM public.fusion_schema_migrations WHERE version = ${AGENT_RATINGS_PROJECT_PARTITION_VERSION}`);
+
+    await expect(applySchemaBaseline(ctx.db)).resolves.toMatchObject({ applied: true });
+    const keys = (await ctx.db.execute(sql`
+      SELECT a.attname AS column_name
+      FROM pg_constraint c
+      JOIN unnest(c.conkey) WITH ORDINALITY AS k(attnum, ordinal) ON true
+      JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+      WHERE c.conrelid = 'project.agent_ratings'::regclass AND c.contype = 'p'
+      ORDER BY k.ordinal
+    `)) as unknown as Array<{ column_name: string }>;
+    expect(keys).toEqual([{ column_name: "project_id" }, { column_name: "id" }]);
   });
 });
 

@@ -2041,6 +2041,10 @@ export const messages = projectSchema.table("messages", {
   index("idxMessagesCreatedAt").on(t.createdAt),
 ]);
 
+/*
+FNXC:AgentRatingsProjectIsolation 2026-08-12-01:00:
+Agent ratings belong to the same project-local identity partition as durable agents. Migration 0006 dynamically reconciled deployed tables; the explicit 0055 reconciliation keeps this Drizzle contract and its physical key/index guarantees aligned on every upgrade path.
+*/
 export const agentRatings = projectSchema.table("agent_ratings", {
   projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
   id: text("id").notNull(),
@@ -2057,6 +2061,7 @@ export const agentRatings = projectSchema.table("agent_ratings", {
   primaryKey({ columns: [t.projectId, t.id] }),
   check("agent_ratings_score_check", sql`${t.score} BETWEEN 1 AND 5`),
   index("idxAgentRatingsAgentId").on(t.projectId, t.agentId),
+  index("idxAgentRatingsProjectAgentId").on(t.projectId, t.agentId),
   index("idxAgentRatingsCreatedAt").on(t.createdAt),
 ]);
 

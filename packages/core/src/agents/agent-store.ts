@@ -1040,8 +1040,12 @@ export class AgentStore extends EventEmitter {
      * FNXC:SqliteFinalRemoval 2026-06-26-09:15:
      * Backend-mode: delegate to async Drizzle addRating helper. The score CHECK
      * constraint is enforced by PostgreSQL (VAL-SCHEMA-005).
+     *
+     * FNXC:AgentRatingsProjectIsolation 2026-08-12-01:00:
+     * Ratings use the soft workflow project accessor: unbound compatibility stores
+     * must retain trigger-stamped writes rather than throw like heartbeat operations.
      */
-        const saved = await addRatingAsync(this.asyncLayer!.db, rating, this.workflowProjectId);
+    const saved = await addRatingAsync(this.asyncLayer!.db, rating, this.workflowProjectId);
     this.emit("rating:added", saved);
     return saved;
 }
@@ -1050,8 +1054,12 @@ export class AgentStore extends EventEmitter {
     /*
      * FNXC:SqliteFinalRemoval 2026-06-26-09:15:
      * Backend-mode: delegate to async Drizzle getRatings helper.
+     *
+     * FNXC:AgentRatingsProjectIsolation 2026-08-12-01:00:
+     * workflowProjectId is intentionally soft so an unbound store keeps its historic
+     * unscoped compatibility read instead of invoking backendProjectId's hard guard.
      */
-        return getRatingsAsync(this.asyncLayer!.db, agentId, options, this.workflowProjectId);
+    return getRatingsAsync(this.asyncLayer!.db, agentId, options, this.workflowProjectId);
 }
 
   async getRatingSummary(agentId: string): Promise<AgentRatingSummary> {
@@ -1118,8 +1126,12 @@ export class AgentStore extends EventEmitter {
     /*
      * FNXC:SqliteFinalRemoval 2026-06-26-09:15:
      * Backend-mode: delegate to async Drizzle deleteRating helper.
+     *
+     * FNXC:AgentRatingsProjectIsolation 2026-08-12-01:00:
+     * Use the soft workflow project binding to scope bound deletes without breaking
+     * the documented unbound compatibility path.
      */
-        await deleteRatingAsync(this.asyncLayer!.db, ratingId, this.workflowProjectId);
+    await deleteRatingAsync(this.asyncLayer!.db, ratingId, this.workflowProjectId);
     return;
 }
 
