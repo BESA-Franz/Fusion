@@ -2421,6 +2421,40 @@ pgDescribe("schema-applier: agent ratings project partition", () => {
   });
 });
 
+pgDescribe("schema-applier: GitHub check-state materialization", () => {
+  let ctx: TestContext | null = null;
+
+  afterEach(async () => {
+    await teardownDb(ctx);
+    ctx = null;
+  });
+
+  it("recreates github_check_states when bookkeeping exists but the table is missing", async () => {
+    /*
+    FNXC:PostgresMigrationMaterialization 2026-08-13-15:12:
+    A migration marker is not proof that its table is still materialized. Production recovery
+    must converge the idempotent 0048 migration before CI-state readers start, even when a copied
+    or partially restored database retains newer bookkeeping rows.
+    */
+    ctx = await setupFreshDb();
+    await applySchemaBaseline(ctx.db, { pluginHooks: [] });
+    await ctx.db.execute(sql`DROP TABLE project.github_check_states`);
+
+    const before = (await ctx.db.execute(sql`
+      SELECT to_regclass('project.github_check_states')::text AS table_name
+    `)) as unknown as Array<{ table_name: string | null }>;
+    expect(before).toEqual([{ table_name: null }]);
+
+    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [] })).resolves.toMatchObject({ applied: true });
+
+    const after = (await ctx.db.execute(sql`
+      SELECT to_regclass('project.github_check_states')::text AS table_name
+    `)) as unknown as Array<{ table_name: string | null }>;
+    expect(after).toEqual([{ table_name: "project.github_check_states" }]);
+    await expect(applySchemaBaseline(ctx.db, { pluginHooks: [] })).resolves.toMatchObject({ applied: false });
+  });
+});
+
 pgDescribe("schema-applier: VAL-SCHEMA-005 CHECK constraints preserved and enforced", () => {
   let ctx: TestContext | null = null;
 

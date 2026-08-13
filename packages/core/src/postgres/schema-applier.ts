@@ -1212,8 +1212,20 @@ export async function applySchemaBaseline(
       schemaChanged = true;
     }
 
-    /* FNXC:PrMergeEventDrivenChecks 2026-08-09-14:35: run after historical baseline for both new and upgraded databases; idempotent SQL converges interrupted upgrades. */
-    if (!githubCheckStatesAlreadyApplied) {
+    /*
+    FNXC:PostgresMigrationMaterialization 2026-08-13-15:12:
+    The 0048 bookkeeping row is not sufficient proof that its relation survived a copied,
+    partially restored, or otherwise drifted database. Probe the materialized table and replay
+    the idempotent migration before any CI-state reader can enter its retry loop.
+    */
+    const githubCheckStatesMaterialization = (await tx.execute(sql`
+      SELECT
+        to_regclass('project.github_check_states') IS NOT NULL AS table_exists,
+        to_regprocedure('project.fusion_assign_project_id()') IS NOT NULL AS ownership_function_exists
+    `)) as unknown as Array<{ table_exists: boolean; ownership_function_exists: boolean }>;
+    const githubCheckStatesRepairReady = githubCheckStatesMaterialization[0]?.table_exists !== true
+      && githubCheckStatesMaterialization[0]?.ownership_function_exists === true;
+    if (!githubCheckStatesAlreadyApplied || githubCheckStatesRepairReady) {
       const migrationSql = await readFile(GITHUB_CHECK_STATES_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${GITHUB_CHECK_STATES_VERSION}) ON CONFLICT (version) DO NOTHING`);
