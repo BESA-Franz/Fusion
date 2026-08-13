@@ -1,6 +1,7 @@
 name: Publish Recovery Image
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - codex/publish-recovery-image-20260813
