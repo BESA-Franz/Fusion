@@ -11,12 +11,12 @@ permissions:
   packages: write
 
 concurrency:
-  group: publish-recovery-image-61f7e8c28340
+  group: publish-recovery-image-3878f4da1
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: 61f7e8c28340b0d053603999bf0ac631dc5a98e3
-  IMAGE_TAG: recovery-61f7e8c28340
+  SOURCE_SHA: 3878f4da1771fc270caf356d91c07d74ec13fc74
+  IMAGE_TAG: recovery-3878f4da1
 
 jobs:
   publish:
@@ -58,7 +58,7 @@ jobs:
       - name: Setup Node.js and pnpm
         uses: ./.github/actions/setup-node-pnpm
 
-      - name: Verify runtime node execution boundary
+      - name: Verify runtime and Windows Git execution boundaries
         run: |
           set -euo pipefail
           pnpm --filter @fusion/core typecheck
@@ -68,13 +68,20 @@ jobs:
             --silent=passed-only --reporter=dot
           pnpm --filter @fusion/engine exec vitest run \
             src/__tests__/effective-node.test.ts \
+            src/__tests__/git-shell-quote.real-git.test.ts \
             src/__tests__/project-runtime.test.ts \
             src/__tests__/scheduler-node-unreachable-audit.test.ts \
             src/__tests__/hold-release-renamed-columns.test.ts \
             src/__tests__/workflow-continuation-capacity.test.ts \
             src/__tests__/triage-runtime-node-routing.test.ts \
             --silent=passed-only --reporter=dot
+          pnpm --filter @fusion/engine exec vitest run \
+            src/__tests__/executor-worktree.test.ts \
+            -t "fresh worktree integration rebase" \
+            --silent=passed-only --reporter=dot
           pnpm exec eslint \
+            packages/engine/src/git-shell-quote.ts \
+            packages/engine/src/executor/shell-quote.ts \
             packages/engine/src/project/effective-node.ts \
             packages/engine/src/scheduler.ts \
             packages/engine/src/triage.ts \
