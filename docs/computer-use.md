@@ -130,7 +130,7 @@ Screenshots are always paths, never base64, `data:` URLs, or byte arrays. `--no-
 
 ## Durable snapshots and safe element replay
 
-Snapshots are stored per project at `.fusion/computer-use/snapshots/<snapshotId>.json`; the app's latest pointer is `.fusion/computer-use/latest/<targetKeySlug>.json`. They are never shared across project roots. Capture atomically persists the record and pointer before returning `snapshotId`.
+Snapshots are stored under the resolved Fusion project root, not the invoking working directory: `<projectRoot>/.fusion/computer-use/snapshots/<snapshotId>.json`; the app's latest pointer is `<projectRoot>/.fusion/computer-use/latest/<targetKeySlug>.json`. Each `fn computer` invocation resolves that root once by walking upward from its starting directory, and falls back to that resolved directory when no project root is found. Snapshots, pointers, and screenshots use the same root, so they are never shared across projects. Capture atomically persists the record and pointer before returning `snapshotId`.
 
 A resolved app has app-scoped `targetKey` (`bundle:<bundleId>`, or `pid:<pid>`) and window-scoped `windowKey` (`<targetKey>#<windowId>`). There is one latest pointer per app, not per window. An action with no `--snapshot-id` uses that latest snapshot. Action window flags are optional assertions: a supplied selector that differs from the recorded window produces `SNAPSHOT_STALE` / `window-mismatch`.
 

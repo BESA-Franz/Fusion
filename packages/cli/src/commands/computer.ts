@@ -3,6 +3,7 @@ import { MacosComputerAdapter } from "./computer/adapter-macos.js";
 import { resolveComputerAdapter, type ComputerClock } from "./computer/adapter-registry.js";
 import type { ComputerAdapter, ResolvedComputerElement, ResolvedComputerWindow } from "./computer/adapter.js";
 import { createComputerSnapshotStore, type ComputerSnapshotStore } from "./computer/snapshot-store.js";
+import { resolveComputerStateRoot } from "./computer/state-root.js";
 import { COMPUTER_COMMAND_SURFACE, COMPUTER_SUBCOMMANDS, ComputerUseError, failureEnvelope, isValidSnapshotId, parseAppTarget, successEnvelope, validateResult, type AppRef, type CommandName, type ComputerSubcommand } from "./computer/contract.js";
 
 export interface ComputerCommandOptions { platform?: string; projectRoot?: string; adapter?: ComputerAdapter; store?: ComputerSnapshotStore; clock?: ComputerClock; stdout?: (text: string) => void; stderr?: (text: string) => void; stdin?: () => Promise<string>; }
@@ -12,8 +13,8 @@ const emit = (value: unknown, json: boolean, options: ComputerCommandOptions): v
 const fail = (name: CommandName, error: unknown, json: boolean, options: ComputerCommandOptions): number => { const e = error instanceof ComputerUseError ? error : new ComputerUseError("INTERNAL", "Computer command failed unexpectedly."); const envelope = failureEnvelope(name, e); if (json) emit(envelope, true, options); else (options.stderr ?? console.error)(`error: ${e.code}: ${e.message}${e.remediation ? `\n${e.remediation}` : ""}`); return 1; };
 function value(args: string[], flag: string): string | undefined { const i = args.indexOf(flag); return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : undefined; }
 function number(args: string[], flag: string): number | undefined { const raw = value(args, flag); if (raw === undefined) return undefined; const parsed = Number(raw); if (!Number.isInteger(parsed) || parsed < 0) throw new ComputerUseError("INVALID_ARGUMENTS", `Invalid ${flag}.`); return parsed; }
-function adapterFor(options: ComputerCommandOptions): ComputerAdapter { if (options.adapter) return options.adapter; const root = options.projectRoot ?? process.cwd(); return resolveComputerAdapter({ platform: options.platform, projectRoot: root, clock: options.clock, macosAdapterFactory: ({ seam, clock, projectRoot }) => new MacosComputerAdapter({ seam, clock, projectRoot }) }); }
-function storeFor(options: ComputerCommandOptions): ComputerSnapshotStore { return options.store ?? createComputerSnapshotStore({ projectRoot: options.projectRoot, now: options.clock ? () => options.clock!.now() : undefined }); }
+function adapterFor(options: ComputerCommandOptions): ComputerAdapter { if (options.adapter) return options.adapter; return resolveComputerAdapter({ platform: options.platform, projectRoot: options.projectRoot!, clock: options.clock, macosAdapterFactory: ({ seam, clock, projectRoot }) => new MacosComputerAdapter({ seam, clock, projectRoot }) }); }
+function storeFor(options: ComputerCommandOptions): ComputerSnapshotStore { return options.store ?? createComputerSnapshotStore({ projectRoot: options.projectRoot!, now: options.clock ? () => options.clock!.now() : undefined }); }
 async function appFor(adapter: ComputerAdapter, raw: string): Promise<AppRef> { const target = parseAppTarget(raw); const apps = (await adapter.listApps()).apps; const matches = target.kind === "pid" ? apps.filter((x) => String(x.pid) === target.value) : (() => { const byBundle = apps.filter((x) => x.bundleId === target.value); return byBundle.length ? byBundle : apps.filter((x) => x.name === target.value); })(); if (!matches.length) throw new ComputerUseError("APP_NOT_FOUND", `No running app matches ${raw}.`); if (matches.length > 1) throw new ComputerUseError("AMBIGUOUS_APP", `More than one app matches ${raw}.`, "Use a bundle id or pid target.", { candidateCount: matches.length }); return matches[0]; }
 async function requireElements(args: string[], indexes: readonly number[], adapter: ComputerAdapter, store: ComputerSnapshotStore, app: AppRef): Promise<{ record: Awaited<ReturnType<ComputerSnapshotStore["resolve"]>>; window: ResolvedComputerWindow; elements: ResolvedComputerElement[] }> {
   if (!indexes.length) throw new ComputerUseError("INVALID_ARGUMENTS", "At least one --element-index is required.");
@@ -174,7 +175,9 @@ export async function runComputer(args: string[], options: ComputerCommandOption
   try {
     // C10 stage 2 is deliberately complete and precedes adapter construction, filesystem, and OS discovery.
     validateFlags(name, handlerArgs);
-    const payload = await COMPUTER_HANDLERS[name](handlerArgs, options);
+    const projectRoot = resolveComputerStateRoot(options.projectRoot ?? process.cwd());
+    const resolvedOptions = { ...options, projectRoot };
+    const payload = await COMPUTER_HANDLERS[name](handlerArgs, resolvedOptions);
     if (!validateResult(name, payload, handlerArgs.includes("--no-screenshot"))) throw new ComputerUseError("INTERNAL", "Computer command produced an invalid contract result.");
     emit(successEnvelope(command(name), payload), json, options);
     return 0;

@@ -44,6 +44,20 @@ describe("ComputerSnapshotStore", () => {
     expect(JSON.parse(await readFile(join(root, ".fusion/computer-use/snapshots", `${record.snapshotId}.json`), "utf8")).elements["7"].index).toBe(7);
   });
 
+  it("retains app, window, and sparse locator identity across fresh store instances", async () => {
+    const { store, root } = await fixture();
+    const sparse = element(7);
+    const record = await store.persist({ app, window, elementCount: 9, elements: [sparse] });
+    const freshStore = new ComputerSnapshotStore({ projectRoot: root, now: () => new Date(record.capturedAt) });
+
+    const restored = await freshStore.resolve({ app, snapshotId: record.snapshotId });
+    expect(restored).toEqual(record);
+    expect(restored.elements["7"]?.locator).toEqual({ kind: "ax-path", path: "AXWindow[0]/AXButton[7]", role: "AXButton", subrole: null, identifier: null, title: "button-7" });
+    expect(restored.app).toEqual({ bundleId: "com.example.Editor", name: "Editor", pid: 41 });
+    expect(restored.window).toMatchObject({ windowId: "w-1", windowIndex: 1 });
+    expect(() => freshStore.getElement(restored, 8)).toThrow(expect.objectContaining({ code: "ELEMENT_INDEX_NOT_FOUND" }));
+  });
+
   it("uses the required C9 freshness order and remediation", async () => {
     const { store, setNow } = await fixture();
     await expect(store.resolve({ app })).rejects.toMatchObject({ code: "SNAPSHOT_REQUIRED" });

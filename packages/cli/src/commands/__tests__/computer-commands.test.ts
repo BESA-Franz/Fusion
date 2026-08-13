@@ -1,5 +1,10 @@
+import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runComputer } from "../computer.js";
+import { ComputerSnapshotStore } from "../computer/snapshot-store.js";
+import { ComputerUseError } from "../computer/contract.js";
 import type { ComputerAdapter } from "../computer/adapter.js";
 
 const app = { bundleId: "com.example.App", name: "App", pid: 1 };
@@ -14,6 +19,77 @@ const adapter: ComputerAdapter = {
 };
 describe("computer commands", () => {
   it("emits one JSON envelope and persists a snapshot", async () => { const output: string[] = []; const root = await import("node:fs/promises").then((fs) => fs.mkdtemp("/tmp/fusion-computer-")); try { expect(await runComputer(["get-app-state", "--app", "App", "--no-screenshot", "--json"], { adapter, projectRoot: root, stdout: (x) => output.push(x) })).toBe(0); const envelope = JSON.parse(output[0]); expect(envelope).toMatchObject({ schemaVersion: 1, ok: true, command: "computer.get-app-state" }); expect(envelope.result.snapshot.snapshotId).toMatch(/^cs_/); } finally { await (await import("node:fs/promises")).rm(root, { recursive: true, force: true }); } });
+  it("keeps snapshots project-local when capture and replay use different directories", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-computer-project-"));
+    const nested = join(root, "pkg");
+    const captureOutput: string[] = [];
+    const actionOutput: string[] = [];
+    const clock = { now: () => new Date("2026-08-13T00:00:00.000Z") };
+    const localAdapter: ComputerAdapter = { ...adapter, captureState: async () => {
+      const state = await adapter.captureState({ kind: "name", value: "App", raw: "App" }, { screenshot: false });
+      state.snapshot.capturedAt = clock.now().toISOString();
+      return state;
+    } };
+    try {
+      await mkdir(nested);
+      await mkdir(join(root, ".fusion"));
+      await writeFile(join(root, ".fusion", "project.json"), JSON.stringify({ id: "proj_0123456789abcdef", createdAt: "2026-08-13T00:00:00.000Z" }));
+      expect(await runComputer(["get-app-state", "--app", "App", "--no-screenshot", "--json"], { adapter: localAdapter, projectRoot: nested, clock, stdout: (text) => captureOutput.push(text) })).toBe(0);
+      const snapshotId = JSON.parse(captureOutput[0]!).result.snapshot.snapshotId;
+      expect(await runComputer(["click", "--app", "App", "--element-index", "7", "--json"], { adapter: localAdapter, projectRoot: root, clock, stdout: (text) => actionOutput.push(text) })).toBe(0);
+      expect(JSON.parse(actionOutput[0]!)).toMatchObject({ ok: true, command: "computer.click", result: { snapshotId } });
+      expect(await readdir(join(root, ".fusion", "computer-use", "snapshots"))).toContain(`${snapshotId}.json`);
+      expect(await readdir(join(root, ".fusion", "computer-use", "latest"))).not.toHaveLength(0);
+      await expect(access(join(nested, ".fusion", "computer-use"))).rejects.toThrow();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("fences stale IDs and replays latest click and set-value targets before actions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-computer-fence-"));
+    const clock = { now: () => new Date("2026-08-13T00:00:00.000Z") };
+    const store = new ComputerSnapshotStore({ projectRoot: root, now: clock.now });
+    const snapshotElement = (index: number) => ({ index, role: "AXButton", title: "Go", value: null, label: null, enabled: true, focused: false, bounds: null, actions: [], locator: { kind: "ax-path" as const, path: "button[0]", role: "AXButton", subrole: null, identifier: null, title: "Go" } });
+    const first = await store.persist({ app, window: { windowId: "w", windowIndex: 0, title: "w", bounds: null, minimized: false }, elementCount: 8, elements: [snapshotElement(7)] });
+    const latest = await store.persist({ app, window: { windowId: "w", windowIndex: 0, title: "w", bounds: null, minimized: false }, elementCount: 8, elements: [snapshotElement(7)] });
+    const calls: string[] = [];
+    const click = vi.fn(async (input: Parameters<ComputerAdapter["click"]>[0]) => { calls.push("click"); return { action: "click" as const, app: input.app, snapshotId: input.snapshotId, elementIndex: input.element.element.index, fromElementIndex: null, toElementIndex: null, performed: true }; });
+    const setValue = vi.fn(async (input: Parameters<ComputerAdapter["set-value"]>[0]) => { calls.push("set-value"); return { action: "set-value" as const, app: input.app, snapshotId: input.snapshotId, elementIndex: input.element.element.index, fromElementIndex: null, toElementIndex: null, performed: true }; });
+    const replayAdapter: ComputerAdapter = { ...adapter,
+      resolveWindow: async () => { calls.push("window"); return { window: { windowId: "w", windowIndex: 0, title: "w", bounds: { x: 1, y: 2, width: 3, height: 4 }, minimized: false }, handle: "live-window" }; },
+      resolveLocator: async (_window, locator) => { calls.push("locator"); return { element: { ...snapshotElement(7), bounds: { x: 10, y: 20, width: 30, height: 40 }, locator }, handle: "live-element" }; },
+      click, "set-value": setValue,
+    };
+    const staleOutput: string[] = [];
+    try {
+      expect(await runComputer(["click", "--app", "App", "--element-index", "7", "--snapshot-id", first.snapshotId, "--json"], { adapter: replayAdapter, store, projectRoot: root, stdout: (text) => staleOutput.push(text) })).toBe(1);
+      expect(JSON.parse(staleOutput[0]!)).toMatchObject({ error: { code: "SNAPSHOT_STALE", details: { reason: "superseded" } } });
+      expect(click).not.toHaveBeenCalled();
+      expect(await runComputer(["set-value", "--app", "App", "--element-index", "7", "--snapshot-id", first.snapshotId, "--value", "safe", "--json"], { adapter: replayAdapter, store, projectRoot: root, stdout: () => undefined })).toBe(1);
+      expect(setValue).not.toHaveBeenCalled();
+      expect(await runComputer(["click", "--app", "App", "--element-index", "7", "--snapshot-id", latest.snapshotId, "--json"], { adapter: replayAdapter, store, projectRoot: root, stdout: () => undefined })).toBe(0);
+      expect(calls).toEqual(["window", "locator", "click"]);
+      expect(click).toHaveBeenLastCalledWith(expect.objectContaining({ snapshotId: latest.snapshotId, element: expect.objectContaining({ element: expect.objectContaining({ index: 7, locator: snapshotElement(7).locator, bounds: { x: 10, y: 20, width: 30, height: 40 } }) }) }));
+      calls.length = 0;
+      expect(await runComputer(["set-value", "--app", "App", "--element-index", "7", "--value", "safe", "--json"], { adapter: replayAdapter, store, projectRoot: root, stdout: () => undefined })).toBe(0);
+      expect(calls).toEqual(["window", "locator", "set-value"]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("maps vanished windows and locator replay failures to safe snapshot errors", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-computer-replay-failure-"));
+    const store = new ComputerSnapshotStore({ projectRoot: root, now: () => new Date("2026-08-13T00:00:00.000Z") });
+    await store.persist({ app, window: { windowId: "w", windowIndex: 0, title: "w", bounds: null, minimized: false }, elementCount: 8, elements: [{ index: 7, role: "AXButton", title: "Go", value: null, label: null, enabled: true, focused: false, bounds: null, actions: [], locator: { kind: "ax-path", path: "button[0]", role: "AXButton", subrole: null, identifier: null, title: "Go" } }] });
+    const output: string[] = [];
+    try {
+      const missingWindow: ComputerAdapter = { ...adapter, resolveWindow: async () => { throw new ComputerUseError("WINDOW_NOT_FOUND", "gone"); } };
+      expect(await runComputer(["click", "--app", "App", "--element-index", "7", "--json"], { adapter: missingWindow, store, projectRoot: root, stdout: (text) => output.push(text) })).toBe(1);
+      expect(JSON.parse(output.pop()!)).toMatchObject({ error: { code: "SNAPSHOT_STALE", details: { reason: "window-gone" } } });
+      const missingLocator: ComputerAdapter = { ...adapter, resolveLocator: async () => { throw new ComputerUseError("ELEMENT_UNRESOLVABLE", "gone", "Re-run fn computer get-app-state."); } };
+      expect(await runComputer(["click", "--app", "App", "--element-index", "7", "--json"], { adapter: missingLocator, store, projectRoot: root, stdout: (text) => output.push(text) })).toBe(1);
+      expect(JSON.parse(output.pop()!)).toMatchObject({ error: { code: "ELEMENT_UNRESOLVABLE", details: { elementIndex: 7 } } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("uses the snapshot replay path for element-scoped typing", async () => {
     const root = await import("node:fs/promises").then((fs) => fs.mkdtemp("/tmp/fusion-computer-"));
     let resolved = 0;
