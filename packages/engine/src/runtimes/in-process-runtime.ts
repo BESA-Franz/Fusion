@@ -66,7 +66,7 @@ import { validateProjectNodeMapping } from "../project/node-dispatch-validation.
 import { attachAgentLinkSync } from "../agents/task-agent-sync.js";
 import { createRunAuditor, generateSyntheticRunId } from "../util/run-audit.js";
 import { setImmediate as setImmediateCb } from "node:timers";
-import { seedPreReleasePlanReviewContinuation } from "../plan-review-continuation.js";
+import { seedPreReleasePlanReviewContinuation, type PlanReviewSeedBailReason } from "../plan-review-continuation.js";
 import {
   formatAdmissionCapacityQueuedReason,
   persistedTopLevelAgentTaskIdsFromStore,
@@ -372,9 +372,18 @@ export interface SpecificationCompleteReactionDeps {
   outcome: PlanningHandoffOutcome;
   getTask: (taskId: string) => Promise<Task | undefined>;
   resolveIr: (taskId: string) => Promise<WorkflowIr>;
-  seed: (task: Task, ir: WorkflowIr) => Promise<{ seeded: boolean; reason?: string }>;
+  seed: (task: Task, ir: WorkflowIr) => Promise<{ seeded: boolean; reason?: PlanReviewSeedBailReason }>;
   kick: () => void;
   log: (message: string) => void;
+  /*
+  FNXC:PlanningHandoffAtomicity 2026-08-13-03:49:
+  A seed outcome that is neither success nor a legitimate operator park is a broken
+  handoff that used to be dropped silently; it must be surfaced loudly because the
+  only remaining recovery owner is the FN-8592 self-healing sweep (~10 min later).
+  */
+  warn: (message: string) => void;
+  /** Injectable delay for the bounded transient-failure retry; defaults to setTimeout. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -414,11 +423,69 @@ export async function reactToSpecificationComplete(
     return;
   }
   deps.log(`Specified ${deps.taskId} → todo`);
-  const live = await deps.getTask(deps.taskId);
-  if (!live || live.paused || live.userPaused) return;
-  const ir = await deps.resolveIr(live.id);
-  await deps.seed(live, ir);
-  deps.kick();
+  /*
+  FNXC:PlanningHandoffAtomicity 2026-08-13-03:49:
+  The seed outcome was previously discarded, so a bailed handoff was invisible: the
+  seeder saw the caller's own still-running plan work item as an "active
+  continuation", returned {seeded:false}, and the card stranded in the hold column
+  until FN-8592 self-healing re-seeded it ~10 minutes later. The seed is now atomic
+  (it retires the named predecessor in the same transaction), so a bail here is a
+  genuine anomaly. Consume the result: retry a bounded number of times to absorb a
+  transient store error or a racing writer, then warn loudly — self-healing remains
+  the durable backstop, never the primary handoff.
+
+  FNXC:PlanningHandoffAtomicity 2026-08-13-04:20:
+  The task and IR are re-fetched at the TOP OF EVERY ATTEMPT (review finding: a
+  single pre-loop snapshot let an operator pause or a replan landing during the
+  retry delays be ignored, arming Plan Review for a plan the operator had just
+  parked or superseded). The seeder re-applies the pause/approval guards from the
+  task object it is given, so a fresh snapshot per attempt is what makes those
+  guards current. A needs-replan status means the plan this handoff belongs to is
+  already superseded — quiet exit, the replan loop owns the card now.
+  QUIET_PARK_REASONS is typed against the seeder's exported reason union so a
+  renamed or added reason is a compile error here, not a silent misroute into the
+  retry/warn path.
+  */
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const QUIET_PARK_REASONS: ReadonlySet<PlanReviewSeedBailReason> = new Set<PlanReviewSeedBailReason>([
+    "no-pre-release-plan-review",
+    "awaiting-approval",
+    "paused",
+    "plan-review-passed",
+  ]);
+  const RETRY_DELAYS_MS = [1_000, 5_000];
+  for (let attempt = 0; ; attempt++) {
+    let failure: string | null = null;
+    try {
+      const live = await deps.getTask(deps.taskId);
+      if (!live || live.paused || live.userPaused) return;
+      if (live.status === "needs-replan") {
+        deps.log(`Plan Review handoff for ${deps.taskId} not armed (needs-replan)`);
+        return;
+      }
+      const ir = await deps.resolveIr(live.id);
+      const result = await deps.seed(live, ir);
+      if (result.seeded) {
+        deps.kick();
+        return;
+      }
+      if (result.reason && QUIET_PARK_REASONS.has(result.reason)) {
+        deps.log(`Plan Review handoff for ${deps.taskId} not armed (${result.reason})`);
+        return;
+      }
+      failure = result.reason ?? "not-seeded";
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    if (attempt >= RETRY_DELAYS_MS.length) {
+      deps.warn(
+        `Plan Review handoff for ${deps.taskId} failed after ${attempt + 1} attempts (${failure}) — stranded-continuation self-healing will recover it`,
+      );
+      return;
+    }
+    deps.warn(`Plan Review handoff for ${deps.taskId} did not seed (${failure}) — retrying`);
+    await sleep(RETRY_DELAYS_MS[attempt]);
+  }
 }
 
 /** Everything the drain pass touches, injected so the pass is exercisable without
@@ -1711,9 +1778,19 @@ export class InProcessRuntime
               outcome: report.outcome,
               getTask: (id) => Promise.resolve(this.taskStore.getTask(id)),
               resolveIr: (id) => resolveWorkflowIrForTask(this.taskStore, id),
-              seed: (task, ir) => seedPreReleasePlanReviewContinuation(this.taskStore, task, ir),
+              /*
+              FNXC:PlanningHandoffAtomicity 2026-08-13-03:49:
+              The report carries the planning session's own durable work item id so the
+              seeder can retire that exact predecessor row atomically with the successor
+              install. Without it the seeder raced triage's finally-block terminal
+              transition and bailed on its own caller (529 stranded cards in 18 days).
+              */
+              seed: (task, ir) => seedPreReleasePlanReviewContinuation(this.taskStore, task, ir, {
+                retirePredecessorId: report.planningWorkItemId,
+              }),
               kick: () => this.kickWorkflowContinuationProcessor(),
               log: (message) => runtimeLog.log(message),
+              warn: (message) => runtimeLog.warn(message),
             }).catch((error) => {
               runtimeLog.error(`Failed to start Todo plan review for ${t.id}:`, error);
             });
