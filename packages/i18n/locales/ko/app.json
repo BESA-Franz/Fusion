@@ -3225,7 +3225,16 @@
     "unarchiveLabel": "이 인사이트 보관 해제",
     "unarchiveTitle": "이 인사이트 보관 해제",
     "unarchiving": "\"{{title}}\" 보관 해제 중...",
-    "usePlanningDefault": "계획 기본값 사용"
+    "usePlanningDefault": "계획 기본값 사용",
+    "recommendations": {
+      "title": "",
+      "count": "",
+      "source": "",
+      "loadMore": "",
+      "loadingMore": "",
+      "loadMoreFailed": "",
+      "truncated": ""
+    }
   },
   "interview": {
     "addContextDirection": "추가 컨텍스트나 방향을 입력하세요...",

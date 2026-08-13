@@ -221,7 +221,7 @@ export {
 } from "./agents/agent-memory-mode.js";
 export type { TaskReviewData, TaskReviewSummary, TaskReviewItem, TaskReviewVerdict, TaskReviewerType } from "./types.js";
 /* FNXC:TaskVerificationRequest 2026-07-30-00:00: FN-8296 makes the persisted verification read model available to dashboard task and Command Center surfaces without exporting a subprocess runner. */
-export type { TaskVerificationRequest, TaskVerificationResultSummary, TaskVerificationStatus, TaskVerificationProfile, TaskRecommendation, TaskRecommendationCategory } from "./types.js";
+export type { TaskVerificationRequest, TaskVerificationResultSummary, TaskVerificationStatus, TaskVerificationProfile, TaskRecommendation, TaskRecommendationCategory, TaskRecommendationListItem, TaskRecommendationListPage } from "./types.js";
 export type {
   TaskCommitAssociation,
   TaskCommitAssociationConfidence,

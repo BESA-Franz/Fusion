@@ -3225,7 +3225,16 @@
     "unarchiveLabel": "取消存檔此洞察",
     "unarchiveTitle": "取消存檔此洞察",
     "unarchiving": "正在取消存檔\"{{title}}\"...",
-    "usePlanningDefault": "使用規劃預設值"
+    "usePlanningDefault": "使用規劃預設值",
+    "recommendations": {
+      "title": "",
+      "count": "",
+      "source": "",
+      "loadMore": "",
+      "loadingMore": "",
+      "loadMoreFailed": "",
+      "truncated": ""
+    }
   },
   "interview": {
     "addContextDirection": "添加任何額外的上下文或方向...",

@@ -1588,6 +1588,39 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
     }
   });
 
+  /*
+  FNXC:TaskRecommendations 2026-08-13-04:41:
+  This literal route must stay before `/tasks/:id`; its bounded row pagination exposes total and
+  hasMore so operators can intentionally walk every advisory recommendation rather than receive a
+  silent cap.
+  */
+  router.get("/tasks/recommendations", async (req, res) => {
+    try {
+      const { store: scopedStore } = await getProjectContext(req);
+      const parsePageNumber = (value: unknown, name: "limit" | "offset"): number | undefined => {
+        if (value === undefined) return undefined;
+        if (typeof value !== "string" || value.trim() === "" || !Number.isInteger(Number(value)) || Number(value) < 0) {
+          throw badRequest(`${name} must be a non-negative integer`);
+        }
+        return Number(value);
+      };
+      const requestedLimit = parsePageNumber(req.query.limit, "limit");
+      const offset = parsePageNumber(req.query.offset, "offset");
+      if (requestedLimit === 0) throw badRequest("limit must be a positive integer");
+      const limit = requestedLimit === undefined ? undefined : Math.min(200, requestedLimit);
+      let completeColumns: ReadonlySet<string>;
+      try {
+        completeColumns = await resolveProjectColumnsForRoles(scopedStore, ["complete"]);
+      } catch {
+        completeColumns = new Set(["done"]);
+      }
+      res.json(await scopedStore.listTaskRecommendations({ completeColumns, limit, offset }));
+    } catch (err: unknown) {
+      if (err instanceof ApiError) throw err;
+      rethrowAsApiError(err);
+    }
+  });
+
   router.post("/tasks/duplicate-check", async (req, res) => {
     try {
       const { store: scopedStore } = await getProjectContext(req);

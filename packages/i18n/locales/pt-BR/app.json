@@ -3235,7 +3235,16 @@
     "unarchiveLabel": "Desarquivar este insight",
     "unarchiveTitle": "Desarquivar este insight",
     "unarchiving": "Desarquivando \"{{title}}\"...",
-    "usePlanningDefault": "Usar padrão de planejamento"
+    "usePlanningDefault": "Usar padrão de planejamento",
+    "recommendations": {
+      "title": "",
+      "count": "",
+      "source": "",
+      "loadMore": "",
+      "loadingMore": "",
+      "loadMoreFailed": "",
+      "truncated": ""
+    }
   },
   "interview": {
     "addContextDirection": "Adicione contexto ou direcionamento extra...",

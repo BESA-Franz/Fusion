@@ -35,6 +35,7 @@ export type {
 export {
   fetchTasks,
   fetchArchivedTasks,
+  fetchTaskRecommendations,
   fetchTaskDetail,
   fetchTaskPrompt,
   fetchTaskRuntimeFallback,
@@ -50,6 +51,7 @@ export {
 import type {
   DeleteTaskOptions,
   ArchiveTaskOptions,
+  TaskRecommendationsResponse,
   TaskRuntimeFallbackResponse,
   TaskPromptResponse,
   UpdateTaskReviewRequest,
@@ -67,6 +69,7 @@ import type {
 export type {
   DeleteTaskOptions,
   ArchiveTaskOptions,
+  TaskRecommendationsResponse,
   TaskRuntimeFallbackResponse,
   TaskPromptResponse,
   UpdateTaskReviewRequest,

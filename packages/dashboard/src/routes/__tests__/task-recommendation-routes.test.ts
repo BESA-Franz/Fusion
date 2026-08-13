@@ -35,6 +35,14 @@ function buildApp(seed: Task[], projectId = "project-a") {
     listTasks: vi.fn(async (options?: { includeDeleted?: boolean }) =>
       tasks.filter((item) => options?.includeDeleted || !item.deletedAt),
     ),
+    listTaskRecommendations: vi.fn(async (options?: { completeColumns?: ReadonlySet<string>; limit?: number; offset?: number }) => {
+      const rows = tasks.filter((item) => !item.deletedAt && !!item.recommendations?.length && (options?.completeColumns ?? new Set(["done"])).has(item.column))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
+      const offset = options?.offset ?? 0;
+      const limit = options?.limit ?? 50;
+      const page = rows.slice(offset, offset + limit);
+      return { items: page.flatMap((item) => (item.recommendations ?? []).map((recommendation) => ({ taskId: item.id, taskTitle: item.title, taskColumn: item.column, updatedAt: item.updatedAt, recommendation }))), rowOffset: offset, rowLimit: limit, returnedRowCount: page.length, totalRowCount: rows.length, hasMore: offset + page.length < rows.length };
+    }),
     searchTasks: vi.fn(async () => tasks.filter((item) => !item.deletedAt)),
     findRecentTasksByContentFingerprint: vi.fn(async () => []),
     getSettingsFast: vi.fn(async () => ({ autoSummarizeTitles: false })),
@@ -210,6 +218,24 @@ function installLegacyV1RecommendationWorkflow(
 describe("recommendation task creation route", () => {
   beforeEach(() => locks?.clear());
   afterEach(() => { locks?.clear(); vi.restoreAllMocks(); });
+
+  it("lists completed recommendations with bounded row pagination before task-id routes", async () => {
+    const first = parent({ id: "FN-1", updatedAt: "2026-08-13T00:00:00.000Z" });
+    const second = parent({ id: "FN-2", updatedAt: "2026-08-13T00:00:00.000Z", recommendations: [{ id: "rec-1", title: "Second", description: "Another safe follow-up.", category: "bug" }] });
+    const { app, store } = buildApp([first, second]);
+    const response = await performRequest(app, "GET", "/api/tasks/recommendations?limit=1&offset=0");
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ rowLimit: 1, rowOffset: 0, returnedRowCount: 1, totalRowCount: 2, hasMore: true });
+    expect(store.getTask).not.toHaveBeenCalledWith("recommendations");
+    expect(await performRequest(app, "GET", "/api/tasks/recommendations?limit=1.5")).toMatchObject({ status: 400 });
+    expect(await performRequest(app, "GET", "/api/tasks/recommendations?limit=-1")).toMatchObject({ status: 400 });
+    expect(await performRequest(app, "GET", "/api/tasks/recommendations?offset=-1")).toMatchObject({ status: 400 });
+    expect(await performRequest(app, "GET", "/api/tasks/recommendations?offset=NaN")).toMatchObject({ status: 400 });
+    expect(await performRequest(app, "GET", "/api/tasks/recommendations?limit=999")).toMatchObject({ status: 200 });
+    expect(store.listTaskRecommendations).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 200 }));
+    const finalPage = await performRequest(app, "GET", "/api/tasks/recommendations?limit=1&offset=1");
+    expect(finalPage.body).toMatchObject({ rowOffset: 1, rowLimit: 1, returnedRowCount: 1, totalRowCount: 2, hasMore: false });
+  });
 
   it("creates and links exactly one child on concurrent clicks through guarded intake", async () => {
     const { app, store, tasks } = buildApp([parent()]);

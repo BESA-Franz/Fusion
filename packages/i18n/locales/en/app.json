@@ -3235,7 +3235,16 @@
     "unarchiveLabel": "Unarchive this insight",
     "unarchiveTitle": "Unarchive this insight",
     "unarchiving": "Unarchiving \"{{title}}\"...",
-    "usePlanningDefault": "Use planning default"
+    "usePlanningDefault": "Use planning default",
+    "recommendations": {
+      "title": "Task Recommendations",
+      "count": "Showing {{shown}} of {{total}} source tasks",
+      "source": "Source: {{task}}",
+      "loadMore": "Load more",
+      "loadingMore": "Loading more…",
+      "loadMoreFailed": "Could not load more recommendations.",
+      "truncated": "Showing the first 20 pages. Refresh to see the latest recommendations."
+    }
   },
   "interview": {
     "addContextDirection": "Add any extra context or direction...",

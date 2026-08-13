@@ -3225,7 +3225,16 @@
     "unarchiveLabel": "Désarchiver cet insight",
     "unarchiveTitle": "Désarchiver cet insight",
     "unarchiving": "Désarchivage de \"{{title}}\"...",
-    "usePlanningDefault": "Utiliser la valeur par défaut de planification"
+    "usePlanningDefault": "Utiliser la valeur par défaut de planification",
+    "recommendations": {
+      "title": "",
+      "count": "",
+      "source": "",
+      "loadMore": "",
+      "loadingMore": "",
+      "loadMoreFailed": "",
+      "truncated": ""
+    }
   },
   "interview": {
     "addContextDirection": "Ajouter du contexte ou des directives supplémentaires...",

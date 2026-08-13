@@ -150,7 +150,7 @@ import { deleteTaskImpl, archiveTaskImpl, type DeleteTaskIfResult } from "./task
 import type { TaskDeleteAuditContext } from "./task-delete-attribution.js";
 import { updateSettingsImpl, updateGlobalSettingsImpl } from "./task-store/settings-ops.js";
 import { createTaskBackendImpl, _createTaskInternalBackendImpl, createTaskImpl, createTaskWithReservedIdImpl, _createTaskInternalImpl, _maybeAutoArchiveSameAgentDuplicateImpl } from "./task-store/task-creation.js";
-import { getTaskImpl, listTasksImpl, searchTasksImpl, listTasksModifiedSinceImpl, getTaskVerificationRequestAsyncImpl } from "./task-store/reads.js";
+import { getTaskImpl, listTasksImpl, searchTasksImpl, listTasksModifiedSinceImpl, getTaskVerificationRequestAsyncImpl, listTaskRecommendationsImpl } from "./task-store/reads.js";
 import { updateTaskUnlockedImpl } from "./task-store/task-update.js";
 import { __setTaskActivityLogLimitsForTesting } from "./task-store/comments.js";
 import { declaresAnyLifecycleTrait, resolveReviewColumns, resolveTaskLifecycleColumns, type LifecycleColumns } from "./workflows/workflow-lifecycle-traits.js";
@@ -1594,6 +1594,9 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
   async clearWorkflowRunStepInstancesAsync(taskId: string, keepRunId?: string): Promise<void> {
     return clearWorkflowRunStepInstancesAsyncImpl(this, taskId, keepRunId);
+  }
+  async listTaskRecommendations(options?: { completeColumns?: ReadonlySet<string>; limit?: number; offset?: number }): Promise<import("./types.js").TaskRecommendationListPage> {
+    return listTaskRecommendationsImpl(this, options);
   }
   async listTasksForGithubTrackingReconcile(options?: { offset?: number; limit?: number }): Promise<{ tasks: Task[]; hasMore: boolean }> {
     return listTasksForGithubTrackingReconcileImpl(this, options);

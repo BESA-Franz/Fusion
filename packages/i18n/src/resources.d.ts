@@ -3222,6 +3222,15 @@ export default interface Resources {
       "model": "Model",
       "modelConfigured": "Model: {{model}}",
       "noInsightsYet": "No insights yet",
+      "recommendations": {
+        "count": "Showing {{shown}} of {{total}} source tasks",
+        "loadMore": "Load more",
+        "loadMoreFailed": "Could not load more recommendations.",
+        "loadingMore": "Loading more…",
+        "source": "Source: {{task}}",
+        "title": "Task Recommendations",
+        "truncated": "Showing the first 20 pages. Refresh to see the latest recommendations."
+      },
       "runCompleted": "{{created}} created, {{updated}} updated",
       "showAllInsights": "Show all insights",
       "showArchived": "Show archived insights",

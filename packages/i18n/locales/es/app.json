@@ -3225,7 +3225,16 @@
     "unarchiveLabel": "Desarchivar esta información",
     "unarchiveTitle": "Desarchivar esta información",
     "unarchiving": "Desarchivando \"{{title}}\"...",
-    "usePlanningDefault": "Usar el predeterminado de planificación"
+    "usePlanningDefault": "Usar el predeterminado de planificación",
+    "recommendations": {
+      "title": "",
+      "count": "",
+      "source": "",
+      "loadMore": "",
+      "loadingMore": "",
+      "loadMoreFailed": "",
+      "truncated": ""
+    }
   },
   "interview": {
     "addContextDirection": "Agregue contexto o dirección adicional...",
