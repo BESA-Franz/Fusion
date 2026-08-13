@@ -289,6 +289,10 @@ pgDescribe("agent activity SSE durable integration", () => {
   afterAll(h.afterAll);
 
   it("delivers an out-of-process-shaped persisted append through the seq tail", async () => {
+    // FNXC:AgentActivityStream 2026-08-12-00:00: drive the real durable poll fast via its
+    // bounded env test-seam instead of sleeping a full 2s production cycle (FN-5048).
+    const priorPollMs = process.env.FUSION_AGENT_ACTIVITY_POLL_MS;
+    process.env.FUSION_AGENT_ACTIVITY_POLL_MS = "20";
     const realCore = await vi.importActual<typeof import("@fusion/core")>("@fusion/core");
     getMaxAgentActivitySeq.mockReset().mockImplementation((layer) => realCore.getMaxAgentActivitySeq(layer));
     queryAgentActivityEvents.mockReset().mockImplementation((layer, query) => realCore.queryAgentActivityEvents(layer, query));
@@ -311,15 +315,23 @@ pgDescribe("agent activity SSE durable integration", () => {
         discriminator: "external-exec-after-connect",
         metadata: { runId: "exec-FN-8864-1234567891-abcd" },
       });
-      // No store.emit: the poll is the delivery guarantee for external writers.
-      await new Promise((resolve) => setTimeout(resolve, 2_100));
-      const frames = response.write.mock.calls
-        .map(([frame]) => String(frame))
-        .filter((frame) => frame.startsWith("event: agent:activity"));
+      // No store.emit: the poll is the delivery guarantee for external writers. Poll for the
+      // frame rather than sleeping a fixed cycle so the test tracks real delivery, not a timer.
+      const agentActivityFrames = () =>
+        response.write.mock.calls
+          .map(([frame]) => String(frame))
+          .filter((frame) => frame.startsWith("event: agent:activity"));
+      const deadline = Date.now() + 5_000;
+      while (agentActivityFrames().length < 1 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const frames = agentActivityFrames();
       expect(frames).toHaveLength(1);
       expect(JSON.parse(frames[0]!.split("data: ")[1]!.trim())).toMatchObject({ seq: "1", taskId: "FN-8864" });
     } finally {
       response.emit("close");
+      if (priorPollMs === undefined) delete process.env.FUSION_AGENT_ACTIVITY_POLL_MS;
+      else process.env.FUSION_AGENT_ACTIVITY_POLL_MS = priorPollMs;
     }
   });
 });

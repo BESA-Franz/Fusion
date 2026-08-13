@@ -53,6 +53,24 @@ function sseDebug(message: string): void {
   sseLog.debug(message);
 }
 
+/*
+FNXC:AgentActivityStream 2026-08-12-00:00:
+The durable agent-activity seq tail polls every 2s in production — that interval IS the
+cross-process delivery guarantee for short-lived out-of-process writers that never emit an
+in-process nudge. The PG integration test for that path could only prove delivery by sleeping
+a full real poll cycle (~2.1s), which is exactly the kind of real time-wait FN-5048 forbids.
+Expose a bounded env test-seam (FUSION_AGENT_ACTIVITY_POLL_MS) so that test can drive the poll
+fast without weakening the real 2s default or the delivery contract. Read per-connection so a
+test can set it before opening the SSE; clamp to >=10ms so a bad value can never busy-spin.
+*/
+function resolveAgentActivityPollMs(): number {
+  const raw = process.env.FUSION_AGENT_ACTIVITY_POLL_MS?.trim();
+  if (!raw) return 2_000;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 2_000;
+  return Math.max(10, Math.floor(parsed));
+}
+
 const SSE_CLIENT_ID_MAX_LENGTH = 128;
 /*
  * FNXC:DashboardSSE 2026-06-23-15:08:
@@ -705,7 +723,7 @@ export function createSSE(
       }
       void drainAgentActivity();
     };
-    const agentActivityPoll = setInterval(onAgentActivityNudge, 2_000);
+    const agentActivityPoll = setInterval(onAgentActivityNudge, resolveAgentActivityPollMs());
     agentActivityPoll.unref?.();
     // --- Event handler definitions ---
     const onCreated = (task: unknown) => {
