@@ -155,7 +155,7 @@ export class MacosComputerAdapter implements ComputerAdapter {
       await this.callJson(["drag-coordinates", input.app.name, String(from.x), String(from.y), String(to.x), String(to.y)], COMPUTER_TIMEOUTS.action);
     } else if (input.fromX !== undefined && input.fromY !== undefined && input.toX !== undefined && input.toY !== undefined) { await this.callJson(["drag-coordinates", input.app.name, String(input.fromX), String(input.fromY), String(input.toX), String(input.toY)], COMPUTER_TIMEOUTS.action); }
     else throw new ComputerUseError("ACTION_FAILED", "Drag requires coordinates or resolved elements.");
-    return { action: "drag", app: input.app, snapshotId: input.snapshotId, elementIndex: null, fromElementIndex: input.from?.element.index ?? null, toElementIndex: input.to?.element.index ?? null, performed: true };
+    return { action: "drag", app: input.app, snapshotId: input.snapshotId, elementIndex: null, fromElementIndex: input.from?.element.index ?? null, toElementIndex: input.to?.element.index ?? null, performed: true, snapshotConsumed: false };
   }
 
   private async assertAccessibility(): Promise<void> {
@@ -208,4 +208,4 @@ function isWindowRef(value: unknown): value is ResolvedComputerWindow["window"] 
 function isElement(value: unknown): value is Element { const element = value as Element; return isLiveElement(value) && typeof element.index === "number"; }
 function isLiveElement(value: unknown): value is Omit<Element, "index"> { const element = value as Element; return !!element && typeof element.role === "string" && !!element.locator && typeof element.locator.path === "string"; }
 function center(bounds: Element["bounds"]): { x: number; y: number } | undefined { return bounds ? { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 } : undefined; }
-function singleAction(action: string, app: AppRef, snapshotId: string | null, elementIndex: number | null): ActionResult { return { action, app, snapshotId: action === "hotkey" ? null : snapshotId, elementIndex, fromElementIndex: null, toElementIndex: null, performed: true }; }
+function singleAction(action: string, app: AppRef, snapshotId: string | null, elementIndex: number | null): ActionResult { return { action, app, snapshotId: action === "hotkey" ? null : snapshotId, elementIndex, fromElementIndex: null, toElementIndex: null, performed: true, snapshotConsumed: false }; }

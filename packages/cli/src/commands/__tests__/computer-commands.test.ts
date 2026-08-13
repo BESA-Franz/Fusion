@@ -15,7 +15,7 @@ const adapter: ComputerAdapter = {
   listApps: async () => ({ apps: [app] }), listWindows: async () => ({ app, windows: [{ windowId: "w", windowIndex: 0, title: "w", bounds: null, minimized: false }] }),
   captureState: async () => ({ app, window: { windowId: "w", windowIndex: 0, title: "w", bounds: null, minimized: false }, snapshot: { snapshotId: "", targetKey: "", windowKey: "", capturedAt: new Date(0).toISOString(), expiresAt: "", treeText: "tree", elementCount: 1, truncated: false, elements: [{ index: 7, role: "AXButton", title: "Go", value: null, label: null, enabled: true, focused: false, bounds: null, actions: [], locator: { kind: "ax-path", path: "button[0]", role: "AXButton", subrole: null, identifier: null, title: "Go" } }] }, screenshot: null }),
   resolveWindow: async () => ({ window: { windowId: "w", windowIndex: 0, title: "w", bounds: null, minimized: false }, handle: "w" }), resolveLocator: async (_w, locator) => ({ element: { index: 7, role: "AXButton", title: "Go", value: null, label: null, enabled: true, focused: false, bounds: null, actions: [], locator }, handle: "e" }),
-  click: async (x) => ({ action: "click", app: x.app, snapshotId: x.snapshotId, elementIndex: 7, fromElementIndex: null, toElementIndex: null, performed: true }), "set-value": async () => { throw new Error("unused"); }, "type-text": async () => { throw new Error("unused"); }, "press-key": async () => { throw new Error("unused"); }, hotkey: async () => { throw new Error("unused"); }, scroll: async () => { throw new Error("unused"); }, drag: async () => { throw new Error("unused"); },
+  click: async (x) => ({ action: "click", app: x.app, snapshotId: x.snapshotId, elementIndex: 7, fromElementIndex: null, toElementIndex: null, performed: true, snapshotConsumed: false }), "set-value": async () => { throw new Error("unused"); }, "type-text": async () => { throw new Error("unused"); }, "press-key": async () => { throw new Error("unused"); }, hotkey: async () => { throw new Error("unused"); }, scroll: async () => { throw new Error("unused"); }, drag: async () => { throw new Error("unused"); },
 };
 describe("computer commands", () => {
   it("emits one JSON envelope and persists a snapshot", async () => { const output: string[] = []; const root = await import("node:fs/promises").then((fs) => fs.mkdtemp("/tmp/fusion-computer-")); try { expect(await runComputer(["get-app-state", "--app", "App", "--no-screenshot", "--json"], { adapter, projectRoot: root, stdout: (x) => output.push(x) })).toBe(0); const envelope = JSON.parse(output[0]); expect(envelope).toMatchObject({ schemaVersion: 1, ok: true, command: "computer.get-app-state" }); expect(envelope.result.snapshot.snapshotId).toMatch(/^cs_/); } finally { await (await import("node:fs/promises")).rm(root, { recursive: true, force: true }); } });
@@ -70,8 +70,8 @@ describe("computer commands", () => {
       expect(calls).toEqual(["window", "locator", "click"]);
       expect(click).toHaveBeenLastCalledWith(expect.objectContaining({ snapshotId: latest.snapshotId, element: expect.objectContaining({ element: expect.objectContaining({ index: 7, locator: snapshotElement(7).locator, bounds: { x: 10, y: 20, width: 30, height: 40 } }) }) }));
       calls.length = 0;
-      expect(await runComputer(["set-value", "--app", "App", "--element-index", "7", "--value", "safe", "--json"], { adapter: replayAdapter, store, projectRoot: root, stdout: () => undefined })).toBe(0);
-      expect(calls).toEqual(["window", "locator", "set-value"]);
+      expect(await runComputer(["set-value", "--app", "App", "--element-index", "7", "--value", "safe", "--json"], { adapter: replayAdapter, store, projectRoot: root, stdout: () => undefined })).toBe(1);
+      expect(calls).toEqual([]);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -96,7 +96,7 @@ describe("computer commands", () => {
     let typed = 0;
     const replayAdapter: ComputerAdapter = { ...adapter,
       resolveLocator: async (_window, locator) => { resolved += 1; return { element: { index: 7, role: "AXButton", title: "Go", value: null, label: null, enabled: true, focused: false, bounds: null, actions: [], locator }, handle: "live" }; },
-      "type-text": async (input) => { typed += 1; return { action: "type-text", app: input.app, snapshotId: input.snapshotId ?? null, elementIndex: input.element?.element.index ?? null, fromElementIndex: null, toElementIndex: null, performed: true }; },
+      "type-text": async (input) => { typed += 1; return { action: "type-text", app: input.app, snapshotId: input.snapshotId ?? null, elementIndex: input.element?.element.index ?? null, fromElementIndex: null, toElementIndex: null, performed: true, snapshotConsumed: false }; },
     };
     try {
       await runComputer(["get-app-state", "--app", "App", "--no-screenshot", "--json"], { adapter: replayAdapter, projectRoot: root, clock: { now: () => new Date(0) }, stdout: () => undefined });
@@ -106,7 +106,7 @@ describe("computer commands", () => {
   });
   it("accepts complete coordinate drag without a snapshot", async () => {
     let input: Parameters<ComputerAdapter["drag"]>[0] | undefined;
-    const dragAdapter: ComputerAdapter = { ...adapter, drag: async (value) => { input = value; return { action: "drag", app: value.app, snapshotId: null, elementIndex: null, fromElementIndex: null, toElementIndex: null, performed: true }; } };
+    const dragAdapter: ComputerAdapter = { ...adapter, drag: async (value) => { input = value; return { action: "drag", app: value.app, snapshotId: null, elementIndex: null, fromElementIndex: null, toElementIndex: null, performed: true, snapshotConsumed: false }; } };
     expect(await runComputer(["drag", "--app", "App", "--from-x", "1", "--from-y", "2", "--to-x", "3", "--to-y", "4", "--json"], { adapter: dragAdapter, stdout: () => undefined })).toBe(0);
     expect(input).toMatchObject({ snapshotId: null, fromX: 1, fromY: 2, toX: 3, toY: 4 });
   });
@@ -118,13 +118,85 @@ describe("computer commands", () => {
     let input: Parameters<ComputerAdapter["drag"]>[0] | undefined;
     const dragAdapter: ComputerAdapter = { ...adapter,
       resolveLocator: async (_window, locator) => ({ element: locator.path === from.locator.path ? from : to, handle: locator.path }),
-      drag: async (value) => { input = value; return { action: "drag", app: value.app, snapshotId: value.snapshotId, elementIndex: null, fromElementIndex: value.from?.element.index ?? null, toElementIndex: value.to?.element.index ?? null, performed: true }; },
+      drag: async (value) => { input = value; return { action: "drag", app: value.app, snapshotId: value.snapshotId, elementIndex: null, fromElementIndex: value.from?.element.index ?? null, toElementIndex: value.to?.element.index ?? null, performed: true, snapshotConsumed: false }; },
     };
-    const store = { resolve, getElement: (_record: typeof record, index: number) => _record.elements[String(index)] } as unknown as import("../computer/snapshot-store.js").ComputerSnapshotStore;
+    const store = { resolve, consume: vi.fn(), getElement: (_record: typeof record, index: number) => _record.elements[String(index)] } as unknown as import("../computer/snapshot-store.js").ComputerSnapshotStore;
     expect(await runComputer(["drag", "--app", "App", "--from-element-index", "7", "--to-element-index", "9", "--json"], { adapter: dragAdapter, store, stdout: () => undefined })).toBe(0);
     expect(resolve).toHaveBeenCalledTimes(1);
     expect(input).toMatchObject({ snapshotId: record.snapshotId, from: { element: { index: 7 } }, to: { element: { index: 9 } } });
   });
+  it("enforces snapshot → act → snapshot and re-arms after a fresh capture", async () => {
+    const output: string[] = [];
+    const root = await import("node:fs/promises").then((fs) => fs.mkdtemp("/tmp/fusion-computer-"));
+    const clock = { now: () => new Date(0) };
+    const run = async (args: string[]) => {
+      output.length = 0;
+      const code = await runComputer([...args, "--json"], { adapter, projectRoot: root, clock, stdout: (text) => output.push(text) });
+      return { code, envelope: JSON.parse(output[0]!) };
+    };
+    try {
+      await run(["get-app-state", "--app", "App", "--no-screenshot"]);
+      expect((await run(["click", "--app", "App", "--element-index", "7"])).envelope.result).toMatchObject({ snapshotConsumed: true });
+      const stale = await run(["click", "--app", "App", "--element-index", "7"]);
+      expect(stale.code).toBe(1);
+      expect(stale.envelope).toMatchObject({ ok: false, error: { code: "SNAPSHOT_STALE", details: { reason: "consumed-by-action" } } });
+      expect(stale.envelope.error.remediation).toContain("fn computer get-app-state");
+      await run(["get-app-state", "--app", "App", "--no-screenshot"]);
+      expect((await run(["click", "--app", "App", "--element-index", "7"])).code).toBe(0);
+    } finally { await (await import("node:fs/promises")).rm(root, { recursive: true, force: true }); }
+  });
+
+  it("consumes a captured app pointer after every action form", async () => {
+    const root = await import("node:fs/promises").then((fs) => fs.mkdtemp("/tmp/fusion-computer-"));
+    const clock = { now: () => new Date(0) };
+    const action = (name: string, input: { app: typeof app; snapshotId?: string | null; element?: { element: { index: number } }; from?: { element: { index: number } }; to?: { element: { index: number } } }) => ({ action: name, app: input.app, snapshotId: input.snapshotId ?? null, elementIndex: input.element?.element.index ?? null, fromElementIndex: input.from?.element.index ?? null, toElementIndex: input.to?.element.index ?? null, performed: true as const, snapshotConsumed: false });
+    const actions: ComputerAdapter = { ...adapter,
+      click: async (input) => action("click", input), "set-value": async (input) => action("set-value", input), "type-text": async (input) => action("type-text", input), "press-key": async (input) => action("press-key", input), hotkey: async (input) => action("hotkey", input), scroll: async (input) => action("scroll", input), drag: async (input) => action("drag", input),
+    };
+    const cases = [
+      ["click", "--app", "App", "--element-index", "7"], ["set-value", "--app", "App", "--element-index", "7", "--value", "x"],
+      ["type-text", "--app", "App", "--element-index", "7", "--text", "x"], ["press-key", "--app", "App", "--element-index", "7", "--key", "enter"],
+      ["scroll", "--app", "App", "--element-index", "7", "--direction", "down"], ["hotkey", "--app", "App", "--keys", "cmd+k"],
+      ["drag", "--app", "App", "--from-x", "1", "--from-y", "2", "--to-x", "3", "--to-y", "4"],
+      ["drag", "--app", "App", "--from-element-index", "7", "--to-element-index", "7"],
+    ];
+    try {
+      for (const args of cases) {
+        const output: string[] = [];
+        await runComputer(["get-app-state", "--app", "App", "--no-screenshot", "--json"], { adapter: actions, projectRoot: root, clock, stdout: () => undefined });
+        expect(await runComputer([...args, "--json"], { adapter: actions, projectRoot: root, clock, stdout: (text) => output.push(text) })).toBe(0);
+        expect(JSON.parse(output[0]!).result.snapshotConsumed).toBe(true);
+        output.length = 0;
+        expect(await runComputer(["click", "--app", "App", "--element-index", "7", "--json"], { adapter: actions, projectRoot: root, clock, stdout: (text) => output.push(text) })).toBe(1);
+        expect(JSON.parse(output[0]!).error.details.reason).toBe("consumed-by-action");
+      }
+    } finally { await (await import("node:fs/promises")).rm(root, { recursive: true, force: true }); }
+  });
+
+  it("consumes after targetless actions but not after failed actions or reads", async () => {
+    const root = await import("node:fs/promises").then((fs) => fs.mkdtemp("/tmp/fusion-computer-"));
+    const clock = { now: () => new Date(0) };
+    let failClick = true;
+    const resilientAdapter: ComputerAdapter = { ...adapter,
+      click: async (input) => { if (failClick) { failClick = false; throw new (await import("../computer/contract.js")).ComputerUseError("ACTION_FAILED", "failed"); } return { action: "click", app: input.app, snapshotId: input.snapshotId, elementIndex: 7, fromElementIndex: null, toElementIndex: null, performed: true, snapshotConsumed: false }; },
+      "type-text": async (input) => ({ action: "type-text", app: input.app, snapshotId: input.snapshotId ?? null, elementIndex: input.element?.element.index ?? null, fromElementIndex: null, toElementIndex: null, performed: true, snapshotConsumed: false }),
+      "press-key": async (input) => ({ action: "press-key", app: input.app, snapshotId: input.snapshotId ?? null, elementIndex: input.element?.element.index ?? null, fromElementIndex: null, toElementIndex: null, performed: true, snapshotConsumed: false }),
+      scroll: async (input) => ({ action: "scroll", app: input.app, snapshotId: input.snapshotId ?? null, elementIndex: input.element?.element.index ?? null, fromElementIndex: null, toElementIndex: null, performed: true, snapshotConsumed: false }),
+    };
+    const run = (args: string[]) => runComputer([...args, "--json"], { adapter: resilientAdapter, projectRoot: root, clock, stdout: () => undefined });
+    try {
+      await run(["get-app-state", "--app", "App", "--no-screenshot"]);
+      await run(["list-apps"]); await run(["list-windows", "--app", "App"]);
+      expect(await run(["click", "--app", "App", "--element-index", "7"])).toBe(1);
+      expect(await run(["click", "--app", "App", "--element-index", "7"])).toBe(0);
+      for (const args of [["type-text", "--app", "App", "--text", "x"], ["press-key", "--app", "App", "--key", "enter"], ["scroll", "--app", "App", "--direction", "down"]]) {
+        await run(["get-app-state", "--app", "App", "--no-screenshot"]);
+        expect(await run(args)).toBe(0);
+        expect(await run(["click", "--app", "App", "--element-index", "7"])).toBe(1);
+      }
+    } finally { await (await import("node:fs/promises")).rm(root, { recursive: true, force: true }); }
+  });
+
   it("uses group-level INVALID_ARGUMENTS for unknown commands", async () => { const output: string[] = []; expect(await runComputer(["nope", "--json"], { adapter, stdout: (x) => output.push(x) })).toBe(1); expect(JSON.parse(output[0])).toMatchObject({ command: "computer", error: { code: "INVALID_ARGUMENTS" } }); });
   it("returns the required JSON envelope for a missing subcommand", async () => {
     const output: string[] = [];
@@ -141,7 +213,7 @@ describe("computer commands", () => {
   it("falls back from an unmatched dotted bundle spelling to an exact app name", async () => {
     const dotted = { ...app, bundleId: "com.example.Other", name: "Foo.Bar" };
     const output: string[] = [];
-    expect(await runComputer(["hotkey", "--app", "Foo.Bar", "--keys", "cmd+k", "--json"], { adapter: { ...adapter, listApps: async () => ({ apps: [dotted] }), hotkey: async (input) => ({ action: "hotkey", app: input.app, snapshotId: null, elementIndex: null, fromElementIndex: null, toElementIndex: null, performed: true }) }, stdout: (text) => output.push(text) })).toBe(0);
+    expect(await runComputer(["hotkey", "--app", "Foo.Bar", "--keys", "cmd+k", "--json"], { adapter: { ...adapter, listApps: async () => ({ apps: [dotted] }), hotkey: async (input) => ({ action: "hotkey", app: input.app, snapshotId: null, elementIndex: null, fromElementIndex: null, toElementIndex: null, performed: true, snapshotConsumed: false }) }, stdout: (text) => output.push(text) })).toBe(0);
     expect(JSON.parse(output[0]!)).toMatchObject({ result: { app: { name: "Foo.Bar" } } });
   });
 });

@@ -4,7 +4,7 @@ import { resolveComputerAdapter, type ComputerClock } from "./computer/adapter-r
 import type { ComputerAdapter, ResolvedComputerElement, ResolvedComputerWindow } from "./computer/adapter.js";
 import { createComputerSnapshotStore, type ComputerSnapshotStore } from "./computer/snapshot-store.js";
 import { resolveComputerStateRoot } from "./computer/state-root.js";
-import { COMPUTER_COMMAND_SURFACE, COMPUTER_SUBCOMMANDS, ComputerUseError, failureEnvelope, isValidSnapshotId, parseAppTarget, successEnvelope, validateResult, type AppRef, type CommandName, type ComputerSubcommand } from "./computer/contract.js";
+import { COMPUTER_COMMAND_SURFACE, COMPUTER_SUBCOMMANDS, ComputerUseError, failureEnvelope, isValidSnapshotId, parseAppTarget, successEnvelope, validateResult, type ActionResult, type AppRef, type CommandName, type ComputerSubcommand } from "./computer/contract.js";
 
 export interface ComputerCommandOptions { platform?: string; projectRoot?: string; adapter?: ComputerAdapter; store?: ComputerSnapshotStore; clock?: ComputerClock; stdout?: (text: string) => void; stderr?: (text: string) => void; stdin?: () => Promise<string>; }
 export type ComputerHandler = (args: string[], options: ComputerCommandOptions) => Promise<unknown>;
@@ -53,15 +53,27 @@ async function requireElement(args: string[], adapter: ComputerAdapter, store: C
   return { record: resolved.record, window: resolved.window, element: resolved.elements[0]! };
 }
 async function optionalElement(args: string[], adapter: ComputerAdapter, store: ComputerSnapshotStore, app: AppRef) { return value(args, "--element-index") === undefined ? undefined : requireElement(args, adapter, store, app); }
+
+/**
+ * FNXC:ComputerUse 2026-08-13-22:02:
+ * This is the sole action completion seam: only a successful adapter call may burn the app fence.
+ * Requiring a new capture prevents a second sparse index from silently targeting a different element
+ * after the first action changed focus, navigation, scrolling, or the rendered accessibility tree.
+ */
+async function finishAction(result: ActionResult, store: ComputerSnapshotStore, app: AppRef): Promise<ActionResult> {
+  await store.consume(app, result.snapshotId ?? undefined);
+  return { ...result, snapshotConsumed: true };
+}
+
 export const COMPUTER_HANDLERS: Record<ComputerSubcommand, ComputerHandler> = {
   capabilities: async (_args, o) => adapterFor(o).capabilities(), permissions: async (_args, o) => adapterFor(o).permissions(),
   "list-apps": async (_args, o) => adapterFor(o).listApps(),
   "list-windows": async (args, o) => { const raw = value(args, "--app"); if (!raw) throw new ComputerUseError("INVALID_ARGUMENTS", "--app is required."); const adapter = adapterFor(o); return adapter.listWindows(parseAppTarget(raw)); },
   "get-app-state": async (args, o) => { const raw = value(args, "--app"); if (!raw) throw new ComputerUseError("INVALID_ARGUMENTS", "--app is required."); if (value(args, "--window-id") && value(args, "--window-index")) throw new ComputerUseError("INVALID_ARGUMENTS", "Window flags are mutually exclusive."); const adapter = adapterFor(o); const state = await adapter.captureState(parseAppTarget(raw), { windowId: value(args, "--window-id"), windowIndex: number(args, "--window-index"), screenshot: !args.includes("--no-screenshot"), restoreWindow: args.includes("--restore-window") }); const record = await storeFor(o).persist({ app: state.app, window: state.window, elementCount: state.snapshot.elementCount, elements: state.snapshot.elements, capturedAt: state.snapshot.capturedAt }); state.snapshot.snapshotId = record.snapshotId; state.snapshot.targetKey = record.targetKey; state.snapshot.windowKey = record.windowKey; state.snapshot.capturedAt = record.capturedAt; state.snapshot.expiresAt = record.expiresAt; return state; },
-  click: async (args, o) => { const raw = value(args, "--app"); if (!raw) throw new ComputerUseError("INVALID_ARGUMENTS", "--app is required."); const adapter = adapterFor(o), app = await appFor(adapter, raw), item = await requireElement(args, adapter, storeFor(o), app); return adapter.click({ app, window: item.window, element: item.element, snapshotId: item.record.snapshotId }); },
-  "set-value": async (args, o) => { const raw = value(args, "--app"), text = value(args, "--value"); if (!raw || (!text && !args.includes("--value-stdin")) || (text && args.includes("--value-stdin"))) throw new ComputerUseError("INVALID_ARGUMENTS", "--app and exactly one value source are required."); const secret = args.includes("--value-stdin") ? await (o.stdin ?? (async () => ""))() : text!; const adapter = adapterFor(o), app = await appFor(adapter, raw), item = await requireElement(args, adapter, storeFor(o), app); return adapter["set-value"]({ app, window: item.window, element: item.element, snapshotId: item.record.snapshotId, value: secret }); },
+  click: async (args, o) => { const raw = value(args, "--app"); if (!raw) throw new ComputerUseError("INVALID_ARGUMENTS", "--app is required."); const adapter = adapterFor(o), app = await appFor(adapter, raw), store = storeFor(o), item = await requireElement(args, adapter, store, app); return finishAction(await adapter.click({ app, window: item.window, element: item.element, snapshotId: item.record.snapshotId }), store, app); },
+  "set-value": async (args, o) => { const raw = value(args, "--app"), text = value(args, "--value"); if (!raw || (!text && !args.includes("--value-stdin")) || (text && args.includes("--value-stdin"))) throw new ComputerUseError("INVALID_ARGUMENTS", "--app and exactly one value source are required."); const secret = args.includes("--value-stdin") ? await (o.stdin ?? (async () => ""))() : text!; const adapter = adapterFor(o), app = await appFor(adapter, raw), store = storeFor(o), item = await requireElement(args, adapter, store, app); return finishAction(await adapter["set-value"]({ app, window: item.window, element: item.element, snapshotId: item.record.snapshotId, value: secret }), store, app); },
   "type-text": async (args, o) => targetedOrUntargeted("type-text", args, o), "press-key": async (args, o) => targetedOrUntargeted("press-key", args, o), scroll: async (args, o) => targetedOrUntargeted("scroll", args, o),
-  hotkey: async (args, o) => { const raw = value(args, "--app"), keys = value(args, "--keys"); if (!raw || !keys) throw new ComputerUseError("INVALID_ARGUMENTS", "--app and --keys are required."); const adapter = adapterFor(o), app = await appFor(adapter, raw); return adapter.hotkey({ app, keys: keys.split("+") }); },
+  hotkey: async (args, o) => { const raw = value(args, "--app"), keys = value(args, "--keys"); if (!raw || !keys) throw new ComputerUseError("INVALID_ARGUMENTS", "--app and --keys are required."); const adapter = adapterFor(o), app = await appFor(adapter, raw), store = storeFor(o); return finishAction(await adapter.hotkey({ app, keys: keys.split("+") }), store, app); },
   drag: async (args, o) => {
     const raw = value(args, "--app"); if (!raw) throw new ComputerUseError("INVALID_ARGUMENTS", "--app is required.");
     const coordinateFlags = ["--from-x", "--from-y", "--to-x", "--to-y"];
@@ -73,12 +85,13 @@ export const COMPUTER_HANDLERS: Record<ComputerSubcommand, ComputerHandler> = {
     if (hasCoordinates) {
       const coordinates = coordinateFlags.map((flag) => number(args, flag));
       if (coordinates.some((item) => item === undefined) || value(args, "--snapshot-id") || value(args, "--window-id") || value(args, "--window-index")) throw new ComputerUseError("INVALID_ARGUMENTS", "Coordinate drag requires all coordinates and takes no snapshot or window flags.");
-      return adapter.drag({ app, snapshotId: null, fromX: coordinates[0]!, fromY: coordinates[1]!, toX: coordinates[2]!, toY: coordinates[3]! });
+      return finishAction(await adapter.drag({ app, snapshotId: null, fromX: coordinates[0]!, fromY: coordinates[1]!, toX: coordinates[2]!, toY: coordinates[3]! }), storeFor(o), app);
     }
     if (from === undefined || to === undefined) throw new ComputerUseError("INVALID_ARGUMENTS", "Drag requires either all coordinates or both element indexes.");
     // Both endpoints share one resolved record and one replayed window, even if another capture updates latest mid-action.
-    const resolved = await requireElements(args, [from, to], adapter, storeFor(o), app);
-    return adapter.drag({ app, snapshotId: resolved.record.snapshotId, window: resolved.window, from: resolved.elements[0]!, to: resolved.elements[1]! });
+    const store = storeFor(o);
+    const resolved = await requireElements(args, [from, to], adapter, store, app);
+    return finishAction(await adapter.drag({ app, snapshotId: resolved.record.snapshotId, window: resolved.window, from: resolved.elements[0]!, to: resolved.elements[1]! }), store, app);
   },
 };
 function validateFlags(name: ComputerSubcommand, args: string[]): void {
@@ -144,19 +157,19 @@ function validateFlags(name: ComputerSubcommand, args: string[]): void {
   }
 }
 
-async function targetedOrUntargeted(kind: "type-text" | "press-key" | "scroll", args: string[], o: ComputerCommandOptions): Promise<unknown> {
+async function targetedOrUntargeted(kind: "type-text" | "press-key" | "scroll", args: string[], o: ComputerCommandOptions): Promise<ActionResult> {
   const raw = value(args, "--app"); if (!raw) throw new ComputerUseError("INVALID_ARGUMENTS", "--app is required.");
-  const adapter = adapterFor(o), app = await appFor(adapter, raw), item = await optionalElement(args, adapter, storeFor(o), app);
+  const adapter = adapterFor(o), app = await appFor(adapter, raw), store = storeFor(o), item = await optionalElement(args, adapter, store, app);
   if (!item && (value(args, "--snapshot-id") || value(args, "--window-id") || value(args, "--window-index"))) throw new ComputerUseError("INVALID_ARGUMENTS", "Snapshot and window flags require --element-index.");
   if (kind === "type-text") {
     const direct = value(args, "--text"), fromStdin = args.includes("--text-stdin");
     if ((direct === undefined && !fromStdin) || (direct !== undefined && fromStdin)) throw new ComputerUseError("INVALID_ARGUMENTS", "Exactly one text source is required.");
     const text = fromStdin ? await (o.stdin ?? (async () => ""))() : direct!;
-    return adapter["type-text"]({ app, text, ...(item ? { window: item.window, element: item.element, snapshotId: item.record.snapshotId } : {}) });
+    return finishAction(await adapter["type-text"]({ app, text, ...(item ? { window: item.window, element: item.element, snapshotId: item.record.snapshotId } : {}) }), store, app);
   }
-  if (kind === "press-key") { const key = value(args, "--key"); if (!key) throw new ComputerUseError("INVALID_ARGUMENTS", "--key is required."); return adapter["press-key"]({ app, key, ...(item ? { window: item.window, element: item.element, snapshotId: item.record.snapshotId } : {}) }); }
+  if (kind === "press-key") { const key = value(args, "--key"); if (!key) throw new ComputerUseError("INVALID_ARGUMENTS", "--key is required."); return finishAction(await adapter["press-key"]({ app, key, ...(item ? { window: item.window, element: item.element, snapshotId: item.record.snapshotId } : {}) }), store, app); }
   const direction = value(args, "--direction"); if (!direction || !["up", "down", "left", "right"].includes(direction)) throw new ComputerUseError("INVALID_ARGUMENTS", "A valid --direction is required.");
-  return adapter.scroll({ app, direction: direction as "up" | "down" | "left" | "right", amount: number(args, "--amount") ?? 3, ...(item ? { window: item.window, element: item.element, snapshotId: item.record.snapshotId } : {}) });
+  return finishAction(await adapter.scroll({ app, direction: direction as "up" | "down" | "left" | "right", amount: number(args, "--amount") ?? 3, ...(item ? { window: item.window, element: item.element, snapshotId: item.record.snapshotId } : {}) }), store, app);
 }
 export async function runComputer(args: string[], options: ComputerCommandOptions = {}): Promise<number> {
   const json = args.includes("--json");

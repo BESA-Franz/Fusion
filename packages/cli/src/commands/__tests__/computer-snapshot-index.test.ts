@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ComputerUseError, type AppRef, type Element, type WindowRef } from "../computer/contract.js";
+import { ComputerUseError, targetKeyForApp, targetKeySlug, type AppRef, type Element, type WindowRef } from "../computer/contract.js";
 import { ComputerSnapshotStore } from "../computer/snapshot-store.js";
 
 const roots: string[] = [];
@@ -82,6 +82,56 @@ describe("ComputerSnapshotStore", () => {
     const record = await live.store.persist({ app, window, elementCount: 1, elements: [element(0)] });
     await expect(live.store.resolve({ app: { ...app, pid: 99 }, snapshotId: record.snapshotId })).rejects.toMatchObject({ details: { reason: "pid-changed", snapshotId: record.snapshotId } });
     await expect(live.store.resolve({ app, snapshotId: record.snapshotId, assertedWindowId: "other-window" })).rejects.toMatchObject({ details: { reason: "window-mismatch", snapshotId: record.snapshotId } });
+  });
+
+  it("consumes the latest pointer until a fresh capture re-arms it", async () => {
+    const { store } = await fixture();
+    await expect(store.consume(app)).resolves.toBeUndefined();
+
+    const first = await store.persist({ app, window, elementCount: 1, elements: [element(7)] });
+    await store.consume(app);
+    await expect(store.resolve({ app })).rejects.toMatchObject({ code: "SNAPSHOT_STALE", details: { reason: "consumed-by-action", snapshotId: first.snapshotId } });
+    await expect(store.resolve({ app, snapshotId: first.snapshotId })).rejects.toMatchObject({ code: "SNAPSHOT_STALE", details: { reason: "consumed-by-action", snapshotId: first.snapshotId } });
+
+    const second = await store.persist({ app, window, elementCount: 1, elements: [element(8)] });
+    await expect(store.resolve({ app, snapshotId: first.snapshotId })).rejects.toMatchObject({ code: "SNAPSHOT_STALE", details: { reason: "superseded", snapshotId: first.snapshotId } });
+    await expect(store.resolve({ app, snapshotId: second.snapshotId })).resolves.toMatchObject({ snapshotId: second.snapshotId });
+  });
+
+  it("preserves a re-capture when consumption completes before the new pointer write", async () => {
+    const { store } = await fixture();
+    const first = await store.persist({ app, window, elementCount: 1, elements: [element(7)] });
+    await store.consume(app, first.snapshotId);
+    const second = await store.persist({ app, window, elementCount: 1, elements: [element(8)] });
+
+    await expect(store.resolve({ app, snapshotId: second.snapshotId })).resolves.toMatchObject({ snapshotId: second.snapshotId });
+  });
+
+  it("does not let an earlier action consume a newer re-capture", async () => {
+    const { store } = await fixture();
+    const first = await store.persist({ app, window, elementCount: 1, elements: [element(7)] });
+    const second = await store.persist({ app, window, elementCount: 1, elements: [element(8)] });
+    await store.consume(app, first.snapshotId);
+
+    await expect(store.resolve({ app, snapshotId: second.snapshotId })).resolves.toMatchObject({ snapshotId: second.snapshotId });
+  });
+
+  it("serializes concurrent consumption and re-capture without losing the re-arm", async () => {
+    const { store } = await fixture();
+    const first = await store.persist({ app, window, elementCount: 1, elements: [element(7)] });
+    const recapture = store.persist({ app, window, elementCount: 1, elements: [element(8)] });
+    const consumption = store.consume(app, first.snapshotId);
+    const [second] = await Promise.all([recapture, consumption]);
+
+    await expect(store.resolve({ app, snapshotId: second.snapshotId })).resolves.toMatchObject({ snapshotId: second.snapshotId });
+  });
+
+  it("keeps legacy pointers without consumedAt usable", async () => {
+    const { store, root } = await fixture();
+    const record = await store.persist({ app, window, elementCount: 1, elements: [element(7)] });
+    const pointerPath = join(root, ".fusion", "computer-use", "latest", `${targetKeySlug(targetKeyForApp(app))}.json`);
+    await writeFile(pointerPath, `${JSON.stringify({ snapshotId: record.snapshotId })}\n`);
+    await expect(store.resolve({ app })).resolves.toMatchObject({ snapshotId: record.snapshotId });
   });
 
   it("treats absent or unparsable named records as not-found", async () => {

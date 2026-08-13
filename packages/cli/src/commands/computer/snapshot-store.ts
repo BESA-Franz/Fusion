@@ -10,6 +10,7 @@ import {
   type AppRef,
   type Element,
   type SnapshotRecord,
+  type SnapshotStaleReason,
   type WindowRef,
 } from "./contract.js";
 
@@ -88,9 +89,25 @@ export class ComputerSnapshotStore {
     await mkdir(this.snapshotsDirectory, { recursive: true });
     await mkdir(this.latestDirectory, { recursive: true });
     await writeJsonAtomically(this.snapshotPath(record.snapshotId), record);
-    await writeJsonAtomically(this.latestPath(targetKey), { snapshotId: record.snapshotId });
+    await this.mutateLatestPointer(targetKey, async () => {
+      await writeJsonAtomically(this.latestPath(targetKey), { snapshotId: record.snapshotId });
+    });
     await this.prune({ preserveSnapshotId: record.snapshotId });
     return record;
+  }
+
+  /**
+   * FNXC:ComputerUse 2026-08-13-22:02:
+   * A successful action consumes only this app's latest pointer, retaining the record for clear
+   * stale details and pruning. The next element replay must capture a new accessibility tree.
+   */
+  async consume(app: AppRef, expectedSnapshotId?: string): Promise<void> {
+    const targetKey = targetKeyForApp(app);
+    await this.mutateLatestPointer(targetKey, async () => {
+      const latest = await this.readLatest(targetKey);
+      if (!latest || (expectedSnapshotId !== undefined && latest.snapshotId !== expectedSnapshotId)) return;
+      await writeJsonAtomically(this.latestPath(targetKey), { snapshotId: latest.snapshotId, consumedAt: this.now().toISOString() });
+    });
   }
 
   /** Read the current record for the resolved app and enforce the C9 fence order. */
@@ -112,6 +129,15 @@ export class ComputerSnapshotStore {
 
     if (input.snapshotId && latest.snapshotId !== input.snapshotId) {
       throw snapshotStale("superseded", input.snapshotId);
+    }
+    /*
+     * FNXC:ComputerUse 2026-08-13-22:02:
+     * Resolve checks consumption after supersession so an explicit old ID preserves the published
+     * superseded diagnosis. A consumed latest pointer fails closed before expiry because its sparse
+     * indexes may already name different live elements after the preceding action.
+     */
+    if (latest.consumedAt !== undefined) {
+      throw snapshotStale("consumed-by-action", latest.snapshotId);
     }
     if (this.now().getTime() >= Date.parse(record.expiresAt)) {
       throw snapshotStale("expired", record.snapshotId);
@@ -165,6 +191,18 @@ export class ComputerSnapshotStore {
     }
   }
 
+  /**
+   * FNXC:ComputerUse 2026-08-13-22:29:
+   * Latest-pointer updates from separate CLI processes must serialize. An action that resolved S
+   * must not overwrite a later get-app-state capture N, so consumption checks its expected ID only
+   * while holding the same per-app lock that persist uses to re-arm the pointer.
+   */
+  private async mutateLatestPointer(targetKey: string, mutation: () => Promise<void>): Promise<void> {
+    await mkdir(this.latestDirectory, { recursive: true });
+    const lockPath = `${this.latestPath(targetKey)}.lock`;
+    await withDirectoryLock(lockPath, mutation);
+  }
+
   private snapshotPath(snapshotId: string): string {
     return join(this.snapshotsDirectory, `${snapshotId}.json`);
   }
@@ -173,7 +211,7 @@ export class ComputerSnapshotStore {
     return join(this.latestDirectory, `${targetKeySlug(targetKey)}.json`);
   }
 
-  private async readLatest(targetKey: string): Promise<{ snapshotId: string } | undefined> {
+  private async readLatest(targetKey: string): Promise<LatestPointer | undefined> {
     const value = await readJson(this.latestPath(targetKey));
     return isLatestPointer(value) ? value : undefined;
   }
@@ -207,7 +245,7 @@ function snapshotRequired(): ComputerUseError {
   );
 }
 
-function snapshotStale(reason: "not-found" | "superseded" | "expired" | "pid-changed" | "window-mismatch", snapshotId: string): ComputerUseError {
+function snapshotStale(reason: SnapshotStaleReason, snapshotId: string): ComputerUseError {
   return new ComputerUseError(
     "SNAPSHOT_STALE",
     `Snapshot ${snapshotId} is ${reason}; re-run fn computer get-app-state.`,
@@ -238,8 +276,39 @@ async function readDirectory(path: string): Promise<string[]> {
   }
 }
 
-function isLatestPointer(value: unknown): value is { snapshotId: string } {
-  return !!value && typeof value === "object" && typeof (value as { snapshotId?: unknown }).snapshotId === "string";
+const POINTER_LOCK_RETRY_MS = 5;
+const POINTER_LOCK_STALE_MS = 60_000;
+
+/** Serialize a tiny pointer rewrite across independently-invoked CLI processes. */
+async function withDirectoryLock(lockPath: string, operation: () => Promise<void>): Promise<void> {
+  for (;;) {
+    try {
+      await mkdir(lockPath);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const lockInfo = await stat(lockPath).catch(() => undefined);
+      const age = lockInfo === undefined ? Number.NaN : Date.now() - lockInfo.mtimeMs;
+      if (Number.isFinite(age) && age > POINTER_LOCK_STALE_MS) {
+        await rm(lockPath, { recursive: true, force: true });
+        continue;
+      }
+      await new Promise<void>((resolveRetry) => setTimeout(resolveRetry, POINTER_LOCK_RETRY_MS));
+    }
+  }
+  try {
+    await operation();
+  } finally {
+    await rm(lockPath, { recursive: true, force: true });
+  }
+}
+
+interface LatestPointer { snapshotId: string; consumedAt?: string; }
+
+function isLatestPointer(value: unknown): value is LatestPointer {
+  if (!value || typeof value !== "object") return false;
+  const pointer = value as { snapshotId?: unknown; consumedAt?: unknown };
+  return typeof pointer.snapshotId === "string" && (pointer.consumedAt === undefined || typeof pointer.consumedAt === "string");
 }
 
 function isSnapshotRecord(value: unknown): value is SnapshotRecord {
