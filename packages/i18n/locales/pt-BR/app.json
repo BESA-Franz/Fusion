@@ -6033,7 +6033,9 @@
       "reportDiscussionCategorySelect": "Selecione uma categoria de discussão",
       "reportDiscussionCategoryUnavailable": "As categorias de discussão não estão disponíveis para o repositório configurado.",
       "reportDiscussionCategoryEmpty": "Nenhuma categoria de discussão está disponível para o repositório configurado.",
-      "reportTargetByActionHelp": "Substituição opcional por ação do destino padrão do relatório para bug, feedback, ideia ou ajuda. Sem padrão — ações não definidas herdam reportTarget / os padrões da ação."
+      "reportTargetByActionHelp": "Substituição opcional por ação do destino padrão do relatório para bug, feedback, ideia ou ajuda. Sem padrão — ações não definidas herdam reportTarget / os padrões da ação.",
+      "recommendationMailboxNoticeEnabled": "",
+      "recommendationMailboxNoticeEnabledHelp": ""
     },
     "mobileNav": {
       "label": "Seção de configurações"

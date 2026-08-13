@@ -848,6 +848,8 @@ export class InProcessRuntime
   private messageStore?: MessageStore;
   /** FNXC:TaskDeleteNotice 2026-07-26-16:10: identity-guarded teardown for the delete-notice mailbox seam. */
   private unregisterTaskDeleteNoticeMailbox?: () => void;
+  /** FNXC:TaskRecommendations 2026-08-13-03:56: identity-guarded teardown for the store-scoped recommendation notice seam. */
+  private unregisterTaskRecommendationNoticeMailbox?: () => void;
   private chatStore?: ChatStore;
   private detachAgentLinkSync?: () => void;
   /**
@@ -927,6 +929,7 @@ export class InProcessRuntime
         buildConsumerId,
         createProjectScopedPluginMcpProvider,
         registerTaskDeleteNoticeMailbox,
+        registerTaskRecommendationNoticeMailbox,
       } = await import("@fusion/core");
       if (this.config.externalTaskStore) {
         this.taskStore = this.config.externalTaskStore;
@@ -1014,6 +1017,15 @@ export class InProcessRuntime
       inbox. A store with no registration degrades to no notice — never to a failed delete.
       */
       this.unregisterTaskDeleteNoticeMailbox = registerTaskDeleteNoticeMailbox(
+        this.taskStore,
+        this.messageStore,
+      );
+      /*
+      FNXC:TaskRecommendations 2026-08-13-03:56:
+      Store-scoped registration prevents a process hosting several projects from delivering one
+      project's recommendation notice into another project's mailbox, matching the delete notice.
+      */
+      this.unregisterTaskRecommendationNoticeMailbox = registerTaskRecommendationNoticeMailbox(
         this.taskStore,
         this.messageStore,
       );
@@ -2078,6 +2090,8 @@ export class InProcessRuntime
     // cannot keep writing notices; the unregister is identity-guarded against a newer runtime.
     this.unregisterTaskDeleteNoticeMailbox?.();
     this.unregisterTaskDeleteNoticeMailbox = undefined;
+    this.unregisterTaskRecommendationNoticeMailbox?.();
+    this.unregisterTaskRecommendationNoticeMailbox = undefined;
     let stopError: Error | undefined;
     try {
       if (this.workflowContinuationTimer) {

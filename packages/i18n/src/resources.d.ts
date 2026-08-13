@@ -1553,6 +1553,33 @@ export default interface Resources {
         "throughput": "Throughput",
         "throughputPerDay": "Throughput / day"
       },
+      "agentActivity": {
+        "agentFilter": "Filter by agent",
+        "allAgents": "All agents",
+        "allTypes": "All event types",
+        "empty": "No agent activity yet.",
+        "end": "End of activity history",
+        "eventTypes": {
+          "agent:state-changed": "Agent state changed",
+          "approval:requested": "Approval requested",
+          "task:completed": "Task completed",
+          "task:handed-off": "Task handed off",
+          "task:started": "Task started",
+          "workflow:gate-failed": "Workflow gate failed",
+          "workflow:gate-passed": "Workflow gate passed"
+        },
+        "live": "Live",
+        "loadOlder": "Load older",
+        "loadingOlder": "Loading…",
+        "mode": "Activity mode",
+        "openAgent": "Open agent {{agentId}}",
+        "openTask": "Open task {{taskId}}",
+        "rangeNote": "Time range filters loaded events; it is not sent to the server.",
+        "showMore": "Show more loaded activity",
+        "taskFilter": "Filter by task",
+        "timeline": "Timeline",
+        "typeFilter": "Filter by event type"
+      },
       "area": {
         "empty": "No data for the selected range.",
         "loading": "Loading…"
@@ -1811,6 +1838,7 @@ export default interface Resources {
       "tablistLabel": "Command Center sections",
       "tabs": {
         "activity": "Activity",
+        "agentActivity": "Agent Activity",
         "ecosystem": "Ecosystem",
         "github": "GitHub",
         "missionControl": "Mission Control",
@@ -5982,6 +6010,8 @@ export default interface Resources {
         "quickChatCloseOnOutsideClickHint": "When enabled, clicking outside the Quick Chat window closes it. Disable to keep it open until you close it explicitly. Default: enabled.",
         "quickChatLauncherHint": "Choose whether Quick Chat opens from the draggable floating button, a footer button beside Terminal, or stays hidden. Default: off (hidden).",
         "recentVerbatimRoomMessages": "Recent verbatim room messages",
+        "recommendationMailboxNoticeEnabled": "Recommendation mailbox notices",
+        "recommendationMailboxNoticeEnabledHelp": "Default: enabled. When a completed task captures recommendations, send a summary to your mailbox. Turning this off does not change whether recommendations are captured.",
         "refinementTaskWorkflow": "Refinement task workflow",
         "refinementTaskWorkflowHelp": "Workflow applied to refinement tasks — the follow-up card spawned from a done or in-review task plus your feedback. Choose \"Selected workflow\" to follow your current board workflow (falling back to the project default workflow). No default — unset means Selected workflow.",
         "removeNavItem": "Remove {{item}}",
@@ -6329,6 +6359,8 @@ export default interface Resources {
         "gitRemoteThatMergedResultsArePushedTo": "Git remote that merged results are pushed to. Default: \"origin\".",
         "gitRemoteToPushToEGOrigin": "Git remote to push to (e.g. \"origin\"). Can include branch name (e.g. \"origin main\"). Default: \"origin\".",
         "githubAuthTokenHint": "No default — unset.",
+        "githubNativeAutoMerge": "Use GitHub native auto-merge",
+        "githubNativeAutoMergeHelp": "GitHub waits for its full ruleset before merging. The repository must allow auto-merge; Fusion fails closed if it is unavailable. Default: disabled.",
         "ignoreOverlapDetectionPreserveLegacyBehavior": "Ignore overlap detection — preserve legacy behavior",
         "inYourProjectRootWillShowTheNew": " in your project root will show the new commits inverted as &quot;staged changes&quot; until you pull manually. Only applies to direct merges. ",
         "includeTaskIDInCommitScope": " Include task ID in commit scope ",
@@ -6368,6 +6400,8 @@ export default interface Resources {
         "pushTargetBranchHelp": "Branch on the remote that merged results are pushed to. Leave on the default to push the integration branch to its same-named remote branch; pick a listed remote branch or choose Custom… to type one that doesn't exist on the remote yet (the push creates it).",
         "pushToRemoteAfterMerge": " Push to remote after merge ",
         "readyToCleanUp": " ready to clean up.",
+        "requiredChecks": "Required pull-request checks",
+        "requiredChecksHelp": "No default — unset. Comma-separated check names match GitHub exactly (case-sensitive). Leaving this empty uses GitHub required-status checks only; a named check that never reports blocks the merge.",
         "retriesTheAIAgentRatherThanAutoPicking": " retries the AI agent rather than auto-picking a side. ",
         "reuseTaskWorktreeDefault": "Reuse task worktree (default)",
         "sameAsIntegrationBranchDefault": "(same as integration branch — default)",
@@ -6529,6 +6563,8 @@ export default interface Resources {
         "webhookNotifications": " Webhook notifications ",
         "webhookURL": "Webhook URL",
         "webhookUrlHint": "No default — unset.",
+        "wedgeNotificationSettleMs": "Terminal-wedge settle window (ms)",
+        "wedgeNotificationSettleMsHelp": "How long a terminal failure must persist before an operator alert. 0 = notify immediately. Default: 300000 (5 minutes).",
         "yourNtfyShTopicName164Alphanumeric": " Your ntfy.sh topic name (1–64 alphanumeric/hyphen/underscore characters). No default — unset."
       },
       "plugins": {
@@ -8023,8 +8059,8 @@ export default interface Resources {
       "recommendations": {
         "create": "Create task",
         "created": "Created {{taskId}}",
-        "empty": "No recommendations were produced for this task.",
         "creating": "Creating…",
+        "empty": "No recommendations were produced for this task.",
         "error": "Could not create task. Try again.",
         "retry": "Retry creating task",
         "title": "Recommendations"
@@ -8378,6 +8414,7 @@ export default interface Resources {
       "effective": "Effective: {{label}}",
       "effectiveFrozen": "Effective: {{label}} — frozen on entry to review",
       "errorSep": " · Error: {{message}}",
+      "fixedInReview": "Fixed in review",
       "followDefault": "Follow default",
       "loadError": "Failed to load review data.",
       "loadingData": "Loading review data…",
@@ -8405,6 +8442,7 @@ export default interface Resources {
       "showMarkdown": "Show formatted markdown",
       "showRawText": "Show raw text",
       "startedAtSep": " · Started: {{timestamp}}",
+      "superseded": "Superseded",
       "upToDate": "Up to date",
       "updateFailed": "Failed to update {{taskId}}: {{error}}"
     },

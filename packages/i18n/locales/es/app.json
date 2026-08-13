@@ -6030,7 +6030,9 @@
       "refinementTaskWorkflow": "",
       "refinementTaskWorkflowHelp": "",
       "maxRecommendationsPerTask": "",
-      "maxRecommendationsPerTaskHelp": ""
+      "maxRecommendationsPerTaskHelp": "",
+      "recommendationMailboxNoticeEnabled": "",
+      "recommendationMailboxNoticeEnabledHelp": ""
     },
     "globalGeneral": {
       "andShowsUpdateNoticesInTheCLIAnd": "",
