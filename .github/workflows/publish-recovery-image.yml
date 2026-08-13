@@ -30,7 +30,6 @@ jobs:
           fetch-depth: 0
 
       - name: Validate immutable inputs
-        env:
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
