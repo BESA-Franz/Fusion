@@ -1,5 +1,34 @@
 # @runfusion/fusion
 
+## 0.76.0-beta.3
+
+### Minor Changes
+
+- ea53cbd: summary: Send mailbox notices for captured task recommendations.
+  category: feature
+  dev: Adds the project setting `recommendationMailboxNoticeEnabled`.
+- f7bf3f9: summary: Add project-wide task recommendations to Insights.
+  category: feature
+  dev: Adds a bounded row-paginated task recommendations API and dashboard triage surface.
+
+### Patch Changes
+
+- c791c0b: summary: Restore missing localized merge, notification, recommendation, and settings copy.
+  category: fix
+  dev: Adds parity keys across six locales and removes the stale pt-BR settings.general.useEphemeralTaskWorkerAgents orphan.
+- 0e98d9b: summary: Center the Quick Add composer's bottom row of action buttons.
+  category: fix
+  dev: CSS-only QuickEntryBox change; preserves the ≤768px space-between layout.
+- 401b057: summary: Quick Add buttons now use mobile edge-to-edge spacing on tablet-width screens.
+  category: fix
+  dev: Adds a 769px–1024px positioning tier in QuickEntryBox.css.
+- 19dffe3: summary: Fix planned tasks stalling ~10 minutes in Todo before Plan Review starts.
+  category: fix
+  dev: The planning→plan-review handoff now retires its predecessor work item and installs the successor continuation in one transaction (`seedStrandedPlanReviewContinuation` gained `retirePredecessorId`); the specification-complete reaction consumes the seed result with bounded retries instead of dropping failures silently.
+- 6243c2c: summary: Terminal pin and pop-out toggles now sit in the top toolbar left of the close button.
+  category: fix
+  dev: Moves terminal-pin-toggle/terminal-popout-toggle out of terminalActionControls into a shared header fragment in TerminalModal.tsx.
+
 ## 0.76.0-beta.2
 
 ### Minor Changes

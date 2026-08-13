@@ -2,6 +2,29 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
+## 0.76.0-beta.3
+
+### Highlights
+
+- Planned tasks no longer stall ~10 minutes in Todo before Plan Review starts
+- Insights adds project-wide task recommendations with paginated triage
+- Mailbox notices arrive for captured task recommendations, via a new project setting
+- Merge, notification, recommendation, and settings copy is localized again in six locales
+- Terminal pin and pop-out toggles moved to the top toolbar, left of the close button
+
+### New
+
+- Insights now has a project-wide task recommendations surface, backed by a bounded row-paginated API.
+- Captured task recommendations can send mailbox notices, controlled by the new `recommendationMailboxNoticeEnabled` project setting.
+
+### Fixed
+
+- Planned tasks that sat roughly ten minutes in Todo now move into Plan Review promptly: the planning-to-plan-review handoff retires its predecessor and installs the successor in a single transaction, and the follow-up reaction retries instead of dropping failures silently.
+- Localized merge, notification, recommendation, and settings copy is restored across six locales, and a stale pt-BR settings key was removed.
+- Terminal pin and pop-out toggles now sit in the top toolbar to the left of the close button.
+- The Quick Add composer's bottom row of action buttons is centered again, with the ≤768px layout unchanged.
+- Quick Add buttons use mobile edge-to-edge spacing on tablet widths (769px–1024px).
+
 ## 0.76.0-beta.2
 
 ### Highlights

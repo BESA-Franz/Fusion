@@ -1,5 +1,18 @@
 # runfusion.ai
 
+## 0.76.0-beta.3
+
+### Patch Changes
+
+- Updated dependencies [ea53cbd]
+- Updated dependencies [f7bf3f9]
+- Updated dependencies [c791c0b]
+- Updated dependencies [0e98d9b]
+- Updated dependencies [401b057]
+- Updated dependencies [19dffe3]
+- Updated dependencies [6243c2c]
+  - @runfusion/fusion@0.76.0-beta.3
+
 ## 0.76.0-beta.2
 
 ### Patch Changes
