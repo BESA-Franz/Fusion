@@ -3618,7 +3618,20 @@
     "testSearchHint": "Runs the same qmd-backed memory_search path agents use.",
     "title": "Memory",
     "totalInsights": "Total Insights",
-    "workingMemoryLabel": "Working Memory"
+    "workingMemoryLabel": "Working Memory",
+    "tabGraph": "Knowledge Graph",
+    "graphLoading": "Loading knowledge graph…",
+    "graphUnavailable": "Graph unavailable",
+    "graphBuild": "Build graph",
+    "graphNodes": "nodes",
+    "graphEdges": "edges",
+    "graphForce": "Force rebuild",
+    "graphRebuilding": "Rebuilding…",
+    "graphRebuild": "Rebuild",
+    "graphFilters": "Graph filters",
+    "graphClearFilters": "Clear filters",
+    "graphResults": "results",
+    "graphNoResults": "No matching nodes."
   },
   "merge": {
     "advanced": "Advanced",

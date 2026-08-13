@@ -3608,7 +3608,20 @@
     "testSearchHint": "에이전트가 사용하는 동일한 qmd 기반 memory_search 경로를 실행합니다.",
     "title": "메모리",
     "totalInsights": "총 인사이트",
-    "workingMemoryLabel": "작업 메모리"
+    "workingMemoryLabel": "작업 메모리",
+    "tabGraph": "Knowledge Graph",
+    "graphLoading": "Loading knowledge graph…",
+    "graphUnavailable": "Graph unavailable",
+    "graphBuild": "Build graph",
+    "graphNodes": "nodes",
+    "graphEdges": "edges",
+    "graphForce": "Force rebuild",
+    "graphRebuilding": "Rebuilding…",
+    "graphRebuild": "Rebuild",
+    "graphFilters": "Graph filters",
+    "graphClearFilters": "Clear filters",
+    "graphResults": "results",
+    "graphNoResults": "No matching nodes."
   },
   "merge": {
     "advanced": "고급",

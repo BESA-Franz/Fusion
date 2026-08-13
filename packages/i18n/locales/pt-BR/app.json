@@ -3618,7 +3618,20 @@
     "testSearchHint": "Executa o mesmo caminho memory_search baseado em qmd que os agentes usam.",
     "title": "Memória",
     "totalInsights": "Total de insights",
-    "workingMemoryLabel": "Memória de trabalho"
+    "workingMemoryLabel": "Memória de trabalho",
+    "tabGraph": "Knowledge Graph",
+    "graphLoading": "Loading knowledge graph…",
+    "graphUnavailable": "Graph unavailable",
+    "graphBuild": "Build graph",
+    "graphNodes": "nodes",
+    "graphEdges": "edges",
+    "graphForce": "Force rebuild",
+    "graphRebuilding": "Rebuilding…",
+    "graphRebuild": "Rebuild",
+    "graphFilters": "Graph filters",
+    "graphClearFilters": "Clear filters",
+    "graphResults": "results",
+    "graphNoResults": "No matching nodes."
   },
   "merge": {
     "advanced": "Avançado",

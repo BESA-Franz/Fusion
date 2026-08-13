@@ -272,7 +272,22 @@ export type {
   MemoryRetrievalTestResult,
   QmdInstallResult,
 } from "./system/memory.js";
-
+export {
+  fetchKnowledgeGraphStatus,
+  queryKnowledgeGraphNodes,
+  fetchKnowledgeGraphNode,
+  fetchKnowledgeGraphNeighbors,
+  fetchKnowledgeGraphPath,
+  buildKnowledgeGraphArtifacts,
+} from "./system/knowledge-graph.js";
+export type {
+  KnowledgeGraphStatus,
+  KnowledgeGraphNode,
+  KnowledgeGraphEdge,
+  KnowledgeGraphNeighbor,
+  KnowledgeGraphNodeQuery,
+  KnowledgeGraphPathResult,
+} from "./system/knowledge-graph.js";
 
 // Re-export skills types so hooks/components keep stable import paths via this barrel.
 import type {

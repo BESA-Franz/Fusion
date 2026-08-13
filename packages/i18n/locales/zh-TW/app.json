@@ -3608,7 +3608,20 @@
     "testSearchHint": "執行與代理使用的相同 qmd 支援的 memory_search 路徑。",
     "title": "記憶",
     "totalInsights": "洞察總數",
-    "workingMemoryLabel": "工作記憶"
+    "workingMemoryLabel": "工作記憶",
+    "tabGraph": "Knowledge Graph",
+    "graphLoading": "Loading knowledge graph…",
+    "graphUnavailable": "Graph unavailable",
+    "graphBuild": "Build graph",
+    "graphNodes": "nodes",
+    "graphEdges": "edges",
+    "graphForce": "Force rebuild",
+    "graphRebuilding": "Rebuilding…",
+    "graphRebuild": "Rebuild",
+    "graphFilters": "Graph filters",
+    "graphClearFilters": "Clear filters",
+    "graphResults": "results",
+    "graphNoResults": "No matching nodes."
   },
   "merge": {
     "advanced": "進階",

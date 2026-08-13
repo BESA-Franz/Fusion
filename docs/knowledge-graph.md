@@ -43,3 +43,13 @@ Memory capture is optional and detached. `RecallCaptureWriter.capture()` returns
 ## Non-goals
 
 This layer has no LLM calls, embeddings, vector recall, MCP tools, source-validity diagnostics, language support beyond TypeScript/TSX symbols, CommonMark parser, cross-rename identity, or capability-fabric bundle. The FR-29/FR-34 bundle format is deferred.
+
+## Dashboard navigation
+
+The dashboard's **Memory → Knowledge Graph** tab provides list-and-detail navigation without transferring the full artifact or rendering a whole-graph canvas. It shows graph status, counts, directory and provenance data; operators can rebuild the artifact explicitly (including force rebuild). Reads use a small manifest-validated artifact cache and never rebuild the graph.
+
+The tab queries capped node pages (200 nodes), node edges (200 per direction), and neighbors with direction, edge-kind, and depth controls. Node IDs are query parameters, so IDs containing `/`, `#`, `@`, or `~` remain safe to navigate. It also supports node filters for kind, path/id prefix, regular-expression name, FNXC area, symbol kind, and owner.
+
+The HTTP surface is `GET /api/knowledge/graph/status`, `/nodes`, `/node`, `/neighbors`, and `/path`, plus `POST /api/knowledge/graph/build`. Missing artifacts are a recoverable status state; query endpoints report them as 404 rather than silently returning empty results.
+
+Dashboard shortest paths use a bounded undirected BFS, not the core unbounded helper. The default is six hops, the maximum is ten hops, and at most 20,000 nodes are expanded. Results are `found`, exhaustive `not-found`, or `limit-reached`; the latter has `truncated: true` and is intentionally distinct from no path. Unknown node IDs return 404. Whole-graph force-directed/canvas rendering remains an explicit non-goal.
