@@ -71,6 +71,11 @@ jobs:
             src/__tests__/scheduler-node-unreachable-audit.test.ts \
             src/__tests__/workflow-continuation-capacity.test.ts \
             src/__tests__/triage-runtime-node-routing.test.ts \
+            --silent=passed-only --reporter=dot
+          # Runtime composition owns process-global admission/agent registries;
+          # isolate it from the pure routing files so their module state cannot
+          # start a fixture planner while the PostgreSQL runtime is shutting down.
+          pnpm --filter @fusion/engine exec vitest run \
             src/__tests__/in-process-runtime.pg.test.ts \
             --silent=passed-only --reporter=dot
           pnpm exec eslint \
