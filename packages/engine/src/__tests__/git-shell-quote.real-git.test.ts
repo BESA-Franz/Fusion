@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { shellQuote } from "../git-shell-quote.js";
+import { quoteShellArg } from "../executor/shell-quote.js";
 import { SelfHealingGitEvidence } from "../self-healing-git-evidence.js";
 
 const temporaryRepositories: string[] = [];
@@ -27,6 +28,8 @@ describe("git shell argument quoting", () => {
   it("uses command-line quoting accepted by Windows Git", () => {
     expect(shellQuote("HEAD", "win32")).toBe('"HEAD"');
     expect(shellQuote('a"b', "win32")).toBe('"a\\"b"');
+    expect(quoteShellArg("origin", "win32")).toBe('"origin"');
+    expect(quoteShellArg("worker's branch", "linux")).toBe("'worker'\\''s branch'");
   });
 
   it("finds a lineage trailer through the host shell and recovery reader", async () => {
