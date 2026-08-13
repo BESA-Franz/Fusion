@@ -78,7 +78,7 @@ describe("computer commands", () => {
   it("maps vanished windows and locator replay failures to safe snapshot errors", async () => {
     const root = await mkdtemp(join(tmpdir(), "fusion-computer-replay-failure-"));
     const store = new ComputerSnapshotStore({ projectRoot: root, now: () => new Date("2026-08-13T00:00:00.000Z") });
-    await store.persist({ app, window: { windowId: "w", windowIndex: 0, title: "w", bounds: null, minimized: false }, elementCount: 8, elements: [{ index: 7, role: "AXButton", title: "Go", value: null, label: null, enabled: true, focused: false, bounds: null, actions: [], locator: { kind: "ax-path", path: "button[0]", role: "AXButton", subrole: null, identifier: null, title: "Go" } }] });
+    const snapshot = await store.persist({ app, window: { windowId: "w", windowIndex: 0, title: "w", bounds: null, minimized: false }, elementCount: 8, elements: [{ index: 7, role: "AXButton", title: "Go", value: null, label: null, enabled: true, focused: false, bounds: null, actions: [], locator: { kind: "ax-path", path: "button[0]", role: "AXButton", subrole: null, identifier: null, title: "Go" } }] });
     const output: string[] = [];
     try {
       const missingWindow: ComputerAdapter = { ...adapter, resolveWindow: async () => { throw new ComputerUseError("WINDOW_NOT_FOUND", "gone"); } };
@@ -86,7 +86,32 @@ describe("computer commands", () => {
       expect(JSON.parse(output.pop()!)).toMatchObject({ error: { code: "SNAPSHOT_STALE", details: { reason: "window-gone" } } });
       const missingLocator: ComputerAdapter = { ...adapter, resolveLocator: async () => { throw new ComputerUseError("ELEMENT_UNRESOLVABLE", "gone", "Re-run fn computer get-app-state."); } };
       expect(await runComputer(["click", "--app", "App", "--element-index", "7", "--json"], { adapter: missingLocator, store, projectRoot: root, stdout: (text) => output.push(text) })).toBe(1);
-      expect(JSON.parse(output.pop()!)).toMatchObject({ error: { code: "ELEMENT_UNRESOLVABLE", details: { elementIndex: 7 } } });
+      expect(JSON.parse(output.pop()!)).toMatchObject({ error: { code: "ELEMENT_UNRESOLVABLE", details: { snapshotId: snapshot.snapshotId, elementIndex: 7 } } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["TIMEOUT", "PERMISSION_UNVERIFIED", "PERMISSION_DENIED"] as const)("preserves %s from element replay without stale-element wrapping", async (code) => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-computer-replay-code-"));
+    const store = new ComputerSnapshotStore({ projectRoot: root, now: () => new Date("2026-08-13T00:00:00.000Z") });
+    const snapshot = await store.persist({ app, window: { windowId: "w", windowIndex: 0, title: "w", bounds: null, minimized: false }, elementCount: 8, elements: [{ index: 7, role: "AXButton", title: "Go", value: null, label: null, enabled: true, focused: false, bounds: null, actions: [], locator: { kind: "ax-path", path: "button[0]", role: "AXButton", subrole: null, identifier: null, title: "Go" } }] });
+    const output: string[] = [];
+    const replayAdapter: ComputerAdapter = { ...adapter, resolveLocator: async () => { throw new ComputerUseError(code, "replay failed", code === "TIMEOUT" ? undefined : "Grant permission.", { replay: true }); } };
+    try {
+      expect(await runComputer(["click", "--app", "App", "--element-index", "7", "--snapshot-id", snapshot.snapshotId, "--json"], { adapter: replayAdapter, store, projectRoot: root, stdout: (text) => output.push(text) })).toBe(1);
+      expect(JSON.parse(output[0]!)).toMatchObject({ error: { code, details: { replay: true } } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("wraps either element-drag endpoint when locator replay cannot resolve it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-computer-drag-replay-"));
+    const store = new ComputerSnapshotStore({ projectRoot: root, now: () => new Date("2026-08-13T00:00:00.000Z") });
+    const element = (index: number) => ({ index, role: "AXButton", title: "Go", value: null, label: null, enabled: true, focused: false, bounds: null, actions: [], locator: { kind: "ax-path" as const, path: `button[${index}]`, role: "AXButton", subrole: null, identifier: null, title: "Go" } });
+    const snapshot = await store.persist({ app, window: { windowId: "w", windowIndex: 0, title: "w", bounds: null, minimized: false }, elementCount: 9, elements: [element(7), element(8)] });
+    const output: string[] = [];
+    const replayAdapter: ComputerAdapter = { ...adapter, resolveLocator: async (_window, locator) => { if (locator.path === "button[8]") throw new ComputerUseError("ELEMENT_UNRESOLVABLE", "gone", "Re-run fn computer get-app-state."); return { element: element(7), handle: "live" }; } };
+    try {
+      expect(await runComputer(["drag", "--app", "App", "--from-element-index", "7", "--to-element-index", "8", "--snapshot-id", snapshot.snapshotId, "--json"], { adapter: replayAdapter, store, projectRoot: root, stdout: (text) => output.push(text) })).toBe(1);
+      expect(JSON.parse(output[0]!)).toMatchObject({ error: { code: "ELEMENT_UNRESOLVABLE", details: { snapshotId: snapshot.snapshotId, elementIndex: 8 } } });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
