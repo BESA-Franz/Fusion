@@ -6392,7 +6392,9 @@
       "sameAsIntegrationBranchDefault": "",
       "pushTargetBranchHelp": "",
       "requiredChecks": "",
-      "requiredChecksHelp": ""
+      "requiredChecksHelp": "",
+      "githubNativeAutoMerge": "GitHub 기본 자동 병합 사용",
+      "githubNativeAutoMergeHelp": "GitHub는 병합하기 전에 전체 규칙 세트가 충족될 때까지 기다립니다. 리포지토리에서 자동 병합을 허용해야 하며, 사용할 수 없으면 Fusion은 안전하게 실패합니다. 기본값: 비활성화됨."
     },
     "mergeManually": "수동으로 병합",
     "mobileNav": {
@@ -6511,7 +6513,9 @@
       "webhookFormatHint": "",
       "agentClarification": "",
       "agentClarificationEnable": "",
-      "agentClarificationHint": ""
+      "agentClarificationHint": "",
+      "wedgeNotificationSettleMs": "터미널 교착 상태 안정화 대기 시간(밀리초)",
+      "wedgeNotificationSettleMsHelp": "운영자에게 알리기 전에 터미널 실패가 지속되어야 하는 시간입니다. 0 = 즉시 알림. 기본값: 300000(5분)."
     },
     "plugins": {
       "fusionPlugins": "",

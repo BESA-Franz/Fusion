@@ -6392,7 +6392,9 @@
       "sameAsIntegrationBranchDefault": "",
       "pushTargetBranchHelp": "",
       "requiredChecks": "",
-      "requiredChecksHelp": ""
+      "requiredChecksHelp": "",
+      "githubNativeAutoMerge": "使用 GitHub 原生自動合併",
+      "githubNativeAutoMergeHelp": "GitHub 會在合併前等待完整規則集。儲存庫必須允許自動合併；若無法使用，Fusion 會採取安全失敗。預設：停用。"
     },
     "mergeManually": "手動合併",
     "mobileNav": {
@@ -6511,7 +6513,9 @@
       "webhookFormatHint": "",
       "agentClarification": "",
       "agentClarificationEnable": "",
-      "agentClarificationHint": ""
+      "agentClarificationHint": "",
+      "wedgeNotificationSettleMs": "終端卡滯穩定等待視窗（毫秒）",
+      "wedgeNotificationSettleMsHelp": "在通知操作員前，終端失敗必須持續多久。0 = 立即通知。預設：300000（5 分鐘）。"
     },
     "plugins": {
       "fusionPlugins": "",

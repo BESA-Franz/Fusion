@@ -6392,7 +6392,9 @@
       "sameAsIntegrationBranchDefault": "",
       "pushTargetBranchHelp": "",
       "requiredChecks": "",
-      "requiredChecksHelp": ""
+      "requiredChecksHelp": "",
+      "githubNativeAutoMerge": "Utiliser la fusion automatique native de GitHub",
+      "githubNativeAutoMergeHelp": "GitHub attend l'ensemble de ses règles avant de fusionner. Le dépôt doit autoriser la fusion automatique ; Fusion échoue de manière sécurisée si elle est indisponible. Par défaut : désactivée."
     },
     "mergeManually": "Fusionner manuellement",
     "mobileNav": {
@@ -6511,7 +6513,9 @@
       "webhookFormatHint": "",
       "agentClarification": "",
       "agentClarificationEnable": "",
-      "agentClarificationHint": ""
+      "agentClarificationHint": "",
+      "wedgeNotificationSettleMs": "Fenêtre de stabilisation d'un blocage terminal (ms)",
+      "wedgeNotificationSettleMsHelp": "Durée pendant laquelle un échec terminal doit persister avant d'alerter un opérateur. 0 = notifier immédiatement. Par défaut : 300000 (5 minutes)."
     },
     "plugins": {
       "fusionPlugins": "",

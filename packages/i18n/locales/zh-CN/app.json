@@ -6392,7 +6392,9 @@
       "sameAsIntegrationBranchDefault": "",
       "pushTargetBranchHelp": "",
       "requiredChecks": "",
-      "requiredChecksHelp": ""
+      "requiredChecksHelp": "",
+      "githubNativeAutoMerge": "使用 GitHub 原生自动合并",
+      "githubNativeAutoMergeHelp": "GitHub 会在合并前等待其完整规则集。仓库必须允许自动合并；不可用时 Fusion 会安全失败。默认：禁用。"
     },
     "mergeManually": "手动合并",
     "mobileNav": {
@@ -6511,7 +6513,9 @@
       "webhookFormatHint": "",
       "agentClarification": "",
       "agentClarificationEnable": "",
-      "agentClarificationHint": ""
+      "agentClarificationHint": "",
+      "wedgeNotificationSettleMs": "终端卡滞稳定等待窗口（毫秒）",
+      "wedgeNotificationSettleMsHelp": "在通知操作员前，终端故障必须持续多长时间。0 = 立即通知。默认：300000（5 分钟）。"
     },
     "plugins": {
       "fusionPlugins": "",
