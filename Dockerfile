@@ -50,9 +50,14 @@ COPY plugins/fusion-plugin-roadmap/package.json ./plugins/fusion-plugin-roadmap/
 COPY plugins/fusion-plugin-even-realities-glasses/package.json ./plugins/fusion-plugin-even-realities-glasses/package.json
 COPY plugins/fusion-plugin-reports/package.json ./plugins/fusion-plugin-reports/package.json
 
-RUN pnpm install --frozen-lockfile
+# FNXC:DockerBuild 2026-08-13-15:36: BuildKit can remove pnpm's per-workspace
+# node_modules links when the later source COPY merges ignored node_modules paths.
+# Prefetch the immutable lockfile payload here, then create links only after source
+# is present. This keeps the expensive download layer cached without losing links.
+RUN pnpm fetch --frozen-lockfile
 
 COPY . .
+RUN pnpm install --frozen-lockfile --offline
 RUN pnpm build
 
 FROM node:22-slim AS runner

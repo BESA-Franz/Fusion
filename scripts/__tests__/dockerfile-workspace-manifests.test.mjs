@@ -35,18 +35,22 @@ function readWorkspacePackageManifestPaths(root = repoRoot) {
   return manifestPaths;
 }
 
-function readBuilderPreInstallCopySources(dockerfile) {
+function readBuilderStage(dockerfile) {
   const builderStart = dockerfile.match(/^FROM\s+.*\s+AS\s+builder\s*$/im);
   assert.ok(builderStart?.index !== undefined, "Dockerfile must define a builder stage");
 
   const afterBuilder = dockerfile.slice(builderStart.index + builderStart[0].length);
   const nextStage = afterBuilder.search(/^FROM\s+/im);
-  const builderStage = nextStage === -1 ? afterBuilder : afterBuilder.slice(0, nextStage);
-  const install = builderStage.match(/RUN\s+pnpm\s+install\s+--frozen-lockfile\b/);
-  assert.ok(install?.index !== undefined, "builder stage must run pnpm install --frozen-lockfile");
+  return nextStage === -1 ? afterBuilder : afterBuilder.slice(0, nextStage);
+}
+
+function readBuilderPreFetchCopySources(dockerfile) {
+  const builderStage = readBuilderStage(dockerfile);
+  const fetch = builderStage.match(/RUN\s+pnpm\s+fetch\s+--frozen-lockfile\b/);
+  assert.ok(fetch?.index !== undefined, "builder stage must run pnpm fetch --frozen-lockfile");
 
   const copied = [];
-  for (const match of builderStage.slice(0, install.index).matchAll(/^COPY\s+(?:--\S+\s+)*(.*?)\s+\S+\s*$/gm)) {
+  for (const match of builderStage.slice(0, fetch.index).matchAll(/^COPY\s+(?:--\S+\s+)*(.*?)\s+\S+\s*$/gm)) {
     const sources = match[1].trim().split(/\s+/).map(normalizeDockerSource);
     copied.push(...sources);
   }
@@ -61,11 +65,11 @@ function findMissingWorkspaceManifests(manifests, copySources) {
 
 function readDockerfileCopiedManifestPaths() {
   const dockerfile = readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
-  const copied = readBuilderPreInstallCopySources(dockerfile);
+  const copied = readBuilderPreFetchCopySources(dockerfile);
   return { copied, dockerfile };
 }
 
-test("Dockerfile builder pre-install copies cover every current workspace manifest", () => {
+test("Dockerfile builder pre-fetch copies cover every current workspace manifest", () => {
   const expected = readWorkspacePackageManifestPaths();
   const { copied } = readDockerfileCopiedManifestPaths();
 
@@ -83,7 +87,7 @@ test("coverage rejects a selected plugin omitted before frozen install", () => {
   assert.deepEqual(findMissingWorkspaceManifests(expected, incompleteSources), [omitted]);
 });
 
-test("coverage ignores post-install and runner copies while tolerating removed paths", () => {
+test("coverage ignores post-fetch and runner copies while tolerating removed paths", () => {
   const expected = readWorkspacePackageManifestPaths();
   const omitted = [...expected].sort().find((manifest) => manifest.startsWith("plugins/"));
   assert.ok(omitted, "workspace fixture must include a plugin manifest");
@@ -92,8 +96,8 @@ test("coverage ignores post-install and runner copies while tolerating removed p
     .filter((manifest) => manifest !== omitted)
     .map((manifest) => `COPY ${manifest} ./${manifest}`)
     .join("\n");
-  const dockerfile = `FROM node:22-slim AS builder\n${builderCopies}\nRUN pnpm install --frozen-lockfile\nCOPY ${omitted} ./${omitted}\nFROM node:22-slim AS runner\nCOPY ${omitted} ./${omitted}`;
-  const copied = readBuilderPreInstallCopySources(dockerfile);
+  const dockerfile = `FROM node:22-slim AS builder\n${builderCopies}\nRUN pnpm fetch --frozen-lockfile\nCOPY ${omitted} ./${omitted}\nFROM node:22-slim AS runner\nCOPY ${omitted} ./${omitted}`;
+  const copied = readBuilderPreFetchCopySources(dockerfile);
 
   assert.deepEqual(findMissingWorkspaceManifests(expected, copied), [omitted]);
   assert.deepEqual(
@@ -101,4 +105,21 @@ test("coverage ignores post-install and runner copies while tolerating removed p
     [],
     "removed or nonexistent COPY paths must not affect selected workspace coverage",
   );
+});
+
+test("Dockerfile links workspace dependencies after copying source", () => {
+  const dockerfile = readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
+  const builderStage = readBuilderStage(dockerfile);
+  const fetchIndex = builderStage.indexOf("RUN pnpm fetch --frozen-lockfile");
+  const sourceCopyIndex = builderStage.indexOf("COPY . .");
+  const offlineInstallIndex = builderStage.indexOf("RUN pnpm install --frozen-lockfile --offline");
+  const buildIndex = builderStage.indexOf("RUN pnpm build");
+
+  assert.ok(fetchIndex >= 0, "builder must preload the lockfile dependencies");
+  assert.ok(sourceCopyIndex > fetchIndex, "builder must copy source after dependency prefetch");
+  assert.ok(
+    offlineInstallIndex > sourceCopyIndex,
+    "builder must create workspace links after source copy so BuildKit cannot remove them",
+  );
+  assert.ok(buildIndex > offlineInstallIndex, "builder must build only after workspace links exist");
 });
