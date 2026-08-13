@@ -2,6 +2,7 @@ import { exec, execSync } from "node:child_process";
 import { promisify } from "node:util";
 
 import { canonicalFusionBranchName, resolveTaskWorkingBranch } from "../worktree/worktree-names.js";
+import { shellQuote } from "../git-shell-quote.js";
 
 const execAsync = promisify(exec);
 
@@ -45,10 +46,6 @@ interface DetectAlreadyLandedInput {
   baseBranch: string;
   taskBranch?: string;
   baseCommitSha?: string;
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function escapeRegex(value: string): string {

@@ -32,6 +32,7 @@ import { exec } from "node:child_process";
    the class body the bare identifier resolves to this import. That collision
    pre-dates the move and is preserved exactly. */
 import { findAlreadyMergedTaskCommit, getCommitTaskOwnership } from "./merge/already-merged-detector.js";
+import { shellQuote } from "./git-shell-quote.js";
 import { createLogger } from "./logger.js";
 import type { Task } from "@fusion/core";
 
@@ -74,9 +75,7 @@ export function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
+export { shellQuote } from "./git-shell-quote.js";
 
 export function parseShortstat(output: string): Pick<LandedTaskCommit, "filesChanged" | "insertions" | "deletions"> {
   const normalized = output.trim().replace(/\n/g, " ");
