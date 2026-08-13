@@ -54,10 +54,13 @@ See [Signals Connectors](./signals-connectors.md) for setup, signing, payload, a
 while disabled. `model` defaults to registry identifier `"parakeet-v3"` and `language` to `"en"`;
 unsupported values are rejected and never become URLs or paths. An installed model is not by itself
 sufficient: Project Settings enables the toggle only after the optional `sherpa-onnx-node` runtime
-loads successfully. A missing module, platform-addon load failure, or incompatible runtime leaves
-voice disabled with a recovery message; install or reinstall a supported Fusion package for the
-current platform, then reopen Settings. The optional sherpa runtime and user-scoped cache degrade to
-unavailable safely. Downloads are on demand and require a pinned SHA-256;
+loads successfully. The runtime probe unwraps `sherpa-onnx-node`'s CommonJS binding, so
+`runtime-incompatible` now indicates a genuinely broken addon rather than a healthy package's ESM
+namespace shape. A missing module, platform-addon load failure, or incompatible runtime leaves voice
+disabled with a recovery message. After repairing an install, use **Re-check runtime** in Settings to
+retry a previously failed import without restarting; Node retains successfully resolved native modules,
+so a resolved-but-broken addon still requires a Fusion restart. The optional sherpa runtime and
+user-scoped cache degrade to unavailable safely. Downloads are on demand and require a pinned SHA-256;
 unpinned assets refuse download. The default asset is upstream `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2`
 (~465 MB), verified against its pinned SHA-256 before installation. Status polling reports
 `queued`/`downloading`; deleting fences an in-flight download. Voice chunks alone allow 2 MiB JSON,

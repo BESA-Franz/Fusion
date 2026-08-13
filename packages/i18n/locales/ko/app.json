@@ -6980,7 +6980,9 @@
       "modelFailed": "",
       "runtimeModuleMissing": "",
       "runtimePlatformLoadFailed": "",
-      "runtimeIncompatible": ""
+      "runtimeIncompatible": "The installed voice runtime is incompatible. Repair it, then re-check the runtime.",
+      "recheckRuntime": "Re-check runtime",
+      "recheckingRuntime": "Re-checking runtime…"
     }
   },
   "setup": {
