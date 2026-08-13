@@ -1,10 +1,9 @@
 /* @vitest-environment jsdom */
 /*
-FNXC:QuickAddActionRow 2026-08-13-05:24:
+FNXC:QuickAddActionRow 2026-08-13-07:38:
 ## Symptom Verification
-At desktop/tablet widths the Quick Add row previously split its options left and primary actions
-right. This declaration guard requires a centered base row while retaining the <=768px edge-to-edge
-mobile override.
+At tablet widths the Quick Add row previously inherited the centered desktop layout. This declaration
+guard requires the base desktop cluster and 769px–1024px and <=768px edge-to-edge overrides.
 
 ## Surface Enumeration
 QuickEntryBox shares this stylesheet across Board, List, modal, Chat, and floating hosts. This test
@@ -96,8 +95,23 @@ function mobileSection(): string {
   return css.slice(start, end);
 }
 
+function tabletSection(): string {
+  const start = css.indexOf("@media (min-width: 769px) and (max-width: 1024px)");
+  expect(start, "tablet tier must exist").toBeGreaterThan(-1);
+  const bodyStart = css.indexOf("{", start) + 1;
+  let depth = 1;
+  let cursor = bodyStart;
+  while (cursor < css.length && depth > 0) {
+    if (css[cursor] === "{") depth += 1;
+    if (css[cursor] === "}") depth -= 1;
+    cursor += 1;
+  }
+  expect(depth, "tablet tier must close").toBe(0);
+  return css.slice(bodyStart, cursor - 1);
+}
+
 describe("QuickEntryBox action-row centering", () => {
-  it("centers the desktop/tablet cluster without restoring its pre-fix split sizing", () => {
+  it("centers the desktop cluster without restoring its pre-fix split sizing", () => {
     const actions = ruleBody(".quick-entry-actions");
     expect(actions.body).toMatch(/justify-content:\s*center/);
     expect(isInsideMediaQuery(actions.index)).toBe(false);
@@ -112,6 +126,17 @@ describe("QuickEntryBox action-row centering", () => {
     expect(options.body).not.toMatch(/(?:#[0-9a-f]{3,8}|rgba?\(|\d+(?:\.\d+)?px)/i);
     expect(primary.body).not.toMatch(/(?:#[0-9a-f]{3,8}|rgba?\(|\d+(?:\.\d+)?px)/i);
     expect(actions.body).not.toMatch(/(?:#[0-9a-f]{3,8}|rgba?\(|\d+(?:\.\d+)?px)/i);
+  });
+
+  it("uses the edge-to-edge mobile positioning contract at tablet widths", () => {
+    const tablet = tabletSection();
+    const forbiddenRawValues = /(?:#[0-9a-f]{3,8}|rgba?\(|\d+(?:\.\d+)?px)/i;
+    expect(tablet).toMatch(/\.quick-entry-actions\s*\{[^}]*justify-content:\s*space-between[^}]*column-gap:\s*var\(--space-xs\)/);
+    expect(tablet).toMatch(/\.quick-entry-options-group\s*\{[^}]*justify-content:\s*space-between[^}]*column-gap:\s*var\(--space-xs\)/);
+    expect(tablet).toMatch(/\.quick-entry-primary-group\s*\{[^}]*gap:\s*var\(--space-xs\)[^}]*justify-content:\s*space-between[^}]*width:\s*100%[^}]*margin-left:\s*0/);
+    expect(tablet).toMatch(/\.quick-entry-primary-group \.btn-icon\s*\{[^}]*min-width:\s*var\(--space-2xl\)/);
+    expect(tablet).not.toMatch(/--quick-entry-action-row-height-mobile|touch-action|--space-lg/);
+    expect(tablet).not.toMatch(forbiddenRawValues);
   });
 
   it("preserves the intentional <=768px edge-to-edge mobile layout", () => {
