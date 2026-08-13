@@ -1,0 +1,73 @@
+name: Publish Recovery Image
+
+on:
+  push:
+    branches:
+      - codex/publish-recovery-image-20260813
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-recovery-image-a9e552e0114e
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: a9e552e0114e41130382df454c0b7dce4b965f70
+  IMAGE_TAG: recovery-a9e552e0114e
+
+jobs:
+  publish:
+    name: Build and publish immutable recovery image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Validate immutable inputs
+        env:
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$IMAGE_TAG" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - name: Authenticate to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Configure isolated BuildKit builder
+        run: docker buildx create --driver docker-container --name "fusion-recovery-${{ github.run_id }}" --use
+
+      - name: Build and publish exact commit
+        run: |
+          set -euo pipefail
+          # FNXC:RecoveryImage 2026-08-13-13:55: Production recovery images must be unique, commit-labelled, and published by GitHub's scoped package credential rather than a workstation token.
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/fusion:${IMAGE_TAG}"
+          docker buildx build \
+            --pull \
+            --platform linux/amd64 \
+            --label "org.opencontainers.image.revision=${SOURCE_SHA}" \
+            --label "org.opencontainers.image.version=0.76.0-recovery.${SOURCE_SHA:0:12}" \
+            --tag "$image" \
+            --push \
+            --metadata-file /tmp/fusion-recovery-image.json \
+            .
+          digest="$(jq -er '."containerimage.digest"' /tmp/fusion-recovery-image.json)"
+          {
+            echo "### Recovery image published"
+            echo
+            echo "- Commit: \`$SOURCE_SHA\`"
+            echo "- Image: \`$image\`"
+            echo "- Digest: \`$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary builder
+        if: always()
+        run: docker buildx rm "fusion-recovery-${{ github.run_id }}" || true
