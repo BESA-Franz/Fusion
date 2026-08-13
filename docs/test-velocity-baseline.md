@@ -16,7 +16,7 @@
 | Merge gate wall-time (`pnpm test:gate`) | 11.0s | -3.6s |
 | Boot smoke wall-time (`pnpm smoke:boot`) | 26.7s | +8.5s |
 | Changed-only test wall-time (`pnpm test`) | 17.6s | -4.9s |
-| Quarantine / flake count | 0 | -1 |
+| Quarantine / flake count | 0 | 0 |
 | Deletion-due quarantines | 0 | n/a |
 
 ## Measurement failures
@@ -71,16 +71,16 @@
 
 | Row | Captured at | Gate | Boot smoke | `pnpm test` | Quarantine count |
 |---|---|---:|---:|---:|---:|
-| Previous | 2026-08-04T03:10:46.073Z | 14.6s | 18.1s | 22.4s | 1 |
+| Previous | 2026-08-04T03:10:46.073Z | 14.6s | 18.1s | 22.4s | 0 |
 | Latest | 2026-08-13T01:59:18.032Z | 11.0s | 26.7s | 17.6s | 0 |
-| Delta | — | -3.6s | +8.5s | -4.9s | -1 |
+| Delta | — | -3.6s | +8.5s | -4.9s | 0 |
 
 _Future weekly rows append to `scripts/test-velocity-history.json`; compare the latest row against the previous row before posting to #leads._
 
 ## Post to #leads
 
 ```text
-FN-6612 weekly test velocity: gate 11.0s (-3.6s), boot smoke 26.7s (+8.5s), pnpm test 17.6s (-4.9s), quarantine ledger 0 (-1). Slowest file: packages/dashboard/app/components/__tests__/SettingsModal.general.test.tsx at 2m 01s. Deletion-due quarantines: 0.
+FN-6612 weekly test velocity: gate 11.0s (-3.6s), boot smoke 26.7s (+8.5s), pnpm test 17.6s (-4.9s), quarantine ledger 0 (0). Slowest file: packages/dashboard/app/components/__tests__/SettingsModal.general.test.tsx at 2m 01s. Deletion-due quarantines: 0.
 ```
 
 ## How to refresh
