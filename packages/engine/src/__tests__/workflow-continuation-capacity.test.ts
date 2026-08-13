@@ -64,6 +64,28 @@ afterEach(() => {
 });
 
 describe("workflow continuation active-slot admission", () => {
+  it("leaves a continuation untouched when it belongs to another runtime", async () => {
+    const foreignTask = task(CONTINUATION_ID, { nodeId: "node-pc1" });
+    const cancelOrphan = vi.fn(async () => {});
+    const defer = vi.fn(async () => {});
+    const dispatch = vi.fn(async () => true);
+
+    await drainDuePlanningContinuations({
+      listDue: async () => [item],
+      getTask: async () => foreignTask,
+      acceptTask: async () => false,
+      cancelOrphan,
+      defer,
+      dispatch,
+      nowMs: () => Date.now(),
+      warn: () => {},
+    });
+
+    expect(cancelOrphan).not.toHaveBeenCalled();
+    expect(defer).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("does not start a tenth task when nine active tasks already hold the worktree budget", async () => {
     const active = Array.from({ length: 8 }, (_, index) =>
       task(`FN-PLAN-${index}`, { status: "planning" }),

@@ -18,6 +18,7 @@ import type {
   WorkflowWorkItem,
   WorkflowWorkItemState,
   WorkflowIr,
+  Settings,
 } from "@fusion/core";
 import {
   AsyncCentralClaimStore,
@@ -63,6 +64,7 @@ import { MissionAutopilot } from "../missions/mission-autopilot.js";
 import { MissionExecutionLoop } from "../missions/mission-execution-loop.js";
 import { TriageProcessor } from "../triage.js";
 import { validateProjectNodeMapping } from "../project/node-dispatch-validation.js";
+import { resolveEffectiveNode, shouldExecuteOnRuntime } from "../project/effective-node.js";
 import { attachAgentLinkSync } from "../agents/task-agent-sync.js";
 import { createRunAuditor, generateSyntheticRunId } from "../util/run-audit.js";
 import { setImmediate as setImmediateCb } from "node:timers";
@@ -493,6 +495,8 @@ export async function reactToSpecificationComplete(
 export interface DuePlanningContinuationDrainDeps {
   listDue: () => Promise<WorkflowWorkItem[]>;
   getTask: (taskId: string) => Promise<Task | undefined>;
+  /** Reject work owned by a different runtime before any continuation mutation. */
+  acceptTask?: (task: Task) => boolean | Promise<boolean>;
   /** The task's own terminal columns; omitted in tests and legacy callers, which keep the legacy pair. */
   resolveTerminalColumns?: (taskId: string) => Promise<ReadonlySet<string>>;
   cancelOrphan: (
@@ -547,6 +551,7 @@ export async function drainDuePlanningContinuations(
         }`,
       );
     }
+    if (task && deps.acceptTask && !await deps.acceptTask(task)) continue;
     const terminalColumns = taskLookupFailed
       ? undefined
       : await deps.resolveTerminalColumns?.(item.taskId).catch(() => undefined);
@@ -886,6 +891,8 @@ export class InProcessRuntime
   private credentialRotator?: CredentialInstanceRotator;
   /** FNXC:PlanReviewLease 2026-07-26-20:42: cluster node id stamped onto review-gate leases; undefined until start() resolves it, or if resolution fails. */
   private localNodeId?: string;
+  /** Remote workers never claim project work without an explicit/default node route. */
+  private acceptUnassignedTasks = true;
   private selfHealingManager?: SelfHealingManager;
   private leaseManager?: MeshLeaseManager;
   private leaseCentralClaimStore?: AsyncCentralClaimStore;
@@ -1073,6 +1080,20 @@ export class InProcessRuntime
           );
         }
       }
+
+      /*
+      FNXC:RuntimeNodeExecutionBoundary 2026-08-13-19:25:
+      Resolve this process identity from FUSION_NODE_ID after CentralCore adopts
+      the shared backend, before any planner, scheduler, continuation, worktree,
+      or recovery component is constructed. A configured-but-missing node fails
+      startup in CentralCore instead of executing against another node's path.
+      */
+      const runtimeNode = await this.centralCore.getRuntimeNode();
+      this.localNodeId = runtimeNode?.id;
+      this.acceptUnassignedTasks = runtimeNode?.type !== "remote";
+      runtimeLog.log(
+        `Runtime node boundary initialized: node=${this.localNodeId ?? "unresolved"}, acceptUnassigned=${this.acceptUnassignedTasks}`,
+      );
 
       this.messageStore = new MessageStoreClass(null, { asyncLayer: messageLayer });
 
@@ -1318,6 +1339,7 @@ export class InProcessRuntime
         getExecutingTaskIds: () => this.executor?.getExecutingTaskIds() ?? new Set<string>(),
         centralClaimStore: this.leaseCentralClaimStore,
         projectId: this.config.projectId,
+        localNodeId: this.localNodeId,
       });
 
       const autoClaimSnapshotManager = new AutoClaimSnapshotManager({ taskStore: this.taskStore });
@@ -1325,6 +1347,8 @@ export class InProcessRuntime
       this.scheduler = new Scheduler(this.taskStore, {
         maxConcurrent: this.config.maxConcurrent,
         maxWorktrees: this.config.maxWorktrees,
+        localNodeId: this.localNodeId,
+        acceptUnassignedTasks: this.acceptUnassignedTasks,
         // FNXC:GlobalConcurrencyControls 2026-07-17-00:00: Feed the triage service's
         // live pre-planning in-flight count into the scheduler's stale-semaphore
         // recovery so a triage session holding a slot before it writes
@@ -1757,6 +1781,8 @@ export class InProcessRuntime
           agentStore: this.agentStore,
           messageStore: this.messageStore,
           pluginRunner: this.pluginRunner,
+          localNodeId: this.localNodeId,
+          acceptUnassignedTasks: this.acceptUnassignedTasks,
           // FNXC:NodeWorktreeIsolation 2026-07-25-22:10: planning acquires (or reuses) the task's own
           // worktree through the executor's acquisition path, so no lane runs in the shared checkout.
           acquirePlanningWorktree: (taskId) => this.executor.ensureTaskWorktreeForPlanning(taskId),
@@ -1855,24 +1881,14 @@ export class InProcessRuntime
       }
       /*
       FNXC:PlanReviewLease 2026-07-26-20:40:
-      Resolve this engine's cluster node id once at start so review-gate leases can be attributed.
+      Reuse the runtime identity resolved before subsystem construction so review-gate leases can be attributed.
       Attribution is what lets self-healing tell "a lease my own dead process left behind" from "a
       peer node's lease that is genuinely running" — the former is reclaimed immediately, the latter
-      keeps the 15-minute staleness floor. Fail-soft: on any error the id stays undefined, leases are
-      written unattributed, and floor-only semantics (the pre-existing behavior) apply.
+      keeps the 15-minute staleness floor. A configured runtime identity was already validated fail-closed.
       */
-      let localNodeId: string | undefined;
-      try {
-        const registeredNodes = await this.centralCore.listNodes();
-        localNodeId = registeredNodes.find((node) => node.type === "local")?.id;
-      } catch (error) {
-        runtimeLog.warn(`Could not resolve local node id for review-gate lease attribution: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      this.localNodeId = localNodeId;
-
       this.selfHealingManager = new SelfHealingManager(this.taskStore, {
         rootDir: this.config.workingDirectory,
-        localNodeId,
+        localNodeId: this.localNodeId,
         agentStore: this.agentStore,
         isWorktreeResumeReserved: this.cliAgentRuntime?.isWorktreeResumeReserved,
         recoverCompletedTask: (task) => this.executor.recoverCompletedTask(task),
@@ -2733,8 +2749,9 @@ export class InProcessRuntime
     Stop AI Engine. Settings are re-read here (not event-driven) for the same reason as the
     boundary probe: the pause must bind even if `settings:updated` never reaches this instance.
     */
+    let settings: Settings | undefined;
     try {
-      const settings = await this.taskStore.getSettings();
+      settings = await this.taskStore.getSettings();
       if (settings.globalPause === true || settings.enginePaused === true) return;
     } catch {
       /* unreadable settings: proceed as before rather than wedging the pump */
@@ -2747,6 +2764,13 @@ export class InProcessRuntime
           limit: DUE_PLANNING_CONTINUATION_BATCH_LIMIT,
         }),
         getTask: (taskId) => Promise.resolve(this.taskStore.getTask(taskId)),
+        acceptTask: (task) => settings !== undefined && shouldExecuteOnRuntime(
+          resolveEffectiveNode(task, settings),
+          {
+            localNodeId: this.localNodeId,
+            acceptUnassignedTasks: this.acceptUnassignedTasks,
+          },
+        ),
         /* FNXC:WorkflowLifecycleColumns 2026-08-02-15:20 (fleet): the PRODUCTION resolver for the drain's
            terminal check — the pure pass keeps the legacy pair when this is omitted, which is what every
            existing test relies on. One IR read per due item, and the batch is capped by

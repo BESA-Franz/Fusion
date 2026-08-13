@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveEffectiveNode } from "../project/effective-node.js";
+import { resolveEffectiveNode, shouldExecuteOnRuntime } from "../project/effective-node.js";
 
 describe("resolveEffectiveNode", () => {
   it.each([
@@ -62,5 +62,28 @@ describe("resolveEffectiveNode", () => {
       nodeId: "node-task",
       source: "task-override",
     });
+  });
+});
+
+describe("shouldExecuteOnRuntime", () => {
+  it("accepts an explicitly assigned task only on the matching runtime", () => {
+    const route = { nodeId: "node-pc1", source: "task-override" as const };
+
+    expect(shouldExecuteOnRuntime(route, { localNodeId: "node-pc1" })).toBe(true);
+    expect(shouldExecuteOnRuntime(route, { localNodeId: "node-vps" })).toBe(false);
+  });
+
+  it("fails closed for an explicit route when runtime identity is unavailable", () => {
+    expect(shouldExecuteOnRuntime(
+      { nodeId: "node-pc1", source: "task-override" },
+      {},
+    )).toBe(false);
+  });
+
+  it("keeps unassigned work on the central orchestrator", () => {
+    const route = { nodeId: undefined, source: "local" as const };
+
+    expect(shouldExecuteOnRuntime(route, { localNodeId: "node-vps", acceptUnassignedTasks: true })).toBe(true);
+    expect(shouldExecuteOnRuntime(route, { localNodeId: "node-pc1", acceptUnassignedTasks: false })).toBe(false);
   });
 });

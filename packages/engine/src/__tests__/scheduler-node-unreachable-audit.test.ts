@@ -88,6 +88,8 @@ describe("Scheduler node-unreachable audit", () => {
     const { store, recordRunAuditEvent } = createStore(createTask());
     const scheduler = new Scheduler(store, {
       nodeHealthMonitor: { getNodeHealth: vi.fn(() => "offline") } as any,
+      localNodeId: "node-task",
+      acceptUnassignedTasks: false,
     });
     (scheduler as unknown as { running: boolean }).running = true;
 
@@ -105,6 +107,23 @@ describe("Scheduler node-unreachable audit", () => {
     });
   });
 
+  it("does not inspect or mutate a task assigned to another runtime", async () => {
+    const { store, recordRunAuditEvent } = createStore(createTask({ id: "FN-FOREIGN", nodeId: "node-pc1" }));
+    const scheduler = new Scheduler(store, {
+      localNodeId: "node-vps",
+      acceptUnassignedTasks: true,
+    });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.parseFileScopeFromPrompt).not.toHaveBeenCalled();
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.updateTask).not.toHaveBeenCalledWith("FN-FOREIGN", expect.objectContaining({ effectiveNodeId: expect.anything() }));
+    expect(recordRunAuditEvent).not.toHaveBeenCalled();
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
   it("emits reassign-local audit metadata", async () => {
     const task = createTask({ id: "FN-2" });
     const { store, recordRunAuditEvent } = createStore(task);
@@ -116,6 +135,8 @@ describe("Scheduler node-unreachable audit", () => {
     } as any);
     const scheduler = new Scheduler(store, {
       nodeHealthMonitor: { getNodeHealth: vi.fn((id: string) => (id === "node-owner" ? "offline" : "online")) } as any,
+      localNodeId: "node-task",
+      acceptUnassignedTasks: false,
     });
     (scheduler as unknown as { running: boolean }).running = true;
 
@@ -135,6 +156,8 @@ describe("Scheduler node-unreachable audit", () => {
     const { store, recordRunAuditEvent } = createStore(createTask({ id: "FN-3" }));
     const scheduler = new Scheduler(store, {
       nodeHealthMonitor: { getNodeHealth: vi.fn(() => "online") } as any,
+      localNodeId: "node-task",
+      acceptUnassignedTasks: false,
     });
     (scheduler as unknown as { running: boolean }).running = true;
 

@@ -33,7 +33,7 @@ import { type PrMonitor, type PrComment } from "./merge/pr-monitor.js";
 import { reconcileMissionState, type MissionReconcileSource } from "./missions/mission-state-reconcile.js";
 import { resolveDedicatedPlannerColumnsForTask } from "./planner-lane-resolution.js";
 import { evaluateSpecStaleness, getPromptPath } from "./execution/spec-staleness.js";
-import { resolveEffectiveNode, type EffectiveNode } from "./project/effective-node.js";
+import { resolveEffectiveNode, shouldExecuteOnRuntime, type EffectiveNode } from "./project/effective-node.js";
 import { applyUnavailableNodePolicy, decideOwningNodeHandoff } from "./project/node-routing-policy.js";
 import type { NodeDispatchValidationResult } from "./project/node-dispatch-validation.js";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
@@ -863,6 +863,8 @@ export interface SchedulerOptions {
   validateNodeDispatch?: (nodeId: string) => Promise<NodeDispatchValidationResult>;
   /** Local node identifier used to distinguish self-owned leases from foreign-owned leases. Default: "local". */
   localNodeId?: string;
+  /** Whether this runtime may execute tasks with no explicit/default node route. */
+  acceptUnassignedTasks?: boolean;
   /** Optional shared auto-claim snapshot manager for invalidation on task mutations. */
   snapshotManager?: AutoClaimSnapshotManager;
   /**
@@ -2476,8 +2478,31 @@ export class Scheduler {
       const result = await runHoldReleaseSweep(this.store, {
         now: () => Date.now(),
         selectionCache,
+        acceptTask: (task) => shouldExecuteOnRuntime(resolveEffectiveNode(task, settings), {
+          localNodeId: this.options.localNodeId,
+          acceptUnassignedTasks: this.options.acceptUnassignedTasks,
+        }),
         reserveSlot: async (task): Promise<SlotReservation | null> => {
           let reservedScope = false;
+
+          /*
+          FNXC:RuntimeNodeExecutionBoundary 2026-08-13-19:25:
+          Every node observes the same PostgreSQL task rows, but only the routed
+          runtime owns that task's PROMPT.md and git checkout. Reject a foreign
+          route before any workflow resolution, filesystem validation, worktree
+          allocation, or task mutation. This is the execution boundary; merely
+          persisting effectiveNodeId later in the pass is telemetry, not routing.
+          */
+          const initialEffectiveNode = resolveEffectiveNode(task, settings);
+          if (!shouldExecuteOnRuntime(initialEffectiveNode, {
+            localNodeId: this.options.localNodeId,
+            acceptUnassignedTasks: this.options.acceptUnassignedTasks,
+          })) {
+            schedulerLog.debug(
+              `Task ${task.id} belongs to node=${initialEffectiveNode.nodeId ?? "central"}; local runtime=${this.options.localNodeId ?? "unresolved"} — skipping foreign dispatch`,
+            );
+            return null;
+          }
 
           /*
           FNXC:WorkflowScheduling 2026-07-07-00:00:
@@ -2639,6 +2664,15 @@ export class Scheduler {
 
           let effectiveNode = resolveEffectiveNode(freshTask, settings);
           logTaskRouting(task.id, effectiveNode);
+
+          // Reassignment can race the pass after the early filesystem guard.
+          // Re-check the fresh row before validation or durable dispatch writes.
+          if (!shouldExecuteOnRuntime(effectiveNode, {
+            localNodeId: this.options.localNodeId,
+            acceptUnassignedTasks: this.options.acceptUnassignedTasks,
+          })) {
+            return null;
+          }
 
           if (effectiveNode.nodeId !== undefined && this.options.validateNodeDispatch) {
             const nodeValidation = await this.options.validateNodeDispatch(effectiveNode.nodeId);

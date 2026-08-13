@@ -168,6 +168,7 @@ import {
   resolvePlanningThinkingLevel,
 } from "./agents/agent-session-helpers.js";
 import { mergeEffectiveSettings } from "./project/effective-settings.js";
+import { resolveEffectiveNode, shouldExecuteOnRuntime } from "./project/effective-node.js";
 import { detectDanglingTaskDocReferences, formatDanglingDiagnostic } from "./spec-validation/task-document-references.js";
 import { buildSessionSkillContext } from "./cli-runtime/session-skill-context.js";
 import {
@@ -309,6 +310,10 @@ export interface TriageProcessorOptions {
   planning falls back to the repo root exactly as before.
   */
   acquirePlanningWorktree?: (taskId: string) => Promise<string | null>;
+  /** Registry identity represented by this planner process. */
+  localNodeId?: string;
+  /** Only the central runtime accepts tasks without an explicit/default route. */
+  acceptUnassignedTasks?: boolean;
 }
 
 /**
@@ -639,6 +644,7 @@ export class TriageProcessor {
         const tasks = await this.discoverReadyPlanningTasks(
           await this.store.listTasks({ slim: true, includeArchived: false }),
           now,
+          settings,
         );
         return tasks.filter((task) => !this.coordinatorAdmittedTaskIds.has(task.id)).map((task) => ({
           taskId: task.id, projectId: this.rootDir, lane: "planning", createdAt: task.createdAt,
@@ -1760,7 +1766,7 @@ export class TriageProcessor {
    * refresh. Keeping the seed-prompt checks here makes the cross-lane admission
    * union include cards before their planner writes status:"planning".
    */
-  private async discoverReadyPlanningTasks(allTasks: Task[], now: number): Promise<Task[]> {
+  private async discoverReadyPlanningTasks(allTasks: Task[], now: number, settings?: Settings): Promise<Task[]> {
     /*
     FNXC:MergedPlanningColumn 2026-07-28-15:10 (U11):
     Planning discovery has TWO admission rules, and they were selected by hardcoded column id:
@@ -1807,6 +1813,7 @@ export class TriageProcessor {
     three IRs — and is now shared across the concurrent resolutions rather than a serial loop.
     */
     const irCache = new Map<string, WorkflowIr>();
+    const routingSettings = settings ?? await this.store.getSettings();
 
     /*
     The store-free half of both admission rules. A card failing this can never be admitted by
@@ -1817,6 +1824,10 @@ export class TriageProcessor {
       if (this.processing.has(t.id) || this.hasLivePlanningWork(t.id) || t.paused) return false;
       if (t.status === "awaiting-approval" || t.status === "failed" || t.status === "stuck-killed") return false;
       if (t.nextRecoveryAt && new Date(t.nextRecoveryAt).getTime() > now) return false;
+      if (!shouldExecuteOnRuntime(resolveEffectiveNode(t, routingSettings), {
+        localNodeId: this.options.localNodeId,
+        acceptUnassignedTasks: this.options.acceptUnassignedTasks,
+      })) return false;
       const couldBeIntake = isTaskStillInPlanningStage(t) && !this.advancedRecoveryReservations.has(t.id);
       const couldBeHold = t.status !== "planning";
       return couldBeIntake || couldBeHold;
@@ -2138,7 +2149,7 @@ export class TriageProcessor {
         this.idleSemaphoreLeakCandidateSince = result.candidateSinceMs;
       }
 
-      const triageTasks = await this.discoverReadyPlanningTasks(allTasks, now);
+      const triageTasks = await this.discoverReadyPlanningTasks(allTasks, now, settings);
 
       /*
       FNXC:ConcurrencyAdmission 2026-08-03-12:00:
@@ -2481,6 +2492,33 @@ export class TriageProcessor {
   }
 
   async specifyTask(task: Task): Promise<void> {
+    /*
+    FNXC:RuntimeNodeExecutionBoundary 2026-08-13-19:25:
+    Admission and execution can race a task reassignment. Re-read the row and
+    route before any duplicate flag, status write, PROMPT access, or worktree
+    acquisition. Runtime wiring always supplies these options; standalone tests
+    without routing options retain their intentionally local behavior.
+    */
+    if (this.options.localNodeId !== undefined || this.options.acceptUnassignedTasks !== undefined) {
+      try {
+        const currentTask = await this.store.getTask(task.id);
+        const routingSettings = await this.store.getSettings();
+        if (!shouldExecuteOnRuntime(resolveEffectiveNode(currentTask ?? task, routingSettings), {
+          localNodeId: this.options.localNodeId,
+          acceptUnassignedTasks: this.options.acceptUnassignedTasks,
+        })) {
+          if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
+          this.coordinatorAdmittedTaskIds.delete(task.id);
+          return;
+        }
+      } catch (error) {
+        if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
+        this.coordinatorAdmittedTaskIds.delete(task.id);
+        planLog.warn(`${task.id}: runtime route could not be verified before planning — failing closed: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+    }
+
     /*
     FNXC:TriageStuckKill 2026-07-18-21:05:
     Refuse a second planner when finalize/Plan Review is still live even if

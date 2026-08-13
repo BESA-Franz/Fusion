@@ -7,6 +7,13 @@ export interface EffectiveNode {
   source: EffectiveNodeSource;
 }
 
+export interface RuntimeNodeRoute {
+  /** Registry identity represented by the current Fusion process. */
+  localNodeId?: string;
+  /** Only the central/local orchestrator accepts tasks without an explicit route. */
+  acceptUnassignedTasks?: boolean;
+}
+
 function isSetNodeId(nodeId: string | null | undefined): nodeId is string {
   return typeof nodeId === "string" && nodeId.trim().length > 0;
 }
@@ -24,4 +31,24 @@ export function resolveEffectiveNode(
   }
 
   return { nodeId: undefined, source: "local" };
+}
+
+/**
+ * Decide whether the current process owns the filesystem side of a task.
+ *
+ * A shared PostgreSQL project is observed by every Fusion process. Persisting a
+ * node id therefore is not enough: each planner/scheduler must reject foreign
+ * routes before it reads PROMPT.md, creates a worktree, or moves the card. An
+ * explicit route also fails closed when this process has no verified registry
+ * identity. Unassigned work remains a central-orchestrator concern.
+ */
+export function shouldExecuteOnRuntime(
+  effectiveNode: EffectiveNode,
+  runtime: RuntimeNodeRoute,
+): boolean {
+  if (effectiveNode.nodeId !== undefined) {
+    return runtime.localNodeId !== undefined && effectiveNode.nodeId === runtime.localNodeId;
+  }
+
+  return runtime.acceptUnassignedTasks !== false;
 }

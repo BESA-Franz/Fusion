@@ -88,6 +88,11 @@ export interface HoldReleaseDeps {
    *  passes `() => Date.now()`. */
   now: () => number;
   /**
+   * Runtime ownership gate. Shared-database peers must reject foreign tasks
+   * before workflow/PROMPT inspection or any hold-state mutation.
+   */
+  acceptTask?: (task: Task) => boolean | Promise<boolean>;
+  /**
    * Reserve a worktree + semaphore slot for a card about to be released into a
    * processing column (KTD-10 reservation-first). Returns `null` when no slot
    * could be reserved (e.g. semaphore exhausted) — the sweep then leaves the
@@ -677,6 +682,7 @@ export async function runHoldReleaseSweep(
       if (expired()) { breakIndex = index; break; }
       const task = tasksForReleaseEvaluation[index]!;
       if (task.paused || task.userPaused || (task.nextRecoveryAt && Date.parse(task.nextRecoveryAt) > deps.now())) continue;
+      if (deps.acceptTask && !await deps.acceptTask(task)) continue;
       if (expired()) { breakIndex = index; break; }
       const irStartedMs = deps.now();
       const ir = await resolveWorkflowIrForTask(resolverStore, task.id, irCache, selectionCache);
