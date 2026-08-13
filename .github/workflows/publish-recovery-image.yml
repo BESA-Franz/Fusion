@@ -11,18 +11,35 @@ permissions:
   packages: write
 
 concurrency:
-  group: publish-recovery-image-a9e552e0114e
+  group: publish-recovery-image-61f7e8c28340
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: a9e552e0114e41130382df454c0b7dce4b965f70
-  IMAGE_TAG: recovery-a9e552e0114e
+  SOURCE_SHA: 61f7e8c28340b0d053603999bf0ac631dc5a98e3
+  IMAGE_TAG: recovery-61f7e8c28340
 
 jobs:
   publish:
-    name: Build and publish immutable recovery image
+    name: Verify, build and publish immutable recovery image
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h localhost -p 5432 -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FUSION_PG_TEST_URL_BASE: postgresql://postgres:postgres@localhost:5432
+      PGPASSWORD: postgres
     steps:
       - name: Checkout immutable source
         uses: actions/checkout@v7
@@ -36,6 +53,33 @@ jobs:
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$IMAGE_TAG" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]]
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff --check "${SOURCE_SHA}^" "$SOURCE_SHA"
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Verify runtime node execution boundary
+        run: |
+          set -euo pipefail
+          pnpm --filter @fusion/core typecheck
+          pnpm --filter @fusion/engine typecheck
+          pnpm --filter @fusion/core exec vitest run \
+            src/__tests__/postgres/central-core-backend.test.ts \
+            --silent=passed-only --reporter=dot
+          pnpm --filter @fusion/engine exec vitest run \
+            src/__tests__/effective-node.test.ts \
+            src/__tests__/scheduler-node-unreachable-audit.test.ts \
+            src/__tests__/workflow-continuation-capacity.test.ts \
+            src/__tests__/triage-runtime-node-routing.test.ts \
+            src/__tests__/in-process-runtime.pg.test.ts \
+            --silent=passed-only --reporter=dot
+          pnpm exec eslint \
+            packages/engine/src/project/effective-node.ts \
+            packages/engine/src/scheduler.ts \
+            packages/engine/src/triage.ts \
+            packages/engine/src/execution/hold-release.ts \
+            packages/engine/src/runtimes/in-process-runtime.ts \
+            --max-warnings=0
 
       - name: Authenticate to GHCR
         env:
