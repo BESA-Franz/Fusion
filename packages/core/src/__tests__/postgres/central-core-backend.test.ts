@@ -20,10 +20,10 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import postgres from "postgres";
 import { CentralCore } from "../../central/central-core.js";
 import { createAsyncDataLayer, type AsyncDataLayer } from "../../postgres/data-layer.js";
 
@@ -39,14 +39,18 @@ function uniqueDbName(): string {
 }
 
 /*
-FNXC:PgTestAuthFix 2026-07-14-00:00:
-The inline adminExec used process.env.USER for the psql -U flag, which is 'runner' on GitHub Actions (not 'postgres'). Use the PG_TEST_URL_BASE connection string instead so credentials are always correct.
+FNXC:PgTestAdminClient 2026-08-13-14:51:
+Use the workspace PostgreSQL client instead of a host `psql` executable. This
+keeps the real-database gate portable on Windows workers while retaining the
+credentials encoded in PG_TEST_URL_BASE.
 */
-function adminExec(statement: string): void {
-  execSync(
-    `psql "${PG_TEST_URL_BASE}/postgres" -v ON_ERROR_STOP=1 -c "${statement.replace(/"/g, '\\"')}"`,
-    { stdio: "pipe", env: process.env },
-  );
+async function adminExec(statement: string): Promise<void> {
+  const admin = postgres(`${PG_TEST_URL_BASE}/postgres`, { max: 1 });
+  try {
+    await admin.unsafe(statement);
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
 }
 
 interface TestCtx {
@@ -60,11 +64,11 @@ interface TestCtx {
 async function setupCtx(): Promise<TestCtx> {
   const dbName = uniqueDbName();
   try {
-    adminExec(`DROP DATABASE IF EXISTS "${dbName}"`);
+    await adminExec(`DROP DATABASE IF EXISTS "${dbName}"`);
   } catch {
     /* may not exist */
   }
-  adminExec(`CREATE DATABASE "${dbName}"`);
+  await adminExec(`CREATE DATABASE "${dbName}"`);
   const testUrl = `${PG_TEST_URL_BASE}/${dbName}`;
   const { createConnectionSetFromUrl } = await import("../../postgres/connection.js");
   const { applySchemaBaseline } = await import("../../postgres/schema-applier.js");
@@ -106,7 +110,7 @@ async function teardownCtx(ctx: TestCtx | null): Promise<void> {
     }
   }
   try {
-    adminExec(`DROP DATABASE IF EXISTS "${ctx.dbName}"`);
+    await adminExec(`DROP DATABASE IF EXISTS "${ctx.dbName}"`);
   } catch {
     /* best-effort */
   }
@@ -252,6 +256,53 @@ pgDescribe("CentralCore backend mode (PostgreSQL)", () => {
 
     const listed = await ctx.central.listProjectNodePathMappings({ projectId: project.id });
     expect(listed.some((m) => m.nodeId === localNode.id)).toBe(true);
+  });
+
+  it("uses the configured runtime node for shared-registry project paths", async () => {
+    ctx = await setupCtx();
+    const projectPath = makeProjectDir(ctx, "runtime-local");
+    const workerPath = makeProjectDir(ctx, "runtime-worker");
+    const project = await ctx.central.registerProject({
+      name: "Runtime identity",
+      path: projectPath,
+    });
+    const workerNode = await ctx.central.registerNode({
+      name: "worker-1",
+      type: "remote",
+      url: "http://worker-1:4040",
+    });
+    await ctx.central.upsertProjectNodePathMapping({
+      projectId: project.id,
+      nodeId: workerNode.id,
+      path: workerPath,
+    });
+
+    const workerCentral = new CentralCore(ctx.globalDir, {
+      asyncLayer: ctx.layer,
+      runtimeNodeId: workerNode.id,
+    });
+    await workerCentral.init();
+
+    expect((await workerCentral.getRuntimeNode())?.id).toBe(workerNode.id);
+    expect(await workerCentral.resolveLocalProjectWorkingDirectory(project.id)).toBe(workerPath);
+    expect(await ctx.central.resolveLocalProjectWorkingDirectory(project.id)).toBe(projectPath);
+
+    await workerCentral.close();
+  });
+
+  it("fails closed when the configured runtime node is absent", async () => {
+    ctx = await setupCtx();
+    const workerCentral = new CentralCore(ctx.globalDir, {
+      asyncLayer: ctx.layer,
+      runtimeNodeId: "node_missing",
+    });
+    await workerCentral.init();
+
+    await expect(workerCentral.getRuntimeNode()).rejects.toThrow(
+      "Configured runtime node not found: node_missing",
+    );
+
+    await workerCentral.close();
   });
 
   it("records and reads a mesh snapshot through PostgreSQL", async () => {

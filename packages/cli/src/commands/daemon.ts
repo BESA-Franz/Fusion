@@ -975,10 +975,9 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   }
   try {
     if (centralCore) {
-      const nodes = await centralCore.listNodes();
-      const localNode = nodes.find((node) => node.type === "local");
-      if (localNode) {
-        await centralCore.updateNode(localNode.id, { status: "online" });
+      const runtimeNode = await centralCore.getRuntimeNode();
+      if (runtimeNode) {
+        await centralCore.updateNode(runtimeNode.id, { status: "online" });
       }
     }
   } catch (err) {

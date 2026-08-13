@@ -1139,11 +1139,10 @@ export async function runServe(
 
   try {
     if (centralCore) {
-      const nodes = await centralCore.listNodes();
-      const localNode = nodes.find((node) => node.type === "local");
-      if (localNode) {
-        localNodeId = localNode.id;
-        await centralCore.updateNode(localNode.id, { status: "online" });
+      const runtimeNode = await centralCore.getRuntimeNode();
+      if (runtimeNode) {
+        localNodeId = runtimeNode.id;
+        await centralCore.updateNode(runtimeNode.id, { status: "online" });
       }
     }
   } catch (err) {

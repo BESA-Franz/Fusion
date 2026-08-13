@@ -196,6 +196,11 @@ export interface EnsureProjectForPathResult {
 export interface CentralCoreOptions {
   ensureGitRepositoryForProjectPath?: typeof ensureGitRepositoryForProjectPath;
   /**
+   * Identify the node represented by this runtime when multiple Fusion
+   * runtimes share one PostgreSQL registry. Defaults to FUSION_NODE_ID.
+   */
+  runtimeNodeId?: string;
+  /**
    * FNXC:CentralCore 2026-06-26-12:30:
    * When an AsyncDataLayer is injected, CentralCore operates in "backend mode":
    * all data access delegates to PostgreSQL via Drizzle against the central
@@ -213,6 +218,7 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
   private discoveryConfig: DiscoveryConfig | null = null;
   private readonly discoveredNodes = new Map<string, DiscoveredNode>();
   private readonly ensureGitRepositoryForProjectPath: typeof ensureGitRepositoryForProjectPath;
+  private readonly runtimeNodeId: string | undefined;
   private ownedBackendShutdown: (() => Promise<void>) | null = null;
   private ownedBackendReleaseConnections: (() => Promise<void>) | null = null;
   private initializationPromise: Promise<void> | null = null;
@@ -319,6 +325,7 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
     this.ensureGitRepositoryForProjectPath =
       options.ensureGitRepositoryForProjectPath ?? ensureGitRepositoryForProjectPath;
     this.asyncLayer = options.asyncLayer ?? null;
+    this.runtimeNodeId = (options.runtimeNodeId ?? process.env.FUSION_NODE_ID)?.trim() || undefined;
   }
 
   /**
@@ -2429,9 +2436,33 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
     };
   }
 
+  /**
+   * Return the registry node represented by this process.
+   *
+   * FNXC:RuntimeNodeIdentity 2026-08-13-14:51:
+   * A shared PostgreSQL registry can contain the central local node plus one
+   * remote row per worker. Selecting the first `type=local` row made every
+   * worker resolve the central host's project mapping. Honor the configured
+   * runtime identity and fail closed when that row is missing so work cannot
+   * silently run in another node's directory.
+   */
+  async getRuntimeNode(): Promise<NodeConfig | undefined> {
+    this.ensureInitialized();
+
+    if (!this.runtimeNodeId) {
+      return asyncCentralCore.getLocalNode(this.backendHandle);
+    }
+
+    const runtimeNode = await asyncCentralCore.getNode(this.backendHandle, this.runtimeNodeId);
+    if (!runtimeNode) {
+      throw new Error(`Configured runtime node not found: ${this.runtimeNodeId}`);
+    }
+    return runtimeNode;
+  }
+
   private async getLocalNode(): Promise<NodeConfig | undefined> {
-        return asyncCentralCore.getLocalNode(this.backendHandle);
-}
+    return this.getRuntimeNode();
+  }
 
   private rowToHealth(row: {
     projectId: string;

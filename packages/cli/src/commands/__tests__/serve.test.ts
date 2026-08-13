@@ -241,6 +241,12 @@ const mocks = vi.hoisted(() => {
       listNodes: vi.fn().mockResolvedValue([
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
+      getRuntimeNode: vi.fn().mockResolvedValue({
+        id: "node-runtime",
+        name: "runtime",
+        type: "remote",
+        status: "offline",
+      }),
       updateNode: vi.fn().mockResolvedValue(undefined),
       startDiscovery: vi.fn().mockResolvedValue({}),
       stopDiscovery: vi.fn(),
@@ -1127,16 +1133,16 @@ describe("runServe", () => {
     await triggerSignal("SIGTERM");
   });
 
-  it("updates the local node status online on startup and offline on shutdown", async () => {
+  it("updates the runtime node status online on startup and offline on shutdown", async () => {
     await runServe(4040, {});
 
-    const nodeCentral = mocks.centralInstances.find((instance) => instance.listNodes.mock.calls.length > 0);
+    const nodeCentral = mocks.centralInstances.find((instance) => instance.getRuntimeNode.mock.calls.length > 0);
     expect(nodeCentral).toBeDefined();
-    expect(nodeCentral.updateNode).toHaveBeenCalledWith("node-local", { status: "online" });
+    expect(nodeCentral.updateNode).toHaveBeenCalledWith("node-runtime", { status: "online" });
 
     await triggerSignal("SIGINT");
 
-    expect(nodeCentral.updateNode).toHaveBeenCalledWith("node-local", { status: "offline" });
+    expect(nodeCentral.updateNode).toHaveBeenCalledWith("node-runtime", { status: "offline" });
   });
 
   it("stops engine services during shutdown", async () => {
@@ -1448,6 +1454,12 @@ describe("runServe — Memory Insight Automation wiring", () => {
       listNodes: vi.fn().mockResolvedValue([
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
+      getRuntimeNode: vi.fn().mockResolvedValue({
+        id: "node-runtime",
+        name: "runtime",
+        type: "remote",
+        status: "offline",
+      }),
       updateNode: vi.fn().mockResolvedValue(undefined),
       startDiscovery: vi.fn().mockResolvedValue({}),
       stopDiscovery: vi.fn(),
@@ -1611,6 +1623,12 @@ describe("runServe — Semaphore boundary (task lanes only)", () => {
       listNodes: vi.fn().mockResolvedValue([
         { id: "node-local", name: "local", type: "local", status: "offline" },
       ]),
+      getRuntimeNode: vi.fn().mockResolvedValue({
+        id: "node-runtime",
+        name: "runtime",
+        type: "remote",
+        status: "offline",
+      }),
       updateNode: vi.fn().mockResolvedValue(undefined),
       startDiscovery: vi.fn().mockResolvedValue({}),
       stopDiscovery: vi.fn(),
@@ -1799,10 +1817,16 @@ describe("runServe — Peer exchange and discovery", () => {
           { ...PROJECT_FIXTURES.primary, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
           { ...PROJECT_FIXTURES.secondary, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
         ]),
-        listNodes: vi.fn().mockResolvedValue([
-          { id: "node-local", name: "local", type: "local", status: "offline" },
-        ]),
-        updateNode: vi.fn().mockResolvedValue(undefined),
+      listNodes: vi.fn().mockResolvedValue([
+        { id: "node-local", name: "local", type: "local", status: "offline" },
+      ]),
+      getRuntimeNode: vi.fn().mockResolvedValue({
+        id: "node-runtime",
+        name: "runtime",
+        type: "remote",
+        status: "offline",
+      }),
+      updateNode: vi.fn().mockResolvedValue(undefined),
         startDiscovery: vi.fn().mockResolvedValue({}),
         stopDiscovery: vi.fn(),
       };
@@ -1836,7 +1860,7 @@ describe("runServe — Peer exchange and discovery", () => {
     await runServe(4040, {});
 
     // Find the central core instance that was used
-    const nodeCentral = mocks.centralInstances.find((instance) => instance.listNodes.mock.calls.length > 0);
+    const nodeCentral = mocks.centralInstances.find((instance) => instance.getRuntimeNode.mock.calls.length > 0);
     expect(nodeCentral).toBeDefined();
 
     // startDiscovery should have been called with broadcast, listen, and correct port
@@ -1858,7 +1882,7 @@ describe("runServe — Peer exchange and discovery", () => {
 
     await runServe(4040, {});
 
-    const nodeCentral = mocks.centralInstances.find((instance) => instance.listNodes.mock.calls.length > 0);
+    const nodeCentral = mocks.centralInstances.find((instance) => instance.getRuntimeNode.mock.calls.length > 0);
     expect(nodeCentral).toBeDefined();
     expect(nodeCentral.startDiscovery).not.toHaveBeenCalled();
 
@@ -1868,7 +1892,7 @@ describe("runServe — Peer exchange and discovery", () => {
   it("starts discovery with port 5050 when port 0 is requested", async () => {
     await runServe(0, {});
 
-    const nodeCentral = mocks.centralInstances.find((instance) => instance.listNodes.mock.calls.length > 0);
+    const nodeCentral = mocks.centralInstances.find((instance) => instance.getRuntimeNode.mock.calls.length > 0);
     expect(nodeCentral).toBeDefined();
 
     // Port 0 maps to 5050 in the mock
@@ -1902,7 +1926,7 @@ describe("runServe — Peer exchange and discovery", () => {
   it("calls centralCore.stopDiscovery() on shutdown before closing", async () => {
     await runServe(4040, {});
 
-    const nodeCentral = mocks.centralInstances.find((instance) => instance.listNodes.mock.calls.length > 0);
+    const nodeCentral = mocks.centralInstances.find((instance) => instance.getRuntimeNode.mock.calls.length > 0);
     expect(nodeCentral).toBeDefined();
 
     // Reset to isolate shutdown behavior
@@ -1914,10 +1938,10 @@ describe("runServe — Peer exchange and discovery", () => {
     expect(nodeCentral.stopDiscovery).toHaveBeenCalledTimes(1);
   });
 
-  it("sets local node to offline on shutdown", async () => {
+  it("sets the runtime node to offline on shutdown", async () => {
     await runServe(4040, {});
 
-    const nodeCentral = mocks.centralInstances.find((instance) => instance.listNodes.mock.calls.length > 0);
+    const nodeCentral = mocks.centralInstances.find((instance) => instance.getRuntimeNode.mock.calls.length > 0);
     expect(nodeCentral).toBeDefined();
 
     // Reset to isolate shutdown behavior
@@ -1925,8 +1949,7 @@ describe("runServe — Peer exchange and discovery", () => {
 
     await triggerSignal("SIGTERM");
 
-    // Should have been called twice: once to set online, once to set offline
-    expect(nodeCentral.updateNode).toHaveBeenCalledWith("node-local", { status: "offline" });
+    expect(nodeCentral.updateNode).toHaveBeenCalledWith("node-runtime", { status: "offline" });
   });
 });
 
@@ -1983,10 +2006,16 @@ describe("runServe --daemon flag", () => {
           { ...PROJECT_FIXTURES.primary, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
           { ...PROJECT_FIXTURES.secondary, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
         ]),
-        listNodes: vi.fn().mockResolvedValue([
-          { id: "node-local", name: "local", type: "local", status: "offline" },
-        ]),
-        updateNode: vi.fn().mockResolvedValue(undefined),
+      listNodes: vi.fn().mockResolvedValue([
+        { id: "node-local", name: "local", type: "local", status: "offline" },
+      ]),
+      getRuntimeNode: vi.fn().mockResolvedValue({
+        id: "node-runtime",
+        name: "runtime",
+        type: "remote",
+        status: "offline",
+      }),
+      updateNode: vi.fn().mockResolvedValue(undefined),
         startDiscovery: vi.fn().mockResolvedValue({}),
         stopDiscovery: vi.fn(),
       };
@@ -2185,10 +2214,16 @@ describe("runServe — multi-project cwd/default engine resolution", () => {
           { ...PROJECT_FIXTURES.primary, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
           { ...PROJECT_FIXTURES.secondary, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
         ]),
-        listNodes: vi.fn().mockResolvedValue([
-          { id: "node-local", name: "local", type: "local", status: "offline" },
-        ]),
-        updateNode: vi.fn().mockResolvedValue(undefined),
+      listNodes: vi.fn().mockResolvedValue([
+        { id: "node-local", name: "local", type: "local", status: "offline" },
+      ]),
+      getRuntimeNode: vi.fn().mockResolvedValue({
+        id: "node-runtime",
+        name: "runtime",
+        type: "remote",
+        status: "offline",
+      }),
+      updateNode: vi.fn().mockResolvedValue(undefined),
         startDiscovery: vi.fn().mockResolvedValue({}),
         stopDiscovery: vi.fn(),
       };
