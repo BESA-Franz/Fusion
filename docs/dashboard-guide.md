@@ -851,18 +851,18 @@ Task Detail has two terminal-adjacent tabs when both are applicable: **Session**
 
 On Windows, the embedded terminal starts a supported shell inside Fusion, such as Command Prompt (`cmd.exe`) or Windows PowerShell. Windows Terminal (`wt.exe`) is an external terminal host and is not required or launched for the embedded panel, so Fusion should not show native Windows Terminal help/version popups while starting a terminal. If embedded terminal startup fails, Fusion shows an inline error with **Retry** instead of a blocking native dialog; install or repair Windows Terminal separately with `winget install Microsoft.WindowsTerminal` only if you want to use Windows Terminal outside Fusion.
 
-<!-- FNXC:TerminalFooter 2026-07-11-20:45: FN-7829 moved all terminal action controls (font size, Clear, Shortcuts, Preferences, status, pin, and pop-out) into the bottom terminal footer at every width, and desktop/tablet tabs now fall back to the mobile-style selector when the tab strip cannot fit its container. -->
+<!-- FNXC:TerminalFooter 2026-07-11-20:45: FN-7829 keeps terminal action controls (font size, Clear, Shortcuts, Preferences, and status) in the bottom terminal footer at every width, while pin and pop-out sit immediately left of close in the non-mobile top toolbar; desktop/tablet tabs fall back to the mobile-style selector when the tab strip cannot fit its container. -->
 Use the terminal on desktop/tablet:
 
 1. Select the **Terminal** button in the footer executor status bar.
-   Expected outcome: the terminal opens as a bottom-docked overlay panel with the active shell session and a draggable top resize handle. The font size / clear / shortcuts / preferences controls, connection status, pin, and pop-out controls render in the terminal's bottom action-control footer at every desktop/tablet width, so the header only has to carry the tab affordance, title/status, workspace picker, and close button.
-2. Select **Pin terminal (push content)** from the bottom action-control footer.
-   Expected outcome: the terminal moves into a persisted below-application panel that reserves space instead of covering the board, chat, or right sidebar. The pinned panel also reserves space above the fixed status footer (the executor status bar), so the terminal's own bottom action-control footer (font size, Clear, Shortcuts, Preferences, connection status, pin/pop-out) stays fully visible instead of being covered by it. Select **Unpin terminal (overlay content)** to return to the overlay docked panel.
+   Expected outcome: the terminal opens as a bottom-docked overlay panel with the active shell session and a draggable top resize handle. Font size / clear / shortcuts / preferences controls and connection status render in the bottom action-control footer, while pin and pop-out toggles render in the top toolbar immediately left of the close button at every desktop/tablet width.
+2. Select **Pin terminal (push content)** from the top toolbar immediately left of Close.
+   Expected outcome: the terminal moves into a persisted below-application panel that reserves space instead of covering the board, chat, or right sidebar. The pinned panel also reserves space above the fixed status footer (the executor status bar), so its bottom action-control footer (font size, Clear, Shortcuts, Preferences, connection status, and exit code) stays fully visible instead of being covered by it. Select **Unpin terminal (overlay content)** in the top toolbar to return to the overlay docked panel.
 3. Drag the top edge of the docked or pinned panel.
    Expected outcome: the panel height changes within its viewport-safe bounds and persists per project, with pinned mode clamped shorter so the application remains usable.
-4. Select **Pop out** from the bottom action-control footer.
+4. Select **Pop out** from the top toolbar immediately left of Close.
    Expected outcome: the terminal switches to a floating window that can be dragged and freely resized; size, position, and display mode are saved per project. On touch tablets, drag the reserved header grip rather than the horizontally scrollable tab strip.
-5. Select **Dock** in the floating terminal.
+5. Select **Dock** from the same top-toolbar control in the floating terminal.
    Expected outcome: the terminal returns to the bottom docked overlay panel using the saved docked height.
 6. Select the scripts chevron beside the footer **Terminal** button.
    Expected outcome: the quick scripts menu opens without toggling the terminal; choosing a script runs it in the terminal, and the menu footer opens script management.
