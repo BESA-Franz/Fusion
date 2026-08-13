@@ -1,5 +1,52 @@
 # @runfusion/fusion
 
+## 0.76.0-beta.2
+
+### Minor Changes
+
+- 508ebc3: summary: Add Grok 4.6 to the built-in Grok model catalog across every model picker.
+  category: feature
+  dev: Registers Grok 4.6 in `GROK_PROVIDER_REGISTRATION` in `packages/core/src/ai/grok-provider.ts`, which fans out through `seedDashboardProviders` and `pi.ts`.
+- fc56161: summary: Add archive and restore views for mailbox messages and chat conversations.
+  category: feature
+  dev: Adds project.messages.archived via migration 0058 and POST /messages/:id/archive|unarchive routes.
+- 8699ff4: summary: Let managers review and coach evaluation results for agents in their reporting tree.
+  category: feature
+  dev: Adds `fn_agent_read_evaluations` and `fn_agent_evaluation_followup`, reusing the management-subtree boundary and action-gate classification.
+
+### Patch Changes
+
+- 6e04b31: summary: Fix the Quick Add model dropdown filter box so typing narrows the model list.
+  category: fix
+  dev: The quick-entry model menu's blanket onMouseDown preventDefault crossed the React portal boundary and suppressed focus on CustomModelDropdown's search input.
+- 52facd1: summary: Keep verification-cache results and project records isolated per project.
+  category: fix
+  dev: Runtime predicates now scope eight project tables; verification-cache results are no longer shared across projects.
+- 0ed0e53: summary: Model eight project-owned storage tables with their partition identities.
+  category: internal
+  dev: Eight declarations now match the 0006 project partition; runtime predicates land in FN-9000.
+- b1dad5c: summary: Keep approval audit history isolated to the active project.
+  category: fix
+  dev: Reconciles approval audit event ownership declarations and threads getApprovalAuditHistory projectId from ApprovalRequestStore.
+- b6839f4: summary: Reconcile PostgreSQL GitHub check-state ownership defaults during upgrades.
+  category: fix
+  dev: Migration 0057 restores the project_id ownership default for github_check_states.
+- c4467b0: summary: Upgrade the bundled Pi runtime to 0.84.1 for updated provider and model support.
+  category: internal
+  dev: Advance the exact Pi closure from 0.82.1 to 0.84.1 and guard pi-client, pi-protocol, and pi-telemetry.
+- e144e8c: summary: Quick Add model menu now labels the merger row “Merger” with spacing matching other roles.
+  category: fix
+  dev: Adds the tasks.modelMerger translation key for the top-level Quick Add menu row.
+- 02f7b58: summary: Fix the collapse/expand toggle in model selection dropdowns.
+  category: fix
+  dev: Stop portal-bound pointer and mouse events before document-level outside-close handlers can unmount CustomModelDropdown.
+- cc10412: summary: Show the task Recommendations tab only when a completed task has recommendations.
+  category: fix
+  dev: TaskDetailModal gates hasRecommendations on task-owned recommendations (fullDetail?.id === task.id, else the live prop); tab reconciliation waits for that same proof, not detailLoading.
+- b0f623b: summary: Fix mission reconciliation failing every cycle with an internal scheduler error.
+  category: fix
+  dev: Preserves the listFeatures receiver and contains per-slice failures in Scheduler.reconcileActiveMissionAutomation.
+
 ## 0.76.0-beta.1
 
 ### Minor Changes

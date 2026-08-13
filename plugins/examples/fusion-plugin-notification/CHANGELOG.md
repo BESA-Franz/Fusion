@@ -1,5 +1,11 @@
 # @fusion-plugin-examples/notification
 
+## 0.2.85-beta.2
+
+### Patch Changes
+
+- @fusion/plugin-sdk@0.76.0-beta.2
+
 ## 0.2.85-beta.1
 
 ### Patch Changes

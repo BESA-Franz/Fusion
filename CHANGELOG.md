@@ -2,6 +2,38 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
+## 0.76.0-beta.2
+
+### Highlights
+
+- Verification cache, approval audit, and GitHub check state now stay scoped per project
+- Grok 4.6 available in every model picker, on bundled Pi runtime 0.84.1
+- Quick Add model dropdown: typing filters, collapse toggle works, merger row labeled Merger
+- Mission reconciliation no longer fails every cycle with a scheduler error
+- Archive and restore mailbox messages and chat conversations from the dashboard
+
+### New
+
+- Grok 4.6 is registered in the built-in Grok catalog and appears in every model picker.
+- Mailbox messages and chat conversations can be archived and restored from dedicated views.
+- Managers can review and coach evaluation results for agents in their reporting tree.
+
+### Fixed
+
+- Verification-cache results and project records are isolated per project instead of shared across them.
+- Approval audit history is scoped to the active project.
+- PostgreSQL GitHub check-state ownership defaults are reconciled during upgrades.
+- Typing in the Quick Add model dropdown filter box narrows the model list again.
+- The collapse/expand toggle in model selection dropdowns no longer closes the dropdown.
+- The Quick Add model menu labels the merger row "Merger" with spacing matching the other roles.
+- The task Recommendations tab appears only when a completed task actually has recommendations.
+- Mission reconciliation no longer fails every cycle with an internal scheduler error.
+
+### Internal
+
+- The bundled Pi runtime moves from 0.82.1 to 0.84.1 for updated provider and model support.
+- Eight project-owned storage tables are modeled with their partition identities.
+
 ## 0.76.0-beta.1
 
 ### Highlights
