@@ -1,3 +1,4 @@
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { discoverOverseerWatchdogFiles, formatOverseerWatchdogPromptBlocks } from "../overseer/overseer-watchdog.js";
 
@@ -12,15 +13,22 @@ describe("discoverOverseerWatchdogFiles", () => {
   });
 
   it("loads user and project files; leaf is last among project", () => {
+    /**
+     * FNXC:OverseerWatchdogTests 2026-08-14-21:41:
+     * Discovery resolves host-native paths, so the fixture map must use the same node:path contract on Windows.
+     */
+    const repoRoot = resolve("repo");
+    const cwd = join(repoRoot, "pkg");
+    const agentDir = join(repoRoot, "user", "agent");
     const files: Record<string, string> = {
-      "/user/agent/WATCHDOG.md": "user watch",
-      "/repo/OVERSEER.md": "root overseer",
-      "/repo/pkg/WATCHDOG.md": "pkg watch",
+      [join(agentDir, "WATCHDOG.md")]: "user watch",
+      [join(repoRoot, "OVERSEER.md")]: "root overseer",
+      [join(cwd, "WATCHDOG.md")]: "pkg watch",
     };
     const items = discoverOverseerWatchdogFiles({
-      cwd: "/repo/pkg",
-      repoRoot: "/repo",
-      agentDir: "/user/agent",
+      cwd,
+      repoRoot,
+      agentDir,
       readText: (p) => files[p] ?? null,
     });
     expect(items.map((i) => i.content)).toEqual(["user watch", "root overseer", "pkg watch"]);
