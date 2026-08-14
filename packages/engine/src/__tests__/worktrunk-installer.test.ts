@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { basename } from "node:path";
 import type { WorktrunkSettings } from "@fusion/core";
 import type { AgentActionGateContext } from "../agents/agent-action-gate.js";
 import type { RunAuditor } from "../util/run-audit.js";
@@ -438,17 +439,20 @@ describe("worktrunk-installer", () => {
 
       const installEvent = gitEvents.find((event) => event.type === "worktree:worktrunk-install");
       expect(installEvent).toBeDefined();
-      expect(installEvent?.target).toContain("/wt");
+      // FNXC:WorktrunkInstaller 2026-08-14-22:15:
+      // Audit targets are host-native paths. Assert the executable identity without requiring a POSIX separator.
+      expect(basename(installEvent?.target ?? "")).toBe("wt");
       expect(installEvent?.metadata).toEqual(
         expect.objectContaining({
           op: "install",
-          binaryPath: expect.stringContaining("/wt"),
+          binaryPath: expect.any(String),
           installSource: expectedSource,
           durationMs: expect.any(Number),
           taskId: "FN-4711",
           runId: "run-install-success",
         }),
       );
+      expect(basename(String(installEvent?.metadata.binaryPath ?? ""))).toBe("wt");
       expect((installEvent?.metadata.durationMs as number) ?? -1).toBeGreaterThanOrEqual(0);
     });
 
