@@ -346,7 +346,7 @@ describe("FN-5754 reliability: mission stranded feature retriage", () => {
     expect(store.getTask).toHaveBeenCalledWith("FN-GENERATED-DONE");
   });
 
-  it("does not block superseded done generated fixes during refreshed startup reconciliation", async () => {
+  it("does not re-block stable superseded done generated fixes on a later reconciliation pass", async () => {
     const supersededFix = feature({
       id: "F-SUPERSEDED-FIX",
       title: "Fix: already validated remediation",
@@ -373,7 +373,9 @@ describe("FN-5754 reliability: mission stranded feature retriage", () => {
         status: "active",
         milestones: [{ id: "MS-001", slices: [{ id: "SL-001", status: "active", features }] }],
       })),
-      reconcileSupersededGeneratedFixFeatures: vi.fn(() => ({ supersededCount: 1, featureIds: ["F-SUPERSEDED-FIX"] })),
+      reconcileSupersededGeneratedFixFeatures: vi.fn()
+        .mockReturnValueOnce({ supersededCount: 1, featureIds: ["F-SUPERSEDED-FIX"] })
+        .mockReturnValue({ supersededCount: 0, featureIds: [] }),
       listFeatures: vi.fn(() => features),
       getSlice: vi.fn(() => ({ id: "SL-001", milestoneId: "MS-001", status: "active", features })),
       triageFeature: vi.fn(async (featureId: string) => {
@@ -389,6 +391,7 @@ describe("FN-5754 reliability: mission stranded feature retriage", () => {
     };
 
     const scheduler = new Scheduler(createTaskStore(tasks), { missionStore: missionStore as any });
+    await scheduler.reconcileAllMissionFeatures();
     await scheduler.reconcileAllMissionFeatures();
 
     expect(missionStore.updateFeature).not.toHaveBeenCalledWith("F-SUPERSEDED-FIX", expect.objectContaining({ status: "blocked" }));

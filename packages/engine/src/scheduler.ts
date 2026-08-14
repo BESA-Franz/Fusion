@@ -3410,7 +3410,20 @@ export class Scheduler {
             const autoTriage = mission.autopilotEnabled === true || mission.autoAdvance === true;
             for (const feature of features) {
               if (supersededFeatureIds.has(feature.id) || feature.taskId || !autoTriage || feature.status === "blocked") continue;
-              if (feature.status !== "defined" && this.isGeneratedFixFeature(feature)) {
+              const isGeneratedFix = this.isGeneratedFixFeature(feature);
+              if (isGeneratedFix) {
+                /*
+                FNXC:MissionAutoReconcile 2026-08-14-10:54:
+                Superseded reconciliation reports only rows changed in this pass. Preserve its
+                canonical terminal projection on later passes so stable taskless fixes cannot
+                oscillate from done/passed back to blocked.
+                */
+                const isStableTerminalFix = feature.status === "done"
+                  && feature.loopState === "passed"
+                  && feature.lastValidatorStatus === "passed";
+                if (isStableTerminalFix) continue;
+              }
+              if (feature.status !== "defined" && isGeneratedFix) {
                 await missionStore.updateFeature(feature.id, { status: "blocked", loopState: "blocked", taskId: undefined });
                 fixed++;
                 continue;
