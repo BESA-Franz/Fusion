@@ -63,7 +63,8 @@ capacity-model table drop that landed while this PR was open.
 /* FNXC:SpecLockMissionAlignment 2026-08-10-16:17: advance the schema ceiling so SQLite and PostgreSQL feature projections retain reconciled drift alignment. */
 /* FNXC:MultiProjectIsolation 2026-08-11-10:25: schema startup must register project-local agent ratings before bound stores scope their mutations. */
 /* FNXC:MessageArchive 2026-08-12-22:14: 0058 persists non-destructive mailbox archival on upgrades. */
-export const SCHEMA_BASELINE_VERSION = "0058";
+/* FNXC:TaskRecommendations 2026-08-13-22:23: upgrades must install the source-agent index before duplicate intake queries it. */
+export const SCHEMA_BASELINE_VERSION = "0059";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -222,6 +223,7 @@ export const PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION = "0056";
 export const PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION = "0057";
 /** FNXC:MessageArchive 2026-08-12-22:14: explicit registration prevents the archived-message migration from being skipped. */
 export const MESSAGE_ARCHIVE_SCHEMA_VERSION = "0058";
+export const TASK_SOURCE_AGENT_INDEX_VERSION = "0059";
 
 /** SECURITY DEFINER helper that only inserts LEGACY_ADOPTION_DRAINED_MARKER. */
 export const LEGACY_ADOPTION_DRAINED_MARKER_FUNCTION = "fusion_mark_legacy_adoption_drained";
@@ -454,6 +456,7 @@ const AGENT_RATINGS_PROJECT_PARTITION_MIGRATION_PATH = join(MIGRATIONS_DIR, "005
 const PROJECT_OWNERSHIP_DECLARATION_DRIFT_MIGRATION_PATH = join(MIGRATIONS_DIR, "0056_fn_8997_project_ownership_declaration_drift.sql");
 const PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_MIGRATION_PATH = join(MIGRATIONS_DIR, "0057_fn_9004_project_ownership_default_reconciliation.sql");
 const MESSAGE_ARCHIVE_SCHEMA_MIGRATION_PATH = join(MIGRATIONS_DIR, "0058_fn_9014_message_archive.sql");
+const TASK_SOURCE_AGENT_INDEX_MIGRATION_PATH = join(MIGRATIONS_DIR, "0059_fn_9037_tasks_source_agent_index.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -582,6 +585,7 @@ export async function applySchemaBaseline(
     const projectOwnershipDeclarationDriftAlreadyApplied = applied.includes(PROJECT_OWNERSHIP_DECLARATION_DRIFT_VERSION);
     const projectOwnershipDefaultReconciliationAlreadyApplied = applied.includes(PROJECT_OWNERSHIP_DEFAULT_RECONCILIATION_VERSION);
     const messageArchiveSchemaAlreadyApplied = applied.includes(MESSAGE_ARCHIVE_SCHEMA_VERSION);
+    const taskSourceAgentIndexAlreadyApplied = applied.includes(TASK_SOURCE_AGENT_INDEX_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -1280,6 +1284,12 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(MESSAGE_ARCHIVE_SCHEMA_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${MESSAGE_ARCHIVE_SCHEMA_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    if (!taskSourceAgentIndexAlreadyApplied) {
+      const migrationSql = await readFile(TASK_SOURCE_AGENT_INDEX_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASK_SOURCE_AGENT_INDEX_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
     return { applied: schemaChanged, pluginHooksRun: pluginHooks.length };

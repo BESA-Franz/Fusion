@@ -128,7 +128,7 @@ function hasFreshAgentLogActivitySinceTaskUpdate(
 }
 
 import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
-import {readTaskRow, readLiveTaskRows} from "./async/async-persistence.js";
+import {readTaskRow, readLiveTaskRows, readTaskRowByProposalClaimId, readTaskRowsBySourceLineage} from "./async/async-persistence.js";
 import {searchTasksTsvector, searchTasksLike} from "./async/async-search.js";
 import {
   getArchivedTask,
@@ -200,6 +200,22 @@ async function resolveReviewColumnsForTask(
   return columns;
 }
 
+
+/**
+ * FNXC:TaskRecommendations 2026-08-13-22:23:
+ * Claim replay is a one-row indexed lookup and intentionally skips cold storage: archive
+ * snapshots have no proposalClaimId. It also skips board-derived signal hydration because replay needs only persisted data.
+ */
+export async function findTaskByProposalClaimIdImpl(store: TaskStore, proposalClaimId: string, options?: { includeDeleted?: boolean }): Promise<Task | null> {
+  if (proposalClaimId.trim().length === 0) return null;
+  const row = await readTaskRowByProposalClaimId(store.asyncLayer!, proposalClaimId, options);
+  return row ? store.rowToTask(store.pgRowToTaskRow(row)) : null;
+}
+
+export async function listTasksBySourceLineageImpl(store: TaskStore, input: { sourceAgentId?: string | null; sourceParentTaskId?: string | null }): Promise<Task[]> {
+  const rows = await readTaskRowsBySourceLineage(store.asyncLayer!, input);
+  return rows.map((row) => store.rowToTask(store.pgRowToTaskRow(row)));
+}
 
 export async function getTaskImpl(store: TaskStore, id: string, options?: { activityLogLimit?: number; includeDeleted?: boolean }): Promise<TaskDetail> {
     return store.withTaskLock(id, async () => {

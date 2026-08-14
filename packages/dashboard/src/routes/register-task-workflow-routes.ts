@@ -2013,14 +2013,11 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
             if (candidateRows.length === 0) {
               candidateRows = await scopedStore.listTasks({ slim: true, includeArchived: false, limit: 50 });
             }
-            const fullRows = await scopedStore.listTasks({ slim: false, includeArchived: false });
-            const byId = new Map(fullRows.map((row) => [row.id, row]));
+            /* FNXC:TaskIntakeDedup 2026-08-13-22:23: slim candidates retain every field this
+             * guard reads; they are live non-archived rows, so the old full-board byId lookup always hit. */
             const candidateMap = new Map<string, NearDuplicateCandidate>();
-            const classifiedRows = await Promise.all(candidateRows.map(async (row) => {
-              const full = byId.get(row.id);
-              return { row, full, blocker: full ? await classifyDuplicateBlocker(full) : true };
-            }));
-            for (const { row, full, blocker } of classifiedRows) {
+            const classifiedRows = await Promise.all(candidateRows.map(async (row) => ({ row, blocker: await classifyDuplicateBlocker(row) })));
+            for (const { row, blocker } of classifiedRows) {
               if (acknowledgedDuplicateIds.includes(row.id)) {
                 continue;
               }
@@ -2032,9 +2029,9 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
                 title: row.title ?? "",
                 description: row.description ?? "",
                 column: row.column,
-                createdAt: full?.createdAt ? Date.parse(full.createdAt) : undefined,
-                fileScope: Array.isArray(full?.sourceMetadata?.fileScope)
-                  ? full.sourceMetadata.fileScope.filter((entry): entry is string => typeof entry === "string")
+                createdAt: row.createdAt ? Date.parse(row.createdAt) : undefined,
+                fileScope: Array.isArray(row.sourceMetadata?.fileScope)
+                  ? row.sourceMetadata.fileScope.filter((entry): entry is string => typeof entry === "string")
                   : undefined,
               });
             }
@@ -2439,8 +2436,7 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       from colliding with the unique claim and manufacturing a second child. Read tombstones here
       only to return a conflict; they are never relinked or exposed as live recommendation tasks.
       */
-      const existing = (await scopedStore.listTasks({ slim: false, includeArchived: true, includeDeleted: true }))
-        .find((task) => task.proposalClaimId === proposalClaimId);
+      const existing = await scopedStore.findTaskByProposalClaimId(proposalClaimId, { includeDeleted: true });
       const existingArchiveColumns = existing
         ? await archivedColumnsForTask(scopedStore, existing.id)
         : new Set<string>();
