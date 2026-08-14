@@ -5,7 +5,10 @@ import type { Settings, Task, TaskStore } from "@fusion/core";
 const { recordRunAuditEventMock } = vi.hoisted(() => ({
   recordRunAuditEventMock: vi.fn(async () => undefined),
 }));
-vi.mock("../run-audit.js", async (importOriginal) => {
+// FNXC:StalledCardWatchdog 2026-08-14-22:07:
+// Mock the utility module imported by self-healing.ts after the run-audit source peel; the legacy facade path no longer
+// intercepts createRunAuditor, which would silently turn this audit assertion into a no-op against the fixture store.
+vi.mock("../util/run-audit.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../util/run-audit.js")>();
   return {
     ...actual,
