@@ -16,6 +16,7 @@ import {
 export type TaskDoneScopeLeakDeps = {
   store: TaskStore;
   workspaceConfig: unknown | null | undefined;
+  ensureWorkspaceConfig?: () => Promise<unknown | null>;
   getRunContextFor: (taskId: string) => EngineRunContext | undefined;
   captureUncommittedModifiedFiles: (worktreePath: string) => Promise<string[]>;
   captureModifiedFiles: (
@@ -83,9 +84,12 @@ export async function evaluateTaskDoneScopeLeak(
   // off-scope files and would silently pass; we block it (scope is declared but unverifiable).
   // F6 (deterministic ordering): iterate sorted repo keys so the reported offending repo is stable
   // across runs/rehydrate.
+  const workspaceConfig = deps.ensureWorkspaceConfig
+    ? await deps.ensureWorkspaceConfig()
+    : deps.workspaceConfig;
   let touchedFiles: string[];
   let offendingRepo: string | undefined;
-  if (deps.workspaceConfig) {
+  if (workspaceConfig) {
     const workspaceWorktrees = task.workspaceWorktrees ?? {};
     const repoKeys = Object.keys(workspaceWorktrees).sort();
     // F2: declaredScope is non-empty here (the `declaredScope.length === 0` early-return above
@@ -146,7 +150,7 @@ export async function evaluateTaskDoneScopeLeak(
     }
   }
 
-  const offScopeFiles = (deps.workspaceConfig
+  const offScopeFiles = (workspaceConfig
     // In workspace mode `touchedFiles` is already the off-scope set (filtered per repo above).
     ? touchedFiles
     : touchedFiles

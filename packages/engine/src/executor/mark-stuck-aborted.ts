@@ -19,6 +19,7 @@ export type MarkStuckAbortedDeps = {
   store: TaskStore;
   rootDir: string;
   workspaceConfig: unknown;
+  ensureWorkspaceConfig?: () => Promise<unknown | null>;
   activeStepExecutors: Map<string, { terminateAllSessions(): Promise<void> }>;
   stuckAborted: Map<string, boolean>;
   executing: Set<string>;
@@ -105,7 +106,10 @@ export function markStuckAborted(
         block below silently no-ops. Per-repo teardown is Phase B; until then make
         the skip visible rather than silent. Behavior is unchanged.
         */
-        if (deps.workspaceConfig && !worktreePath) {
+        const workspaceConfig = deps.ensureWorkspaceConfig
+          ? await deps.ensureWorkspaceConfig()
+          : deps.workspaceConfig;
+        if (workspaceConfig && !worktreePath) {
           await deps.store.logEntry(
             taskId,
             `workspace task ${taskId}: no singular worktree to force-requeue (per-repo teardown is Phase B)`,

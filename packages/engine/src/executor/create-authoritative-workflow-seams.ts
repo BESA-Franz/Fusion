@@ -55,6 +55,7 @@ export type CreateAuthoritativeWorkflowSeamsDeps = {
     [k: string]: unknown;
   };
   workspaceConfig: WorkspaceConfig | null | undefined;
+  ensureWorkspaceConfig?: () => Promise<WorkspaceConfig | null>;
   activeWorkflowPrincipals: Map<string, { agentId: string; nodeInstanceId: string; agent?: import("@fusion/core").Agent }>;
   graphSeamGoverningNodeId: Map<string, string>;
   graphSeamThinkingLevel: Map<string, ThinkingLevel>;
@@ -423,8 +424,11 @@ export function createAuthoritativeWorkflowSeams(
           const invoke = () => invokeReviewerForCwd(cwd);
           return sem ? sem.runNested(invoke) : invoke();
         };
+        const workspaceConfig = deps.ensureWorkspaceConfig
+          ? await deps.ensureWorkspaceConfig()
+          : deps.workspaceConfig;
         const invokeReviewer = () =>
-          deps.workspaceConfig && reviewCwd === worktreePath
+          workspaceConfig && reviewCwd === worktreePath
             ? deps.reviewWorkspacePerRepo(detail, (cwd: string) => runForCwd(cwd))
             : runForCwd(reviewCwd);
 

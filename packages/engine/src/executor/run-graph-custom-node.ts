@@ -43,6 +43,7 @@ export type RunGraphCustomNodeDeps = {
   store: TaskStore;
   rootDir: string;
   workspaceConfig: WorkspaceConfig | null | undefined;
+  ensureWorkspaceConfig?: () => Promise<WorkspaceConfig | null>;
   options: { pluginRunner?: unknown; agentStore?: AgentStore | null; [k: string]: unknown };
   graphUnattendedRuns: Set<string>;
   getRunContextFor: (taskId: string) => EngineRunContext | undefined;
@@ -188,6 +189,9 @@ export async function runGraphCustomNode(
       optionalGroupId,
       reviewerInlineFixes: (settings as Settings & { reviewerInlineFixes?: boolean }).reviewerInlineFixes,
     });
+    const workspaceConfig = deps.ensureWorkspaceConfig
+      ? await deps.ensureWorkspaceConfig()
+      : deps.workspaceConfig;
     let executionTarget = writeCapable ? await deps.store.getTask(live.id) : live;
 
     /*
@@ -209,7 +213,7 @@ export async function runGraphCustomNode(
     */
     const nodeDisplayName = typeof cfg.name === "string" && cfg.name.trim() ? cfg.name.trim() : node.id;
     const isPlanReviewNode = node.id === "plan-review-step" || nodeDisplayName === "Plan Review" || optionalGroupId === "plan-review";
-    if (!deps.workspaceConfig) {
+    if (!workspaceConfig) {
       const recordedWorktreeMissing = Boolean(executionTarget.worktree) && !existsSync(executionTarget.worktree!);
       /*
       A node with NO recorded worktree is pre-execution (planning / Plan Review): acquire one.
@@ -236,7 +240,7 @@ export async function runGraphCustomNode(
       }
     }
 
-    if (writeCapable && !executionTarget.worktree && !deps.workspaceConfig) {
+    if (writeCapable && !executionTarget.worktree && !workspaceConfig) {
       return { outcome: "failure", value: "no-worktree-for-write-node" };
     }
 
