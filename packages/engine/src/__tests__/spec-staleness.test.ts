@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { evaluateSpecStaleness, getPromptPath, shouldSkipSpecStalenessForPreservedProgress} from "../execution/spec-staleness.js";
 import { stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Settings, Task } from "@fusion/core";
 
 vi.mock("node:fs/promises", () => ({
@@ -24,22 +24,20 @@ function createMockSettings(overrides: Partial<Settings> = {}): Settings {
 }
 
 describe("getPromptPath", () => {
+  /**
+   * FNXC:SpecStalenessTests 2026-08-14-21:50:
+   * getPromptPath returns host-native absolute paths, so its fixtures and expectations use the same node:path contract.
+   */
   it("returns absolute path to PROMPT.md for a task", () => {
-    const tasksDir = "/project/.fusion/tasks";
+    const tasksDir = resolve("project", ".fusion", "tasks");
     const taskId = "FN-001";
-    expect(getPromptPath(tasksDir, taskId)).toBe(
-      "/project/.fusion/tasks/FN-001/PROMPT.md",
-    );
+    expect(getPromptPath(tasksDir, taskId)).toBe(join(tasksDir, taskId, "PROMPT.md"));
   });
 
   it("handles task IDs with different formats", () => {
-    const tasksDir = "/project/.fusion/tasks";
-    expect(getPromptPath(tasksDir, "KB-042")).toBe(
-      "/project/.fusion/tasks/KB-042/PROMPT.md",
-    );
-    expect(getPromptPath(tasksDir, "TASK-999")).toBe(
-      "/project/.fusion/tasks/TASK-999/PROMPT.md",
-    );
+    const tasksDir = resolve("project", ".fusion", "tasks");
+    expect(getPromptPath(tasksDir, "KB-042")).toBe(join(tasksDir, "KB-042", "PROMPT.md"));
+    expect(getPromptPath(tasksDir, "TASK-999")).toBe(join(tasksDir, "TASK-999", "PROMPT.md"));
   });
 });
 
