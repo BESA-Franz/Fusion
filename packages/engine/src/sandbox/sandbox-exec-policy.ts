@@ -1,4 +1,4 @@
-import { dirname, resolve } from "node:path";
+import { posix } from "node:path";
 
 import {
   SBPL_BASE_ALLOW,
@@ -9,6 +9,13 @@ import {
   SBPL_TMP_WRITE,
 } from "./sandbox-exec-profile-templates.js";
 import type { SandboxPolicy } from "./types.js";
+
+/**
+ * FNXC:SandboxExecPolicy 2026-08-14-21:57:
+ * sandbox-exec consumes macOS paths even when its pure policy builder is validated on another host, so path operations
+ * must stay POSIX rather than inheriting the test or orchestration machine's separator rules.
+ */
+const { dirname, resolve } = posix;
 
 export class SandboxPolicyError extends Error {
   constructor(message: string) {
