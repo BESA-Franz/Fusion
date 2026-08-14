@@ -42,6 +42,11 @@ describe("FN-5715 reliability: mission validation trigger gap", () => {
     const feature = makeFeature();
     const missionStore = {
       getFeatureByTaskId: vi.fn(() => feature),
+      getMissionWithHierarchy: vi.fn(() => ({
+        id: "M-001",
+        status: "active",
+        milestones: [{ status: "active", slices: [{ id: "SL-001", status: "active", features: [feature] }] }],
+      })),
       listAssertionsForFeature: vi.fn(() => [{ id: "CA-1" }]),
       updateFeatureStatus: vi.fn(),
       getSlice: vi.fn(() => ({ id: "SL-001", milestoneId: "MS-001", status: "active" })),
@@ -69,6 +74,11 @@ describe("FN-5715 reliability: mission validation trigger gap", () => {
     const feature = makeFeature();
     const missionStore = {
       getFeatureByTaskId: vi.fn(() => feature),
+      getMissionWithHierarchy: vi.fn(() => ({
+        id: "M-001",
+        status: "active",
+        milestones: [{ status: "active", slices: [{ id: "SL-001", status: "active", features: [feature] }] }],
+      })),
       listAssertionsForFeature: vi.fn(() => []),
       reconcileSupersededGeneratedFixFeatures: vi.fn(async () => ({ supersededCount: 0, featureIds: [] as string[] })),
       listFeatures: vi.fn(async () => [feature]),
@@ -88,7 +98,13 @@ describe("FN-5715 reliability: mission validation trigger gap", () => {
 
     await (scheduler as any).handleMissionTaskMove("FN-001", "done");
 
-    expect(missionStore.updateFeatureStatus).toHaveBeenCalledWith("F-001", "done");
+    expect(missionStore.updateFeatureStatus).toHaveBeenCalledWith("F-001", "done", {
+      actor: {
+        type: "system",
+        id: "mission-reconcile",
+        source: "mission-reconcile:task-move",
+      },
+    });
   });
 
   it("recovers implementing features whose task is already done at startup", async () => {

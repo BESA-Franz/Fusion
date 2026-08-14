@@ -41,17 +41,10 @@ import { createLogger } from "../logger.js";
 import { createFallbackModelObserver } from "../auth/fallback-model-observer.js";
 import { resolveMcpServersForStore } from "../mcp/mcp-resolution.js";
 import { createRunAuditor, generateSyntheticRunId } from "../util/run-audit.js";
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-const execAsync = promisify(exec);
-
-/** Shell-quote a single argument for a `git` invocation (mirror of the local
- * helper in branch-conflicts.ts — kept local rather than shared per repo
- * convention). */
-function quoteShellArg(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
+const execFileAsync = promisify(execFile);
 
 /** Logger for the mission execution loop subsystem. */
 export const loopLog = createLogger("mission-loop");
@@ -822,9 +815,14 @@ export class MissionExecutionLoop extends EventEmitter {
       return { workspaceStale: false, inspectionUnavailableReason: "landed merge SHA is unavailable" };
     }
     try {
-      await execAsync(`git merge-base --is-ancestor ${quoteShellArg(landedSha)} HEAD`, {
+      /*
+      FNXC:MissionValidation 2026-08-14-12:18:
+      Pass Git arguments directly so Windows does not receive POSIX shell quotes as literal ref names.
+      */
+      await execFileAsync("git", ["merge-base", "--is-ancestor", landedSha, "HEAD"], {
         cwd: inspectionRoot,
         timeout: 30_000,
+        windowsHide: true,
       });
       return { workspaceStale: false }; // exit 0 → ancestor → workspace is fresh
     } catch (err) {
