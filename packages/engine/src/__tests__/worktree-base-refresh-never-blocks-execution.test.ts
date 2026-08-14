@@ -109,7 +109,7 @@ describe("worktree base refresh never blocks execution", () => {
     // Compensated back to the task's own tip: no rebase in progress, no conflict markers, no lost commit.
     expect(git(worktree, ["rev-parse", "HEAD"])).toBe(c2);
     expect(git(worktree, ["status", "--porcelain"])).toBe("");
-    expect(readFileSync(join(worktree, "shared.ts"), "utf8")).toBe("export const shared = 'task-C2';\n");
+    expect(readFileSync(join(worktree, "shared.ts"), "utf8").replaceAll("\r\n", "\n")).toBe("export const shared = 'task-C2';\n");
     expect(c2).not.toBe(c1);
   });
 

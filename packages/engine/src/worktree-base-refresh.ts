@@ -1,10 +1,10 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { resolveIntegrationBranch } from "./merge/integration-branch.js";
 import type { GitAuditInput } from "./util/run-audit.js";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 120_000;
 
 export type WorktreeBaseRefreshKind =
@@ -48,18 +48,14 @@ export interface RefreshReusedWorktreeBaseInput {
   logger?: { warn: (message: string) => void };
 }
 
-function quote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-async function git(cwd: string, command: string): Promise<string> {
-  const { stdout } = await execAsync(`git ${command}`, { cwd, encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 });
+async function git(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 });
   return stdout.trim();
 }
 
 async function isAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean> {
   try {
-    await git(cwd, `merge-base --is-ancestor ${quote(ancestor)} ${quote(descendant)}`);
+    await git(cwd, ["merge-base", "--is-ancestor", ancestor, descendant]);
     return true;
   } catch {
     return false;
@@ -68,13 +64,13 @@ async function isAncestor(cwd: string, ancestor: string, descendant: string): Pr
 
 async function compensate(cwd: string, originalHead: string): Promise<boolean> {
   try {
-    await git(cwd, `rebase --abort`);
+    await git(cwd, ["rebase", "--abort"]);
   } catch {
     // No rebase may be in progress; reset below is the proof-bearing restoration.
   }
   try {
-    await git(cwd, `reset --hard ${quote(originalHead)}`);
-    const [head, dirty] = await Promise.all([git(cwd, "rev-parse HEAD"), git(cwd, "status --porcelain")]);
+    await git(cwd, ["reset", "--hard", originalHead]);
+    const [head, dirty] = await Promise.all([git(cwd, ["rev-parse", "HEAD"]), git(cwd, ["status", "--porcelain"])]);
     return head === originalHead && !dirty;
   } catch {
     return false;
@@ -120,9 +116,9 @@ export async function refreshReusedWorktreeBase(input: RefreshReusedWorktreeBase
   try {
     integrationBranch = await resolveIntegrationBranch(rootDir, settings, { logger: logger ?? console });
     [baseSha, originalHead, dirty] = await Promise.all([
-      git(rootDir, `rev-parse --verify ${quote(`${integrationBranch}^{commit}`)}`),
-      git(worktreePath, "rev-parse HEAD"),
-      git(worktreePath, "status --porcelain"),
+      git(rootDir, ["rev-parse", "--verify", `${integrationBranch}^{commit}`]),
+      git(worktreePath, ["rev-parse", "HEAD"]),
+      git(worktreePath, ["status", "--porcelain"]),
     ]);
   } catch (error) {
     /*
@@ -167,19 +163,19 @@ export async function refreshReusedWorktreeBase(input: RefreshReusedWorktreeBase
 
   let mergeBase: string;
   try {
-    mergeBase = await git(worktreePath, `merge-base HEAD ${quote(baseSha)}`);
+    mergeBase = await git(worktreePath, ["merge-base", "HEAD", baseSha]);
   } catch (error) {
     return { kind: "git-refresh-failed", executionSafe: true, skipped: true, observedHead: originalHead, ...common, detail: error instanceof Error ? error.message : String(error) };
   }
   let kind: "reset-to-base" | "rebased";
   try {
-    const ownCommits = await git(worktreePath, `rev-list --count ${quote(`${mergeBase}..HEAD`)}`);
+    const ownCommits = await git(worktreePath, ["rev-list", "--count", `${mergeBase}..HEAD`]);
     if (Number(ownCommits) === 0) {
-      await git(worktreePath, `reset --hard ${quote(baseSha)}`);
+      await git(worktreePath, ["reset", "--hard", baseSha]);
       kind = "reset-to-base";
     } else {
       try {
-        await git(worktreePath, `rebase ${quote(baseSha)}`);
+        await git(worktreePath, ["rebase", baseSha]);
         kind = "rebased";
       } catch (error) {
         /*
@@ -212,7 +208,7 @@ export async function refreshReusedWorktreeBase(input: RefreshReusedWorktreeBase
     };
   }
 
-  const observedHead = await git(worktreePath, "rev-parse HEAD").catch(() => undefined);
+  const observedHead = await git(worktreePath, ["rev-parse", "HEAD"]).catch(() => undefined);
   try {
     await store.updateTask(task.id, { baseCommitSha: baseSha });
     await audit?.git?.({ type: "worktree:base-refreshed", target: worktreePath, metadata: { taskId: task.id, outcome: kind } });

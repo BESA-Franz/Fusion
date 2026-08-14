@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,14 @@ import { refreshReusedWorktreeBase } from "../worktree-base-refresh.js";
 
 const paths: string[] = [];
 const git = (cwd: string, command: string) => execSync(`git ${command}`, { cwd, encoding: "utf8" }).trim();
+const isGitAncestor = (cwd: string, ancestor: string, descendant: string) => {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+};
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "fn-8693-base-"));
   paths.push(root);
@@ -52,7 +60,7 @@ describe("refreshReusedWorktreeBase", () => {
     const c2 = git(worktree, "rev-parse HEAD");
     expect(result).toMatchObject({ kind: "rebased", executionSafe: true, baseSha: c1, observedHead: c2 });
     expect(c2).not.toBe(c1);
-    expect(git(worktree, `merge-base --is-ancestor ${c1} ${c2}; echo $?`)).toBe("0");
+    expect(isGitAncestor(worktree, c1, c2)).toBe(true);
     expect(store.updateTask).toHaveBeenCalledWith("FN-1", { baseCommitSha: c1 });
   });
 
