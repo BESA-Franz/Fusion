@@ -1,7 +1,7 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 /**
  * Resolve the fork-point base SHA for a freshly acquired task worktree.
@@ -39,34 +39,28 @@ export async function resolveCapturedBaseCommitSha(
   integrationBranch: string = "main",
 ): Promise<string | undefined> {
   const branch = integrationBranch.trim() || "main";
-  /*
-  FNXC:Workspace 2026-06-22-09:00:
-  Shell-quote with a real single-quoted POSIX literal, NOT JSON.stringify. A
-  JSON double-quoted string still lets bash expand `$(...)`, backticks, and `$VAR`
-  inside it; JSON.stringify is not a shell-quoting function. Git ref names can't
-  legally contain backticks so there's no live injection path today, but
-  single-quoting is the idiomatic safe form and stays correct if a caller ever
-  passes a less-constrained string. A single quote inside the value is escaped as
-  the standard `'\''` close-reopen sequence.
-  */
-  const shellSingleQuote = (value: string): string => `'${value.replace(/'/g, "'\\''")}'`;
-  const localRef = shellSingleQuote(branch);
-  const originRef = shellSingleQuote(`origin/${branch}`);
   let baseCommitSha: string | undefined;
-  try {
-    const { stdout } = await execAsync(
-      `git merge-base HEAD ${localRef} 2>/dev/null || git merge-base HEAD ${originRef}`,
-      { cwd: worktreePath, encoding: "utf-8" },
-    );
-    baseCommitSha = stdout.trim() || undefined;
-  } catch (err: unknown) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
+  let mergeBaseError: unknown;
+  for (const ref of [branch, `origin/${branch}`]) {
+    try {
+      const { stdout } = await execFileAsync("git", ["merge-base", "HEAD", ref], {
+        cwd: worktreePath,
+        encoding: "utf-8",
+      });
+      baseCommitSha = stdout.trim() || undefined;
+      if (baseCommitSha) break;
+    } catch (error: unknown) {
+      mergeBaseError = error;
+    }
+  }
+  if (!baseCommitSha && mergeBaseError) {
+    const errorMessage = mergeBaseError instanceof Error ? mergeBaseError.message : String(mergeBaseError);
     logger?.warn(`merge-base failed, falling back to HEAD: ${errorMessage}`);
   }
 
   if (!baseCommitSha) {
     try {
-      const { stdout } = await execAsync("git rev-parse HEAD", {
+      const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
         cwd: worktreePath,
         encoding: "utf-8",
       });

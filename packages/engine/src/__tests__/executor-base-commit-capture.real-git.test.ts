@@ -1,17 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { execSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import type { Task, TaskStore } from "@fusion/core";
-import { TaskExecutor } from "../executor.js";
+import { captureBaseCommitSha } from "../executor/worktree-git-refs.js";
 
 const hasGit = spawnSync("git", ["--version"], { stdio: "pipe" }).status === 0;
 const describeIfGit = hasGit ? describe : describe.skip;
 
-function git(repo: string, command: string): string {
-  return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+function git(repo: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
 function createStore(): TaskStore & EventEmitter {
@@ -48,37 +48,39 @@ describeIfGit("captureBaseCommitSha (real git)", () => {
   it("FN-4309/FN-4383: preserves baseCommitSha across sessions and keeps commit distance", async () => {
     const repo = mkdtempSync(path.join(os.tmpdir(), "fn-4383-"));
     repos.push(repo);
-    git(repo, "git init -b main");
-    git(repo, 'git config user.email "test@example.com"');
-    git(repo, 'git config user.name "Test"');
+    git(repo, ["init", "-b", "main"]);
+    git(repo, ["config", "user.email", "test@example.com"]);
+    git(repo, ["config", "user.name", "Test"]);
 
     writeFileSync(path.join(repo, "file.txt"), "init\n", "utf-8");
-    git(repo, "git add file.txt && git commit -m 'init'");
+    git(repo, ["add", "file.txt"]);
+    git(repo, ["commit", "-m", "init"]);
 
-    git(repo, "git checkout -b fusion/fn-test-4383");
+    git(repo, ["checkout", "-b", "fusion/fn-test-4383"]);
     for (let i = 1; i <= 17; i += 1) {
       writeFileSync(path.join(repo, `branch-${i}.txt`), `branch ${i}\n`, "utf-8");
-      git(repo, `git add branch-${i}.txt && git commit -m 'branch ${i}'`);
+      git(repo, ["add", `branch-${i}.txt`]);
+      git(repo, ["commit", "-m", `branch ${i}`]);
     }
 
     const store = createStore();
-    const executor = new TaskExecutor(store, repo);
     const audit = { git: vi.fn().mockResolvedValue(undefined) };
 
-    await (executor as any).captureBaseCommitSha(makeTask(), repo, audit, { isResume: false });
+    await captureBaseCommitSha(store, makeTask(), repo, audit, { isResume: false });
     const firstBase = (store.updateTask as any).mock.calls[0][1].baseCommitSha as string;
     expect(firstBase).toBeTruthy();
 
     writeFileSync(path.join(repo, "branch-18.txt"), "branch 18\n", "utf-8");
-    git(repo, "git add branch-18.txt && git commit -m 'branch 18'");
+    git(repo, ["add", "branch-18.txt"]);
+    git(repo, ["commit", "-m", "branch 18"]);
 
     // Resume of the same task: baseCommitSha must be preserved so diff math
     // stays stable across sessions (FN-4309/FN-4383).
-    await (executor as any).captureBaseCommitSha(makeTask(firstBase), repo, audit, { isResume: true });
+    await captureBaseCommitSha(store, makeTask(firstBase), repo, audit, { isResume: true });
 
     expect((store.updateTask as any).mock.calls).toHaveLength(1);
 
-    const distance = Number(git(repo, `git rev-list --count ${firstBase}..HEAD`));
+    const distance = Number(git(repo, ["rev-list", "--count", `${firstBase}..HEAD`]));
     expect(distance).toBeGreaterThan(0);
   }, 30_000);
 });

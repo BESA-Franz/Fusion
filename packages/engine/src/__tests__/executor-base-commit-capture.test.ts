@@ -8,7 +8,9 @@ Gate suite calls the free function with an injected store — no TaskExecutor me
 import { captureBaseCommitSha } from "../executor/worktree-git-refs.js";
 import { executorLog } from "../logger.js";
 import type { Task } from "@fusion/core";
-import { createMockStore, mockedExec, mockedExecSync, resetExecutorMocks } from "./executor-test-helpers.js";
+import { createMockStore, mockedExecFile, mockedExecSync, resetExecutorMocks } from "./executor-test-helpers.js";
+
+type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -32,10 +34,9 @@ describe("captureBaseCommitSha", () => {
   });
 
   it("captures merge-base for fresh worktree", async () => {
-    mockedExec.mockImplementation(((cmd: any, _opts: any, cb: any) => {
-      cb(null, cmd.includes("merge-base") ? "abc1234\n" : "");
-      return {} as any;
-    }) as any);
+    mockedExecFile.mockImplementation(((_file: unknown, args: string[], _opts: unknown, cb: ExecFileCallback) => {
+      cb(null, args.includes("merge-base") ? "abc1234\n" : "", "");
+    }) as never);
     const store = createMockStore();
     const audit = { git: vi.fn().mockResolvedValue(undefined) };
 
@@ -68,10 +69,9 @@ describe("captureBaseCommitSha", () => {
     // relative to the new merge-base. Preserving it would re-introduce the
     // false-positive contamination cascade.
     mockedExecSync.mockReturnValue(""); // is-ancestor would succeed if asked
-    mockedExec.mockImplementation(((cmd: any, _opts: any, cb: any) => {
-      cb(null, cmd.includes("merge-base") ? "freshmainSHA\n" : "");
-      return {} as any;
-    }) as any);
+    mockedExecFile.mockImplementation(((_file: unknown, args: string[], _opts: unknown, cb: ExecFileCallback) => {
+      cb(null, args.includes("merge-base") ? "freshmainSHA\n" : "", "");
+    }) as never);
     const store = createMockStore();
     const audit = { git: vi.fn().mockResolvedValue(undefined) };
 
@@ -95,10 +95,9 @@ describe("captureBaseCommitSha", () => {
     mockedExecSync.mockImplementation(() => {
       throw new Error("not ancestor");
     });
-    mockedExec.mockImplementation(((cmd: any, _opts: any, cb: any) => {
-      cb(null, cmd.includes("merge-base") ? "new456\n" : "");
-      return {} as any;
-    }) as any);
+    mockedExecFile.mockImplementation(((_file: unknown, args: string[], _opts: unknown, cb: ExecFileCallback) => {
+      cb(null, args.includes("merge-base") ? "new456\n" : "", "");
+    }) as never);
     const store = createMockStore();
     const audit = { git: vi.fn().mockResolvedValue(undefined) };
 
@@ -125,14 +124,13 @@ describe("captureBaseCommitSha", () => {
   });
 
   it("falls back to HEAD when merge-base fails", async () => {
-    mockedExec.mockImplementation(((cmd: any, _opts: any, cb: any) => {
-      if (String(cmd).includes("merge-base")) {
+    mockedExecFile.mockImplementation(((_file: unknown, args: string[], _opts: unknown, cb: ExecFileCallback) => {
+      if (args.includes("merge-base")) {
         cb(new Error("merge-base failed"), "", "merge-base failed");
-        return {} as any;
+        return;
       }
       cb(null, "head777\n", "");
-      return {} as any;
-    }) as any);
+    }) as never);
     const store = createMockStore();
     const audit = { git: vi.fn().mockResolvedValue(undefined) };
 

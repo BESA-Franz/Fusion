@@ -1,4 +1,4 @@
-import { execSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,8 +8,8 @@ import { resolveCapturedBaseCommitSha } from "../execution/base-commit-capture.j
 const hasGit = spawnSync("git", ["--version"], { stdio: "pipe" }).status === 0;
 const describeIfGit = hasGit ? describe : describe.skip;
 
-function git(repo: string, command: string): string {
-  return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+function git(repo: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
 describeIfGit("resolveCapturedBaseCommitSha real-git scenarios", { timeout: 30_000 }, () => {
@@ -26,19 +26,20 @@ describeIfGit("resolveCapturedBaseCommitSha real-git scenarios", { timeout: 30_0
 
   function originFixture(): string {
     const origin = tmp("fusion-base-capture-origin-");
-    git(origin, "git init -b main");
-    git(origin, 'git config user.email "test@example.com"');
-    git(origin, 'git config user.name "Test User"');
+    git(origin, ["init", "-b", "main"]);
+    git(origin, ["config", "user.email", "test@example.com"]);
+    git(origin, ["config", "user.name", "Test User"]);
     writeFileSync(join(origin, "README.md"), "init\n");
-    git(origin, "git add README.md && git commit -m 'init'");
+    git(origin, ["add", "README.md"]);
+    git(origin, ["commit", "-m", "init"]);
     return origin;
   }
 
   function cloneFixture(origin: string): string {
     const clone = tmp("fusion-base-capture-clone-");
-    git(clone, `git clone ${JSON.stringify(origin)} .`);
-    git(clone, 'git config user.email "test@example.com"');
-    git(clone, 'git config user.name "Test User"');
+    git(clone, ["clone", origin, "."]);
+    git(clone, ["config", "user.email", "test@example.com"]);
+    git(clone, ["config", "user.name", "Test User"]);
     return clone;
   }
 
@@ -54,11 +55,12 @@ describeIfGit("resolveCapturedBaseCommitSha real-git scenarios", { timeout: 30_0
 
     // Local main advances by a merged-but-unpushed predecessor task commit.
     writeFileSync(join(clone, "predecessor.txt"), "FN-5936 work\n");
-    git(clone, "git add predecessor.txt && git commit -m 'FN-5936: predecessor task'");
-    const localMainTip = git(clone, "git rev-parse HEAD");
+    git(clone, ["add", "predecessor.txt"]);
+    git(clone, ["commit", "-m", "FN-5936: predecessor task"]);
+    const localMainTip = git(clone, ["rev-parse", "HEAD"]);
 
     // New task branch forks from local main (prepareForTask behavior).
-    git(clone, "git checkout -B fusion/fn-5937-test main");
+    git(clone, ["checkout", "-B", "fusion/fn-5937-test", "main"]);
 
     const captured = await resolveCapturedBaseCommitSha(clone);
     expect(captured).toBe(localMainTip);
@@ -67,11 +69,12 @@ describeIfGit("resolveCapturedBaseCommitSha real-git scenarios", { timeout: 30_0
   it("captures the merge-base with main for a branch with its own commits", async () => {
     const origin = originFixture();
     const clone = cloneFixture(origin);
-    const forkPoint = git(clone, "git rev-parse HEAD");
+    const forkPoint = git(clone, ["rev-parse", "HEAD"]);
 
-    git(clone, "git checkout -B fusion/fn-100-test main");
+    git(clone, ["checkout", "-B", "fusion/fn-100-test", "main"]);
     writeFileSync(join(clone, "feature.txt"), "feature\n");
-    git(clone, "git add feature.txt && git commit -m 'FN-100: feature'");
+    git(clone, ["add", "feature.txt"]);
+    git(clone, ["commit", "-m", "FN-100: feature"]);
 
     const captured = await resolveCapturedBaseCommitSha(clone);
     expect(captured).toBe(forkPoint);
@@ -80,12 +83,12 @@ describeIfGit("resolveCapturedBaseCommitSha real-git scenarios", { timeout: 30_0
   it("falls back to origin/main when no local main branch exists", async () => {
     const origin = originFixture();
     const clone = cloneFixture(origin);
-    const originMainSha = git(clone, "git rev-parse origin/main");
+    const originMainSha = git(clone, ["rev-parse", "origin/main"]);
 
     // Detach and delete local main so only origin/main can resolve.
-    git(clone, "git checkout --detach origin/main");
-    git(clone, "git branch -D main");
-    git(clone, "git checkout -B fusion/fn-200-test");
+    git(clone, ["checkout", "--detach", "origin/main"]);
+    git(clone, ["branch", "-D", "main"]);
+    git(clone, ["checkout", "-B", "fusion/fn-200-test"]);
 
     const captured = await resolveCapturedBaseCommitSha(clone);
     expect(captured).toBe(originMainSha);
@@ -93,12 +96,13 @@ describeIfGit("resolveCapturedBaseCommitSha real-git scenarios", { timeout: 30_0
 
   it("falls back to HEAD when neither main nor origin/main resolves", async () => {
     const repo = tmp("fusion-base-capture-nomain-");
-    git(repo, "git init -b trunk");
-    git(repo, 'git config user.email "test@example.com"');
-    git(repo, 'git config user.name "Test User"');
+    git(repo, ["init", "-b", "trunk"]);
+    git(repo, ["config", "user.email", "test@example.com"]);
+    git(repo, ["config", "user.name", "Test User"]);
     writeFileSync(join(repo, "README.md"), "init\n");
-    git(repo, "git add README.md && git commit -m 'init'");
-    const head = git(repo, "git rev-parse HEAD");
+    git(repo, ["add", "README.md"]);
+    git(repo, ["commit", "-m", "init"]);
+    const head = git(repo, ["rev-parse", "HEAD"]);
 
     const captured = await resolveCapturedBaseCommitSha(repo);
     expect(captured).toBe(head);

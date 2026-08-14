@@ -344,8 +344,31 @@ vi.mock("node:child_process", async () => {
         }
       });
     });
-  execFileFn[promisify.custom] = (_file: string, _args?: string[], _opts?: any) =>
-    Promise.resolve({ stdout: "", stderr: "" });
+  execFileFn[promisify.custom] = (file: string, args?: string[], opts?: any) =>
+    new Promise((resolve, reject) => {
+      execFileFn(
+        file,
+        args,
+        opts,
+        (
+          err: (Error & Record<string, unknown>) | null,
+          stdout: string | { stdout?: string; stderr?: string },
+          stderr: string,
+        ) => {
+          const result =
+            typeof stdout === "object" && stdout !== null
+              ? { stdout: stdout.stdout ?? "", stderr: stdout.stderr ?? "" }
+              : { stdout: stdout ?? "", stderr: stderr ?? "" };
+          if (err) {
+            err.stdout = result.stdout;
+            err.stderr = result.stderr;
+            reject(err);
+          } else {
+            resolve(result);
+          }
+        },
+      );
+    });
 
   return { execSync: execSyncFn, exec: execFn, execFile: execFileFn, spawn: spawnFn };
 });
@@ -427,7 +450,7 @@ import { generateWorktreeName } from "../worktree/worktree-names.js";
 import { findWorktreeUser } from "../merger.js";
 import { StepSessionExecutor } from "../execution/step-session-executor.js";
 import { withRateLimitRetry } from "../errors/rate-limit-retry.js";
-import { exec, execSync } from "node:child_process";
+import { exec, execFile, execSync } from "node:child_process";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { hydrateWorktreeDb } from "../worktree/worktree-db-hydrate.js";
 import { classifyTaskWorktree, describeRegisteredWorktrees, isUsableTaskWorktree } from "../worktree/worktree-pool.js";
@@ -443,6 +466,7 @@ export const mockedFindWorktreeUser = vi.mocked(findWorktreeUser);
 export const mockedStepSessionExecutor = vi.mocked(StepSessionExecutor);
 export const mockedWithRateLimitRetry = vi.mocked(withRateLimitRetry);
 export const mockedExec = vi.mocked(exec);
+export const mockedExecFile = vi.mocked(execFile);
 export const mockedExecSync = vi.mocked(execSync);
 export const mockedExistsSync = vi.mocked(existsSync);
 export const mockedRealpathSync = vi.mocked(realpathSync);
@@ -907,6 +931,7 @@ export function selectImplementationSessionCall<T extends { customTools?: Array<
 export function resetExecutorMocks() {
   vi.clearAllMocks();
   mockedExec.mockReset();
+  mockedExecFile.mockReset();
   mockedExecSync.mockReset();
   mockedStatSync.mockReset();
   mockedStatSync.mockReturnValue({ isDirectory: () => true } as ReturnType<typeof statSync>);
