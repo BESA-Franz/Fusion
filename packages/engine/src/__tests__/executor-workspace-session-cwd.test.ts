@@ -9,6 +9,7 @@ import { acquireTaskWorktree } from "../worktree/worktree-acquisition.js";
 import type { WorkspaceConfig } from "@fusion/core";
 import {
   createMockStore,
+  createWorkflowRoutingAgentStore,
   mockedCreateFnAgent,
   mockedExecSync,
   resetExecutorMocks,
@@ -56,7 +57,9 @@ describe("U1 KTD1 — session cwd is the browse-only workspace root", () => {
       sessionFile: "/tmp/sessions/ws.jsonl",
     } as any);
 
-    const executor = new TaskExecutor(store, ROOT);
+    const executor = new TaskExecutor(store, ROOT, {
+      agentStore: createWorkflowRoutingAgentStore(store).agentStore,
+    });
     // Drive the genuine workspace gate (loadWorkspaceConfig is covered elsewhere).
     (executor as any).workspaceConfig = { repos: ["repo-a", "repo-b"] } as WorkspaceConfig;
 
@@ -104,7 +107,9 @@ describe("U1 regression — non-workspace task acquires a worktree and roots the
       sessionFile: "/tmp/sessions/ns.jsonl",
     } as any);
 
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = new TaskExecutor(store, "/tmp/test", {
+      agentStore: createWorkflowRoutingAgentStore(store).agentStore,
+    });
     // No workspaceConfig → single-repo path. Pin the lazy-load guard so the real
     // loader is never consulted (it would return null for /tmp/test anyway).
     (executor as any).workspaceConfig = null;
