@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
  * - packages/engine/src/execution/verification-utils.ts :: execWithProcessGroup — delegates command execution through the sandbox backend streaming API; caller-owned options must carry bounds.
  * - packages/engine/src/execution/verification-utils.ts :: runVerificationCommand — runs configured test/build commands through execWithProcessGroup with timeout and VERIFICATION_COMMAND_MAX_BUFFER.
  * - packages/engine/src/execution/run-verification-tool.ts :: runVerificationCommand — backs fn_run_verification with superviseSpawn and maxLifetimeMs.
- * - packages/engine/src/executor.ts :: runConfiguredCommand — runs settings.scripts, settings.setupScript, settings.worktreeInitCommand, and workflow script commands through backend.run with timeoutMs and maxBuffer.
+ * - packages/engine/src/executor/configured-command.ts :: runConfiguredCommand — runs settings.scripts, settings.setupScript, settings.worktreeInitCommand, and workflow script commands through backend.run with timeoutMs and maxBuffer.
  * - packages/engine/src/merger.ts :: runConfiguredMergeWorktreeCommand — runs configured merge-worktree commands through backend.run with timeoutMs and maxBuffer.
  * - FNXC:EngineTests 2026-06-27-10:05: U7c removed the legacy merger-side executePostMergeScriptStep path; the static guard must track only live user-configured command surfaces so registry drift fails for real protected functions, not deleted ones.
  * - packages/engine/src/scheduling/routine-runner.ts :: executeCommand — runs configured automation/routine commands through backend.run with timeoutMs and maxBuffer.
@@ -86,7 +86,9 @@ const protectedCommandPaths: GuardEntry[] = [
     ],
   },
   {
-    file: "src/executor.ts",
+    // FNXC:EngineProcessRules 2026-08-14-22:02:
+    // Follow the configured-command owner after the TaskExecutor source peel instead of pinning the thin facade.
+    file: "src/executor/configured-command.ts",
     name: "runConfiguredCommand",
     signature: "async function runConfiguredCommand(",
     requiredSafeguards: [
@@ -295,12 +297,12 @@ describe("user-configured command static execSync guard", () => {
   });
 
   it("does not false-positive on allowed git-plumbing execSync outside protected slices", () => {
-    const executorSource = readSource("src/executor.ts");
-    expect(executorSource, "executor keeps a git-only execSync ancestry check outside the protected configured-command helper").toContain("execSync(`git merge-base --is-ancestor");
+    const gitRefsSource = readSource("src/executor/worktree-git-refs.ts");
+    expect(gitRefsSource, "executor keeps a git-only execSync ancestry check outside the protected configured-command helper").toContain("execSync(`git merge-base --is-ancestor");
 
-    const configuredCommand = protectedCommandPaths.find((entry) => entry.file === "src/executor.ts" && entry.name === "runConfiguredCommand");
+    const configuredCommand = protectedCommandPaths.find((entry) => entry.file === "src/executor/configured-command.ts" && entry.name === "runConfiguredCommand");
     expect(configuredCommand, "executor runConfiguredCommand registry entry must exist").toBeDefined();
-    const body = sliceFunctionBody(executorSource, configuredCommand!.signature, "src/executor.ts :: runConfiguredCommand");
-    assertGuardInvariants(body, "src/executor.ts :: runConfiguredCommand", configuredCommand!.requiredSafeguards);
+    const body = sliceFunctionBody(readSource(configuredCommand!.file), configuredCommand!.signature, "src/executor/configured-command.ts :: runConfiguredCommand");
+    assertGuardInvariants(body, "src/executor/configured-command.ts :: runConfiguredCommand", configuredCommand!.requiredSafeguards);
   });
 });
