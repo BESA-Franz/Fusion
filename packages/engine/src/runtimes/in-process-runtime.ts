@@ -997,6 +997,7 @@ export class InProcessRuntime
         createProjectScopedPluginMcpProvider,
         registerTaskDeleteNoticeMailbox,
         registerTaskRecommendationNoticeMailbox,
+        syncBackupRoutine,
       } = await import("@fusion/core");
       if (this.config.externalTaskStore) {
         this.taskStore = this.config.externalTaskStore;
@@ -1815,6 +1816,18 @@ export class InProcessRuntime
             : new RoutineStoreClass(this.config.workingDirectory);
           await routineStore.init();
           this.routineStore = routineStore;
+
+          /*
+          FNXC:SettingsBackups 2026-08-13-23:51:
+          Backup settings can change while no engine is running, so startup must reconcile the
+          durable backup routine before the scheduler's first immediate tick. This both creates
+          an enabled schedule and removes a stale one when automatic backups are disabled.
+          */
+          try {
+            await syncBackupRoutine(routineStore, await this.taskStore.getSettings());
+          } catch (backupRoutineErr) {
+            runtimeLog.warn("Database backup routine reconciliation skipped:", backupRoutineErr instanceof Error ? backupRoutineErr.message : backupRoutineErr);
+          }
 
           if (this.heartbeatMonitor) {
             const aiPromptExecutor = await createAiPromptExecutor(this.config.workingDirectory);

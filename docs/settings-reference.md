@@ -756,6 +756,10 @@ GitLab configuration examples: leave both URL fields blank for GitLab.com (`http
 
 > **Scope:** Database Backups are global because PostgreSQL is one shared cluster. Settings → Database Backups writes one global policy and stores its default dumps under `~/.fusion/backups`; Memory Backups remain project-scoped. Existing project overrides should be reviewed during upgrade before removing them.
 
+Settings → Database Backups shows the newest backup inventory (filename, creation time, and size) along with automatic-schedule evidence: enabled state, cron expression, next and last run, most recent result, and run count. An empty inventory and listing error are shown explicitly. If an enabled policy has no registered shared routine, the screen warns that restarting Fusion or saving the backup settings will reconcile it.
+
+Fusion reconciles the shared Database Backup routine during engine startup. Saving unchanged backup settings preserves the existing next-run timestamp, so frequent global-settings saves cannot indefinitely postpone an otherwise due backup.
+
 Database backups work with both external PostgreSQL and Fusion's default embedded PostgreSQL deployment. `fn backup` and the built-in **Database Backup** cron/routine use `pg_dump` and `pg_restore`; install PostgreSQL client tools or configure their paths so both executables are available on `PATH`. They are not bundled with `embedded-postgres`.
 
 | `memoryBackupEnabled` | `boolean` | `false` | Enable scheduled memory backups. |

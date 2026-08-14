@@ -929,6 +929,7 @@ export type {
   BackupCreateResponse,
   BackupInfo,
   BackupListResponse,
+  BackupScheduleStatus,
   CompaniesCatalogResponse,
   CompanyEntry,
   SettingsExportData,
