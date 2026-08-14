@@ -8,7 +8,11 @@ function readSource(file: string): string {
 
 describe("fn_web_fetch universal registration", () => {
   it("executor registers fn_web_fetch", () => {
-    expect(readSource("executor.ts")).toContain("createWebFetchTool()");
+    // FNXC:WebFetchUniversal 2026-08-14-22:00:
+    // TaskExecutor is now a thin lifecycle shell. Follow its executeCore delegation to the implementation that owns
+    // the session tool list so this invariant does not depend on the pre-peel source location.
+    expect(readSource("executor.ts")).toContain("this.executeCore(task)");
+    expect(readSource("executor/run-implementation.ts")).toContain("createWebFetchTool()");
   });
 
   it("step-session executor registers fn_web_fetch", () => {
