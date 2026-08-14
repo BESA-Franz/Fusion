@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { resolve } from "node:path";
 import type { Settings, TaskStore, Task } from "@fusion/core";
 import { cleanupOrphanedWorktrees } from "../../worktree/worktree-pool.js";
 import { SelfHealingManager } from "../../self-healing.js";
@@ -84,6 +85,6 @@ describe("reliability interactions: worktrunk worktree removal routing", () => {
     const store = { listTasks: vi.fn(async () => []) } as unknown as TaskStore;
     await cleanupOrphanedWorktrees("/repo", store, { worktreesDir: "/repo/.worktrees" });
 
-    expect(removeSpy).toHaveBeenCalledWith(expect.objectContaining({ rootDir: "/repo", worktreePath: "/repo/.worktrees/fn-1" }));
+    expect(removeSpy).toHaveBeenCalledWith(expect.objectContaining({ rootDir: "/repo", worktreePath: resolve("/repo/.worktrees/fn-1") }));
   });
 });
