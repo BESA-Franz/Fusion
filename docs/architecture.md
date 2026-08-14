@@ -2406,7 +2406,7 @@ The resolver deliberately separates four outcomes: `selected` writes the owner o
 
 ### Agent activity outbox
 
-FN-8864 records project-scoped agent activity in `project.agent_activity_events`, with a transactional per-project bigint counter providing a stable decimal-string `seq` cursor. The deterministic event id and `(project_id,event_id)` uniqueness make retries idempotent without allocating a cursor position for a deduplicated retry. The stream covers task starts, review handoffs and completions, agent state changes, workflow gates, and approval requests.
+FN-8864 records project-scoped agent activity in `project.agent_activity_events`, with a transactional per-project bigint counter providing a stable decimal-string `seq` cursor. The deterministic event id and `(project_id,event_id)` uniqueness make retries idempotent without allocating a cursor position for a deduplicated retry. The stream covers task starts, review handoffs and completions, workflow gates, and approval requests. Historical `agent:state-changed` rows remain wire-compatible but are no longer produced; current agent state comes from the roster/live state channel.
 
 Writers use the `AsyncDataLayer` outbox seam because AgentStore and approval stores can run outside a TaskStore process. Callers provide attribution claims only; the append boundary probes the current project roster before emitting `agent` attribution, without exemptions. `lane` and `actor` are never org-map nodes. Metadata is deny-by-default: it contains only closed enums (with `unlisted`/`custom` fallbacks), generated Fusion identifiers, counts, booleans, and SHAs—never freeform text.
 
