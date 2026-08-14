@@ -130,10 +130,12 @@ test("root and package gate scripts still propagate real Vitest failures", () =>
     staticCheck("capacity-pool-id"),
     staticCheck("no-node-only-core-imports-in-dashboard"),
     staticCheck("pi-versions-pinned"),
+    staticCheck("workspace-package-graph"),
     staticCheck("no-test-timeout-appeasement"),
     staticCheck("changeset-format"),
     staticCheck("mock-completeness"),
     staticCheck("inert-sync-lane-conversions"),
+    staticCheck("runtime-skill-loader-drift"),
   ], "every static policy validator must remain once in the blocking composition");
   assert.equal(new Set(gateValidators).size, gateValidators.length, "the static validator composition must be duplicate-free");
   assert.match(gate, /pnpm --filter @fusion\/engine test:core/);
