@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import {
@@ -70,7 +70,7 @@ export class ComputerSnapshotStore {
     return join(this.projectRoot, ".fusion", "computer-use", "latest");
   }
 
-  async persist(input: PersistSnapshotInput): Promise<SnapshotRecord> {
+  async persist(input: PersistSnapshotInput, alreadyFenced = false): Promise<SnapshotRecord> {
     const capturedAt = input.capturedAt ?? this.now().toISOString();
     const expiresAt = input.expiresAt ?? new Date(Date.parse(capturedAt) + this.ttlMs).toISOString();
     const targetKey = targetKeyForApp(input.app);
@@ -89,9 +89,9 @@ export class ComputerSnapshotStore {
     await mkdir(this.snapshotsDirectory, { recursive: true });
     await mkdir(this.latestDirectory, { recursive: true });
     await writeJsonAtomically(this.snapshotPath(record.snapshotId), record);
-    await this.mutateLatestPointer(targetKey, async () => {
-      await writeJsonAtomically(this.latestPath(targetKey), { snapshotId: record.snapshotId });
-    });
+    const writeLatest = async () => { await writeJsonAtomically(this.latestPath(targetKey), { snapshotId: record.snapshotId }); };
+    if (alreadyFenced) await writeLatest();
+    else await this.mutateLatestPointer(targetKey, writeLatest);
     await this.prune({ preserveSnapshotId: record.snapshotId });
     return record;
   }
@@ -101,13 +101,28 @@ export class ComputerSnapshotStore {
    * A successful action consumes only this app's latest pointer, retaining the record for clear
    * stale details and pruning. The next element replay must capture a new accessibility tree.
    */
-  async consume(app: AppRef, expectedSnapshotId?: string): Promise<void> {
+  async consume(app: AppRef, expectedSnapshotId?: string, alreadyFenced = false): Promise<boolean> {
     const targetKey = targetKeyForApp(app);
-    await this.mutateLatestPointer(targetKey, async () => {
+    let consumed = false;
+    const consumeLatest = async () => {
       const latest = await this.readLatest(targetKey);
       if (!latest || (expectedSnapshotId !== undefined && latest.snapshotId !== expectedSnapshotId)) return;
       await writeJsonAtomically(this.latestPath(targetKey), { snapshotId: latest.snapshotId, consumedAt: this.now().toISOString() });
-    });
+      consumed = true;
+    };
+    if (alreadyFenced) await consumeLatest();
+    else await this.mutateLatestPointer(targetKey, consumeLatest);
+    return consumed;
+  }
+
+  /**
+   * FNXC:ComputerUse 2026-08-14-00:35:
+   * Capture acquisition and element replay share this app fence, not merely their pointer writes.
+   * This prevents an action resolved from S or a tree captured before it from racing to re-arm S.
+   */
+  async withAppFence<T>(app: AppRef, operation: () => Promise<T>): Promise<T> {
+    await mkdir(this.latestDirectory, { recursive: true });
+    return withDirectoryLock(`${this.latestPath(targetKeyForApp(app))}.lock`, operation);
   }
 
   /** Read the current record for the resolved app and enforce the C9 fence order. */
@@ -198,9 +213,7 @@ export class ComputerSnapshotStore {
    * while holding the same per-app lock that persist uses to re-arm the pointer.
    */
   private async mutateLatestPointer(targetKey: string, mutation: () => Promise<void>): Promise<void> {
-    await mkdir(this.latestDirectory, { recursive: true });
-    const lockPath = `${this.latestPath(targetKey)}.lock`;
-    await withDirectoryLock(lockPath, mutation);
+    await this.withAppFence({ bundleId: targetKey.startsWith("bundle:") ? targetKey.slice("bundle:".length) : null, name: "snapshot-pointer", pid: targetKey.startsWith("pid:") ? Number(targetKey.slice("pid:".length)) : 0 }, mutation);
   }
 
   private snapshotPath(snapshotId: string): string {
@@ -278,28 +291,41 @@ async function readDirectory(path: string): Promise<string[]> {
 
 const POINTER_LOCK_RETRY_MS = 5;
 const POINTER_LOCK_STALE_MS = 60_000;
+const LOCK_HEARTBEAT_MS = 1_000;
 
-/** Serialize a tiny pointer rewrite across independently-invoked CLI processes. */
-async function withDirectoryLock(lockPath: string, operation: () => Promise<void>): Promise<void> {
+/**
+ * FNXC:ComputerUse 2026-08-14-00:35:
+ * An app fence lives through OS work, so its heartbeat—not a fixed maximum action duration—proves
+ * liveness. Stale locks are atomically quarantined and token-checked on release: a crashed holder
+ * cannot block forever, and a recovered holder cannot delete a successor's lock after a PID reuse.
+ */
+async function withDirectoryLock<T>(lockPath: string, operation: () => Promise<T>): Promise<T> {
+  const ownerPath = join(lockPath, "owner.json");
+  const token = randomBytes(16).toString("hex");
   for (;;) {
     try {
       await mkdir(lockPath);
+      await writeJsonAtomically(ownerPath, { token, pid: process.pid });
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const lockInfo = await stat(lockPath).catch(() => undefined);
       const age = lockInfo === undefined ? Number.NaN : Date.now() - lockInfo.mtimeMs;
       if (Number.isFinite(age) && age > POINTER_LOCK_STALE_MS) {
-        await rm(lockPath, { recursive: true, force: true });
-        continue;
+        const quarantined = `${lockPath}.stale-${randomBytes(8).toString("hex")}`;
+        try { await rename(lockPath, quarantined); await rm(quarantined, { recursive: true, force: true }); continue; }
+        catch { continue; }
       }
       await new Promise<void>((resolveRetry) => setTimeout(resolveRetry, POINTER_LOCK_RETRY_MS));
     }
   }
+  const heartbeat = setInterval(() => { void utimes(lockPath, new Date(), new Date()).catch(() => undefined); }, LOCK_HEARTBEAT_MS);
   try {
-    await operation();
+    return await operation();
   } finally {
-    await rm(lockPath, { recursive: true, force: true });
+    clearInterval(heartbeat);
+    const owner = await readJson(ownerPath) as { token?: unknown } | undefined;
+    if (owner?.token === token) await rm(lockPath, { recursive: true, force: true });
   }
 }
 

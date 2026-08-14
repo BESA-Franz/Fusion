@@ -86,7 +86,7 @@ describe("ComputerSnapshotStore", () => {
 
   it("consumes the latest pointer until a fresh capture re-arms it", async () => {
     const { store } = await fixture();
-    await expect(store.consume(app)).resolves.toBeUndefined();
+    await expect(store.consume(app)).resolves.toBe(false);
 
     const first = await store.persist({ app, window, elementCount: 1, elements: [element(7)] });
     await store.consume(app);

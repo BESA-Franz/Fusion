@@ -145,7 +145,7 @@ describe("computer commands", () => {
       resolveLocator: async (_window, locator) => ({ element: locator.path === from.locator.path ? from : to, handle: locator.path }),
       drag: async (value) => { input = value; return { action: "drag", app: value.app, snapshotId: value.snapshotId, elementIndex: null, fromElementIndex: value.from?.element.index ?? null, toElementIndex: value.to?.element.index ?? null, performed: true, snapshotConsumed: false }; },
     };
-    const store = { resolve, consume: vi.fn(), getElement: (_record: typeof record, index: number) => _record.elements[String(index)] } as unknown as import("../computer/snapshot-store.js").ComputerSnapshotStore;
+    const store = { resolve, consume: vi.fn(async () => true), withAppFence: async (_app: typeof app, operation: () => Promise<unknown>) => operation(), getElement: (_record: typeof record, index: number) => _record.elements[String(index)] } as unknown as import("../computer/snapshot-store.js").ComputerSnapshotStore;
     expect(await runComputer(["drag", "--app", "App", "--from-element-index", "7", "--to-element-index", "9", "--json"], { adapter: dragAdapter, store, stdout: () => undefined })).toBe(0);
     expect(resolve).toHaveBeenCalledTimes(1);
     expect(input).toMatchObject({ snapshotId: record.snapshotId, from: { element: { index: 7 } }, to: { element: { index: 9 } } });
@@ -220,6 +220,30 @@ describe("computer commands", () => {
         expect(await run(["click", "--app", "App", "--element-index", "7"])).toBe(1);
       }
     } finally { await (await import("node:fs/promises")).rm(root, { recursive: true, force: true }); }
+  });
+
+  it("holds the command fence through consumption and makes a re-capture wait", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fusion-computer-command-fence-"));
+    const clock = { now: () => new Date(0) };
+    let releaseAction!: () => void;
+    const actionStarted = new Promise<void>((resolve) => { releaseAction = resolve; });
+    let completeAction!: () => void;
+    const actionComplete = new Promise<void>((resolve) => { completeAction = resolve; });
+    const events: string[] = [];
+    let captures = 0;
+    const blockingAdapter: ComputerAdapter = { ...adapter, captureState: async (target, options) => { captures += 1; if (captures > 1) events.push("capture"); return adapter.captureState(target, options); }, click: async (input) => { releaseAction(); await actionComplete; events.push("action-consumed"); return { action: "click", app: input.app, snapshotId: input.snapshotId, elementIndex: 7, fromElementIndex: null, toElementIndex: null, performed: true, snapshotConsumed: false }; } };
+    try {
+      await runComputer(["get-app-state", "--app", "App", "--no-screenshot", "--json"], { adapter: blockingAdapter, projectRoot: root, clock, stdout: () => undefined });
+      const action = runComputer(["click", "--app", "App", "--element-index", "7", "--json"], { adapter: blockingAdapter, projectRoot: root, clock, stdout: () => undefined });
+      await actionStarted;
+      let recaptured = false;
+      const recapture = runComputer(["get-app-state", "--app", "App", "--no-screenshot", "--json"], { adapter: blockingAdapter, projectRoot: root, clock, stdout: () => { recaptured = true; } });
+      completeAction();
+      expect(await action).toBe(0);
+      expect(await recapture).toBe(0);
+      expect(recaptured).toBe(true);
+      expect(events).toEqual(["action-consumed", "capture"]);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it("uses group-level INVALID_ARGUMENTS for unknown commands", async () => { const output: string[] = []; expect(await runComputer(["nope", "--json"], { adapter, stdout: (x) => output.push(x) })).toBe(1); expect(JSON.parse(output[0])).toMatchObject({ command: "computer", error: { code: "INVALID_ARGUMENTS" } }); });
