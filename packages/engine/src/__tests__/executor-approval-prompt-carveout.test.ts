@@ -14,13 +14,17 @@ the engine copy is asserted by reading the source file directly.
 */
 const CARVEOUT_MARKER = "Exception — pending approval.";
 
+/**
+ * FNXC:ExecutorPromptTests 2026-08-14-21:45:
+ * Prompt ownership moved into the executor and core agent modules; keep source-parity coverage bound to those owners.
+ */
 function readExecutorSourcePrompt(): string {
-  const executorTsPath = fileURLToPath(new URL("../executor.ts", import.meta.url));
+  const executorTsPath = fileURLToPath(new URL("../executor/system-prompt.ts", import.meta.url));
   return readFileSync(executorTsPath, "utf8");
 }
 
 function readAgentPromptsSource(): string {
-  const agentPromptsTsPath = fileURLToPath(new URL("../../../core/src/agent-prompts.ts", import.meta.url));
+  const agentPromptsTsPath = fileURLToPath(new URL("../../../core/src/agents/agent-prompts.ts", import.meta.url));
   return readFileSync(agentPromptsTsPath, "utf8");
 }
 
@@ -37,7 +41,7 @@ describe("executor prompt pending-approval carve-out (FN-7608)", () => {
     expect(prompt).toContain("Waiting on a pending approval IS a legitimate turn end");
   });
 
-  it("keeps the shared carve-out clause byte-identical between both prompt copies", () => {
+  it("keeps the shared carve-out clause text-identical between both prompt copies", () => {
     // Compare raw .ts SOURCE text on both sides (not the runtime-resolved
     // core prompt), since the core copy's runtime string has already been
     // through template-literal escape resolution (e.g. `\\\`` -> `\``) while
@@ -47,11 +51,12 @@ describe("executor prompt pending-approval carve-out (FN-7608)", () => {
     const coreSource = readAgentPromptsSource();
 
     function extractClause(text: string): string {
-      const start = text.indexOf(`**${CARVEOUT_MARKER}**`);
+      const normalized = text.replaceAll("\r\n", "\n");
+      const start = normalized.indexOf(`**${CARVEOUT_MARKER}**`);
       expect(start).toBeGreaterThan(-1);
-      const end = text.indexOf("\n\nIf you have just finished", start);
+      const end = normalized.indexOf("\n\nIf you have just finished", start);
       expect(end).toBeGreaterThan(start);
-      return text.slice(start, end);
+      return normalized.slice(start, end);
     }
 
     const engineClause = extractClause(engineSource);
