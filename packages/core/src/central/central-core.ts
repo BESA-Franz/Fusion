@@ -1,6 +1,13 @@
 import { createLogger } from "../process/logger.js";
 
 const severityAuditLog = createLogger("core-central-core");
+
+/**
+ * FNXC:RemoteNodeHealth 2026-08-14-21:34:
+ * Tailnet workers can complete an authenticated health response just after five seconds; keep the monitor below its
+ * one-minute cadence while allowing enough connection headroom to avoid false `error` transitions for healthy nodes.
+ */
+const REMOTE_NODE_HEALTH_TIMEOUT_MS = 10_000;
 /**
  * CentralCore — Main API for fn's multi-project central infrastructure.
  *
@@ -1165,7 +1172,7 @@ export class CentralCore extends EventEmitter<CentralCoreEvents> {
       nextStatus = "error";
     } else {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5_000);
+      const timeout = setTimeout(() => controller.abort(), REMOTE_NODE_HEALTH_TIMEOUT_MS);
 
       try {
         const healthUrl = new URL("/api/health", node.url).toString();
