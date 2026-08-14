@@ -104,7 +104,10 @@ function findDiscardedCalls(source: string, name: string): string[] {
 }
 
 const SELF_HEALING = "packages/engine/src/self-healing.ts";
-const EXECUTOR = "packages/engine/src/executor.ts";
+// FNXC:NodeWorktreeIsolation 2026-08-14-22:13:
+// TaskExecutor's session/worktree methods moved from the thin shell into their dedicated facade class. Keep the
+// ratchet on the public facade owner while the free-function assertions below continue checking the peeled bodies.
+const EXECUTOR = "packages/engine/src/executor/task-executor-session-facades.ts";
 /*
 FNXC:CodeOrganization 2026-08-03-20:25:
 U4 peels move free-function bodies under executor/*. Source-scan ratchets must
