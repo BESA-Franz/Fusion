@@ -22,32 +22,44 @@ imports them cannot read source off disk — a detail worth writing down, since 
 like a broken path rather than a mocked module.
 */
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 describe("no rebound move is guarded by a column literal", () => {
-  const source = readFileSync(
-    join(dirname(fileURLToPath(import.meta.url)), "..", "executor.ts"),
-    "utf8",
-  );
-  /** Comments blanked in place so prose about the old shape is not read as code. */
-  const code = source
-    .replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " "))
-    .replace(/\/\/.*$/gm, "");
-  const lines = code.split("\n");
+  const sourceRoot = dirname(fileURLToPath(import.meta.url));
+  const executorDir = join(sourceRoot, "..", "executor");
+  /*
+  FNXC:WorkflowLifecycleColumns 2026-08-14-15:11:
+  executor.ts is now a facade while rebound implementations live in direct executor modules. Scan both surfaces so modularization cannot turn this guard into a zero-match success.
+  */
+  const sourceFiles = [
+    { name: "executor.ts", path: join(sourceRoot, "..", "executor.ts") },
+    ...readdirSync(executorDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".ts"))
+      .map((entry) => ({ name: `executor/${entry.name}`, path: join(executorDir, entry.name) })),
+  ].map(({ name, path }) => ({
+    name,
+    /** Comments blanked in place so prose about the old shape is not read as code. */
+    lines: readFileSync(path, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " "))
+      .replace(/\/\/.*$/gm, "")
+      .split("\n"),
+  }));
 
   it("resolves the rebound column before every guarded rebound move", () => {
     const offenders: string[] = [];
 
-    lines.forEach((line, index) => {
-      if (!/moveTask\([^)]*reboundColumn/.test(line) && !/reboundColumn,/.test(line)) return;
-      // Walk back a few lines to the guard that admits this move.
-      for (let i = Math.max(0, index - 6); i <= index; i += 1) {
-        if (/column\s*(?:===|!==)\s*["'](?:todo|triage|in-progress|in-review|done|archived)["']/.test(lines[i] ?? "")) {
-          offenders.push(`${i + 1}: ${(lines[i] ?? "").trim()}`);
+    sourceFiles.forEach(({ name, lines }) => {
+      lines.forEach((line, index) => {
+        if (!/moveTask\([^)]*(?:rebound|Rebound)Column/.test(line) && !/(?:rebound|Rebound)Column,/.test(line)) return;
+        // Walk back a few lines to the guard that admits this move.
+        for (let i = Math.max(0, index - 6); i <= index; i += 1) {
+          if (/column\s*(?:===|!==)\s*["'](?:todo|triage|in-progress|in-review|done|archived)["']/.test(lines[i] ?? "")) {
+            offenders.push(`${name}:${i + 1}: ${(lines[i] ?? "").trim()}`);
+          }
         }
-      }
+      });
     });
 
     expect(offenders).toEqual([]);
@@ -77,7 +89,9 @@ describe("no rebound move is guarded by a column literal", () => {
 
   it("still sees the eight rebound moves it is meant to cover", () => {
     // A guard that reports success on zero matches is worse than no guard.
-    const reboundMoves = lines.filter((line) => /moveTask\([^)]*(?:rebound|Rebound)Column/.test(line));
+    const reboundMoves = sourceFiles.flatMap(({ lines }) =>
+      lines.filter((line) => /moveTask\([^)]*(?:rebound|Rebound)Column/.test(line)),
+    );
 
     expect(reboundMoves.length).toBeGreaterThanOrEqual(8);
   });
