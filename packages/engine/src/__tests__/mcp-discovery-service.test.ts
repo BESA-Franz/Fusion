@@ -1,10 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { discoverMcpServers } from "../mcp/mcp-discovery-service.js";
 
+/**
+ * FNXC:McpConfigTests 2026-08-14-15:32:
+ * MCP discovery returns host-native paths, so fixture readers normalize separators before matching portable config suffixes.
+ */
+function hasConfigSuffix(path: string, suffix: string): boolean {
+  return path.replaceAll("\\", "/").endsWith(suffix);
+}
+
 describe("discoverMcpServers", () => {
   it("reads only requested-scope sources through the injectable reader", async () => {
     const readFile = vi.fn(async (path: string) => {
-      if (path.endsWith(".cursor/mcp.json")) {
+      if (hasConfigSuffix(path, ".cursor/mcp.json")) {
         return JSON.stringify({ mcpServers: { cursor: { command: "cursor-mcp" } } });
       }
       return undefined;
@@ -23,7 +31,7 @@ describe("discoverMcpServers", () => {
 
   it("returns project servers, treats missing files as non-errors, and never exposes plaintext in definitions", async () => {
     const readFile = vi.fn(async (path: string) => {
-      if (path.endsWith(".vscode/mcp.json")) {
+      if (hasConfigSuffix(path, ".vscode/mcp.json")) {
         return JSON.stringify({ servers: { secure: { transport: "sse", url: "https://secure.example.test/sse", headers: { Authorization: "Bearer plaintext" } } } });
       }
       return undefined;
@@ -45,8 +53,8 @@ describe("discoverMcpServers", () => {
 
   it("captures parse and reader failures without spawning or connecting to servers", async () => {
     const readFile = vi.fn(async (path: string) => {
-      if (path.endsWith(".cursor/mcp.json")) throw new Error("permission denied");
-      if (path.endsWith(".vscode/mcp.json")) return "{";
+      if (hasConfigSuffix(path, ".cursor/mcp.json")) throw new Error("permission denied");
+      if (hasConfigSuffix(path, ".vscode/mcp.json")) return "{";
       return undefined;
     });
 
