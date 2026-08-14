@@ -8,8 +8,12 @@ The executor split must preserve external-checkout ownership fences that used to
 */
 const REPO_ROOT = resolve(import.meta.dirname, "../../../../..");
 
+/*
+FNXC:CodeOrganization 2026-08-14-15:20:
+Static extraction guards must inspect the same source shape on every host. Normalize checkout line endings at the shared read boundary so Windows CRLF cannot invalidate otherwise unchanged safety invariants.
+*/
 function readSource(path: string): string {
-  return readFileSync(join(REPO_ROOT, path), "utf8");
+  return readFileSync(join(REPO_ROOT, path), "utf8").replace(/\r\n/g, "\n");
 }
 
 describe("executor extraction safety guards", () => {
