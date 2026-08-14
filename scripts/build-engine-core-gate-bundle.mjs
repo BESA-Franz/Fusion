@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * FNXC:EngineTests 2026-07-08-04:10:
  * FN-7669 prototypes the #1 lever FN-7668 ranked: the `engine-core` merge
@@ -163,7 +162,7 @@ export async function setup() {
 
 // Allow direct invocation for manual measurement / debugging:
 //   node scripts/build-engine-core-gate-bundle.mjs
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   const started = Date.now();
   const metafile = await buildCoreGateBundle();
   const elapsedMs = Date.now() - started;

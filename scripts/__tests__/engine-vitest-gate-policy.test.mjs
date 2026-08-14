@@ -63,6 +63,38 @@ test("engine-core gate keeps a Node 24/macOS-safe Vitest pool without changing b
     "engine-core transform cache must stay isolated from broad engine lanes");
 });
 
+test("engine-core global setup remains importable by Vitest", () => {
+  const config = read("packages/engine/vitest.config.ts");
+  const builder = read("scripts/build-engine-core-gate-bundle.mjs");
+
+  assert.match(
+    config,
+    /globalSetup:[\s\S]*?build-engine-core-gate-bundle\.mjs/,
+    "engine-core must keep rebuilding its gate bundle through globalSetup",
+  );
+  assert.doesNotMatch(
+    builder,
+    /^#!/,
+    "Vitest transforms globalSetup as ESM, so an executable shebang becomes invalid after injected imports",
+  );
+  assert.match(builder, /export async function setup\(\)/, "the builder must retain Vitest's named setup contract");
+  assert.match(
+    builder,
+    /node scripts\/build-engine-core-gate-bundle\.mjs/,
+    "the builder must retain its explicit Node CLI path without relying on executable file mode",
+  );
+  assert.doesNotMatch(
+    builder,
+    /import\.meta\.url === `file:\/\/\$\{process\.argv\[1\]\}`/,
+    "direct invocation must not compare a file URL with an unnormalized Windows path",
+  );
+  assert.match(
+    builder,
+    /fileURLToPath\(import\.meta\.url\) === resolve\(process\.argv\[1\]\)/,
+    "direct invocation must compare normalized filesystem paths on every platform",
+  );
+});
+
 test("engine-core remains an explicit allow-listed merge gate", () => {
   const config = read("packages/engine/vitest.config.ts");
   const engineCoreBlock = config.match(/name:\s*"engine-core"[\s\S]*?exclude:\s*\[/)?.[0] ?? "";
