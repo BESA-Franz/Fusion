@@ -15,6 +15,8 @@ import {
 
 describe("worktree-paths", () => {
   const rootDir = "/tmp/repo-name";
+  const absoluteWorktreesDir = resolve(rootDir, "..", "fn-worktrees");
+  const absoluteAiMergeWorktreesDir = resolve(rootDir, "..", "ext-worktrees");
 
   it("defaults to <rootDir>/.worktrees when unset", () => {
     expect(resolveWorktreesDir(rootDir, undefined)).toBe(join(rootDir, ".worktrees"));
@@ -25,7 +27,7 @@ describe("worktree-paths", () => {
   });
 
   it("supports absolute path", () => {
-    expect(resolveWorktreesDir(rootDir, { worktreesDir: "/var/tmp/fn-worktrees" } as any)).toBe("/var/tmp/fn-worktrees");
+    expect(resolveWorktreesDir(rootDir, { worktreesDir: absoluteWorktreesDir } as any)).toBe(absoluteWorktreesDir);
   });
 
   it("supports ~ expansion", () => {
@@ -51,7 +53,9 @@ describe("worktree-paths", () => {
   });
 
   it("builds the AI-merge root under an absolute custom worktrees dir", () => {
-    expect(resolveAiMergeRootPath(rootDir, { worktreesDir: "/tmp/ext-worktrees" } as any)).toBe(join("/tmp/ext-worktrees", AI_MERGE_DIRNAME));
+    expect(resolveAiMergeRootPath(rootDir, { worktreesDir: absoluteAiMergeWorktreesDir } as any)).toBe(
+      join(absoluteAiMergeWorktreesDir, AI_MERGE_DIRNAME),
+    );
   });
 
   it("builds the AI-merge root under expanded {repo} and ~ worktrees dirs", () => {

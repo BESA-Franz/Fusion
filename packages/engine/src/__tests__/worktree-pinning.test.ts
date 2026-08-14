@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   isTaskPinnedWorktreeNaming,
   pinnedWorktreeSlug,
@@ -36,7 +36,7 @@ describe("worktree-pinning", () => {
     it("respects a configured worktreesDir with {repo} token", () => {
       expect(
         pinnedWorktreePathForTask("FN-1", { worktreesDir: "../wt/{repo}" }, "/home/me/myrepo"),
-      ).toBe(join("/home/me/wt/myrepo", "fn-1"));
+      ).toBe(resolve("/home/me/myrepo", "../wt/myrepo", "fn-1"));
     });
 
     it("respects a ~-expanded worktreesDir", () => {
@@ -59,7 +59,7 @@ describe("worktree-pinning", () => {
         "/legacy/recover-fn-8400",
         { worktreeNaming: "task-id" },
         "/repo",
-      )).toBe("/repo/.worktrees/fn-8400");
+      )).toBe(join("/repo", ".worktrees", "fn-8400"));
     });
 
     it("preserves the legacy basename for non-pinned naming", () => {
@@ -68,7 +68,7 @@ describe("worktree-pinning", () => {
         "/legacy/recover-fn-8400",
         { worktreeNaming: "random" },
         "/repo",
-      )).toBe("/repo/.worktrees/recover-fn-8400");
+      )).toBe(join("/repo", ".worktrees", "recover-fn-8400"));
     });
   });
 });
