@@ -43,6 +43,14 @@ export default defineConfig({
     // on hangs, so healthy tests pay nothing.
     env: {
       FUSION_TEST_SUBPROCESS_TIMEOUT_MS: "120000",
+      /*
+      FNXC:WindowsTestWorkers 2026-08-14-11:41:
+      Pi's clipboard utilities use TERMUX_VERSION as their existing no-native bypass.
+      Engine Vitest workers are disposable and must take that path: forced thread teardown can unload
+      clipboard.win32-x64-msvc.node with 0xc0000005. Production runtimes do not use this test-only env;
+      pi-native-clipboard-boundary.test.ts removes it in a separate process and loads the real addon.
+      */
+      TERMUX_VERSION: "fusion-vitest-headless",
     },
     // Real-git integration tests need more than the default 5 s under concurrent
     // load (other packages run tests at the same time via pnpm recursive).
