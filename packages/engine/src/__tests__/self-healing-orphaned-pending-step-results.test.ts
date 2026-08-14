@@ -5,7 +5,10 @@ import type { Settings, Task, TaskStore, WorkflowStepResult } from "@fusion/core
 const { recordRunAuditEventMock } = vi.hoisted(() => ({
   recordRunAuditEventMock: vi.fn(async () => undefined),
 }));
-vi.mock("../run-audit.js", async (importOriginal) => {
+// FNXC:OrphanedPendingSteps 2026-08-14-22:17:
+// Mock the utility module imported by self-healing.ts after the run-audit source peel; the legacy facade path no longer
+// intercepts createRunAuditor and would hide the recovery audit from these assertions.
+vi.mock("../util/run-audit.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../util/run-audit.js")>();
   return {
     ...actual,
