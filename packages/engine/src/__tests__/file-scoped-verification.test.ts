@@ -33,6 +33,13 @@ const mockedExistsSync = vi.mocked(existsSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
 const mockedReaddirSync = vi.mocked(readdirSync);
 
+// FNXC:Verification 2026-08-14-22:10:
+// The implementation must use host-native filesystem paths, while git diffs and these synthetic fixtures are POSIX.
+// Normalize only mock inputs so Windows validation exercises the same fixture contract as Linux and macOS.
+function fixturePath(path: unknown): string {
+  return String(path).replaceAll("\\", "/");
+}
+
 /**
  * Wire a single-package ("packages/engine" → "@fusion/engine") workspace, with
  * a configurable git-diff output and a set of test files that "exist" on disk.
@@ -46,7 +53,7 @@ function setupSinglePackageWorkspace(opts: {
   const existing = new Set(opts.existingTestFiles.map((p) => `/tmp/root/${p}`));
 
   mockedExistsSync.mockImplementation((p: any) => {
-    const path = String(p);
+    const path = fixturePath(p);
     if (path.endsWith("pnpm-workspace.yaml")) return true;
     if (path.endsWith("pnpm-lock.yaml")) return true;
     // package.json existence for resolveWorkspacePackageRoots + name reads
@@ -57,7 +64,7 @@ function setupSinglePackageWorkspace(opts: {
     packages.map((pkg) => ({ name: pkg.dir, isDirectory: () => true })) as any,
   );
   mockedReadFileSync.mockImplementation((p: any) => {
-    const path = String(p);
+    const path = fixturePath(p);
     if (path.endsWith("pnpm-workspace.yaml")) return `packages:\n  - "packages/*"\n`;
     for (const pkg of packages) {
       if (path.endsWith(`packages/${pkg.dir}/package.json`)) {
