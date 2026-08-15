@@ -129,6 +129,8 @@ export type GitMutationType =
   // -failed: a sub-repo worktree acquisition threw; surfaced + audited, never swallowed.
   | "worktree:workspace-repo-acquire-busy"
   | "worktree:workspace-repo-acquire-failed"
+  /* FNXC:Workspace 2026-08-15-07:05: Main-checkout guard reports only ids/counts/fixed outcomes. */
+  | "worktree:workspace-main-checkout-edit"
   /**
    * worktrunk run-audit metadata shape:
    *

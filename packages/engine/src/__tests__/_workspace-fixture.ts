@@ -24,7 +24,8 @@ export function initRepoWithCommit(repoDir: string, defaultBranch = "main"): voi
   git(repoDir, 'git config user.name "Test"');
   writeFileSync(path.join(repoDir, "README.md"), `# ${path.basename(repoDir)}\n`, "utf-8");
   git(repoDir, "git add README.md");
-  git(repoDir, "git commit -m 'init'");
+  // FNXC:Workspace 2026-08-15-07:05: Fixture initialization predates task anchors, so completion guards can distinguish operator baseline commits from task-era bypass commits.
+  git(repoDir, "GIT_AUTHOR_DATE='2000-01-01T00:00:00Z' GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' git commit -m 'init'");
 }
 
 export interface WorkspaceFixture {

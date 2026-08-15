@@ -277,7 +277,8 @@ Do not repeatedly rerun a broad failing or hanging workspace command without a n
       workspaceConfig.repos.map((r: string) => `- \`${r}\``).join("\n") +
       `\n\nBefore editing files in any sub-repo, call \`fn_acquire_repo_worktree\` ` +
       `with the repo name to get an isolated worktree path. ` +
-      `Work exclusively inside that returned path — never edit the repo's main checkout directly.\n`;
+      /* FNXC:Workspace 2026-08-15-07:05: Completion mechanically refuses task-era main-checkout writes and commits, even outside File Scope or before acquisition. */
+      `Work exclusively inside that returned path — never edit the repo's main checkout directly. This is mechanically enforced at \`fn_task_done\`: any file created, modified, or deleted, or any commit landed in a sub-repo main checkout during this run refuses completion regardless of File Scope or acquisition. Move the work into an acquired worktree and restore the main checkout before retrying.\n`;
   }
 
   return executionPrompt;

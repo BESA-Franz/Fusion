@@ -25,12 +25,13 @@ import { classifyWorkspaceZeroAcquire } from "./workspace-zero-acquire.js";
 import { evaluatePromptDerivedNoCommitEligibility } from "./prompt-derived-eligibility.js";
 import { getNoCommitEligibilityReason } from "./no-commit-eligibility.js";
 import { resolveAuthoritativeExternalExecutionRoute } from "./resolve-authoritative-external-execution-route.js";
+import { detectWorkspaceMainCheckoutWork } from "./workspace-main-checkout-guard.js";
 
 const execAsync = promisify(exec);
 
 export type WorktreeInvariantResult =
   | { ok: true }
-  | { ok: false; reason: "wrong_toplevel" | "wrong_branch" | "no_commits"; observed: string; expected: string; repo?: string };
+  | { ok: false; reason: "wrong_toplevel" | "wrong_branch" | "no_commits" | "main_checkout_edit"; observed: string; expected: string; repo?: string };
 
 export type WorktreeInvariantDeps = {
   rootDir: string;
@@ -64,6 +65,48 @@ export async function verifyWorktreeInvariants(
   // vacuously accepting work that review must honestly leave unavailable.
   if (workspaceConfig) {
     const workspaceWorktrees = task.workspaceWorktrees ?? {};
+    const configuredRepos = Array.isArray((workspaceConfig as { repos?: unknown }).repos)
+      ? (workspaceConfig as { repos: string[] }).repos
+      : [];
+    // FNXC:Workspace 2026-08-15-07:05:
+    // This must precede zero-acquire and per-worktree returns: a direct main-checkout commit
+    // leaves the acquired worktree empty, otherwise masking the actual, clearable bypass as no_commits.
+    const declaredScope = typeof deps.store.parseFileScopeFromPrompt === "function"
+      ? await deps.store.parseFileScopeFromPrompt(task.id).catch(() => [] as string[])
+      : [];
+    const mainCheckout = await detectWorkspaceMainCheckoutWork(
+      { rootDir: deps.rootDir, settings }, task, configuredRepos, declaredScope,
+    );
+    const auditor = createRunAuditor(deps.store, deps.getRunContextFor(task.id));
+    for (const warning of mainCheckout.warnings) {
+      executorLog.warn(`${task.id}: workspace main-checkout guard warning repo=${warning.repo} reason=${warning.reason}`);
+      await auditor.git({ type: "worktree:workspace-main-checkout-edit", target: warning.repo, metadata: {
+        taskId: task.id, repo: warning.repo, fileCount: warning.files.length, commitCount: warning.commits.length,
+        reason: warning.reason, taskDoneRetryCount: task.taskDoneRetryCount ?? 0, outcome: "warned",
+      } });
+    }
+    for (const repo of mainCheckout.skipped) {
+      await auditor.git({ type: "worktree:workspace-main-checkout-edit", target: repo, metadata: {
+        taskId: task.id, repo, fileCount: 0, commitCount: 0, taskDoneRetryCount: task.taskDoneRetryCount ?? 0, outcome: "skipped",
+      } });
+    }
+    const firstMainCheckoutViolation = mainCheckout.violations[0];
+    if (firstMainCheckoutViolation) {
+      await auditor.git({ type: "worktree:workspace-main-checkout-edit", target: firstMainCheckoutViolation.repo, metadata: {
+        taskId: task.id, repo: firstMainCheckoutViolation.repo, fileCount: firstMainCheckoutViolation.files.length,
+        commitCount: firstMainCheckoutViolation.commits.length, evidence: firstMainCheckoutViolation.evidence,
+        taskDoneRetryCount: task.taskDoneRetryCount ?? 0, outcome: "blocked",
+      } });
+      const observed = [
+        ...firstMainCheckoutViolation.files.slice(0, 10),
+        ...firstMainCheckoutViolation.commits.slice(0, 10).map((sha) => sha.slice(0, 12)),
+      ].join(", ");
+      return {
+        ok: false, reason: "main_checkout_edit", repo: firstMainCheckoutViolation.repo,
+        observed: `${firstMainCheckoutViolation.evidence}: ${observed}`,
+        expected: `move task work into the acquired fusion/${task.id} worktree for ${firstMainCheckoutViolation.repo} (acquire it first if needed), restore its main checkout, then retry fn_task_done; only 3 requeue attempts are available`,
+      };
+    }
     const zeroAcquire = classifyWorkspaceZeroAcquire(task, {
       workspaceMode: true,
       noOpCompletion: options?.noOpCompletion,
