@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import "./executor-test-helpers.js";
 import { TaskExecutor } from "../executor.js";
 import * as worktreePool from "../worktree/worktree-pool.js";
-import { captureNamedTool, createMockStore, mockedCreateFnAgent, mockedExecSync, resetExecutorMocks } from "./executor-test-helpers.js";
+import { captureNamedTool, createWorkflowRoutingAgentStore, createMockStore, mockedCreateFnAgent, mockedExecSync, resetExecutorMocks } from "./executor-test-helpers.js";
 
 function makeTask(overrides: Record<string, unknown> = {}) {
   return {
@@ -13,6 +13,7 @@ function makeTask(overrides: Record<string, unknown> = {}) {
     title: "Invariant test",
     description: "",
     column: "in-progress",
+    assignedAgentId: "workflow-test-executor",
     worktree: "/repo/.worktrees/swift-falcon",
     branch: "fusion/fn-4115",
     baseCommitSha: "abc123",
@@ -26,6 +27,11 @@ function makeTask(overrides: Record<string, unknown> = {}) {
     updatedAt: new Date().toISOString(),
     ...overrides,
   };
+}
+
+function makeExecutor(store: ReturnType<typeof createMockStore>) {
+  const routing = createWorkflowRoutingAgentStore(store);
+  return new TaskExecutor(store as never, "/repo", { agentStore: routing.agentStore as never });
 }
 
 async function setup(overrides: Record<string, unknown> = {}) {
@@ -47,7 +53,7 @@ async function setup(overrides: Record<string, unknown> = {}) {
     return { session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn() } } as any;
   });
 
-  const executor = new TaskExecutor(store as any, "/repo");
+  const executor = makeExecutor(store);
   await executor.execute(makeTask(overrides) as any);
 
   return { store, tool, getTask: () => task };
@@ -155,7 +161,7 @@ describe("FN-4115 wrong-checkout completion rejection", () => {
       });
     const store = createMockStore();
     store.getTask.mockResolvedValue(makeTask());
-    const executor = new TaskExecutor(store as any, "/repo");
+    const executor = makeExecutor(store);
     await executor.execute(makeTask() as any);
     expect(implementationSessionCalls()).toHaveLength(0);
     expect(store.moveTask).toHaveBeenCalledWith("FN-4115", "todo", { preserveProgress: true });
@@ -166,7 +172,7 @@ describe("FN-4115 wrong-checkout completion rejection", () => {
     const store = createMockStore();
     const escaped = makeTask({ worktree: "/repo/not-a-worktree" });
     store.getTask.mockResolvedValue(escaped);
-    const executor = new TaskExecutor(store as any, "/repo");
+    const executor = makeExecutor(store);
     await executor.execute(escaped as any);
     expect(implementationSessionCalls()).toHaveLength(0);
     expect(store.moveTask).toHaveBeenCalledWith("FN-4115", "todo", { preserveProgress: true });
