@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Artifact, ArtifactType, ArtifactWithTask, MessageStore, TaskStore } from "@fusion/core";
 import { DASHBOARD_USER_ID } from "@fusion/core";
 import {
@@ -520,7 +520,7 @@ describe("artifact register tool path payloads", () => {
       const result = await runTool(tool, "call-path-escape", {
         type: "image",
         title: "Escaped screenshot",
-        path: join("..", outsideDir.split("/").pop()!, "escape.png"),
+        path: join("..", basename(outsideDir), "escape.png"),
       });
 
       expect(registerArtifact).not.toHaveBeenCalled();
@@ -533,13 +533,13 @@ describe("artifact register tool path payloads", () => {
   it("rejects a symlink inside the baseDir that targets a file outside the allowed roots", async () => {
     const { store, registerArtifact } = createMockStore();
     const tool = createArtifactRegisterTool(store, AUTHOR_ID, undefined, { baseDir, defaultTaskId: TASK_ID });
-    const outsideTarget = join(process.cwd(), "package.json");
-    symlinkSync(outsideTarget, join(baseDir, "sneaky.json"));
+    const outsideTarget = process.cwd();
+    symlinkSync(outsideTarget, join(baseDir, "sneaky"), process.platform === "win32" ? "junction" : "dir");
 
     const result = await runTool(tool, "call-symlink-escape", {
       type: "document",
       title: "Sneaky symlink",
-      path: "sneaky.json",
+      path: join("sneaky", "package.json"),
     });
 
     expect(registerArtifact).not.toHaveBeenCalled();
