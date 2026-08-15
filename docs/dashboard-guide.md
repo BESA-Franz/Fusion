@@ -583,7 +583,7 @@ For the stored settings shape, see [`customProviders` in the Settings Reference]
 
 Open **Settings → Worktrees** to maintain **Files to copy into new worktrees**. Add editable rows for repository-root-relative files such as `.env`, use **Browse** to select a project file, remove rows you no longer want, then Save. Fusion trims blank rows and de-duplicates paths before persisting. During task startup, configured regular files are copied into fresh or pooled task worktrees before the worktree init command and task execution begin; existing/resumed worktrees are not overwritten. Missing files, directories, absolute paths, traversal entries, and unreadable sources are skipped with non-fatal diagnostics and without logging file contents. See [`worktreeCopyFiles` in the Settings Reference](./settings-reference.md#project-settings) for the stored setting shape.
 
-Use **Show worktree grouping on the board** in **Settings → Worktrees** when you want WIP/processing columns to always show worktree names and group cards by worktree. With the toggle off, Fusion preserves the legacy default: only the non-workflow `in-progress` column is grouped, and workflow-mode processing columns stay as plain cards.
+Use **Show worktree grouping on the board** in **Settings → Worktrees** when you want WIP/processing columns to always show worktree names and group cards by worktree. Workspace-mode tasks appear in their own group labeled with the acquired worktree name and repository count; only tasks with no acquired worktree remain **Unassigned**. With the toggle off, Fusion preserves the legacy default: only the non-workflow `in-progress` column is grouped, and workflow-mode processing columns stay as plain cards.
 
 ## Planning Mode
 
