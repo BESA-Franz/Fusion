@@ -5,7 +5,7 @@ import "../executor-test-helpers.js";
 import { TaskExecutor } from "../../executor.js";
 import { MAX_POST_DONE_NONCONTINUABLE_WEDGE_RECOVERIES, SelfHealingManager } from "../../self-healing.js";
 import { MAX_RECOVERY_RETRIES } from "../../healing/recovery-policy.js";
-import { mockExecuteAll, mockedCreateFnAgent, resetExecutorMocks } from "../executor-test-helpers.js";
+import { createWorkflowRoutingAgentStore, mockExecuteAll, mockedCreateFnAgent, resetExecutorMocks } from "../executor-test-helpers.js";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -13,6 +13,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     title: "Prevent executor from continuing post-done sessions",
     description: "regression fixture",
     column: "in-progress",
+    assignedAgentId: "workflow-test-executor",
     status: undefined,
     error: undefined,
     paused: false,
@@ -80,8 +81,11 @@ function createStore(task: Task, settingsOverrides: Record<string, unknown> = {}
     audits.push(event);
   });
   (emitter as any).appendAgentLog = vi.fn().mockResolvedValue(undefined);
+  (emitter as any).recordActivity = vi.fn().mockResolvedValue({});
   (emitter as any).getGoalStore = vi.fn().mockReturnValue({ listGoals: vi.fn().mockReturnValue([]) });
   (emitter as any).getFusionDir = vi.fn().mockReturnValue("/tmp/test/.fusion");
+  (emitter as any).getRootDir = vi.fn().mockReturnValue("/tmp/test");
+  (emitter as any).getGlobalSettingsDir = vi.fn().mockReturnValue(undefined);
   (emitter as any).clearStaleExecutionStartBranchReferences = vi.fn().mockReturnValue([]);
   (emitter as any).listWorkflowSteps = vi.fn().mockResolvedValue([]);
   (emitter as any).getWorkflowStep = vi.fn().mockResolvedValue(undefined);
@@ -113,8 +117,10 @@ function createStore(task: Task, settingsOverrides: Record<string, unknown> = {}
   (emitter as any).getAgentLogCount = vi.fn().mockResolvedValue(0);
   // FNXC:EngineTests 2026-07-19-01:20: FN-8296 pending verification before createFnAgent.
   (emitter as any).getTaskVerificationRequestAsync = vi.fn().mockResolvedValue(null);
+  (emitter as any).getTaskVerificationRequest = vi.fn().mockReturnValue(null);
   (emitter as any).claimTaskVerificationRequest = vi.fn().mockResolvedValue(null);
   (emitter as any).finishTaskVerificationRequest = vi.fn().mockResolvedValue(undefined);
+  (emitter as any).createTaskVerificationRequest = vi.fn().mockResolvedValue(undefined);
   /*
   FNXC:EngineTests 2026-07-21-00:25:
   U10b requires workflow-selection readers or the graph fails closed at entry (source of
@@ -196,9 +202,11 @@ describe("FN-5866 reliability interactions: post-done continuation no wedge", ()
     const onComplete = vi.fn();
     const onError = vi.fn();
 
-    mockedCreateFnAgent.mockResolvedValue({
+    mockedCreateFnAgent.mockImplementation(async ({ customTools }: { customTools?: Array<{ name?: string }> }) => ({
       session: {
         prompt: vi.fn().mockImplementation(async () => {
+          const isImplementation = (customTools ?? []).some((tool) => tool.name === "fn_task_done");
+          if (!isImplementation) return;
           task.steps = [{ name: "Implement", status: "done" as const }];
           task.currentStep = 1;
           task.column = "in-review";
@@ -211,9 +219,10 @@ describe("FN-5866 reliability interactions: post-done continuation no wedge", ()
           tokens: { input: 11, output: 7, cacheRead: 0, cacheWrite: 0, total: 18 },
         }),
       },
-    } as any);
+    }) as any);
 
-    const executor = new TaskExecutor(store, "/tmp/test", { onComplete, onError });
+    const routing = createWorkflowRoutingAgentStore(store as never);
+    const executor = new TaskExecutor(store, "/tmp/test", { onComplete, onError, agentStore: routing.agentStore as never });
     await executor.execute(task);
 
     expect(task.column).toBe("in-review");
@@ -250,7 +259,8 @@ describe("FN-5866 reliability interactions: post-done continuation no wedge", ()
       throw new Error("Cannot continue from message role: assistant");
     });
 
-    const executor = new TaskExecutor(store, "/tmp/test", { onComplete, onError, agentStore: { getAgent: vi.fn().mockResolvedValue(null) } as any });
+    const routing = createWorkflowRoutingAgentStore(store as never);
+    const executor = new TaskExecutor(store, "/tmp/test", { onComplete, onError, agentStore: routing.agentStore as never });
     await executor.execute(task);
 
     // Pre-fix root cause: the post-done step-session catch in executor.ts marked
@@ -272,17 +282,21 @@ describe("FN-5866 reliability interactions: post-done continuation no wedge", ()
     const store = createStore(task);
     const onError = vi.fn();
 
-    mockedCreateFnAgent.mockResolvedValue({
+    mockedCreateFnAgent.mockImplementation(async ({ customTools }: { customTools?: Array<{ name?: string }> }) => ({
       session: {
-        prompt: vi.fn().mockRejectedValue(new Error("Cannot continue from message role: assistant")),
+        prompt: vi.fn().mockImplementation(async () => {
+          const isImplementation = (customTools ?? []).some((tool) => tool.name === "fn_task_done");
+          if (isImplementation) throw new Error("Cannot continue from message role: assistant");
+        }),
         dispose: vi.fn(),
         getSessionStats: vi.fn().mockResolvedValue({
           tokens: { input: 5, output: 0, cacheRead: 0, cacheWrite: 0, total: 5 },
         }),
       },
-    } as any);
+    }) as any);
 
-    const executor = new TaskExecutor(store, "/tmp/test", { onError });
+    const routing = createWorkflowRoutingAgentStore(store as never);
+    const executor = new TaskExecutor(store, "/tmp/test", { onError, agentStore: routing.agentStore as never });
     await executor.execute(task);
 
     expect(task.column).toBe("todo");
@@ -427,17 +441,21 @@ describe("FN-5866 reliability interactions: post-done continuation no wedge", ()
     const store = createStore(task);
     const onError = vi.fn();
 
-    mockedCreateFnAgent.mockResolvedValue({
+    mockedCreateFnAgent.mockImplementation(async ({ customTools }: { customTools?: Array<{ name?: string }> }) => ({
       session: {
-        prompt: vi.fn().mockRejectedValue(new Error("Cannot continue from message role: assistant")),
+        prompt: vi.fn().mockImplementation(async () => {
+          const isImplementation = (customTools ?? []).some((tool) => tool.name === "fn_task_done");
+          if (isImplementation) throw new Error("Cannot continue from message role: assistant");
+        }),
         dispose: vi.fn(),
         getSessionStats: vi.fn().mockResolvedValue({
           tokens: { input: 5, output: 0, cacheRead: 0, cacheWrite: 0, total: 5 },
         }),
       },
-    } as any);
+    }) as any);
 
-    const executor = new TaskExecutor(store, "/tmp/test", { onError });
+    const routing = createWorkflowRoutingAgentStore(store as never);
+    const executor = new TaskExecutor(store, "/tmp/test", { onError, agentStore: routing.agentStore as never });
     await executor.execute(task);
 
     // FNXC:WorkflowLifecycle 2026-07-01-21:15: When the non-continuable fresh-session retry budget is
