@@ -33,6 +33,7 @@ import { resolveProjectColumnsForRoles } from "../project-lane-vocabulary.js";
 import {archiveParentTaskWithLineageGate, findArchivedTaskEntry, deleteArchivedTaskEntry, restoreTaskFromArchive} from "../task-store/async/async-archive-lineage.js";
 import {getArchivedRowCount, listArchivedTaskEntriesPage} from "../async-stores/async-archive-db.js";
 import {disposeArchivedWorkspaceWorktrees, disposeArchivedWorktree, prepareArchivedWorkspaceWorktrees, releasePreparedWorkspaceArchiveDisposal} from "./archive-lifecycle.js";
+import {resolveArchiveLivenessWipLanes, TaskIsLiveError} from "../tasks/task-archive-liveness.js";
 
 export async function taskToArchiveEntryImpl(store: TaskStore, task: Task, archivedAt: string): Promise<ArchivedTaskEntry> {
     const settings = await store.getSettingsFast();
@@ -414,10 +415,11 @@ async function archivedLanesForTask(store: TaskStore, taskId: string): Promise<R
   return lanes;
 }
 
-export async function archiveTaskBackendImpl(store: TaskStore, id: string, optionsOrCleanup: boolean | { cleanup?: boolean; removeLineageReferences?: boolean },): Promise<Task> {
+export async function archiveTaskBackendImpl(store: TaskStore, id: string, optionsOrCleanup: boolean | { cleanup?: boolean; removeLineageReferences?: boolean; liveExecutionGuard?: "refuse" | "off" },): Promise<Task> {
     const layer = store.asyncLayer!;
     const cleanup = typeof optionsOrCleanup === "boolean" ? optionsOrCleanup : optionsOrCleanup.cleanup !== false;
     const removeLineageRefs = typeof optionsOrCleanup === "object" && optionsOrCleanup.removeLineageReferences === true;
+    const liveExecutionGuard = typeof optionsOrCleanup === "object" ? optionsOrCleanup.liveExecutionGuard ?? "off" : "off";
 
     // Read the task (forensic: include deleted for idempotency check).
     const task = await store.getTask(id);
@@ -445,6 +447,8 @@ export async function archiveTaskBackendImpl(store: TaskStore, id: string, optio
     one value through pre-read and gate. The workspace reservation is created inside the locked body.
     */
     const archiveLineageArchivedLanes: ReadonlySet<string> | undefined = undefined;
+    // Resolve configuration before the transaction; only its durable row verdict is authoritative.
+    const livenessWipLanes = liveExecutionGuard === "refuse" ? await resolveArchiveLivenessWipLanes(store, id) : undefined;
     const archiveRun = async (context?: { candidateIds: string[]; promptByChildId: ReadonlyMap<string, string>; locksHeld: boolean; attempt: number }) => {
       const preparedWorkspace = cleanup ? await prepareArchivedWorkspaceWorktrees(store, task) : undefined;
       try {
@@ -452,6 +456,7 @@ export async function archiveTaskBackendImpl(store: TaskStore, id: string, optio
           removeLineageReferences: removeLineageRefs,
           now: archivedAt,
           archivedColumns: archiveLineageArchivedLanes,
+          ...(livenessWipLanes ? {livenessWipLanes} : {}),
           ...(context ? {
             revalidateAgainst: context.candidateIds,
             promptByChildId: context.promptByChildId,
@@ -497,6 +502,7 @@ export async function archiveTaskBackendImpl(store: TaskStore, id: string, optio
     const preparedWorkspace = archiveExecution.preparedWorkspace;
     if (!result.archived) {
       if (preparedWorkspace) await releasePreparedWorkspaceArchiveDisposal(preparedWorkspace);
+      if ("liveVerdict" in result) throw new TaskIsLiveError(id, result.liveVerdict.reasons);
       throw new TaskHasLineageChildrenError(id, result.liveChildIds);
     }
 
@@ -510,12 +516,19 @@ export async function archiveTaskBackendImpl(store: TaskStore, id: string, optio
       successful archives still await disposal before publishing the move event.
       */
       const workspace = await disposeArchivedWorkspaceWorktrees(store, task, preparedWorkspace);
-      if (!workspace.singularDeduplicated) await disposeArchivedWorktree(store, task);
-      await store.cleanupBranchForTask(task);
-      const { rm } = await import("node:fs/promises");
-      await rm(dir, { recursive: true, force: true });
-      if (store.isWatching) {
-        store.taskCache.delete(id);
+      const singular = workspace.singularDeduplicated ? {refusedLive: false} : await disposeArchivedWorktree(store, task);
+      /*
+      FNXC:WorkflowLifecycle 2026-08-15-06:35:
+      A disposer live-refusal preserves data rather than merely reporting a failed worktree action.
+      Branch cleanup and task-directory removal are the same destructive operation and must stop together.
+      */
+      if (workspace.refusedLive || singular.refusedLive) {
+        storeLog.warn("archive-cleanup-suppressed-live-task", {taskId: id, refusedBy: workspace.refusedLive ? "workspace" : "singular"});
+      } else {
+        await store.cleanupBranchForTask(task);
+        const { rm } = await import("node:fs/promises");
+        await rm(dir, { recursive: true, force: true });
+        if (store.isWatching) store.taskCache.delete(id);
       }
     }
 

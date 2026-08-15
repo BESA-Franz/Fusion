@@ -3056,14 +3056,14 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async archiveAllDone(options?: { removeLineageReferences?: boolean }): Promise<Task[]> {
     return archiveAllDoneImpl(this, options);
   }
-  async archiveTask( id: string, optionsOrCleanup: boolean | { cleanup?: boolean; removeLineageReferences?: boolean } = true, ): Promise<Task> {
+  async archiveTask( id: string, optionsOrCleanup: boolean | { cleanup?: boolean; removeLineageReferences?: boolean; liveExecutionGuard?: "refuse" | "off" } = true, ): Promise<Task> {
     return archiveTaskImpl(this, id, optionsOrCleanup);
   }
 
   /**
    * FNXC:RuntimeTaskOrchestrationAsync 2026-06-24-14:55:
    */
-  public async archiveTaskBackend( id: string, optionsOrCleanup: boolean | { cleanup?: boolean; removeLineageReferences?: boolean }, ): Promise<Task> {
+  public async archiveTaskBackend( id: string, optionsOrCleanup: boolean | { cleanup?: boolean; removeLineageReferences?: boolean; liveExecutionGuard?: "refuse" | "off" }, ): Promise<Task> {
     return archiveTaskBackendImpl(this, id, optionsOrCleanup);
   }
 

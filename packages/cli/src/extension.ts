@@ -524,6 +524,7 @@ async function getStore(
           await boot.shutdown().catch(() => undefined);
           return raced.store;
         }
+        /* FNXC:TaskLifecycleTools 2026-08-15-06:35: Agent tools intentionally install the protective baseline with no force path; only a human CLI invocation can override live removal. */
         installBaselineArchiveWorktreeDisposer(boot.taskStore, {rootDir: projectRoot, getSettings: () => boot.taskStore.getSettings()});
         storeCache.set(projectRoot, { store: boot.taskStore, shutdown: boot.shutdown });
         return boot.taskStore;
@@ -2848,14 +2849,22 @@ export default function kbExtension(pi: ExtensionAPI) {
       const gated = await applyAgentPolicyGateForExtensionTool("fn_task_archive", params as Record<string, unknown>, ctx as ExtensionCallerContext);
       if (gated) return gated;
       const store = await getStore(ctx.cwd);
-      const task = await store.archiveTask(params.id, {
-        removeLineageReferences: params.removeLineageReferences === true,
-      });
-
-      return {
-        content: [{ type: "text", text: `Archived ${task.id} → ${columnLabel(task.column)}` }],
-        details: { taskId: task.id, column: task.column },
-      };
+      try {
+        const task = await store.archiveTask(params.id, {
+          removeLineageReferences: params.removeLineageReferences === true,
+          liveExecutionGuard: "refuse",
+        });
+        return {
+          content: [{ type: "text", text: `Archived ${task.id} → ${columnLabel(task.column)}` }],
+          details: { taskId: task.id, column: task.column },
+        };
+      } catch (error) {
+        if (error instanceof fusionCore.TaskIsLiveError) {
+          const task = await store.getTask(params.id);
+          return {isError: true, content: [{type: "text", text: fusionCore.describeArchiveLiveness(params.id, {live: true, reasons: error.reasons}, {workspaceWorktreeCount: Object.keys(task?.workspaceWorktrees ?? {}).length})}], details: {taskId: params.id}};
+        }
+        throw error;
+      }
     },
   });
 

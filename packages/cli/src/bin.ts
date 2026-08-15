@@ -342,7 +342,7 @@ Usage:
   fn task merge <id>                  Merge an in-review task and close it
   fn task duplicate <id>              Duplicate a task (creates copy in triage)
   fn task refine <id> [opts]          Create a refinement task from done/in-review
-  fn task archive <id>                Archive a task (from any column)
+  fn task archive <id> [--force]      Archive a task; --force permits live-worktree removal
   fn task unarchive <id>              Unarchive an archived task
   fn task delete <id> [--force] [--allow-resurrection]
                                       Delete a task (use --force to skip confirmation; --allow-resurrection permits intentional ID recreation)
@@ -1423,8 +1423,8 @@ async function main() {
           }
           case "archive": {
             const id = args[2];
-            if (!id) { console.error("Usage: fn task archive <id>"); process.exit(1); }
-            await runTaskArchive(id, projectName);
+            if (!id) { console.error("Usage: fn task archive <id> [--force]"); process.exit(1); }
+            await runTaskArchive(id, projectName, {force: args.includes("--force")});
             break;
           }
           case "unarchive": {

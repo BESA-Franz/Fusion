@@ -814,12 +814,14 @@ fn task merge FN-001
 fn task duplicate FN-001
 fn task refine FN-001 --feedback "Add rollback handling"
 fn task archive FN-001
+fn task archive FN-001 --force
 fn task unarchive FN-001
 fn task delete FN-001 --force
 ```
 
 Notes:
-- `fn task archive` accepts any live-board task (`triage`, `todo`, `in-progress`, `in-review`, or `done`) and preserves the original column for restore.
+- `fn task archive` accepts live-board tasks and preserves the original column for restore. It refuses tasks in a WIP lane or active merge pipeline to protect another process's worktrees; a human operator may use `--force` to override this destructive guard.
+- The agent-facing `fn_task_archive` tool returns a structured error for the same live-task refusal and deliberately has no force parameter.
 - `fn task unarchive` restores to the saved pre-archive column when available, with legacy archives falling back to `done`.
 
 ### Branch conflict handling

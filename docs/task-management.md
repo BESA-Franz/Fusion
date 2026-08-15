@@ -369,7 +369,7 @@ Auto-completion/finalization remains owned by existing recovery passes:
 
 ### Archive worktree cleanup
 
-Archiving a single-repository task synchronously removes its git worktree before branch and task-metadata cleanup. This applies to random and pinned (`task-id`/`task-title`) names, including `fn_task_archive` and direct CLI archive commands that run without an executor. A host-scoped filesystem reservation serializes a successor's deterministic-path acquisition with archival disposal; if removal fails, the reservation is quarantined so the next acquisition can reconcile the orphan instead of colliding with it. `archive({ cleanup: false })` intentionally retains the worktree. Workspace tasks' per-repository `workspaceWorktrees` are not removed by this lifecycle yet.
+Archiving a single-repository task synchronously removes its git worktree before branch and task-metadata cleanup. CLI and extension archive requests fence live execution under the per-task advisory transaction lock: a WIP-lane or active-merge refusal performs no archive write and suppresses all cleanup (worktrees, branches, and task directory). This applies to random and pinned (`task-id`/`task-title`) names, including `fn_task_archive` and direct CLI archive commands that run without an executor. A host-scoped filesystem reservation serializes a successor's deterministic-path acquisition with archival disposal; if removal fails, the reservation is quarantined so the next acquisition can reconcile the orphan instead of colliding with it. `archive({ cleanup: false })` intentionally retains the worktree. Workspace tasks' per-repository `workspaceWorktrees` are not removed by this lifecycle yet.
 
 Board ordering behavior:
 - `todo` mirrors scheduler dispatch order: priority first (`urgent` → `low`), then oldest `createdAt` within a priority tier, then task ID as deterministic tie-break.
@@ -649,7 +649,7 @@ Behavior:
 
 ### Archive behavior
 
-- `fn task archive <id>` moves any live-board task (`triage`, `todo`, `in-progress`, `in-review`, or `done`) to `archived`; tasks already in `archived` are rejected.
+- `fn task archive <id>` moves eligible live-board tasks to `archived`; tasks already in `archived` are rejected. It refuses WIP-lane or active-merge tasks unless a human operator explicitly supplies `--force`.
 - Archive records the task's `preArchiveColumn` so restore can return to the original live column instead of always assuming `done`.
 - Dashboard delete confirmations for live tasks include an **Archive Instead** action so users can preserve history without soft-deleting the task.
 - Archived tasks can also be deleted from the dashboard/API/CLI. Deleting an archived task removes the archived snapshot from lists and search, but first materializes the normal soft-delete tombstone so the task ID remains reserved unless the operator explicitly chooses allow-resurrection behavior.

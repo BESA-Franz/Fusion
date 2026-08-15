@@ -775,6 +775,16 @@ export {
   isActiveMergeStatus,
 } from "./merge/active-merge-status.js";
 export {
+  decideArchiveLiveness,
+  resolveArchiveLivenessWipLanes,
+  evaluateArchiveTaskLiveness,
+  describeArchiveLiveness,
+  TaskIsLiveError,
+  LiveTaskWorktreeRemovalRefusedError,
+  type ArchiveLivenessReason,
+  type ArchiveLivenessVerdict,
+} from "./tasks/task-archive-liveness.js";
+export {
   setTaskCreatedHook,
   getTaskCreatedHook,
   type TaskCreatedHook,

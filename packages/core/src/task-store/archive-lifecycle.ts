@@ -15,6 +15,7 @@ import {__setTaskActivityLogLimitsForTesting} from "../task-store/comments.js";
 import {getErrorMessage} from "../process/error-message.js";
 import {ArchiveWorkspaceDisposalError, ArchiveWorkspaceDisposalIncompleteError, ArchiveWorkspaceWorktreeDisposerMissingError, getArchiveWorkspaceWorktreeDisposer, getArchiveWorktreeDisposer, type ArchiveWorkspaceDisposalResult, type WorkspaceDisposalPlanEntry} from "../db/archive-worktree-disposer.js";
 import {acquireWorktreePathReservation, canonicalizeWorktreePath} from "../tasks/worktree-path-reservation.js";
+import {LiveTaskWorktreeRemovalRefusedError} from "../tasks/task-archive-liveness.js";
 import {basename, join, resolve} from "node:path";
 import {homedir} from "node:os";
 
@@ -104,10 +105,10 @@ export async function releasePreparedWorkspaceArchiveDisposal(prepared: Prepared
   }
 }
 
-export async function disposeArchivedWorkspaceWorktrees(store: TaskStore, task: Task, prepared = undefined as PreparedWorkspaceArchiveDisposal | undefined): Promise<{singularDeduplicated: boolean}> {
+export async function disposeArchivedWorkspaceWorktrees(store: TaskStore, task: Task, prepared = undefined as PreparedWorkspaceArchiveDisposal | undefined): Promise<{singularDeduplicated: boolean; refusedLive: boolean}> {
   const disposal = prepared ?? await prepareArchivedWorkspaceWorktrees(store, task);
   const {plan, reservations, singularDeduplicated} = disposal;
-  if (plan.length === 0) return {singularDeduplicated};
+  if (plan.length === 0) return {singularDeduplicated, refusedLive: false};
   try {
     const disposer = getArchiveWorkspaceWorktreeDisposer(store);
     let result: ArchiveWorkspaceDisposalResult;
@@ -124,29 +125,30 @@ export async function disposeArchivedWorkspaceWorktrees(store: TaskStore, task: 
     }
     const normalized = normalizeWorkspaceDisposalResult(plan, result);
     for (const [repoRel, error] of normalized.failures) await reservations[repoRel].quarantine(getErrorMessage(error));
+    return {singularDeduplicated, refusedLive: [...normalized.failures.values()].some((error) => error instanceof LiveTaskWorktreeRemovalRefusedError)};
   } finally {
     await releasePreparedWorkspaceArchiveDisposal(disposal);
   }
-  return {singularDeduplicated};
 }
 
-export async function disposeArchivedWorktree(store: TaskStore, task: Task): Promise<void> {
-  if (!task.worktree) return;
+export async function disposeArchivedWorktree(store: TaskStore, task: Task): Promise<{refusedLive: boolean}> {
+  if (!task.worktree) return {refusedLive: false};
   const settings = await store.getSettings();
   const canonical = await canonicalizeWorktreePath(task.worktree);
-  if (canonical === await canonicalizeWorktreePath(store.rootDir)) return;
+  if (canonical === await canonicalizeWorktreePath(store.rootDir)) return {refusedLive: false};
   const reservation = await acquireWorktreePathReservation({canonicalPath: canonical, worktreesDir: resolveArchiveWorktreesDir(store, settings.worktreesDir), rootDir: store.rootDir});
   try {
     const disposer = getArchiveWorktreeDisposer(store);
     if (!disposer) {
       /* FNXC:WorkflowLifecycle 2026-07-16-10:00: A non-root archived worktree without a store-scoped engine disposer must be loud rather than silently leaked by an executor-less archive surface. */
       storeLog.warn("archive-worktree-disposer-missing", {taskId: task.id, worktreePath: canonical});
-      return;
+      return {refusedLive: false};
     }
-    try { await disposer(task, reservation); }
+    try { await disposer(task, reservation); return {refusedLive: false}; }
     catch (error) {
       await reservation.quarantine(getErrorMessage(error));
       storeLog.warn("Archive worktree disposal failed; reservation quarantined", {taskId: task.id, worktreePath: canonical, error: getErrorMessage(error)});
+      return {refusedLive: error instanceof LiveTaskWorktreeRemovalRefusedError};
     }
   } finally { if (reservation.state === "held") await reservation.release(); }
 }
@@ -206,7 +208,7 @@ export async function deleteTaskIfImpl(
   return store.deleteTaskIf(id, predicate, options);
 }
 
-export async function archiveTaskImpl(store: TaskStore, id: string, optionsOrCleanup: boolean | { cleanup?: boolean; removeLineageReferences?: boolean } = true,): Promise<Task> {
+export async function archiveTaskImpl(store: TaskStore, id: string, optionsOrCleanup: boolean | { cleanup?: boolean; removeLineageReferences?: boolean; liveExecutionGuard?: "refuse" | "off" } = true,): Promise<Task> {
     /*
     FNXC:SqliteDualPathCleanup 2026-07-26-14:08:
     archiveTask is PostgreSQL-only via archiveTaskBackend (async archive-lineage helper).

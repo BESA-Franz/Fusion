@@ -40,6 +40,8 @@ import {
   readTaskRowInTransaction,
 } from "./async-persistence.js";
 import type { ArchivedTaskEntry } from "../../types.js";
+import {acquireTaskAdvisoryXactLock} from "../task-advisory-lock.js";
+import {decideArchiveLiveness, type ArchiveLivenessVerdict} from "../../tasks/task-archive-liveness.js";
 
 /**
  * FNXC:TaskStoreArchiveLineage 2026-06-24-07:10:
@@ -238,12 +240,23 @@ export async function archiveParentTaskWithLineageGate(
   layer: AsyncDataLayer,
   taskId: string,
   entry: ArchivedTaskEntry,
-  options: { removeLineageReferences?: boolean; now?: string; beforeArchive?: (tx: DbTransaction) => Promise<void>; beforeLineageGate?: () => void | Promise<void>; archivedColumns?: ReadonlySet<string>; revalidateAgainst?: readonly string[]; promptByChildId?: ReadonlyMap<string, string>; evidenceTargetVersionForTest?: (childId: string, computed: number, attempt: number) => number } = {},
+  options: { removeLineageReferences?: boolean; now?: string; beforeArchive?: (tx: DbTransaction) => Promise<void>; beforeLineageGate?: () => void | Promise<void>; archivedColumns?: ReadonlySet<string>; revalidateAgainst?: readonly string[]; promptByChildId?: ReadonlyMap<string, string>; evidenceTargetVersionForTest?: (childId: string, computed: number, attempt: number) => number; livenessWipLanes?: ReadonlySet<string> } = {},
 
-): Promise<{ archived: true; lineageOutcome?: LineageRemovalOutcome } | { archived: false; liveChildIds: string[] }> {
+): Promise<{ archived: true; lineageOutcome?: LineageRemovalOutcome } | { archived: false; liveChildIds: string[] } | { archived: false; liveVerdict: ArchiveLivenessVerdict }> {
   const now = options.now ?? new Date().toISOString();
 
   return layer.transactionImmediate(async (tx) => {
+    /*
+    FNXC:WorkflowLifecycle 2026-08-15-06:35:
+    Admission writers take this same advisory key before changing a task's lane. Re-read and decide
+    under it so a CLI archive cannot win a todo-to-WIP race and destroy an executor's live worktree.
+    */
+    if (options.livenessWipLanes) {
+      await acquireTaskAdvisoryXactLock(tx, layer.projectId, taskId);
+      const live = await readTaskRowInTransaction(tx, taskId, undefined, layer.projectId);
+      const verdict = decideArchiveLiveness({column: String(live?.column ?? ""), status: live?.status as string | null | undefined, wipLanes: options.livenessWipLanes});
+      if (verdict.live) return {archived: false as const, liveVerdict: verdict};
+    }
     // Test-only barrier is before this operation's single in-transaction lineage read.
     await options.beforeLineageGate?.();
     // 1. Lineage gate — check for live children inside the transaction.
