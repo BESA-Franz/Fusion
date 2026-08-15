@@ -148,6 +148,38 @@ async function runGitArgs(repoDir: string, args: string[]): Promise<string> {
   return stdout.trim();
 }
 
+async function runGitArgsWithInput(repoDir: string, args: string[], input: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile("git", args, {
+      cwd: repoDir,
+      encoding: "utf-8",
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
+    }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(stdout.trim());
+    });
+    child.stdin?.end(input);
+  });
+}
+
+async function listStablePatchIds(repoDir: string, revision: string): Promise<Set<string>> {
+  const patches = await runGitArgs(repoDir, ["log", "-p", "--no-ext-diff", "--binary", revision]);
+  if (!patches) return new Set();
+  const output = await runGitArgsWithInput(repoDir, ["patch-id", "--stable"], `${patches}\n`);
+  return new Set(output.split("\n").map((line) => line.trim().split(/\s+/, 1)[0]).filter(Boolean));
+}
+
+async function stablePatchIdForCommit(repoDir: string, sha: string): Promise<string> {
+  const patch = await runGitArgs(repoDir, ["show", "--no-ext-diff", "--binary", sha]);
+  if (!patch) return "";
+  const output = await runGitArgsWithInput(repoDir, ["patch-id", "--stable"], `${patch}\n`);
+  return output.trim().split(/\s+/, 1)[0] ?? "";
+}
+
 async function revParse(repoDir: string, ref: string): Promise<string> {
   return runGitArgs(repoDir, ["rev-parse", "--verify", `${ref}^{commit}`]);
 }
@@ -539,23 +571,12 @@ async function classifyForeignCommitsViaPatchId(
   mainRef: string,
   commits: BranchCrossContaminationCommit[],
 ): Promise<ClassifyForeignCommitsResult> {
-  const upstreamPatchIdsOutput = await runGit(
-    repoDir,
-    `git rev-list ${quoteShellArg(mainRef)} | while read c; do git show "$c" | git patch-id --stable; done`,
-  ).catch(() => "");
-
-  const upstreamPatchIds = new Set(
-    upstreamPatchIdsOutput
-      .split("\n")
-      .map((line) => line.trim().split(" ")[0])
-      .filter(Boolean),
-  );
+  const upstreamPatchIds = await listStablePatchIds(repoDir, mainRef).catch(() => new Set<string>());
 
   const alreadyUpstream: BranchCrossContaminationCommit[] = [];
   const unique: BranchCrossContaminationCommit[] = [];
   for (const commit of commits) {
-    const patchIdLine = await runGit(repoDir, `git show ${quoteShellArg(commit.sha)} | git patch-id --stable`).catch(() => "");
-    const patchId = patchIdLine.trim().split(" ")[0];
+    const patchId = await stablePatchIdForCommit(repoDir, commit.sha).catch(() => "");
     if (patchId && upstreamPatchIds.has(patchId)) {
       alreadyUpstream.push(commit);
     } else {
@@ -653,9 +674,9 @@ export async function classifyMisroutedForeignCommit(
     return { misrouted: false, paths: [] };
   }
 
-  const pathsOutput = await runGit(
+  const pathsOutput = await runGitArgs(
     repoDir,
-    `git diff-tree --root --no-commit-id --name-only -r ${quoteShellArg(sha)}`,
+    ["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", sha],
   ).catch(() => "");
   const paths = pathsOutput
     .split("\n")
@@ -863,29 +884,24 @@ export async function autoRecoverCrossContamination(
   }
 
   const originalTip = await revParse(repoDir, branchName);
-  const commitListOutput = await runGit(repoDir, `git rev-list --reverse ${quoteShellArg(`${baseSha}..${branchName}`)}`)
+  const commitListOutput = await runGitArgs(repoDir, ["rev-list", "--reverse", `${baseSha}..${branchName}`])
     .catch(() => "");
   const commits = commitListOutput.split("\n").map((line) => line.trim()).filter(Boolean);
 
-  await runGit(repoDir, `git checkout --detach ${quoteShellArg(baseSha)}`);
+  await runGitArgs(repoDir, ["checkout", "--detach", baseSha]);
 
   try {
     for (const sha of commits) {
       if (dropSet.has(sha)) continue;
-      await execAsync(`git cherry-pick ${quoteShellArg(sha)}`, {
-        cwd: repoDir,
-        encoding: "utf-8",
-        timeout: GIT_TIMEOUT_MS,
-        maxBuffer: GIT_MAX_BUFFER,
-      });
+      await runGitArgs(repoDir, ["cherry-pick", sha]);
     }
 
     const newTip = await revParse(repoDir, "HEAD");
-    await runGit(repoDir, `git update-ref ${quoteShellArg(`refs/heads/${branchName}`)} ${quoteShellArg(newTip)} ${quoteShellArg(originalTip)}`);
-    await runGit(repoDir, `git checkout ${quoteShellArg(branchName)}`);
+    await runGitArgs(repoDir, ["update-ref", `refs/heads/${branchName}`, newTip, originalTip]);
+    await runGitArgs(repoDir, ["checkout", branchName]);
   } catch (error) {
-    await runGit(repoDir, `git cherry-pick --abort`).catch(() => undefined);
-    await runGit(repoDir, `git checkout ${quoteShellArg(branchName)}`).catch(() => undefined);
+    await runGitArgs(repoDir, ["cherry-pick", "--abort"]).catch(() => undefined);
+    await runGitArgs(repoDir, ["checkout", branchName]).catch(() => undefined);
     throw error;
   }
 
@@ -910,7 +926,7 @@ async function isZeroUniqueCommitBranchViaPatchIdFallback(
   mainRef: string,
 ): Promise<boolean> {
   const range = `${startPoint}..${branchName}`;
-  const branchCommitsOutput = await runGit(repoDir, `git rev-list ${quoteShellArg(range)}`).catch(() => "");
+  const branchCommitsOutput = await runGitArgs(repoDir, ["rev-list", range]).catch(() => "");
   const branchCommitShas = branchCommitsOutput
     .split("\n")
     .map((line) => line.trim())
@@ -920,25 +936,14 @@ async function isZeroUniqueCommitBranchViaPatchIdFallback(
     return true;
   }
 
-  const upstreamPatchIdsOutput = await runGit(
-    repoDir,
-    `git rev-list ${quoteShellArg(mainRef)} | while read c; do git show "$c" | git patch-id --stable; done`,
-  ).catch(() => "");
-
-  const upstreamPatchIds = new Set(
-    upstreamPatchIdsOutput
-      .split("\n")
-      .map((line) => line.trim().split(" ")[0])
-      .filter(Boolean),
-  );
+  const upstreamPatchIds = await listStablePatchIds(repoDir, mainRef).catch(() => new Set<string>());
 
   if (upstreamPatchIds.size === 0) {
     return false;
   }
 
   for (const sha of branchCommitShas) {
-    const patchIdLine = await runGit(repoDir, `git show ${quoteShellArg(sha)} | git patch-id --stable`).catch(() => "");
-    const patchId = patchIdLine.trim().split(" ")[0];
+    const patchId = await stablePatchIdForCommit(repoDir, sha).catch(() => "");
     if (!patchId || !upstreamPatchIds.has(patchId)) {
       return false;
     }
