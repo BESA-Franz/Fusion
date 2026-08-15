@@ -973,7 +973,26 @@ export async function handleGraphFailure(
             error: null,
           }, deps.getRunContextFor(task.id));
           const scheduleRetry = () => {
-            deps.execute(live).catch((err: unknown) =>
+            void (async () => {
+              const resumeTask = await deps.store.getTask(task.id);
+              if (
+                !resumeTask
+                || resumeTask.deletedAt
+                || resumeTask.paused
+                || resumeTask.userPaused
+                || resumeTask.column !== wipColumn
+                || resumeTask.status === "failed"
+                || resumeTask.error != null
+                || ("lastError" in resumeTask && resumeTask.lastError != null)
+                || ("failureReason" in resumeTask && resumeTask.failureReason != null)
+                || deps.userCanceledTaskIds.has(task.id)
+                || deps.hasLiveTaskSessionSurface(task.id)
+              ) {
+                executorLog.debug(`${task.id}: skipping transient graph resume retry — task state changed before retry fire time`);
+                return;
+              }
+              await deps.execute(resumeTask);
+            })().catch((err: unknown) =>
               executorLog.error(`Failed transient graph resume retry for ${task.id}:`, err),
             );
           };
