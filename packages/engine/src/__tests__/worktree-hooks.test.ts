@@ -159,8 +159,10 @@ describe("worktree-hooks", () => {
     expect((await readFile(taskIdPath, "utf-8")).trim()).toBe("FN-1");
     await access(preCommitPath);
     await access(commitMsgPath);
-    expect((await stat(preCommitPath)).mode & 0o777).toBe(0o755);
-    expect((await stat(commitMsgPath)).mode & 0o777).toBe(0o755);
+    if (process.platform !== "win32") {
+      expect((await stat(preCommitPath)).mode & 0o777).toBe(0o755);
+      expect((await stat(commitMsgPath)).mode & 0o777).toBe(0o755);
+    }
     expect(await readFile(commitMsgPath, "utf-8")).toContain('git interpret-trailers');
   });
 

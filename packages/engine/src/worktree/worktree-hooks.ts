@@ -153,6 +153,12 @@ case "$COMMIT_SOURCE" in
   commit|merge|squash) exit 0 ;;
 esac
 
+# Non-empty commits never need the parent-process tiebreaker. This also avoids
+# launching the Windows process query on the normal commit path.
+if ! git diff --cached --quiet --no-ext-diff 2>/dev/null; then
+  exit 0
+fi
+
 # 'git commit --amend -m "..."' reports source=message (not commit), so the
 # source arg alone cannot distinguish amend-with-new-message from
 # --allow-empty -m. Inspect the parent process command line as a tiebreaker.
@@ -161,6 +167,8 @@ esac
 #   - 'ps -o args= -p $PPID' is POSIX (macOS, BSD, glibc Linux).
 #   - Alpine/busybox 'ps' may not support '-o args='; fall back to
 #     /proc/$PPID/cmdline (Linux including busybox).
+#   - Git for Windows has neither a readable /proc command line nor a reliable
+#     POSIX ps view of git.exe; query the parent command line through Windows.
 #
 # Matching: tokenize PARENT_CMD by whitespace and require an EXACT '--amend'
 # token APPEARING BEFORE the first message-supplying flag ('-m', '-F',
@@ -174,6 +182,10 @@ esac
 PARENT_CMD=$(ps -o args= -p "$PPID" 2>/dev/null || echo "")
 if [ -z "$PARENT_CMD" ] && [ -r "/proc/$PPID/cmdline" ]; then
   PARENT_CMD=$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null || echo "")
+fi
+if command -v powershell.exe >/dev/null 2>&1; then
+  WINDOWS_PARENT_CMD=$(powershell.exe -NoProfile -NonInteractive -Command '$p = Get-CimInstance Win32_Process -Filter "ProcessId=$PID"; $depth = 0; while ($p -and $p.Name -ne "git.exe" -and $depth -lt 6) { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)"; $depth++ }; if ($p -and $p.Name -eq "git.exe") { $p.CommandLine }' 2>/dev/null || echo "")
+  [ -z "$WINDOWS_PARENT_CMD" ] || PARENT_CMD="$WINDOWS_PARENT_CMD"
 fi
 for tok in $PARENT_CMD; do
   case "$tok" in
@@ -203,12 +215,10 @@ if [ -f "$GIT_DIR/MERGE_HEAD" ] \\
   exit 0
 fi
 
-if git diff --cached --quiet --no-ext-diff 2>/dev/null; then
-  printf '%s\\n' "fusion: refusing empty commit \u2014 staged diff is empty." >&2
-  printf '%s\\n' "  Use fn_task_document_write for narrative output, not git commits." >&2
-  printf '%s\\n' "  (FN-5345/FN-5377 empty-commit guard)" >&2
-  exit 1
-fi
+printf '%s\\n' "fusion: refusing empty commit \u2014 staged diff is empty." >&2
+printf '%s\\n' "  Use fn_task_document_write for narrative output, not git commits." >&2
+printf '%s\\n' "  (FN-5345/FN-5377 empty-commit guard)" >&2
+exit 1
 `;
 }
 
