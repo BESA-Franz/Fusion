@@ -79,7 +79,7 @@ describe("hook-scripts", () => {
   });
 
   describe("writeSessionHookScripts", () => {
-    it("writes both scripts into the dir, marked executable", async () => {
+    it("writes both scripts into the dir and marks them executable where file modes are supported", async () => {
       const result = await writeSessionHookScripts({ ...opts, dir });
 
       expect(result.hookScriptPath).toBe(join(dir, HOOK_SCRIPT_NAMES.hook));
@@ -87,11 +87,15 @@ describe("hook-scripts", () => {
       expect(existsSync(result.hookScriptPath)).toBe(true);
       expect(existsSync(result.notifyScriptPath)).toBe(true);
 
-      // Owner-executable bit set on both files.
-      const hookMode = statSync(result.hookScriptPath).mode;
-      const notifyMode = statSync(result.notifyScriptPath).mode;
-      expect(hookMode & 0o100).toBe(0o100);
-      expect(notifyMode & 0o100).toBe(0o100);
+      // Windows does not expose POSIX execute bits through stat(). The generated
+      // shell scripts still need a strict owner-executable assertion everywhere
+      // the host filesystem represents that contract.
+      if (process.platform !== "win32") {
+        const hookMode = statSync(result.hookScriptPath).mode;
+        const notifyMode = statSync(result.notifyScriptPath).mode;
+        expect(hookMode & 0o100).toBe(0o100);
+        expect(notifyMode & 0o100).toBe(0o100);
+      }
 
       const hookContent = await readFile(result.hookScriptPath, "utf8");
       expect(hookContent).toContain(opts.endpointUrl);
