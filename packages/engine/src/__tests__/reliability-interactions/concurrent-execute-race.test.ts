@@ -18,7 +18,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "../executor-test-helpers.js";
 import { TaskExecutor } from "../../executor.js";
-import { mockedCreateFnAgent, createMockStore, resetExecutorMocks } from "../executor-test-helpers.js";
+import { createWorkflowRoutingAgentStore, mockedCreateFnAgent, createMockStore, resetExecutorMocks } from "../executor-test-helpers.js";
 
 function makeTask(overrides: Record<string, unknown> = {}) {
   return {
@@ -33,7 +33,7 @@ function makeTask(overrides: Record<string, unknown> = {}) {
     // that gates the `await shouldDeferForHeartbeat(...)` which is the offending yield
     // point. Without it, the short-circuit `assignedAgentId && ...` evaluates to false
     // synchronously and no await happens, so the race window doesn't exist.
-    assignedAgentId: "agent-test-executor",
+    assignedAgentId: "workflow-test-executor",
     dependencies: [],
     steps: [],
     currentStep: 0,
@@ -68,7 +68,10 @@ describe("FN-4811 follow-up (FN-4814): concurrent execute() must not produce par
         state: {},
       },
     }) as any);
-    const baselineExecutor = new TaskExecutor(baselineStore as any, "/tmp/test");
+    const baselineRouting = createWorkflowRoutingAgentStore(baselineStore);
+    const baselineExecutor = new TaskExecutor(baselineStore as any, "/tmp/test", {
+      agentStore: baselineRouting.agentStore as never,
+    });
     await baselineExecutor.execute(makeTask());
     const baselineCount = mockedCreateFnAgent.mock.calls.length;
     expect(baselineCount).toBeGreaterThan(0);
@@ -94,7 +97,8 @@ describe("FN-4811 follow-up (FN-4814): concurrent execute() must not produce par
     });
 
     const store = createMockStore();
-    const executor = new TaskExecutor(store as any, "/tmp/test");
+    const routing = createWorkflowRoutingAgentStore(store);
+    const executor = new TaskExecutor(store as any, "/tmp/test", { agentStore: routing.agentStore as never });
     const task = makeTask();
 
     const [resultA, resultB] = await Promise.allSettled([
@@ -128,7 +132,8 @@ describe("FN-4811 follow-up (FN-4814): concurrent execute() must not produce par
       },
     }) as any);
 
-    const executor = new TaskExecutor(store as any, "/tmp/test");
+    const routing = createWorkflowRoutingAgentStore(store);
+    const executor = new TaskExecutor(store as any, "/tmp/test", { agentStore: routing.agentStore as never });
     await executor.execute(makeTask());
     const firstCount = mockedCreateFnAgent.mock.calls.length;
     /*
