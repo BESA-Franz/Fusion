@@ -673,6 +673,7 @@ the cache useful across a normal work week.
 - Code changes: affected package tests + any directly relevant browser/build lane.
 - Cross-package, shared test infrastructure, or CI changes: `pnpm test:full`.
 - Production/bundling-sensitive changes: `pnpm build`.
+- Staged CLI plugin core imports: run `pnpm --filter @runfusion/fusion exec vitest run src/__tests__/staged-plugin-core-imports.test.ts --silent=passed-only --reporter=dot`. The AST guard checks every staged plugin's non-test source against the CLI core-runtime shim and each plugin manifest; it intentionally rejects unclassifiable, namespace-escaping, default, and core-subpath imports.
 - Substantial work: `pnpm verify:workspace`.
 - If you skip a relevant lane, say why.
 
