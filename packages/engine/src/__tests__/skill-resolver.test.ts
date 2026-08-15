@@ -11,7 +11,7 @@ Hoist mock filesystem state used inside vi.mock factories. Without vi.hoisted,
 existsSync runs during module import (schema-applier path resolution) before
 const mockFiles initializes and throws TDZ "Cannot access before initialization".
 */
-const { mockPiLog, mockFiles, mockDirs, mockDirCounter } = vi.hoisted(() => ({
+const { mockPiLog, mockFiles, mockDirs, mockDirCounter, normalizeMockPath } = vi.hoisted(() => ({
   mockPiLog: {
     log: vi.fn(),
     debug: vi.fn(),
@@ -21,6 +21,7 @@ const { mockPiLog, mockFiles, mockDirs, mockDirCounter } = vi.hoisted(() => ({
   mockFiles: new Map<string, string>(),
   mockDirs: new Set<string>(),
   mockDirCounter: { value: 0 },
+  normalizeMockPath: (value: unknown) => String(value).replaceAll("\\", "/").replace(/^[A-Za-z]:(?=\/)/, ""),
 }));
 
 vi.mock("../logger.js", () => ({
@@ -40,12 +41,12 @@ vi.mock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
   return {
     ...actual,
-    existsSync: (path: unknown) => mockFiles.has(String(path)) || mockDirs.has(String(path)),
-    readFileSync: (path: unknown) => mockFiles.get(String(path)) ?? "{}",
+    existsSync: (path: unknown) => mockFiles.has(normalizeMockPath(path)) || mockDirs.has(normalizeMockPath(path)),
+    readFileSync: (path: unknown) => mockFiles.get(normalizeMockPath(path)) ?? "{}",
     mkdtempSync: () => `/tmp/skill-resolver-mock-${++mockDirCounter.value}`,
-    writeFileSync: (path: unknown, content: unknown) => mockFiles.set(String(path), String(content)),
+    writeFileSync: (path: unknown, content: unknown) => mockFiles.set(normalizeMockPath(path), String(content)),
     rmSync: (path: unknown) => {
-      const pathStr = String(path);
+      const pathStr = normalizeMockPath(path);
       for (const key of mockFiles.keys()) {
         if (key.startsWith(pathStr)) mockFiles.delete(key);
       }
@@ -77,7 +78,7 @@ describe("resolveProjectRoot", () => {
     const dir = `/tmp/skill-resolver-mock-${++mockDirCounter.value}`;
     mockDirs.add(`${dir}/.fusion`);
 
-    expect(resolveProjectRoot(dir)).toBe(dir);
+    expect(normalizeMockPath(resolveProjectRoot(dir))).toBe(normalizeMockPath(dir));
   });
 
   it("prefers parent repo root for worktree paths when both parent and worktree have .fusion", () => {
@@ -86,7 +87,7 @@ describe("resolveProjectRoot", () => {
     mockDirs.add(`${projectDir}/.fusion`);
     mockDirs.add(`${worktreeDir}/.fusion`);
 
-    expect(resolveProjectRoot(`${worktreeDir}/sub`)).toBe(projectDir);
+    expect(normalizeMockPath(resolveProjectRoot(`${worktreeDir}/sub`))).toBe(normalizeMockPath(projectDir));
   });
 
   it("falls back to legacy walk when parent repo .fusion is missing", () => {
@@ -94,7 +95,7 @@ describe("resolveProjectRoot", () => {
     const worktreeDir = `${projectDir}/.worktrees/swift-falcon`;
     mockDirs.add(`${worktreeDir}/.fusion`);
 
-    expect(resolveProjectRoot(`${worktreeDir}/sub`)).toBe(worktreeDir);
+    expect(normalizeMockPath(resolveProjectRoot(`${worktreeDir}/sub`))).toBe(normalizeMockPath(worktreeDir));
   });
 
   it("walks up from deeply nested path", () => {
@@ -102,14 +103,14 @@ describe("resolveProjectRoot", () => {
     const nestedDir = `${projectDir}/.worktrees/task-branch/src/components`;
     mockDirs.add(`${projectDir}/.fusion`);
 
-    expect(resolveProjectRoot(nestedDir)).toBe(projectDir);
+    expect(normalizeMockPath(resolveProjectRoot(nestedDir))).toBe(normalizeMockPath(projectDir));
   });
 
   it("returns cwd when no .fusion directory found anywhere", () => {
     const dir = `/tmp/skill-resolver-mock-${++mockDirCounter.value}`;
 
     // No .fusion set up anywhere
-    expect(resolveProjectRoot(dir)).toBe(dir);
+    expect(normalizeMockPath(resolveProjectRoot(dir))).toBe(normalizeMockPath(dir));
   });
 
   it("returns cwd when .fusion is in a sibling directory (not ancestor)", () => {
@@ -119,7 +120,7 @@ describe("resolveProjectRoot", () => {
     mockDirs.add(`${siblingDir}/.fusion`);
 
     // Walking up from dir should not find sibling's .fusion
-    expect(resolveProjectRoot(dir)).toBe(dir);
+    expect(normalizeMockPath(resolveProjectRoot(dir))).toBe(normalizeMockPath(dir));
   });
 });
 
