@@ -7,6 +7,7 @@ import { evaluateNoCommitsNoOpFinalize } from "@fusion/core";
 import {
   captureNamedTool,
   createMockStore,
+  createWorkflowRoutingAgentStore,
   mockedCreateFnAgent,
   mockedExecSync,
   resetExecutorMocks,
@@ -31,6 +32,7 @@ function baseTask(overrides: Record<string, unknown> = {}) {
     worktree: "/repo/.worktrees/swift-falcon",
     branch: "fusion/fn-8141",
     baseCommitSha: "abc123",
+    assignedAgentId: "workflow-test-executor",
     taskDoneRetryCount: 0,
     // Two unreviewed pending steps: the exact shape that trips bulk-step-completion-without-review.
     steps: [
@@ -67,7 +69,8 @@ async function setup(overrides: Record<string, unknown> = {}) {
     return { session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn() } } as any;
   });
 
-  const executor = new TaskExecutor(store as any, "/repo");
+  const routing = createWorkflowRoutingAgentStore(store as never);
+  const executor = new TaskExecutor(store as any, "/repo", { agentStore: routing.agentStore as never });
   await executor.execute(task as any);
 
   // execute() runs a mock session that never calls fn_task_done, so its own
