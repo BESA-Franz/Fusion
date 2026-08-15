@@ -689,6 +689,7 @@ export function buildBuildActionGateContextDeps(host: any): any {
     get approvalRequestStore() { return host.approvalRequestStore; },
     activeWorkflowAuthorities: host.activeWorkflowAuthorities,
     activeWorkflowGraphAbortControllers: host.activeWorkflowGraphAbortControllers,
+    messageStore: host.options.messageStore,
   };
 }
 
@@ -837,6 +838,7 @@ export function buildBuildPermanentAgentGatingContextDeps(host: any): any {
     ...buildStoreRunContextDeps(host),
     approvalSuspended: host.approvalSuspended,
     get approvalRequestStore() { return host.approvalRequestStore; },
+    messageStore: host.options.messageStore,
   };
 }
 

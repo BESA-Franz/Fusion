@@ -16,7 +16,7 @@
  * in lanes WITHOUT an actionGateContext, where no executor in-flight
  * session surface exists to abort.
  */
-import type { Agent, PermanentAgentGatingContext, TaskStore } from "@fusion/core";
+import type { Agent, MessageStore, PermanentAgentGatingContext, TaskStore } from "@fusion/core";
 import {
   AWAITING_APPROVAL_PAUSE_REASON,
   ApprovalRequestStore,
@@ -24,12 +24,14 @@ import {
 } from "@fusion/core";
 import { buildAgentGatedActionSummary } from "../agents/permanent-agent-gating.js";
 import type { EngineRunContext } from "../util/run-audit.js";
+import { emitApprovalMail } from "../agents/approval-mail.js";
 
 export type BuildPermanentAgentGatingContextDeps = {
   store: TaskStore;
   getRunContextFor: (taskId: string) => EngineRunContext | undefined;
   approvalSuspended: Set<string>;
   approvalRequestStore: ApprovalRequestStore;
+  messageStore?: MessageStore;
 };
 
 export function buildPermanentAgentGatingContext(
@@ -98,6 +100,12 @@ export function buildPermanentAgentGatingContext(
         deps.approvalSuspended.delete(taskId);
         throw error;
       }
+      /*
+      FNXC:StructuralMail 2026-08-15-02:46:
+      Permanent executor gates share the idempotent approval-mail writer; mailbox failure never
+      weakens or rolls back the task pause that protects the gated action.
+      */
+      void emitApprovalMail({ messageStore: deps.messageStore, approvalRequestId, toolName, taskId, agentId: actorId, agentName: actorName });
     },
   };
 }

@@ -30,7 +30,7 @@
  * FNXC:ApprovalRedemption 2026-07-26-14:35:
  * ownership guard — an agent must not be able to burn another agent's approval by id.
  */
-import type { Agent, AgentStore, TaskStore } from "@fusion/core";
+import type { Agent, AgentStore, MessageStore, TaskStore } from "@fusion/core";
 import {
   AWAITING_APPROVAL_PAUSE_REASON,
   ApprovalRequestStore,
@@ -43,6 +43,7 @@ import { isCurrentReviewerNodeOverride } from "../agents/workflow-agent-router.j
 import { executorLog } from "../logger.js";
 import type { EngineRunContext } from "../util/run-audit.js";
 import type { ActiveWorkflowAuthority } from "./workflow-principal-before-node.js";
+import { emitApprovalMail } from "../agents/approval-mail.js";
 
 export type BuildActionGateContextDeps = {
   store: TaskStore;
@@ -53,6 +54,7 @@ export type BuildActionGateContextDeps = {
   approvalRequestStore: ApprovalRequestStore;
   activeWorkflowAuthorities: Map<string, ActiveWorkflowAuthority>;
   activeWorkflowGraphAbortControllers: Map<string, AbortController>;
+  messageStore?: MessageStore;
 };
 
 export function buildActionGateContext(
@@ -184,6 +186,12 @@ export function buildActionGateContext(
         await deps.agentStore.updateAgentState(agent.id, "paused");
         await deps.agentStore.updateAgent(agent.id, { pauseReason: "awaiting-approval" });
       }
+      /*
+      FNXC:StructuralMail 2026-08-15-02:46:
+      The executor gate must use the same idempotent, fail-soft mailbox seam as heartbeat and triage.
+      The approval pause remains authoritative even when message persistence is unavailable.
+      */
+      void emitApprovalMail({ messageStore: deps.messageStore, approvalRequestId, toolName: decision.toolName, taskId, agentId: actorId, agentName: actorName });
     },
     markApprovalCompleted: async (approvalRequestId) => {
       await deps.approvalRequestStore.markCompleted(approvalRequestId, {
