@@ -150,6 +150,19 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
     super();
     this.setMaxListeners(100);
 
+    // Node treats an EventEmitter `error` event without a listener as a
+    // process-fatal exception. Runtime errors can arrive before the daemon
+    // has attached its optional consumer (for example while a remote node is
+    // still returning its startup 503), so keep the orchestrator alive and
+    // preserve the error in the engine log until an external listener is
+    // attached.
+    this.on("error", ({ projectId, projectName, error }) => {
+      hybridExecutorLog.error(
+        `Unhandled runtime error for ${projectName} (${projectId}):`,
+        error.message,
+      );
+    });
+
     // Create internal ProjectManager
     this.projectManager = new ProjectManager(centralCore);
 

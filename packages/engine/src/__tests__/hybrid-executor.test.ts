@@ -367,6 +367,16 @@ describe("HybridExecutor", () => {
       expect(handler).not.toHaveBeenCalled();
     });
 
+    it("does not crash when a runtime error has no external consumer", () => {
+      expect(() => {
+        executor.emit("error", {
+          projectId: "proj_test123",
+          projectName: "Test Project",
+          error: new Error("remote node is still starting"),
+        });
+      }).not.toThrow();
+    });
+
     it("should support health:changed event", () => {
       const handler = vi.fn();
       executor.on("health:changed", handler);
