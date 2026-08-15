@@ -686,7 +686,9 @@ CRITICAL SCOPING RULES — read before doing anything else:
         // Skill selection: assigned-agent / role-fallback skills, plus the step's own named skill (U1) made discoverable via additionalSkillPaths.
         ...(effectiveSkillSelection ? { skillSelection: effectiveSkillSelection } : {}),
         ...(additionalSkillPaths ? { additionalSkillPaths } : {}),
-        ...(readonlyCustomTools.allowed.length > 0 ? { customTools: readonlyCustomTools.allowed } : {}),
+        ...(readonlyCustomTools.allowed.length > 0
+          ? { customTools: readonlyCustomTools.allowed, fusionTools: readonlyCustomTools.allowed }
+          : {}),
       });
       // FNXC:CommandCenterActivity 2026-08-15-22:15: session boundary for the workflow-step runtime session (restored post-wave-18).
       emitAgentSessionStart({ store: deps.store, agentId: task.assignedAgentId ?? null, taskId: task.id, nodeId: task.effectiveNodeId ?? task.nodeId ?? null, model: primaryModelId ?? null, provider: primaryProvider ?? null, lane: "executor" });
