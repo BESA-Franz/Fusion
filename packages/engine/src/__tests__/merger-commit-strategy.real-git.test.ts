@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { execSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Settings, Task, TaskStore } from "@fusion/core";
@@ -12,8 +12,12 @@ import { aiMergeTask } from "../merger.js";
 const hasGit = spawnSync("git", ["--version"], { stdio: "pipe" }).status === 0;
 const describeIfGit = hasGit ? describe : describe.skip;
 
-function git(repo: string, command: string): string {
-  return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+function git(repo: string, ...args: string[]): string {
+  const result = spawnSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+  }
+  return result.stdout.trim();
 }
 
 function makeTask(overrides: TaskWithPromptOverride): Task {
@@ -89,28 +93,34 @@ describeIfGit("aiMergeTask direct merge commit routing (real git)", () => {
   function setupRepo(): { repo: string; initSha: string } {
     const repo = mkdtempSync(join(tmpdir(), "fusion-merger-commit-strategy-"));
     repos.push(repo);
-    git(repo, "git init -b main");
-    git(repo, 'git config user.email "test@example.com"');
-    git(repo, 'git config user.name "Test User"');
+    git(repo, "init", "-b", "main");
+    git(repo, "config", "user.email", "test@example.com");
+    git(repo, "config", "user.name", "Test User");
     writeFileSync(join(repo, "README.md"), "init\n", "utf-8");
-    git(repo, "git add README.md && git commit -m 'chore: init'");
-    return { repo, initSha: git(repo, "git rev-parse HEAD") };
+    git(repo, "add", "README.md");
+    git(repo, "commit", "-m", "chore: init");
+    return { repo, initSha: git(repo, "rev-parse", "HEAD") };
   }
 
   it("auto-routes multi-substantive branches to history-preserving direct merge", async () => {
     const { repo, initSha } = setupRepo();
     const branch = "fusion/fn-4069-test";
 
-    git(repo, `git checkout -b ${branch}`);
+    git(repo, "checkout", "-b", branch);
     writeFileSync(join(repo, "src-fix.ts"), "export const fix = 1;\n", "utf-8");
-    git(repo, "git add src-fix.ts && git commit -m 'fix: preserve original bugfix'");
+    git(repo, "add", "src-fix.ts");
+    git(repo, "commit", "-m", "fix: preserve original bugfix");
 
     writeFileSync(join(repo, ".changeset-fn-4069.md"), "noop\n", "utf-8");
-    git(repo, "mkdir -p .changeset && mv .changeset-fn-4069.md .changeset/fn-4069.md && git add .changeset/fn-4069.md && git commit -m 'chore: add changeset'");
+    mkdirSync(join(repo, ".changeset"), { recursive: true });
+    renameSync(join(repo, ".changeset-fn-4069.md"), join(repo, ".changeset", "fn-4069.md"));
+    git(repo, "add", ".changeset/fn-4069.md");
+    git(repo, "commit", "-m", "chore: add changeset");
 
     writeFileSync(join(repo, "src-style.css"), ".root { display: block; }\n", "utf-8");
-    git(repo, "git add src-style.css && git commit -m 'feat: preserve follow-up polish'");
-    git(repo, "git checkout main");
+    git(repo, "add", "src-style.css");
+    git(repo, "commit", "-m", "feat: preserve follow-up polish");
+    git(repo, "checkout", "main");
 
     const task = makeTask({
       id: "FN-4069",
@@ -125,17 +135,17 @@ describeIfGit("aiMergeTask direct merge commit routing (real git)", () => {
 
     expect((store.moveTask as ReturnType<typeof vi.fn>).mock.calls.some(([, column]) => column === "done")).toBe(true);
 
-    const subjects = git(repo, `git log --reverse --format=%s ${initSha}..HEAD`).split("\n");
+    const subjects = git(repo, "log", "--reverse", "--format=%s", `${initSha}..HEAD`).split("\n");
     expect(subjects).toEqual([
       "fix: preserve original bugfix",
       "chore: add changeset",
       "feat: preserve follow-up polish",
     ]);
 
-    const landedShas = git(repo, `git rev-list --reverse ${initSha}..HEAD`).split("\n");
+    const landedShas = git(repo, "rev-list", "--reverse", `${initSha}..HEAD`).split("\n");
     expect(landedShas).toHaveLength(3);
     for (const sha of landedShas) {
-      const body = git(repo, `git log -1 --format=%B ${sha}`);
+      const body = git(repo, "log", "-1", "--format=%B", sha);
       expect(body).toContain("Fusion-Task-Id: FN-4069");
     }
   }, 20_000);
