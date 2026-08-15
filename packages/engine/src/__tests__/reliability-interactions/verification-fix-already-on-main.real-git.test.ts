@@ -2,14 +2,14 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { commitOrAmendMergeWithFixes } from "../../merger.js";
 import { SelfHealingManager } from "../../self-healing.js";
 
-function git(dir: string, cmd: string): string {
-  return execSync(cmd, { cwd: dir, stdio: "pipe" }).toString().trim();
+function git(dir: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: dir, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
 function makeStore(task: Task, settings: Partial<Settings> = {}): TaskStore & EventEmitter {
@@ -36,21 +36,21 @@ describe("verification-fix already-on-main reliability interactions (real git)",
   it("recovers no-content finalize and allows self-healing done transition", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fn-4559-ri-"));
     try {
-      git(dir, "git init -b main");
-      git(dir, 'git config user.email "test@example.com"');
-      git(dir, 'git config user.name "Test"');
-      git(dir, "git commit --allow-empty -m init");
+      git(dir, ["init", "-b", "main"]);
+      git(dir, ["config", "user.email", "test@example.com"]);
+      git(dir, ["config", "user.name", "Test"]);
+      git(dir, ["commit", "--allow-empty", "-m", "init"]);
 
-      git(dir, "git commit --allow-empty -m 'feat(FN-4545): unrelated'");
-      const unrelatedSha = git(dir, "git rev-parse HEAD");
+      git(dir, ["commit", "--allow-empty", "-m", "feat(FN-4545): unrelated"]);
+      const unrelatedSha = git(dir, ["rev-parse", "HEAD"]);
       writeFileSync(join(dir, "file.txt"), "task\n");
-      git(dir, "git add file.txt");
-      git(dir, "git commit -m 'feat(FN-4553): landed' -m 'Fusion-Task-Id: FN-4553'");
-      const landedSha = git(dir, "git rev-parse HEAD");
-      git(dir, "git commit --allow-empty -m 'chore: post'");
-      const preAttemptHeadSha = git(dir, "git rev-parse HEAD");
+      git(dir, ["add", "file.txt"]);
+      git(dir, ["commit", "-m", "feat(FN-4553): landed", "-m", "Fusion-Task-Id: FN-4553"]);
+      const landedSha = git(dir, ["rev-parse", "HEAD"]);
+      git(dir, ["commit", "--allow-empty", "-m", "chore: post"]);
+      const preAttemptHeadSha = git(dir, ["rev-parse", "HEAD"]);
 
-      git(dir, `git branch fusion/fn-4553 ${unrelatedSha}`);
+      git(dir, ["branch", "fusion/fn-4553", unrelatedSha]);
 
       const finalized = await commitOrAmendMergeWithFixes(
         dir,
