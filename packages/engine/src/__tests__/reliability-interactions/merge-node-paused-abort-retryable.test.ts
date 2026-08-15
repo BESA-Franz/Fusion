@@ -115,9 +115,9 @@ describe("merge-node paused-abort retry classification (FN-6735)", () => {
     );
   });
 
-  it("allows shared-branch-group local integration to retry even when global autoMerge is off", async () => {
+  it("allows an explicitly opted-in shared-branch-group local integration to retry when global autoMerge is off", async () => {
     const { store, task, executor, mergeRequester } = makeHarness({
-      autoMerge: undefined,
+      autoMerge: true,
       branchContext: { groupId: "BG-6735", source: "mission", assignmentMode: "shared" },
     }, { autoMerge: false });
 
