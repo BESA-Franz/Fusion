@@ -28,6 +28,8 @@ interface CheckDiffVolumeParams {
   threshold: number;
   allowlistGlobs: readonly string[];
   taskId?: string;
+  /** Approved clean-room commit range; legacy callers continue reading the index. */
+  squashRange?: { fromSha: string; toSha: string };
 }
 
 function buildMessage(findings: readonly DiffVolumeRegressionFinding[]): string {
@@ -71,6 +73,7 @@ export async function checkDiffVolume({
   minLines,
   threshold,
   allowlistGlobs,
+  squashRange,
 }: CheckDiffVolumeParams): Promise<void> {
   const base = (await execGit(rootDir, ["merge-base", integrationTargetSha, branch])).trim();
   const touchedFilesOutput = await execGit(rootDir, ["diff", "--name-only", `${base}...${branch}`]);
@@ -89,9 +92,14 @@ export async function checkDiffVolume({
     );
     if (branchNet <= minLines) continue;
 
-    const staged = parseNumstatTotal(
-      await execGit(rootDir, ["diff", "--cached", "--numstat", "--", file]),
-    );
+    /*
+     * FNXC:AIMerge 2026-08-19-00:00:
+     * The unified land has an approved commit, not staged changes; preserve the
+     * legacy index read unless its clean-room range is supplied.
+     */
+    const staged = parseNumstatTotal(await execGit(rootDir, squashRange
+      ? ["diff", "--numstat", `${squashRange.fromSha}..${squashRange.toSha}`, "--", file]
+      : ["diff", "--cached", "--numstat", "--", file]));
     const ratio = branchNet === 0 ? 1 : staged / branchNet;
     if (ratio < threshold) {
       findings.push({ file, branchNet, staged, ratio });

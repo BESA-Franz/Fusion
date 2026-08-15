@@ -66,6 +66,7 @@ import { selectUserCommentsForAgentContext } from "../agents/agent-user-comments
 import { resolveTaskWorkingBranch } from "../worktree/worktree-names.js";
 import { resolveIntegrationBranch } from "./integration-branch.js";
 import { advanceIntegrationBranchRef } from "./merger-ref-update-advance.js";
+import { enforceAiMergeSquashGates } from "./merger-ai-squash-gates.js";
 import {
   assertMergeGenerationOwned,
   createMergeWriteFence,
@@ -259,6 +260,7 @@ function listAiMergeWorktreeCandidates(taskId: string, projectRootDir: string, s
 
 async function recoverApprovedPreexistingAiMergeWorktree(
   repoRootDir: string,
+  branch: string,
   integrationBranch: string,
   ctx: LandRepoContext,
 ): Promise<LandOneRepoResult | null> {
@@ -307,6 +309,8 @@ async function recoverApprovedPreexistingAiMergeWorktree(
   const selected = recoverableCandidates[0];
   throwIfAborted(signal, taskId);
   if (!selected.alreadyLanded) {
+    if (!task) throw new Error(`AI merge task ${taskId} disappeared before recovery squash gates`);
+    await enforceAiMergeSquashGates({ store, task, taskId, mergeRoot: selected.mergeRoot, branch, tipSha: selected.tipSha, squashSha: selected.squashSha, settings, audit, log, repoRel: ctx.repoRel, repoKeys: ctx.repoKeys });
     const land = await landSquash({
       projectRootDir: repoRootDir,
       mergeRoot: selected.mergeRoot,
@@ -806,6 +810,9 @@ export interface LandRepoContext {
   off, preserving the documented hard-fail for the single-repo land path.
   */
   nonFatalDependencySync?: boolean;
+  /** Workspace repo-local File Scope context; omitted for single-repo lands. */
+  repoRel?: string;
+  repoKeys?: readonly string[];
   /*
   FNXC:MergeNoCommits 2026-07-17-12:00:
   When true, the task is expected to produce no code changes (audit, documentation, decision-only).
@@ -859,7 +866,7 @@ export async function landOneRepo(
   // If a prior merger died after the clean-room squash was approved but before
   // landing/finalization, land that commit before the normal pre-merge prune can
   // delete the only easy reference to it.
-  const recovered = await recoverApprovedPreexistingAiMergeWorktree(repoRootDir, integrationBranch, ctx);
+  const recovered = await recoverApprovedPreexistingAiMergeWorktree(repoRootDir, branch, integrationBranch, ctx);
   if (recovered) return recovered;
 
   // Pre-merge prune is rooted at THIS sub-repo (KTD1): N per-repo clean rooms for
@@ -1064,6 +1071,16 @@ export async function landOneRepo(
         await audit.git({ type: "merge:ai-empty", target: integrationBranch, metadata: { taskId, tipSha } });
         return { outcome: "empty", tipSha, integrationBranch };
       }
+
+      /*
+       * FNXC:AIMerge 2026-08-19-00:00:
+       * This is the sole production pre-land seam: the reviewer approved the
+       * clean-room squash but the integration ref has not advanced, so scope and
+       * shrinkage violations can still leave every integration branch untouched.
+       */
+      const freshTask = await store.getTask(taskId);
+      if (!freshTask) throw new Error(`AI merge task ${taskId} disappeared before squash gates`);
+      await enforceAiMergeSquashGates({ store, task: freshTask, taskId, mergeRoot, branch, tipSha, squashSha, settings, audit, log, repoRel: ctx.repoRel, repoKeys: ctx.repoKeys });
 
       // 4 + 5. Land the squash on the target branch and sync the user's
       //        checkout (AI reconciles a conflicting restore).
@@ -2072,6 +2089,8 @@ export async function landWorkspaceTask(
         nonFatalDependencySync: true,
         // FNXC:MergeNoCommits 2026-07-17-12:00: no-commits tasks skip dependency sync in the clean room
         noCommitsExpected: task.noCommitsExpected === true,
+        repoRel,
+        repoKeys,
         store,
       });
       if (landResult.outcome === "landed") {
