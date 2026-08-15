@@ -103,7 +103,9 @@ export function enrichRunningAgentTaskShape<T extends RunningAgentTaskShape>(tas
     columnTerminalKind: resolveColumnTerminalKind(task.column, ir),
     columnIsIntakeOrHold: columnHasFlag(ir, task.column, "intake") || columnHasFlag(ir, task.column, "hold"),
     columnCountsTowardWip: columnHasFlag(ir, task.column, "countsTowardWip"),
-    columnIsReviewOrMerge: columnHasFlag(ir, task.column, "mergeOrchestration") || columnHasFlag(ir, task.column, "mergeBlocker"),
+    columnIsReviewOrMerge: columnHasFlag(ir, task.column, "mergeOrchestration")
+      || columnHasFlag(ir, task.column, "mergeBlocker")
+      || columnHasFlag(ir, task.column, "humanReview"),
   };
 }
 
@@ -124,7 +126,7 @@ The fix for a renamed board is at the CALLER — pass flags, or use `enrichRunni
 which takes the IR and resolves every role by trait. Same reasoning as the marker above
 `isLegacyPreImplementationColumn`, which this file already records.
 */
-export function enrichRunningAgentTaskShapeFromFlags<T extends RunningAgentTaskShape>(task: T, flags?: Pick<TraitFlags, "complete" | "archived" | "intake" | "hold" | "countsTowardWip" | "mergeOrchestration" | "mergeBlocker">): T & Required<Pick<RunningAgentTaskShape, "columnTerminalKind" | "columnIsIntakeOrHold" | "columnCountsTowardWip" | "columnIsReviewOrMerge">> {
+export function enrichRunningAgentTaskShapeFromFlags<T extends RunningAgentTaskShape>(task: T, flags?: Pick<TraitFlags, "complete" | "archived" | "intake" | "hold" | "countsTowardWip" | "mergeOrchestration" | "mergeBlocker" | "humanReview">): T & Required<Pick<RunningAgentTaskShape, "columnTerminalKind" | "columnIsIntakeOrHold" | "columnCountsTowardWip" | "columnIsReviewOrMerge">> {
   return {
     ...task,
     columnTerminalKind: flags?.archived ? "archived" : flags?.complete ? "complete" : "none",
@@ -136,7 +138,9 @@ export function enrichRunningAgentTaskShapeFromFlags<T extends RunningAgentTaskS
     a column absent from the board's flag map is the renamed-or-undeclared case. Supply flags
     rather than relying on them.
     */
-    columnIsReviewOrMerge: flags ? flags.mergeOrchestration === true || flags.mergeBlocker === true : task.column === "in-review",
+    columnIsReviewOrMerge: flags
+      ? flags.mergeOrchestration === true || flags.mergeBlocker === true || flags.humanReview === true
+      : task.column === "in-review",
   };
 }
 
