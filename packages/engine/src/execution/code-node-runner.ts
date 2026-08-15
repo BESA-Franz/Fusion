@@ -43,6 +43,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // esbuild is loaded lazily at first compile: a top-level import would run its
 // environment invariant check (TextEncoder) at module-load time in any process
@@ -175,8 +176,9 @@ export async function compileCodeNodeSource(source: string): Promise<string> {
 /** The child harness wrapper. Reads ctx JSON from stdin, imports the compiled
  *  user module (default export), invokes it, frames the JSON result on stdout. */
 function buildChildHarness(userModuleFile: string): string {
+  const userModuleUrl = pathToFileURL(userModuleFile).href;
   return `
-import userMod from ${JSON.stringify(userModuleFile)};
+import userMod from ${JSON.stringify(userModuleUrl)};
 
 function readStdin() {
   return new Promise((resolve) => {
