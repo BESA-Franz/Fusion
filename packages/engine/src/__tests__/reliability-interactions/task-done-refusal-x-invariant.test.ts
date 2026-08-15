@@ -44,7 +44,9 @@ async function setup(overrides: Record<string, unknown> = {}) {
   });
 
   const executor = new TaskExecutor(store as any, "/repo");
-  await executor.execute(createTask() as any);
+  await (executor as unknown as {
+    runImplementation(task: unknown, onPrompt: () => void): Promise<void>;
+  }).runImplementation(createTask(), vi.fn());
 
   return { store, doneTool, getTask: () => task };
 }
@@ -82,7 +84,7 @@ describe("FN-4851 reliability interactions: task-done refusals x invariant", () 
   it("does not let summary prose prevent the scope-leak guard from running", async () => {
     const invariantSpy = vi.spyOn(TaskExecutor.prototype as any, "verifyWorktreeInvariants").mockResolvedValue({ ok: true });
     const scopeSpy = vi.spyOn(TaskExecutor.prototype as any, "evaluateTaskDoneScopeLeak");
-    const { doneTool } = await setup();
+    const { doneTool } = await setup({ steps: [{ name: "Step 1", status: "done" }] });
 
     const result = await doneTool.execute("done", { summary: "To unblock, land FN-4789 first." });
 
