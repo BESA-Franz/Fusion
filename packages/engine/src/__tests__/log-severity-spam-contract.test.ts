@@ -12,8 +12,40 @@ import { logSeverityManifest } from "./log-severity-manifest.js";
 
 const engineSrc = join(__dirname, "..");
 
+const relocatedSources: Record<string, string> = {
+  "agent-self-improve.ts": "agents/agent-self-improve.ts",
+  "agent-session-helpers.ts": "agents/agent-session-helpers.ts",
+  "auto-claim-snapshot.ts": "scheduling/auto-claim-snapshot.ts",
+  "cron-runner.ts": "scheduling/cron-runner.ts",
+  "goal-anchoring-audit.ts": "goals/goal-anchoring-audit.ts",
+  "hold-release.ts": "execution/hold-release.ts",
+  "mcp-session-tools.ts": "mcp/mcp-session-tools.ts",
+  "merger-conflict-resolution.ts": "merge/merger-conflict-resolution.ts",
+  "mission-execution-loop.ts": "missions/mission-execution-loop.ts",
+  "peer-exchange-service.ts": "project/peer-exchange-service.ts",
+  "plugin-runner.ts": "plugins/plugin-runner.ts",
+  "pty-native.ts": "cli-runtime/pty-native.ts",
+  "routine-scheduler.ts": "scheduling/routine-scheduler.ts",
+  "run-verification-tool.ts": "execution/run-verification-tool.ts",
+  "runtime-resolution.ts": "execution/runtime-resolution.ts",
+  "session-skill-context.ts": "cli-runtime/session-skill-context.ts",
+  "session-token-usage.ts": "execution/session-token-usage.ts",
+  "skill-resolver.ts": "cli-runtime/skill-resolver.ts",
+  "step-runner.ts": "execution/step-runner.ts",
+  "stuck-task-detector.ts": "healing/stuck-task-detector.ts",
+  "verification-utils.ts": "execution/verification-utils.ts",
+  "workflow-graph-foreach.ts": "workflows/workflow-graph-foreach.ts",
+  "worktree-acquisition.ts": "worktree/worktree-acquisition.ts",
+  "worktree-pool.ts": "worktree/worktree-pool.ts",
+};
+
 function readSrc(relative: string): string {
-  return readFileSync(join(engineSrc, relative), "utf8");
+  if (relative === "executor.ts") {
+    return [join(engineSrc, relative), ...sourceFiles(join(engineSrc, "executor"))]
+      .map((path) => readFileSync(path, "utf8"))
+      .join("\n");
+  }
+  return readFileSync(join(engineSrc, relocatedSources[relative] ?? relative), "utf8");
 }
 
 function sourceFiles(root: string): string[] {
