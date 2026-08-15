@@ -32,7 +32,7 @@ const BOUNDED_GIT_DIFF = "bounded data-dependent git diff plumbing";
 const allowlist: AllowlistEntry[] = [
   // FNXC:FullSuiteBookkeeping 2026-08-05-00:25: Re-pin after code-organization peels moved git plumbing under merge/, worktree/, execution/ and shifted self-healing/executor line numbers. Identity remains file+primitive+signature; lines are documentation only.
   { file: "src/execution/review-checkout.ts", line: 35, primitive: "execFileSync", signature: "const topLevel = execFileSync(\"git\", [\"rev-parse\", \"--show-toplevel\"], {", reason: SHORT_GIT_PLUMBING },
-  { file: "src/executor.ts", line: 18450, primitive: "execSync", signature: "execSync(`git merge-base --is-ancestor ${task.baseCommitSha} HEAD`, {", reason: SHORT_GIT_PLUMBING },
+  { file: "src/executor/worktree-git-refs.ts", line: 121, primitive: "execSync", signature: "execSync(`git merge-base --is-ancestor ${task.baseCommitSha} HEAD`, {", reason: SHORT_GIT_PLUMBING },
   { file: "src/merge/already-merged-detector.ts", line: 204, primitive: "execSync", signature: "branchTip = execSync(`git rev-parse --verify ${shellQuote(branchName)}`, {", reason: SHORT_GIT_PLUMBING },
   { file: "src/merge/already-merged-detector.ts", line: 223, primitive: "execSync", signature: "execSync(`git merge-base --is-ancestor ${shellQuote(branchTip)} ${shellQuote(baseBranch)}`, {", reason: SHORT_GIT_PLUMBING },
   { file: "src/merge/already-merged-detector.ts", line: 270, primitive: "execSync", signature: "branchTip = execSync(`git rev-parse --verify ${shellQuote(branchName)}`, {", reason: SHORT_GIT_PLUMBING },
@@ -121,7 +121,7 @@ What is deliberately given up is distinguishing "the audited call moved" from "t
 put" — which this guard has no reason to care about.
 */
 function keyOf(entry: { file: string; primitive: string; signature: string }): string {
-  return `${entry.file}:${entry.primitive}:${entry.signature}`;
+  return `${entry.file.replace(/\\/g, "/")}:${entry.primitive}:${entry.signature}`;
 }
 
 function classifySites(
@@ -172,6 +172,14 @@ describe("shellout allowlist matching semantics", () => {
   it("accepts an audited call that has MOVED — line drift alone is not a violation", () => {
     // The false failure this replaced: an edit ABOVE the call site broke the guard three times.
     const { unmatched, stale } = classifySites([siteAt(9_999)], [AUDITED]);
+
+    expect(unmatched).toEqual([]);
+    expect(stale).toEqual([]);
+  });
+
+  it("accepts Windows source paths against the portable allowlist identity", () => {
+    const windowsSite = { ...siteAt(10), file: "src\\example.ts" };
+    const { unmatched, stale } = classifySites([windowsSite], [AUDITED]);
 
     expect(unmatched).toEqual([]);
     expect(stale).toEqual([]);
