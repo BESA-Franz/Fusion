@@ -78,7 +78,29 @@ export class TaskRevertError extends Error {
 }
 
 function quoteShellArg(value: string): string {
+  // `exec` uses the platform shell. POSIX single quotes are literal data in
+  // cmd.exe, so Git receives the quote characters and rejects refs such as
+  // `'main'`. Double quotes are the native cmd.exe argument delimiter; the
+  // values passed here are refs/branch names or commit-message text, so
+  // escaping the cmd metacharacters keeps them one argument without changing
+  // the existing POSIX behavior.
+  if (process.platform === "win32") {
+    return `"${value.replace(/["^&|<>]/g, "^$&")}"`;
+  }
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Git commit ids are passed to `exec`, not a POSIX shell.  Wrapping a
+ * revision in single quotes therefore makes the quote characters part of the
+ * revision on Windows (`fatal: bad revision ''<sha>''`).  Keep the revision
+ * constrained to Git's hexadecimal object-id syntax and pass it unquoted.
+ */
+function gitRevisionArg(value: string): string {
+  if (!/^[0-9a-f]{4,64}$/i.test(value)) {
+    throw new TaskRevertError(`invalid git revision: ${value}`, "invalid-git-revision");
+  }
+  return value;
 }
 
 // FNXC:TaskRevert 2026-07-04-00:00:
@@ -326,7 +348,7 @@ export async function classifyTaskRevert(opts: ClassifyTaskRevertOptions): Promi
       mutated = true;
       const statusBefore = (await runGit(execImpl, "git status --porcelain", worktreePath)).stdout;
       try {
-        await runGit(execImpl, `git revert --no-commit --no-edit ${quoteShellArg(sha)}`, worktreePath);
+        await runGit(execImpl, `git revert --no-commit --no-edit ${gitRevisionArg(sha)}`, worktreePath);
         // FNXC:TaskRevert 2026-07-04-00:00: `git revert --no-commit` on an
         // already-reverted commit exits 0 with NO staged/working-tree diff
         // (no error, no "nothing to commit" text — that message only ever
@@ -401,7 +423,7 @@ async function applyRevertNoCommit(
 ): Promise<RevertShaApplyOutcome> {
   const statusBefore = (await runGit(execImpl, "git status --porcelain", worktreePath)).stdout;
   try {
-    await runGit(execImpl, `git revert --no-commit --no-edit ${quoteShellArg(sha)}`, worktreePath);
+    await runGit(execImpl, `git revert --no-commit --no-edit ${gitRevisionArg(sha)}`, worktreePath);
     // FNXC:TaskRevert 2026-07-04-00:00: `git revert --no-commit` on an
     // already-reverted commit exits 0 with no staged/working-tree diff (no
     // thrown error, no "nothing to commit" text on this call). Detect this by

@@ -1,4 +1,4 @@
-import { execSync, spawnSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,10 @@ const describeIfGit = hasGit ? describe : describe.skip;
 
 function git(repo: string, command: string): string {
   return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+}
+
+function gitArgs(repo: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
 function makeTask(overrides: Partial<Task>): Task {
@@ -44,14 +48,16 @@ describeIfGit("prepareRevertPrBranch real-git scenarios", { timeout: 30_000 }, (
     git(repo, 'git config user.name "Test User"');
     git(repo, "git config commit.gpgsign false");
     writeFileSync(join(repo, "foo.ts"), "line1\n");
-    git(repo, "git add foo.ts && git commit -m 'init'");
+    gitArgs(repo, ["add", "foo.ts"]);
+    gitArgs(repo, ["commit", "-m", "init"]);
     return repo;
   }
 
   it("clean → eligible: creates fusion/revert-<id> branch with revert commit, base untouched", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-A): add feature a'");
+    gitArgs(repo, ["add", "foo.ts"]);
+    gitArgs(repo, ["commit", "-m", "feat(FN-A): add feature a"]);
     const sha = git(repo, "git rev-parse HEAD");
     const mainHeadBefore = git(repo, "git rev-parse main");
 
@@ -86,12 +92,13 @@ describeIfGit("prepareRevertPrBranch real-git scenarios", { timeout: 30_000 }, (
   it("conflicting → pass-through: no revert branch left behind, base + checkout unchanged", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-A): add feature a'");
+    gitArgs(repo, ["add", "foo.ts"]);
+    gitArgs(repo, ["commit", "-m", "feat(FN-A): add feature a"]);
     const shaA = git(repo, "git rev-parse HEAD");
 
     // Task B later modifies the exact same region touched by task A.
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a-modified-by-b\n");
-    git(repo, "git commit -am 'feat(FN-B): modify same region'");
+    gitArgs(repo, ["commit", "-am", "feat(FN-B): modify same region"]);
 
     const mainHeadBefore = git(repo, "git rev-parse main");
     const statusBefore = git(repo, "git status --porcelain");
@@ -120,11 +127,12 @@ describeIfGit("prepareRevertPrBranch real-git scenarios", { timeout: 30_000 }, (
   it("already-reverted → pass-through: no branch, base unchanged", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-A): add feature a'");
+    gitArgs(repo, ["add", "foo.ts"]);
+    gitArgs(repo, ["commit", "-m", "feat(FN-A): add feature a"]);
     const sha = git(repo, "git rev-parse HEAD");
 
     // Manually revert the change on main before calling prepareRevertPrBranch.
-    git(repo, `git revert --no-edit ${sha}`);
+    gitArgs(repo, ["revert", "--no-edit", sha]);
     const mainHeadBefore = git(repo, "git rev-parse main");
 
     const task = makeTask({ mergeDetails: { commitSha: sha, mergeTargetBranch: "main" } });
@@ -159,7 +167,8 @@ describeIfGit("prepareRevertPrBranch real-git scenarios", { timeout: 30_000 }, (
   it("idempotent local branch reset: a stale local branch pointing elsewhere is reset off base with the fresh revert commit", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-A): add feature a'");
+    gitArgs(repo, ["add", "foo.ts"]);
+    gitArgs(repo, ["commit", "-m", "feat(FN-A): add feature a"]);
     const sha = git(repo, "git rev-parse HEAD");
 
     // Pre-create a stale local branch pointing at an unrelated commit.
@@ -184,7 +193,8 @@ describeIfGit("prepareRevertPrBranch real-git scenarios", { timeout: 30_000 }, (
   it("dirty-tree refusal: a stray staged change is refused without any branch/base mutation", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-A): add feature a'");
+    gitArgs(repo, ["add", "foo.ts"]);
+    gitArgs(repo, ["commit", "-m", "feat(FN-A): add feature a"]);
     const sha = git(repo, "git rev-parse HEAD");
 
     writeFileSync(join(repo, "stray.txt"), "stray change\n");
