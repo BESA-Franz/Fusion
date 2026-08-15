@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../executor-test-helpers.js";
 import { TaskExecutor } from "../../executor.js";
 import { createFnAgent } from "../../pi.js";
-import { createMockStore, resetExecutorMocks } from "../executor-test-helpers.js";
+import { createWorkflowRoutingAgentStore, createMockStore, resetExecutorMocks } from "../executor-test-helpers.js";
 
 const mockedCreateFnAgent = vi.mocked(createFnAgent);
 
@@ -12,6 +12,7 @@ function makeTask(overrides: Record<string, unknown> = {}) {
     title: "Pending review skip",
     description: "",
     column: "in-progress",
+    assignedAgentId: "workflow-test-executor",
     dependencies: [],
     taskDoneRetryCount: 0,
     steps: [{ name: "Step 1", status: "in-progress" as const }],
@@ -22,6 +23,11 @@ function makeTask(overrides: Record<string, unknown> = {}) {
     updatedAt: new Date().toISOString(),
     ...overrides,
   } as any;
+}
+
+function makeExecutor(store: ReturnType<typeof createMockStore>) {
+  const routing = createWorkflowRoutingAgentStore(store);
+  return new TaskExecutor(store as never, "/repo", { agentStore: routing.agentStore as never });
 }
 
 /*
@@ -75,7 +81,7 @@ describe("reliability interactions: FN-5436 executor pending-review skip", () =>
     store.getTask.mockResolvedValue(task);
     sessionThatCompletesStepsWithoutCallingTaskDone(store, "FN-5436-RI-A");
 
-    const executor = new TaskExecutor(store as any, "/repo");
+    const executor = makeExecutor(store);
     await executor.execute(task);
 
     expect(store.updateTask).not.toHaveBeenCalledWith("FN-5436-RI-A", {
@@ -96,7 +102,7 @@ describe("reliability interactions: FN-5436 executor pending-review skip", () =>
     const task = makeTask({ id: "FN-5436-RI-B", paused: true });
     store.getTask.mockResolvedValue(task);
 
-    const executor = new TaskExecutor(store as any, "/repo");
+    const executor = makeExecutor(store);
     await executor.execute(task);
 
     expect(store.moveTask).toHaveBeenCalledWith("FN-5436-RI-B", "todo", { preserveProgress: true });
@@ -136,7 +142,7 @@ describe("reliability interactions: FN-5436 executor pending-review skip", () =>
       },
     }) as any);
 
-    const executor = new TaskExecutor(store as any, "/repo");
+    const executor = makeExecutor(store);
     await executor.execute(task);
 
     expect(store.updateTask).not.toHaveBeenCalledWith("FN-5436-RI-C", {
@@ -167,7 +173,7 @@ describe("reliability interactions: FN-5436 executor pending-review skip", () =>
     store.getTask.mockResolvedValue(task);
     sessionThatCompletesStepsWithoutCallingTaskDone(store, "FN-5436-RI-D");
 
-    const executor = new TaskExecutor(store as any, "/repo");
+    const executor = makeExecutor(store);
     await executor.execute(task);
 
     /*
@@ -201,7 +207,7 @@ describe("reliability interactions: FN-5436 executor pending-review skip", () =>
     });
     store.getTask.mockResolvedValue(task);
 
-    const executor = new TaskExecutor(store as any, "/repo");
+    const executor = makeExecutor(store);
     await executor.execute(task);
 
     /*
