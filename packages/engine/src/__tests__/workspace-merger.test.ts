@@ -344,7 +344,7 @@ describe("workspace merge defense-in-depth (non-routed doors keep throwing)", ()
       id: TASK_ID,
       workspaceWorktrees: { "repo-a": { worktreePath: "/x/repo-a", branch: BRANCH } },
     } as unknown as Task;
-    expect(() => assertNotWorkspaceTaskMerge(task)).toThrowError(/cannot merge until per-repo merge/i);
+    expect(() => assertNotWorkspaceTaskMerge(task)).toThrowError(/reached a single-repo merge path/i);
     try {
       assertNotWorkspaceTaskMerge(task);
     } catch (err) {

@@ -4134,8 +4134,8 @@ export class ProjectEngine {
           // Hoist the workspace check here so workspace tasks ALWAYS fall through
           // to the existing direct/else `rawMerge` branch below, whose
           // isWorkspaceTask(mergeTask) routing already calls landWorkspaceTask
-          // correctly, regardless of the configured mergeStrategy — until true
-          // per-repo PR merge for workspace tasks (master-plan U6) ships.
+          // correctly, regardless of the configured mergeStrategy. PR-based
+          // workspace landing remains outside this direct workspace land path.
           const mergeCandidate = await store.getTask(taskId).catch(() => null);
           const routeWorkspaceDirect = !!mergeCandidate && isWorkspaceTask(mergeCandidate);
 
@@ -4545,15 +4545,15 @@ export class ProjectEngine {
             continue;
           }
 
-          // FNXC:Workspace 2026-06-21-19:40:
-          // R7 workspace merge-boundary park (master-plan U0). A WorkspaceTaskMergeError
-          // is a PERMANENT config error (workspace task hit a merge door before the
-          // per-repo merge loop exists — master-plan U6), NOT a transient merge failure.
-          // Park with status:"failed" so the auto-merge cooldown sweep STOPS re-attempting:
+          // FNXC:Workspace 2026-08-15-04:54:
+          // `landWorkspaceTask` owns the workspace per-repository land path. A
+          // WorkspaceTaskMergeError means a workspace task reached this single-repository
+          // merge door despite that routing, not a transient merge failure. Park with
+          // status:"failed" so the auto-merge cooldown sweep stops re-attempting:
           // `canMergeTask` short-circuits on status==="failed". (Parking with status:null +
           // mergeRetries:0 passes every eligibility gate, so the sweep re-enqueues every tick
           // → tight WorkspaceTaskMergeError re-throw/re-park loop.) Keep mergeRetries:0 (not
-          // the cap) so a human's manual merge after the config is addressed is not blocked by
+          // the cap) so a human's manual merge after the routing is addressed is not blocked by
           // exhausted retries — and manual merge flows through the manual-resolver branch
           // (rejectMergeResolvers), which bypasses canMergeTask, so "failed" never blocks it.
           // Detect by err.name (matches the VerificationError/MergeAbortedError convention and
@@ -4562,7 +4562,7 @@ export class ProjectEngine {
             err instanceof Error && err.name === "WorkspaceTaskMergeError";
           if (isWorkspaceMergeError) {
             runtimeLog.error(
-              `${hasManualResolver ? "Manual" : "Auto"}-merge blocked for ${taskId}: workspace-mode tasks cannot merge until per-repo merge support (master-plan U6) lands; parking as failed (manual retry still works) without exhausting mergeRetries: ${errorMsg}`,
+              `${hasManualResolver ? "Manual" : "Auto"}-merge blocked for ${taskId}: workspace task reached a single-repo merge path and must land per-repo via landWorkspaceTask; parking as failed (manual retry still works) without exhausting mergeRetries: ${errorMsg}`,
             );
             await store
               .logEntry(taskId, `Merge blocked: ${errorMsg}`, "WorkspaceTaskMergeError")
