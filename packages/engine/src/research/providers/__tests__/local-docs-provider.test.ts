@@ -1,5 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import os from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { LocalDocsProvider } from "../local-docs-provider.js";
@@ -28,21 +28,33 @@ describe("LocalDocsProvider", () => {
     const results = await provider.search("provider confidence", {});
     expect(results.length).toBeGreaterThan(0);
     expect(results[0]?.reference).toContain("docs/guide.md");
+    expect(results[0]?.metadata?.path).toBe("docs/guide.md");
   });
 
   it("fetches local file content", async () => {
     const root = makeProject();
     const provider = new LocalDocsProvider({ projectRoot: root });
 
-    const result = await provider.fetchContent("README.md", {});
-    expect(result.content).toContain("Fusion research");
-    expect(result.metadata).toMatchObject({ extension: ".md" });
+    const result = await provider.fetchContent("docs/guide.md", {});
+    expect(result.content).toContain("provider architecture");
+    expect(result.metadata).toMatchObject({ path: "docs/guide.md", extension: ".md" });
   });
 
   it("prevents path traversal", async () => {
     const root = makeProject();
     const provider = new LocalDocsProvider({ projectRoot: root });
     await expect(provider.fetchContent("../../etc/passwd", {})).rejects.toMatchObject({ code: "provider-unavailable" });
+  });
+
+  it("rejects a sibling path that merely shares the project-root prefix", async () => {
+    const root = makeProject();
+    const sibling = `${root}-sibling`;
+    tempDirs.push(sibling);
+    mkdirSync(sibling, { recursive: true });
+    writeFileSync(join(sibling, "secret.md"), "must stay outside the provider boundary");
+    const provider = new LocalDocsProvider({ projectRoot: root });
+
+    await expect(provider.fetchContent(`../${basename(sibling)}/secret.md`, {})).rejects.toMatchObject({ code: "provider-unavailable" });
   });
 
   it("skips binary files during search", async () => {

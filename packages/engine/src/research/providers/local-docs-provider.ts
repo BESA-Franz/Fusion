@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import { extname, join, relative, resolve } from "node:path";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ResearchProviderConfig, ResearchSource } from "@fusion/core";
 import type { ResearchProvider } from "../research-step-runner.js";
 import { createLogger } from "../../logger.js";
@@ -52,7 +52,8 @@ export class LocalDocsProvider implements ResearchProvider {
       }
       if (score <= 0) continue;
 
-      const relPath = relative(this.projectRoot, file);
+      const relPath = projectRelativePath(this.projectRoot, file);
+      if (relPath === undefined) continue;
       results.push({
         score,
         source: {
@@ -76,7 +77,8 @@ export class LocalDocsProvider implements ResearchProvider {
   async fetchContent(filePath: string, config: ResearchProviderConfig = {}, signal?: AbortSignal): Promise<ResearchFetchResult> {
     const timeoutMs = Number(config.timeoutMs ?? this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const resolvedPath = resolve(this.projectRoot, filePath);
-    if (!resolvedPath.startsWith(this.projectRoot)) {
+    const relPath = projectRelativePath(this.projectRoot, resolvedPath);
+    if (relPath === undefined) {
       throw new ResearchProviderError({
         providerType: "local-docs",
         code: "provider-unavailable",
@@ -99,7 +101,7 @@ export class LocalDocsProvider implements ResearchProvider {
     return {
       content: text.length > MAX_FILE_SIZE_BYTES ? text.slice(0, MAX_FILE_SIZE_BYTES) : text,
       metadata: {
-        path: relative(this.projectRoot, resolvedPath),
+        path: relPath,
         size: stat.size,
         modifiedAt: stat.mtime.toISOString(),
         extension: extname(resolvedPath),
@@ -114,7 +116,7 @@ export class LocalDocsProvider implements ResearchProvider {
 
     for (const pathEntry of this.scanPaths) {
       const target = resolve(this.projectRoot, pathEntry);
-      if (!target.startsWith(this.projectRoot)) continue;
+      if (projectRelativePath(this.projectRoot, target) === undefined) continue;
       try {
         const stat = await fs.stat(target);
         if (stat.isDirectory()) {
@@ -143,7 +145,8 @@ export class LocalDocsProvider implements ResearchProvider {
     for (const entry of entries) {
       this.throwIfAborted(signal);
       const fullPath = join(dir, entry.name);
-      const relPath = relative(this.projectRoot, fullPath).replace(/\\/g, "/");
+      const relPath = projectRelativePath(this.projectRoot, fullPath);
+      if (relPath === undefined) continue;
       if (matchesGitignore(relPath, ignorePatterns)) continue;
 
       if (entry.isDirectory()) {
@@ -220,6 +223,13 @@ function buildExcerpt(content: string, terms: string[]): string {
   const start = Math.max(0, idx - 80);
   const end = Math.min(content.length, idx + 140);
   return content.slice(start, end).replace(/\s+/g, " ").trim();
+}
+
+function projectRelativePath(projectRoot: string, target: string): string | undefined {
+  const relPath = relative(projectRoot, target);
+  if (relPath === "") return "";
+  if (isAbsolute(relPath) || relPath === ".." || relPath.startsWith(`..${sep}`)) return undefined;
+  return relPath.replace(/\\/g, "/");
 }
 
 function matchesGitignore(relPath: string, patterns: string[]): boolean {
