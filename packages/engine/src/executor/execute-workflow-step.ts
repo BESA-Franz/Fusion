@@ -297,7 +297,8 @@ export async function executeWorkflowStep(
   ${scopeFileBlock}${diffShortstat ? `\nDiff stat: ${diffShortstat}` : ""}
 
   CRITICAL SCOPING RULES — read before doing anything else:
-  - Review ONLY the files listed above. Do NOT analyze unmodified files or unrelated parts of the codebase.
+  - The modified-file list is the starting point, not a hard boundary. Review the changed implementation and follow only the necessary callers, selectors, shared helpers, consumers, and tests needed to verify its behavior.
+  - Do NOT browse unrelated parts of the codebase. Every unmodified file you inspect must have a concrete dependency or verification relationship to a changed file.
   - If NONE of the files in the diff scope are relevant to your review category (e.g. a UX/design reviewer with no UI/CSS/component files in scope, a security reviewer with no auth/network code in scope, an a11y reviewer with no markup changes), respond IMMEDIATELY with a single short approval line such as "No relevant changes in scope — approved." and STOP. Do not start exploring the codebase.
   - Your wall-clock budget is short. Spending it browsing unmodified files will cause this step to time out and block merge.${approvedContractBlock}`;
 
@@ -397,6 +398,7 @@ export async function executeWorkflowStep(
 
   This review-type node may fix issues it finds before returning a final verdict.
   - If you find an in-scope issue you can fix safely, edit the relevant files in this same session, run the smallest relevant verification, and then return APPROVE or APPROVE_WITH_NOTES.
+  - After any inline repair, restart the mandatory review procedure against the fresh diff before returning a verdict.
   - Return REVISE only when the issue is still present, cannot be safely fixed in this reviewer session, needs broader executor remediation, or needs user input.
   - Plan Review may use fn_task_prompt_write to replace the task's PROMPT.md with the complete revised plan. Do not implement product code from Plan Review.
   - Code Review and Browser Verification may fix implementation issues inside the assigned task worktree. Report each self-fixed issue as a finding with resolution resolved-in-review; list a fixed prior-lane finding in supersededFindingIds.`

@@ -30,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BUILTIN_WORKFLOWS, type WorkflowIr } from "@fusion/core";
 import "./executor-test-helpers.js";
 import { TaskExecutor } from "../executor.js";
+import * as worktreeGitRefs from "../executor/worktree-git-refs.js";
 import type { PluginRunner } from "../plugins/plugin-runner.js";
 import { WorkflowGraphExecutor } from "../workflows/workflow-graph-executor.js";
 import { WorktreeBaseRefreshError } from "../worktree/worktree-acquisition.js";
@@ -334,7 +335,7 @@ describe("CE workflow-step executor integration", () => {
         path: "/tmp/test/.worktrees/swift-falcon",
         branch: "fusion/fn-ce-1",
       });
-      vi.spyOn(executor as any, "captureBaseCommitSha").mockResolvedValue(undefined);
+      vi.spyOn(worktreeGitRefs, "captureBaseCommitSha").mockResolvedValue(undefined);
 
       const captured: { step?: any; worktreePath?: string } = {};
       vi.spyOn(executor as any, "executeWorkflowStep").mockImplementation(async (...args: any[]) => {
@@ -404,7 +405,7 @@ describe("CE workflow-step executor integration", () => {
         path: "/tmp/test/.worktrees/fresh-ce-checkout",
         branch: "fusion/fn-ce-1",
       });
-      vi.spyOn(executor as any, "captureBaseCommitSha").mockResolvedValue(undefined);
+      vi.spyOn(worktreeGitRefs, "captureBaseCommitSha").mockResolvedValue(undefined);
 
       const captured: { worktreePath?: string } = {};
       vi.spyOn(executor as any, "executeWorkflowStep").mockImplementation(async (...args: any[]) => {
@@ -481,7 +482,7 @@ describe("CE workflow-step executor integration", () => {
         path: "/tmp/test/.worktrees/acquired-code-review",
         branch: "fusion/fn-ce-1",
       });
-      vi.spyOn(executor as any, "captureBaseCommitSha").mockResolvedValue(undefined);
+      vi.spyOn(worktreeGitRefs, "captureBaseCommitSha").mockResolvedValue(undefined);
       const executeStep = vi.spyOn(executor as any, "executeWorkflowStep").mockResolvedValue({ success: true, output: "APPROVE" });
       const requirements: any[] = [];
       const codeReview = {
