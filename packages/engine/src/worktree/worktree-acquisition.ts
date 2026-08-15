@@ -1518,20 +1518,12 @@ export async function acquireWorkspaceRepoWorktree(
     }
 
     /*
-    FNXC:Workspace 2026-06-21-22:30:
-    F5 — re-read the task fresh immediately before building the merged
-    workspaceWorktrees map. store.updateTask wholesale-replaces the map, and the
-    `task` snapshot was read earlier; two sequential acquires for DIFFERENT sub-repos
-    in one task would otherwise clobber a sibling's entry. Merging into the LATEST map
-    closes the common sequential-tool-call case. NOTE: a fully-atomic store-level
-    per-repo merge is the complete fix (it also covers truly-concurrent writes); it is
-    deferred to Phase B, which exercises multi-repo acquisition.
+    FNXC:Workspace 2026-08-15-07:51:
+    F5 Phase B is implemented by mergeWorkspaceWorktreeEntry: its advisory-locked,
+    per-key database merge retains sibling sub-repo entries across concurrent processes.
+    Do not restore a wholesale workspaceWorktrees update here; that reopens the silent
+    sibling-clobber race which leaves an on-disk worktree invisible to workspace landing.
     */
-    const latest = await store.getTask(task.id);
-    const updated: Record<string, { worktreePath: string; branch: string; baseCommitSha?: string }> = {
-      ...(latest.workspaceWorktrees ?? {}),
-      [repoRelPath]: { worktreePath: result.worktreePath, branch: result.branch, baseCommitSha },
-    };
     /*
     FNXC:Workspace 2026-08-15-04:28:
     F10 — this is the one durable acquisition-state write. The helper suppresses every earlier
@@ -1540,7 +1532,12 @@ export async function acquireWorkspaceRepoWorktree(
     never makes dashboard workspace rendering, self-healing, or executor dispatch read it as
     single-repo.
     */
-    await store.updateTask(task.id, { workspaceWorktrees: updated, worktree: null, branch: null });
+    await store.mergeWorkspaceWorktreeEntry(
+      task.id,
+      repoRelPath,
+      { worktreePath: result.worktreePath, branch: result.branch, baseCommitSha },
+      { clearSingularWorktree: true },
+    );
 
     return { worktreePath: result.worktreePath, branch: result.branch, baseCommitSha, alreadyAcquired: false };
   } catch (err) {

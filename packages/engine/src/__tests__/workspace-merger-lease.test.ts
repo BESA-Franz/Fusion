@@ -58,6 +58,18 @@ function createStore(task: Task): TaskStore & RecordingStore {
       Object.assign(store.task, patch);
       return undefined;
     }),
+    mergeWorkspaceWorktreeEntry: vi.fn(async (
+      _id: string,
+      repoRelPath: string,
+      patch: Partial<NonNullable<Task["workspaceWorktrees"]>[string]>,
+      options?: { requireExistingEntry?: boolean },
+    ) => {
+      const current = store.task.workspaceWorktrees ?? {};
+      const existing = current[repoRelPath];
+      if (options?.requireExistingEntry && !existing) return store.task;
+      store.task.workspaceWorktrees = { ...current, [repoRelPath]: { ...existing, ...patch } };
+      return store.task;
+    }),
     logEntry: vi.fn().mockResolvedValue(undefined),
     appendAgentLog: vi.fn().mockResolvedValue(undefined),
     getTask: vi.fn(async () => store.task),

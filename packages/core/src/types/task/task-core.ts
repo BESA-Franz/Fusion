@@ -675,6 +675,21 @@ export interface TaskReleaseGateVerdict {
   evaluatedForUpdatedAt?: string;
 }
 
+/*
+FNXC:Workspace 2026-08-15-07:51:
+The atomic per-repository store mutation and its engine callers share this entry contract so
+per-key merges preserve every durable workspace worktree field rather than drifting into
+independent inline shapes.
+*/
+export interface WorkspaceWorktreeEntry {
+  worktreePath: string;
+  branch: string;
+  baseCommitSha?: string;
+  landedSha?: string;
+  revertBoundarySha?: string;
+  landFailure?: { message: string; at: string; branch?: string };
+}
+
 export interface Task {
   id: string;
   /** Immutable lineage identity used for durable commit/task attribution. */
@@ -732,7 +747,7 @@ export interface Task {
    * error prose is never parsed for attribution. FN-9047/FN-9048 stale-state clearing must drop
    * it alongside `landedSha`.
    */
-  workspaceWorktrees?: Record<string, { worktreePath: string; branch: string; baseCommitSha?: string; landedSha?: string; revertBoundarySha?: string; landFailure?: { message: string; at: string; branch?: string } }>;
+  workspaceWorktrees?: Record<string, WorkspaceWorktreeEntry>;
   steps: TaskStep[];
   currentStep: number;
   /**

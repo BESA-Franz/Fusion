@@ -10661,9 +10661,18 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             landed evidence for operator recovery and later safe deletion; deleting the whole entry
             would turn a safe retain into a permanent leak.
             */
-            const worktrees = { ...(task.workspaceWorktrees ?? {}) };
-            if (worktrees[repoRel]) worktrees[repoRel] = { ...worktrees[repoRel], worktreePath: "" };
-            await this.store.updateTask(task.id, { workspaceWorktrees: worktrees });
+            /*
+            FNXC:Workspace 2026-08-15-08:00:
+            Teardown settles one durable repository entry. The store-level advisory-locked merge
+            refreshes the map under the task's composite project scope, so this best-effort sweep
+            cannot erase a sibling acquisition or landed-SHA mutation that raced its stale task scan.
+            */
+            await this.store.mergeWorkspaceWorktreeEntry(
+              task.id,
+              repoRel,
+              { worktreePath: "" },
+              { requireExistingEntry: true },
+            );
           } catch { /* soft-deleted rows may reject best-effort settlement */ }
         }
         try { await createRunAuditor(this.store, { runId: generateSyntheticRunId("self-healing-orphaned-workspace-worktree", task.id), agentId: "self-healing", taskId: task.id, taskLineageId: task.lineageId, phase: "reconcile-orphaned-workspace-worktree" }).database({ type: "task:reconcile-orphaned-workspace-worktree", target: task.id, metadata: { taskId: task.id, repo: repoRel, worktreePath, success: settled, reason: failed ? "git-teardown-failed" : "settled", lane, worktreeOutcome: worktreeGone ? "gone" : "present", pruned, branch: entry.branch, branchOutcome, attempt } }); } catch { /* audit best-effort */ }

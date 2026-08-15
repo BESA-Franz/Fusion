@@ -45,6 +45,7 @@ interface RecordingStore extends EventEmitter {
   emitted: Array<{ event: string; payload: unknown }>;
   enqueued: string[];
   updateTask: ReturnType<typeof vi.fn>;
+  mergeWorkspaceWorktreeEntry: ReturnType<typeof vi.fn>;
   moveTask: ReturnType<typeof vi.fn>;
 }
 
@@ -68,6 +69,25 @@ function createStore(rows: Task[], settings: Partial<Settings> = {}): TaskStore 
       const cur = tasks.get(id);
       if (cur) tasks.set(id, { ...cur, ...patch } as Task);
       return tasks.get(id) as Task;
+    }),
+    mergeWorkspaceWorktreeEntry: vi.fn(async (
+      id: string,
+      repoRel: string,
+      patch: Partial<NonNullable<Task["workspaceWorktrees"]>[string]>,
+      options?: { requireExistingEntry?: boolean; clearSingularWorktree?: boolean },
+    ) => {
+      const current = tasks.get(id);
+      if (!current) throw new Error(`Task ${id} not found`);
+      const workspaceWorktrees = current.workspaceWorktrees ?? {};
+      const existing = workspaceWorktrees[repoRel];
+      if (options?.requireExistingEntry && !existing) return current;
+      const updated = {
+        ...current,
+        workspaceWorktrees: { ...workspaceWorktrees, [repoRel]: { ...existing, ...patch } },
+        ...(options?.clearSingularWorktree ? { worktree: undefined, branch: undefined } : {}),
+      } as Task;
+      tasks.set(id, updated);
+      return updated;
     }),
     moveTask: vi.fn(async (id: string, column: string) => {
       const cur = tasks.get(id);
@@ -926,7 +946,12 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(1);
     expect(existsSync(worktreePath)).toBe(false);
     expect(fx.git("repo-a", `git branch --list ${BRANCH}`).trim()).toBe("");
-    expect(store.updateTask).toHaveBeenCalled();
+    expect(store.mergeWorkspaceWorktreeEntry).toHaveBeenCalledWith(
+      TASK_ID,
+      "repo-a",
+      { worktreePath: "" },
+      { requireExistingEntry: true },
+    );
   });
 
   /*
@@ -976,9 +1001,12 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     expect(await makeManager(store, fx.rootDir).reconcileOrphanedWorkspaceWorktrees()).toBe(1);
     expect(existsSync(worktreePath)).toBe(false);
     expect(fx.git("repo-a", `git branch --list ${BRANCH}`).trim()).toContain(BRANCH);
-    expect(store.updateTask).toHaveBeenCalledWith(TASK_ID, expect.objectContaining({
-      workspaceWorktrees: expect.objectContaining({ "repo-a": expect.objectContaining({ branch: BRANCH, baseCommitSha, worktreePath: "" }) }),
-    }));
+    expect(store.mergeWorkspaceWorktreeEntry).toHaveBeenCalledWith(
+      TASK_ID,
+      "repo-a",
+      { worktreePath: "" },
+      { requireExistingEntry: true },
+    );
   });
 
   it("prunes an already-gone recorded worktree and settles its absent branch", async () => {
@@ -1011,9 +1039,12 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     const manager = makeManager(store, fx.rootDir);
 
     expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(1);
-    expect(store.updateTask).toHaveBeenCalledWith(TASK_ID, expect.objectContaining({
-      workspaceWorktrees: expect.objectContaining({ "repo-a": expect.objectContaining({ branch: BRANCH, worktreePath: "" }) }),
-    }));
+    expect(store.mergeWorkspaceWorktreeEntry).toHaveBeenCalledWith(
+      TASK_ID,
+      "repo-a",
+      { worktreePath: "" },
+      { requireExistingEntry: true },
+    );
     expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
   });
 
@@ -1091,7 +1122,7 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     // Negative scope: one primary veto cannot silently disable teardown of another terminal row.
     expect(existsSync(companionPath)).toBe(false);
     expect(fx.git("repo-a", `git branch --list ${companionBranch}`).trim()).toBe("");
-    expect(store.updateTask).toHaveBeenCalledTimes(1);
+    expect(store.mergeWorkspaceWorktreeEntry).toHaveBeenCalledTimes(1);
   });
 
   it("settles the prune phase while retaining a duplicate branch claim without re-pruning", async () => {
@@ -1176,7 +1207,7 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     rmSync(worktreePath, { recursive: true, force: true });
     const rejected = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, landedSha: "landed" } }, { id: "FN-7003", deletedAt: old, updatedAt: old, columnMovedAt: old });
     const store = createStore([rejected]);
-    store.updateTask.mockRejectedValue(new Error("soft-deleted"));
+    store.mergeWorkspaceWorktreeEntry.mockRejectedValue(new Error("soft-deleted"));
     const settled = makeManager(store, fx.rootDir);
     expect(await settled.reconcileOrphanedWorkspaceWorktrees()).toBe(1);
     expect(await settled.reconcileOrphanedWorkspaceWorktrees()).toBe(0);

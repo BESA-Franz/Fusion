@@ -3,7 +3,11 @@ import type { TaskStore } from "@fusion/core";
 /**
  * FNXC:Workspace 2026-08-15-07:05:
  * Persist a display-only per-repository landing failure without altering merge control flow.
- * A fresh read preserves concurrent updates to sibling workspace entries and callers swallow errors.
+ *
+ * FNXC:Workspace 2026-08-15-08:00:
+ * This is a per-key mutation, so it must use the advisory-locked store merge rather than
+ * reconstructing workspaceWorktrees from a stale read. `requireExistingEntry` retains the
+ * absent-entry no-op while concurrent acquisition and landing keep every sibling entry.
  */
 export async function persistWorkspaceRepoLandFailure(
   store: TaskStore,
@@ -11,11 +15,10 @@ export async function persistWorkspaceRepoLandFailure(
   repoRel: string,
   failure: { message: string; at: string; branch?: string },
 ): Promise<void> {
-  const latest = await store.getTask(taskId);
-  const current = latest?.workspaceWorktrees ?? {};
-  const entry = current[repoRel];
-  if (!entry) return;
-  await store.updateTask(taskId, {
-    workspaceWorktrees: { ...current, [repoRel]: { ...entry, landFailure: failure } },
-  });
+  await store.mergeWorkspaceWorktreeEntry(
+    taskId,
+    repoRel,
+    { landFailure: failure },
+    { requireExistingEntry: true },
+  );
 }

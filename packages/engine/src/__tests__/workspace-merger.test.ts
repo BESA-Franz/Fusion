@@ -58,6 +58,7 @@ function createStore(settings: Record<string, unknown> = {}): TaskStore & Record
     emitted,
     getSettings: vi.fn().mockResolvedValue({ autoMerge: false, ...settings }),
     updateTask: vi.fn().mockResolvedValue(undefined),
+    mergeWorkspaceWorktreeEntry: vi.fn().mockResolvedValue(undefined),
     logEntry: vi.fn().mockResolvedValue(undefined),
     appendAgentLog: vi.fn().mockResolvedValue(undefined),
     // FNXC:Test 2026-06-24-23:50: mergeAndReview reads store.getTask().comments for merge/review
@@ -286,11 +287,12 @@ describeIfGit("landWorkspaceTask — per-repo merge loop (Phase C U1)", () => {
     expect(byRepo["repo-a"].status).toBe("landed");
     expect(byRepo["repo-b"].status).toBe("failed");
     expect(byRepo["repo-b"].error).toMatch(/conflict/i);
-    expect(store.updateTask).toHaveBeenCalledWith(TASK_ID, expect.objectContaining({
-      workspaceWorktrees: expect.objectContaining({
-        "repo-b": expect.objectContaining({ landFailure: expect.objectContaining({ message: expect.stringMatching(/conflict/i), branch: BRANCH }) }),
-      }),
-    }));
+    expect(store.mergeWorkspaceWorktreeEntry).toHaveBeenCalledWith(
+      TASK_ID,
+      "repo-b",
+      expect.objectContaining({ landFailure: expect.objectContaining({ message: expect.stringMatching(/conflict/i), branch: BRANCH }) }),
+      { requireExistingEntry: true },
+    );
 
     // Repo A landed locally (its ref advanced).
     expect(fx.git("repo-a", "git rev-parse refs/heads/main")).not.toBe(tipABefore);

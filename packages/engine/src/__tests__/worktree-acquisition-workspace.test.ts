@@ -34,16 +34,42 @@ function git(repo: string, command: string): string {
  */
 function makeFakeStore(
   task: Task,
-  options: { failWhen?: (patch: Partial<Task>) => boolean } = {},
+  options: {
+    failWhen?: (patch: Partial<Task>) => boolean;
+    beforeWorkspaceMerge?: (repoRelPath: string) => Promise<void>;
+  } = {},
 ): { store: TaskStore; current: () => Task; logs: string[]; patches: Partial<Task>[] } {
   let current = task;
   const logs: string[] = [];
   const patches: Partial<Task>[] = [];
   const store = {
     async updateTask(id: string, patch: Partial<Task>): Promise<void> {
+      // Deliberately retain wholesale replacement: the concurrent regression below must fail
+      // if production returns to updateTask({ workspaceWorktrees }) instead of the key merge.
       patches.push(patch);
       if (options.failWhen?.(patch)) throw new Error("injected update failure");
       if (id === current.id) current = { ...current, ...patch };
+    },
+    async mergeWorkspaceWorktreeEntry(
+      id: string,
+      repoRelPath: string,
+      patch: Partial<NonNullable<Task["workspaceWorktrees"]>[string]>,
+      mergeOptions?: { requireExistingEntry?: boolean; clearSingularWorktree?: boolean },
+    ): Promise<Task> {
+      if (id !== current.id) throw new Error(`Task ${id} not found`);
+      await options.beforeWorkspaceMerge?.(repoRelPath);
+      // Read only after the deterministic gate: this mirrors the store primitive's locked fresh read.
+      const workspaceWorktrees = current.workspaceWorktrees ?? {};
+      const existing = workspaceWorktrees[repoRelPath];
+      if (mergeOptions?.requireExistingEntry && !existing) return current;
+      const mergedPatch: Partial<Task> = {
+        workspaceWorktrees: { ...workspaceWorktrees, [repoRelPath]: { ...existing, ...patch } },
+        ...(mergeOptions?.clearSingularWorktree ? { worktree: undefined, branch: undefined } : {}),
+      };
+      patches.push(mergedPatch);
+      if (options.failWhen?.(mergedPatch)) throw new Error("injected update failure");
+      current = { ...current, ...mergedPatch };
+      return current;
     },
     async logEntry(_id: string, message: string): Promise<void> {
       logs.push(message);
@@ -374,6 +400,60 @@ describeIfGit("acquireWorkspaceRepoWorktree (U2 per-repo hardening)", { timeout:
     expect(persisted["repo-a"]?.worktreePath).toBe(first.worktreePath);
     expect(persisted["repo-b"]?.worktreePath).toBe(second.worktreePath);
     expect(patches.every((patch) => !patch.worktree && !patch.branch)).toBe(true);
+  });
+
+  it("retains both sibling entries when different repo acquisitions overlap deterministically", async () => {
+    fixture = await createWorkspaceFixture(["repo-a", "repo-b"]);
+    let firstAtMerge!: () => void;
+    const firstReachedMerge = new Promise<void>((resolve) => { firstAtMerge = resolve; });
+    let releaseFirst!: () => void;
+    const release = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let mergeCalls = 0;
+    const { store, current } = makeFakeStore(makeTask("FN-7-concurrent"), {
+      beforeWorkspaceMerge: async () => {
+        mergeCalls += 1;
+        if (mergeCalls === 1) {
+          firstAtMerge();
+          await release;
+        } else {
+          // The second acquisition reaches the atomic merge before the first writes.
+          releaseFirst();
+        }
+      },
+    });
+    const registry = new ActiveSessionRegistry();
+
+    const first = acquireWorkspaceRepoWorktree({ repoRelPath: "repo-a", workspaceRootDir: fixture.rootDir, task: current(), store, settings: SETTINGS, registry });
+    await firstReachedMerge;
+    const second = acquireWorkspaceRepoWorktree({ repoRelPath: "repo-b", workspaceRootDir: fixture.rootDir, task: current(), store, settings: SETTINGS, registry });
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(a.alreadyAcquired).toBe(false);
+    expect(b.alreadyAcquired).toBe(false);
+    expect(current().workspaceWorktrees).toMatchObject({
+      "repo-a": { worktreePath: a.worktreePath, branch: a.branch },
+      "repo-b": { worktreePath: b.worktreePath, branch: b.branch },
+    });
+    expect(current().worktree).toBeFalsy();
+    expect(current().branch).toBeFalsy();
+  });
+
+  it("keeps same-repo concurrent acquisition exclusive while the winning merge is pending", async () => {
+    fixture = await createWorkspaceFixture(["repo-a"]);
+    let reachedMerge!: () => void;
+    const firstReachedMerge = new Promise<void>((resolve) => { reachedMerge = resolve; });
+    let releaseFirst!: () => void;
+    const release = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const { store, current } = makeFakeStore(makeTask("FN-7-same-repo"), {
+      beforeWorkspaceMerge: async () => { reachedMerge(); await release; },
+    });
+    const registry = new ActiveSessionRegistry();
+    const first = acquireWorkspaceRepoWorktree({ repoRelPath: "repo-a", workspaceRootDir: fixture.rootDir, task: current(), store, settings: SETTINGS, registry });
+    await firstReachedMerge;
+    await expect(acquireWorkspaceRepoWorktree({ repoRelPath: "repo-a", workspaceRootDir: fixture.rootDir, task: makeTask("FN-7-same-repo-loser"), store, settings: SETTINGS, registry })).rejects.toBeInstanceOf(WorkspaceRepoAcquireBusyError);
+    releaseFirst();
+    const winner = await first;
+    expect(current().workspaceWorktrees?.["repo-a"]?.worktreePath).toBe(winner.worktreePath);
   });
 
   it("re-acquires a dead remembered workspace entry without singular persistence", async () => {

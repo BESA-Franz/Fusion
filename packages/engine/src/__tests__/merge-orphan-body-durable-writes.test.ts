@@ -72,6 +72,14 @@ function createRecordingStore(controller: AbortController, options: { sharedGrou
         if (patch.mergeDetails) options.onMergeDetailsPersist?.();
         return task;
       }),
+      mergeWorkspaceWorktreeEntry: vi.fn(async (_id: string, repoRelPath: string, patch: Record<string, unknown>, mergeOptions?: { requireExistingEntry?: boolean }) => {
+        records.push({ generation, writer: "mergeWorkspaceWorktreeEntry", args: [_id, repoRelPath, patch, mergeOptions] });
+        const current = (task.workspaceWorktrees as Record<string, Record<string, unknown>> | undefined) ?? {};
+        const existing = current[repoRelPath];
+        if (mergeOptions?.requireExistingEntry && !existing) return task;
+        task.workspaceWorktrees = { ...current, [repoRelPath]: { ...existing, ...patch } };
+        return task;
+      }),
       moveTask: vi.fn(async (...args: unknown[]) => { records.push({ generation, writer: "moveTask", args }); task.column = args[1] as string; return task; }),
       logEntry: record("logEntry"), appendAgentLog: record("appendAgentLog"),
       emit: vi.fn((...args: unknown[]) => { records.push({ generation, writer: "emit", args }); }),

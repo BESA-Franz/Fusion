@@ -2237,9 +2237,8 @@ export { isRepoLanded };
 
 /**
  * FNXC:Workspace 2026-06-22-00:30 (Phase C U2, KTD3):
- * Persist one sub-repo's `landedSha` with a FRESH-read-then-merge so a concurrent
- * sibling-entry write is not clobbered (Phase A/B per-repo `workspaceWorktrees`
- * pattern). Re-read the latest task, merge only this repo's entry, write the whole map.
+ * Persist one sub-repo's `landedSha` through the store's advisory-locked per-key merge,
+ * so a concurrent sibling-entry acquisition or landing cannot be clobbered.
  *
  * FNXC:Workspace 2026-06-22-04:10 (Phase C review A1 — do NOT swallow the DB write):
  * Previously the `store.updateTask(...)` was `.catch(() => undefined)`. That swallow is the
@@ -2251,6 +2250,10 @@ export { isRepoLanded };
  * trailer ancestor-fallback (A1) recognises the actually-landed repo and skips it (no double
  * squash). We DELIBERATELY do not swallow the `getTask` read either-way: a failed read leaves
  * `landedSha` unrecorded for the same reason, so it must also escalate.
+ *
+ * FNXC:Workspace 2026-08-15-07:51: requireExistingEntry preserves the vanished-entry no-op,
+ * while mergeWorkspaceWorktreeEntry owns the cross-process atomic map merge. Do not substitute
+ * updateTask with a reconstructed workspaceWorktrees map here.
  */
 async function persistRepoLandedSha(
   store: TaskStore,
@@ -2258,14 +2261,14 @@ async function persistRepoLandedSha(
   repoRel: string,
   landedSha: string,
 ): Promise<void> {
-  const latest = await store.getTask(taskId);
-  const current = latest?.workspaceWorktrees ?? {};
-  const entry = current[repoRel];
-  if (!entry) return; // entry vanished — nothing to merge into
   // FNXC:Workspace 2026-08-15-06:45: a new landing is strictly after its revert boundary,
   // so clear that invalidation marker while retaining the fresh landedSha as normal proof.
-  const next = { ...current, [repoRel]: { ...entry, landedSha, landFailure: undefined, revertBoundarySha: undefined } };
-  await store.updateTask(taskId, { workspaceWorktrees: next });
+  await store.mergeWorkspaceWorktreeEntry(
+    taskId,
+    repoRel,
+    { landedSha, landFailure: undefined, revertBoundarySha: undefined },
+    { requireExistingEntry: true },
+  );
 }
 
 /**

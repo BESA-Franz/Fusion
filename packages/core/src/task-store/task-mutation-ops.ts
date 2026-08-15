@@ -19,7 +19,7 @@ import {randomUUID} from "node:crypto";
 import {mkdir, readFile, writeFile, rename, unlink} from "node:fs/promises";
 import {join} from "node:path";
 import {existsSync} from "node:fs";
-import type {Task, TaskCreateInput, TaskAttachment, BoardConfig, ActivityLogEntry, ActivityEventType, Artifact, ArtifactCreateInput, RunMutationContext, MergeQueueEntry, BranchGroup, BranchGroupUpdate, CompletionHandoffMarker, WorkflowWorkItem, WorkflowWorkItemKind, PrEntity, PrEntityUpdate, TaskRecommendation} from "../types.js";
+import type {Task, TaskCreateInput, TaskAttachment, BoardConfig, ActivityLogEntry, ActivityEventType, Artifact, ArtifactCreateInput, RunMutationContext, MergeQueueEntry, BranchGroup, BranchGroupUpdate, CompletionHandoffMarker, WorkflowWorkItem, WorkflowWorkItemKind, PrEntity, PrEntityUpdate, TaskRecommendation, WorkspaceWorktreeEntry} from "../types.js";
 import { CONFIG_CHANGED_BY_SYSTEM } from "../types.js";
 import {validateSettingValuePatch, WorkflowSettingRejectionError} from "../workflows/workflow-settings.js";
 import "../builtin-traits.js";
@@ -457,6 +457,56 @@ Resolution changes only the active episode status. The PostgreSQL compare-and-se
 merges that field into the existing JSON, preserving per-reason cooldown stamps so
 resolving X or notifying Y cannot reopen X's live spam window.
 */
+/*
+FNXC:Workspace 2026-08-15-07:51:
+Per-repository workspace worktree updates must serialize across Fusion processes, not merely one
+TaskStore instance. The advisory transaction lock is acquired before reading the composite
+(project_id, id)-scoped row, then this method replaces only the requested key. Reintroducing an
+engine-side wholesale workspaceWorktrees update would reopen the Phase-B sibling-clobber race.
+*/
+export async function mergeWorkspaceWorktreeEntryImpl(
+  store: TaskStore,
+  id: string,
+  repoRelPath: string,
+  patch: Partial<WorkspaceWorktreeEntry>,
+  options: { requireExistingEntry?: boolean; clearSingularWorktree?: boolean } = {},
+): Promise<Task> {
+  return store.withTaskLock(id, async () => {
+    const layer = store.asyncLayer!;
+    const outcome = await layer.transactionImmediate(async (tx) => {
+      await acquireTaskAdvisoryXactLock(tx, layer.projectId, id);
+      const row = await readTaskRowInTransaction(tx, id, { includeDeleted: true }, layer.projectId);
+      if (!row) throw new TaskNotFoundError(id);
+      if (row.deletedAt) throw new TaskDeletedError(id, row.deletedAt as string);
+
+      const current = store.rowToTask(store.pgRowToTaskRow(row));
+      const workspaceWorktrees = current.workspaceWorktrees ?? {};
+      const existing = workspaceWorktrees[repoRelPath];
+      if (options.requireExistingEntry && !existing) return { task: current, mutated: false };
+
+      const updatedAt = new Date().toISOString();
+      const [updatedRow] = await tx
+        .update(schema.project.tasks)
+        .set({
+          workspaceWorktrees: { ...workspaceWorktrees, [repoRelPath]: { ...existing, ...patch } },
+          ...(options.clearSingularWorktree ? { worktree: null, branch: null } : {}),
+          updatedAt,
+        })
+        .where(and(eq(schema.project.tasks.id, id), taskProjectScope(layer)))
+        .returning();
+      if (!updatedRow) throw new TaskNotFoundError(id);
+      return { task: store.rowToTask(store.pgRowToTaskRow(updatedRow)), mutated: true };
+    });
+
+    if (outcome.mutated) {
+      await store.writeTaskJsonFile(store.taskDir(id), outcome.task);
+      if (store.isWatching) store.taskCache.set(id, { ...outcome.task });
+      store.emitTaskLifecycleEventSafely("task:updated", [outcome.task]);
+    }
+    return outcome.task;
+  });
+}
+
 export async function resolveTaskWedgeNotificationEpisodeImpl(
   store: TaskStore,
   id: string,
