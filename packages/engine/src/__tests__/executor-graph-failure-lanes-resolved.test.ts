@@ -455,17 +455,20 @@ describe("one lane snapshot per recovery, across every classifier", () => {
 
   async function methodBody(name: string): Promise<string> {
     const { readFile } = await import("node:fs/promises");
-    const source = await readFile(new URL("../executor.ts", import.meta.url), "utf8");
+    const moduleName = name === "handleNonContinuableSessionError"
+      ? "non-continuable-session"
+      : name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
+    const source = await readFile(new URL(`../executor/${moduleName}.ts`, import.meta.url), "utf8");
     const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-    const start = code.indexOf(`private async ${name}(`);
+    const start = code.indexOf(`export async function ${name}(`);
     expect(start, `${name} not found — update this test, do not delete it`).toBeGreaterThan(-1);
     /*
-    Bounded by the next `private ` declaration of ANY kind. My first version bounded on the next member of
-    the same list, so the last entry's window ran to EOF and it accused a method of a call living 1200 lines
-    away. A ratchet with the wrong window accuses the wrong function — worse than no ratchet, because the
-    "fix" lands on code that was already correct.
+    Bounded by the next exported declaration of ANY kind. The executor is split into one module per lane
+    classifier, so reading the old facade or using a class-member boundary silently drops the real body.
+    A ratchet with the wrong window accuses the wrong function — worse than no ratchet, because the "fix"
+    lands on code that was already correct.
     */
-    const next = code.indexOf("\n  private ", start + 1);
+    const next = code.indexOf("\nexport ", start + 1);
     return code.slice(start, next === -1 ? code.length : next);
   }
 
