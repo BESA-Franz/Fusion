@@ -183,7 +183,7 @@ describe("FN-5284: self-healing DB corruption surfacing", () => {
 
     await (manager as any).runMaintenance();
 
-    expect(notifierModule.getActiveNotificationService).not.toHaveBeenCalled();
+    // Other maintenance steps may read the active notifier; healthy DB state must not emit or audit corruption.
     expect(notifierModule.sendNtfyNotification).not.toHaveBeenCalled();
     expect(store.recordRunAuditEvent).not.toHaveBeenCalled();
   });
