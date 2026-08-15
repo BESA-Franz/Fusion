@@ -411,6 +411,25 @@ describeIfGit("landWorkspaceTask — DB-failure resilience (Phase C review A1/A4
     expect(second.finalized).toBe(true);
   });
 
+  it("does not treat an ancient recycled trailer on a gone branch as already landed", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    configureIdentity(fx.repoPath("repo-a"));
+    writeFileSync(path.join(fx.repoPath("repo-a"), "ancient.txt"), "ancient\n", "utf-8");
+    fx.git("repo-a", "git add ancient.txt");
+    execSync(`git commit -m "historic land" -m "Fusion-Task-Id: ${TASK_ID}"`, {
+      cwd: fx.repoPath("repo-a"), stdio: "pipe",
+      env: { ...process.env, GIT_AUTHOR_DATE: "2024-01-01T00:00:00Z", GIT_COMMITTER_DATE: "2024-01-01T00:00:00Z" },
+    });
+    const task = makeTask({ "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } });
+    const store = createStore(task);
+    const result = await landWorkspaceTask(store, store.task, fx.rootDir, {}, {
+      mergeAgent: squashMergeAgent(BRANCH), reviewAgent: approveReviewAgent,
+    });
+    const repo = result.repos[0]!;
+    expect(repo.alreadyLanded).toBeFalsy();
+    expect(repo.status).toBe("empty");
+  });
+
   it("A4: WorkspacePartialLandError is a real class (instanceof + retryable + payload)", () => {
     const err = new WorkspacePartialLandError(2, ["repo-b"], "partial");
     expect(err).toBeInstanceOf(WorkspacePartialLandError);

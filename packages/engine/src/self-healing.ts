@@ -10114,7 +10114,8 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             A boundary-invalidated repo is unlanded here and therefore follows the existing
             branch-present retry path; FORK-A remains fail-closed when its branch is absent.
             */
-            if (await isRepoLanded(repoRootDir, integrationBranch, entry.landedSha, task.id, entry.branch, entry.revertBoundarySha)) {
+            /* FNXC:Workspace 2026-08-15-07:05: Creation time bounds branch-gone trailer recovery against recycled task ids. */
+            if (await isRepoLanded(repoRootDir, integrationBranch, entry.landedSha, task.id, entry.branch, entry.revertBoundarySha, task.createdAt)) {
               landedRepos.push(repoRel);
               continue;
             }
@@ -10613,7 +10614,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
                   repoRootDir,
                   { ...settings, integrationBranch: undefined, baseBranch: undefined },
                 );
-                safe = await isRepoLanded(repoRootDir, integrationBranch, entry.landedSha, task.id, branch, entry.revertBoundarySha);
+                safe = await isRepoLanded(repoRootDir, integrationBranch, entry.landedSha, task.id, branch, entry.revertBoundarySha, task.createdAt);
               }
               if (!safe && entry.baseCommitSha) {
                 const count = await this.execWorkspaceTeardownGit(`git rev-list --count ${shellQuote(entry.baseCommitSha)}..${shellQuote(branch)}`, { cwd: repoRootDir, timeout: 120_000 });

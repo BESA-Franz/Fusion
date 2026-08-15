@@ -2020,6 +2020,11 @@ export async function landWorkspaceTask(
     // ancestor of (or equals) its CURRENT integration tip is already landed — SKIP
     // it so a retry never re-advances the ref. This makes a re-run after a partial
     // land idempotent for the already-landed repos.
+    /*
+    FNXC:Workspace 2026-08-15-07:05:
+    Supply task creation time so a missing workspace branch cannot let a recycled historical
+    trailer prove this repo landed and skip its current work.
+    */
     const provenLandedSha = await findProvenLandedCommit(
       repoRootDir,
       integrationBranch,
@@ -2027,6 +2032,7 @@ export async function landWorkspaceTask(
       taskId,
       entry.branch,
       entry.revertBoundarySha,
+      task.createdAt,
     );
     if (provenLandedSha) {
       /*

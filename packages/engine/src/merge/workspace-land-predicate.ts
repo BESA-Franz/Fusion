@@ -15,6 +15,9 @@ const execFileAsync = promisify(execFile);
 
 /** Canonical Fusion task-id trailer key stamped on every land squash commit. */
 export const FUSION_TASK_ID_TRAILER_KEY = "Fusion-Task-Id";
+export const TRAILER_SCAN_CLOCK_SKEW_MS = 24 * 60 * 60 * 1_000;
+export const UNBOUNDED_TRAILER_SCAN_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
+export const UNBOUNDED_TRAILER_SCAN_MAX_COMMITS = 1_000;
 
 async function git(args: string[], cwd: string, opts: { timeout?: number } = {}): Promise<string> {
   const { stdout } = await execFileAsync("git", args, {
@@ -72,8 +75,9 @@ async function gitCapture(args: string[], cwd: string): Promise<string | undefin
  * `Fusion-Task-Id` trailer (always stamped onto the squash by `taskTrailers` + the
  * ensureTaskMetadata safety net) is the only reliable "this task's work is already on the ref"
  * signal that does not depend on the landedSha row, so it is what survives a lost persist. We
- * bound the scan to commits the integration tip has gained since the branch's merge-base (the
- * land base) so an unrelated historical reuse of the same trailer cannot false-positive.
+ * normally bound the scan to commits the integration tip has gained since the branch's merge-base
+ * (the land base). When the branch or merge-base is gone, that graph bound degrades; the fallback
+ * is instead bounded by task creation time (or a conservative recent window for legacy callers).
  *
  * Exported (A6) so Phase D self-healing reuses THIS canonical predicate instead of
  * reimplementing the ancestor/trailer check.
@@ -93,6 +97,7 @@ export async function findProvenLandedCommit(
   taskId?: string,
   branch?: string,
   revertBoundarySha?: string,
+  taskCreatedAt?: string | number,
 ): Promise<string | undefined> {
   const intRef = `refs/heads/${integrationBranch}`;
   if (!(await gitOk(["rev-parse", "--verify", intRef], repoRootDir))) {
@@ -123,10 +128,24 @@ export async function findProvenLandedCommit(
   if (taskId) {
     const branchRef = branch ? `refs/heads/${branch}` : undefined;
     let range = intRef;
+    let degradedRange = true;
     if (branchRef && (await gitOk(["rev-parse", "--verify", branchRef], repoRootDir))) {
       const base = await gitCapture(["merge-base", branchRef, intRef], repoRootDir);
-      if (base) range = `${base.trim()}..${intRef}`;
+      if (base) {
+        range = `${base.trim()}..${intRef}`;
+        degradedRange = false;
+      }
     }
+    /*
+    FNXC:Workspace 2026-08-15-07:05:
+    A missing branch loses the merge-base boundary, so scanning all integration history could
+    treat a recycled task id as landed and silently drop current work. Prefer a false-negative
+    (idempotent re-land or honest recovery classification) by requiring recent trailer evidence.
+    */
+    const parsedCreatedAt = taskCreatedAt === undefined ? Number.NaN : new Date(taskCreatedAt).getTime();
+    const minCommitTimeMs = Number.isFinite(parsedCreatedAt)
+      ? parsedCreatedAt - TRAILER_SCAN_CLOCK_SKEW_MS
+      : Date.now() - UNBOUNDED_TRAILER_SCAN_WINDOW_MS;
     const trailer = `${FUSION_TASK_ID_TRAILER_KEY}: ${taskId}`;
     /*
     FNXC:Workspace 2026-07-07-10:50 (Phase C A1 precision — Greptile P1, trailer-line verification):
@@ -138,14 +157,23 @@ export async function findProvenLandedCommit(
     own landing commit.
     */
     const candidates = await gitCapture(
-      ["log", "--format=%H", `--grep=${trailer}`, "--fixed-strings", range],
+      [
+        "log", "--format=%H", `--grep=${trailer}`, "--fixed-strings",
+        ...(degradedRange ? [`--since=${new Date(minCommitTimeMs).toISOString()}`, `--max-count=${UNBOUNDED_TRAILER_SCAN_MAX_COMMITS}`] : []),
+        range,
+      ],
       repoRootDir,
     );
     if (candidates) {
       for (const sha of candidates.trim().split("\n")) {
         if (!sha) continue;
+        const commitTime = degradedRange
+          ? await gitCapture(["show", "-s", "--format=%ct", sha], repoRootDir)
+          : undefined;
+        const commitTimeMs = commitTime === undefined ? Number.NaN : Number(commitTime) * 1_000;
         const body = await gitCapture(["show", "-s", "--format=%B", sha], repoRootDir);
         if (
+          (!degradedRange || (Number.isFinite(commitTimeMs) && commitTimeMs >= minCommitTimeMs)) &&
           body &&
           body.split("\n").some((line) => line.trim() === trailer) &&
           !(await isAtOrBehindRevertBoundary(sha))
@@ -165,8 +193,9 @@ export async function isRepoLanded(
   taskId?: string,
   branch?: string,
   revertBoundarySha?: string,
+  taskCreatedAt?: string | number,
 ): Promise<boolean> {
   return Boolean(
-    await findProvenLandedCommit(repoRootDir, integrationBranch, landedSha, taskId, branch, revertBoundarySha),
+    await findProvenLandedCommit(repoRootDir, integrationBranch, landedSha, taskId, branch, revertBoundarySha, taskCreatedAt),
   );
 }
