@@ -229,8 +229,8 @@ read looks converted, the census scores only the comparison, and the sweep silen
 consequence here is that orphaned tasks are NEVER resumed after a crash or restart — the single path
 that recovers them — and the failure surfaces only once an operator is already investigating a crash.
 
-`isTaskWorkComplete` is the first thing done per surviving task, before any dispatch, worktree probing
-or git, so it is the observable that needs no live registry.
+`recoverCompletedTask` is the first injected action for a surviving completed task, before any
+dispatch, worktree probing or git, so it is the observable that needs no live registry.
 
 REVERT CHECK, measured: with the filter back on `t.column === "in-progress"`, this fails — the renamed
 card is dropped and the sweep returns before touching it.
@@ -244,7 +244,7 @@ describe("resumeOrphaned filters by the board's OWN wip lane, not the literal", 
       title: "orphaned by a restart",
       description: "",
       dependencies: [],
-      steps: [{ id: "s1", status: "pending" }],
+      steps: [{ id: "s1", status: "done" }],
       currentStep: 0,
       log: [],
       createdAt: "2026-07-30T00:00:00.000Z",
@@ -255,17 +255,17 @@ describe("resumeOrphaned filters by the board's OWN wip lane, not the literal", 
     widened.listTasks = vi.fn(async (options?: { column?: string }) =>
       (options?.column === undefined || options.column === column ? [task] : []));
     widened.listWorkflowDefinitions = async () => [{ ir: RENAMED_IR }];
-    const isTaskWorkComplete = vi.fn(() => true);
-    Object.assign(executor, { isTaskWorkComplete, recoverCompletedTask: vi.fn(async () => undefined) });
-    return { executor, isTaskWorkComplete };
+    const recoverCompletedTask = vi.fn(async () => true);
+    Object.assign(executor, { recoverCompletedTask });
+    return { executor, recoverCompletedTask };
   }
 
   it("reaches an orphan sitting in the RENAMED wip lane", async () => {
-    const { executor, isTaskWorkComplete } = orphanHarness("building");
+    const { executor, recoverCompletedTask } = orphanHarness("building");
 
     await executor.resumeOrphaned();
 
-    expect(isTaskWorkComplete).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-ORPHAN-RESUME" }));
+    expect(recoverCompletedTask).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-ORPHAN-RESUME" }));
   });
 
   it("does not resume a card outside the wip lane", async () => {
@@ -273,10 +273,10 @@ describe("resumeOrphaned filters by the board's OWN wip lane, not the literal", 
     Non-vacuous companion: a card in the board's REVIEW lane is not an orphaned execution — it has no
     session to resume, and re-dispatching it would restart finished work.
     */
-    const { executor, isTaskWorkComplete } = orphanHarness("checking");
+    const { executor, recoverCompletedTask } = orphanHarness("checking");
 
     await executor.resumeOrphaned();
 
-    expect(isTaskWorkComplete).not.toHaveBeenCalled();
+    expect(recoverCompletedTask).not.toHaveBeenCalled();
   });
 });
