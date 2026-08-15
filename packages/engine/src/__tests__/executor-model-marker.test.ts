@@ -51,7 +51,7 @@ describe("TaskExecutor model marker logging", () => {
     } as any);
 
     const executor = new TaskExecutor(store as any, "/tmp/test");
-    await executor.execute(await store.getTask("FN-7370") as any);
+    await (executor as any).runImplementation(await store.getTask("FN-7370") as any, vi.fn());
 
     expect(store.logEntry).toHaveBeenCalledWith(
       "FN-7370",
