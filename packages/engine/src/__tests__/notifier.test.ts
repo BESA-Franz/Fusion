@@ -731,6 +731,7 @@ describe("NtfyNotifier", () => {
     });
 
     it("sends a high-priority wedge notification when a task terminally fails", async () => {
+      store.setSettings({ wedgeNotificationSettleMs: 0 });
       notifier = new NtfyNotifier(store);
       await notifier.start();
 
