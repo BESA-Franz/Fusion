@@ -1103,6 +1103,9 @@ importers:
 
   plugins/fusion-plugin-hermes-runtime:
     dependencies:
+      '@fusion/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@fusion/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
