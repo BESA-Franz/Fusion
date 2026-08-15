@@ -3873,6 +3873,39 @@ Read-only list/placeholder only — not the deferred rich per-repo-status compon
 .workspace-worktrees-branch {
   color: var(--text-muted, inherit);
 }
+.workspace-worktrees-status {
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-xs);
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+}
+.workspace-worktrees-status--landed {
+  color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 15%, transparent);
+}
+.workspace-worktrees-status--pending {
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 15%, transparent);
+}
+.workspace-worktrees-status--failed,
+.workspace-worktrees-failure,
+.workspace-worktrees-failure-message {
+  color: var(--color-error);
+  background: var(--status-error-bg);
+}
+.workspace-worktrees-failure,
+.workspace-worktrees-failure-message {
+  padding: var(--space-xs);
+  border-radius: var(--radius-sm);
+}
+.workspace-worktrees-sha {
+  color: var(--color-success);
+}
+@media (max-width: 768px) {
+  .workspace-worktrees-item--wrapping {
+    gap: var(--space-xs);
+  }
+}
 
 /*
 FNXC:TaskDetailTerminal 2026-07-10-00:00:

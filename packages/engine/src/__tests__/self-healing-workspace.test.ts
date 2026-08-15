@@ -440,6 +440,25 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     expect(store.enqueued).not.toContain(TASK_ID);
   });
 
+  it("FORK-A: persists failure breadcrumbs for every concurrently unrecoverable repo", async () => {
+    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
+    // Both branches are absent and neither repository has a landing proof.
+    const task = workspaceTask({
+      "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH, landedSha: "landed-a" },
+      "repo-b": { worktreePath: fx.repoPath("repo-b"), branch: BRANCH },
+    });
+    const store = createStore([task]);
+    const manager = makeManager(store, fx.rootDir);
+
+    const n = await manager.reconcileWorkspacePartialLands();
+    const entries = store.tasks.get(TASK_ID)?.workspaceWorktrees;
+
+    expect(n).toBe(1);
+    expect(store.tasks.get(TASK_ID)?.status).toBe("failed");
+    expect(entries?.["repo-a"]?.landFailure).toMatchObject({ branch: BRANCH });
+    expect(entries?.["repo-b"]?.landFailure).toMatchObject({ branch: BRANCH });
+  });
+
   it("skips a restored fully-disposed workspace task after restore clears its map", async () => {
     /*
     FNXC:WorkspaceArchiveRestore 2026-08-15-05:39:

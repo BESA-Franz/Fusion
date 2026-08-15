@@ -2452,3 +2452,7 @@ The shared Task Detail Definition view shows the persisted spec alignment, lates
 Saving or removing API keys, completing OAuth login/manual-code flows, logging out, and removing credential instances invalidate that registry's generation and clear both windows. If a credential change happens while an uncancellable refresh is already running, the model list temporarily serves its retained rows rather than overlapping the refresh. Once that old refresh settles, the first following request starts a current-credential refresh with no additional cache-window wait.
 
 The Memory view also includes a fourth **Knowledge Graph** tab. It provides capped search, node detail, edge and neighbor drill-down, bounded shortest-path navigation, and explicit artifact rebuilding for the deterministic project knowledge graph.
+
+### Workspace per-repository land status
+
+Task Detail shows each acquired workspace repository as **landed**, **pending**, or **failed**. Landed repositories include a short commit SHA; a partial land shows the aggregate landed count and retained task failure detail. The compact TaskCard chip deliberately remains count-only. The engine records a durable per-repository failure for both `landWorkspaceTask` failed-result branches and self-healing's unrecoverable partial-land park; busy leases, aborts, persist-after-advance recovery, and empty merges intentionally do not record one. Older partial-land rows and empty repositories remain pending, with any available failure detail shown only in the aggregate block.

@@ -722,8 +722,17 @@ export interface Task {
    * `revertBoundarySha` is the integration-branch commit after a completed git-mode revert
    * (the revert commit, or pre-revert HEAD when already reverted). A proven landing at or behind
    * it is stale and must re-land; `landedSha` remains for attribution and diff consumers.
+   *
+   * FNXC:Workspace 2026-08-15-07:05:
+   * `landFailure` is a display-only durable breadcrumb for dashboard per-repo status. It never
+   * participates in landed predicates, land control flow, retries, or park decisions, and a
+   * later `landedSha` supersedes it. Exactly the two `landWorkspaceTask` failed-result seams and
+   * self-healing's unrecoverable FORK-A park write it; busy, abort, persist-after-advance, and
+   * empty-merge paths deliberately do not. Legacy rows without it render pending because task
+   * error prose is never parsed for attribution. FN-9047/FN-9048 stale-state clearing must drop
+   * it alongside `landedSha`.
    */
-  workspaceWorktrees?: Record<string, { worktreePath: string; branch: string; baseCommitSha?: string; landedSha?: string; revertBoundarySha?: string }>;
+  workspaceWorktrees?: Record<string, { worktreePath: string; branch: string; baseCommitSha?: string; landedSha?: string; revertBoundarySha?: string; landFailure?: { message: string; at: string; branch?: string } }>;
   steps: TaskStep[];
   currentStep: number;
   /**

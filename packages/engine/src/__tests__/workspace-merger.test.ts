@@ -275,6 +275,7 @@ describeIfGit("landWorkspaceTask — per-repo merge loop (Phase C U1)", () => {
       "repo-b": { worktreePath: fx.repoPath("repo-b"), branch: BRANCH },
     });
 
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(task);
     const result = await landWorkspaceTask(store, task, fx.rootDir, {}, {
       mergeAgent: squashMergeAgent(BRANCH),
       reviewAgent: approveReviewAgent,
@@ -285,6 +286,11 @@ describeIfGit("landWorkspaceTask — per-repo merge loop (Phase C U1)", () => {
     expect(byRepo["repo-a"].status).toBe("landed");
     expect(byRepo["repo-b"].status).toBe("failed");
     expect(byRepo["repo-b"].error).toMatch(/conflict/i);
+    expect(store.updateTask).toHaveBeenCalledWith(TASK_ID, expect.objectContaining({
+      workspaceWorktrees: expect.objectContaining({
+        "repo-b": expect.objectContaining({ landFailure: expect.objectContaining({ message: expect.stringMatching(/conflict/i), branch: BRANCH }) }),
+      }),
+    }));
 
     // Repo A landed locally (its ref advanced).
     expect(fx.git("repo-a", "git rev-parse refs/heads/main")).not.toBe(tipABefore);

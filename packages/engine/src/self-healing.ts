@@ -94,6 +94,7 @@ imported it from merger-ai while merger-ai imports `MIN_TEMP_WORKTREE_REAP_AGE_M
 self-healing — a real import cycle. Importing from the predicate module breaks the cycle.
 */
 import { isRepoLanded } from "./merge/workspace-land-predicate.js";
+import { persistWorkspaceRepoLandFailure } from "./merge/workspace-land-failure.js";
 import { getCommitTaskOwnership } from "./merge/already-merged-detector.js";
 import { getTaskCompletionBlockerForStore } from "./execution/task-completion.js";
 import { shouldReclaimWedgedMerge } from "./merge/merge-reclaim-policy.js";
@@ -10172,6 +10173,21 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
           if (unrecoverableRepos.length > 0) {
             // FORK-A: at least one repo is proven branch-gone and not landed → park failed.
             const error = `Workspace partial-land unrecoverable: sub-repo(s) ${unrecoverableRepos.join(", ")} have no fusion/${task.id.toLowerCase()} branch and no landedSha — manual intervention required.`;
+            /*
+            FNXC:Workspace 2026-08-15-07:17:
+            This is the third and final writer of the display-only failure breadcrumb. Persist each
+            repo sequentially because the helper fresh-reads then replaces the JSON map; concurrent
+            writes could otherwise lose sibling breadcrumbs. Best-effort persistence must never
+            influence FORK-A's pre-existing park classification or decision.
+            */
+            for (const repoRel of unrecoverableRepos) {
+              const entry = workspaceWorktrees[repoRel];
+              await persistWorkspaceRepoLandFailure(this.store, task.id, repoRel, {
+                message: "Workspace branch is gone and the repository is provably not landed; manual intervention required.",
+                at: new Date().toISOString(),
+                branch: entry?.branch,
+              }).catch(() => undefined);
+            }
             await this.store.updateTask(task.id, { status: "failed", error });
             await this.store.logEntry(task.id, error);
             await auditor.database({

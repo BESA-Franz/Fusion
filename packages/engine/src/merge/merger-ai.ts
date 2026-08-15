@@ -106,6 +106,7 @@ module so self-healing can import the predicate without re-entering the self-hea
 import cycle (merger-ai-worktree imports `MIN_TEMP_WORKTREE_REAP_AGE_MS` from self-healing).
 */
 import { isRepoLanded, findProvenLandedCommit, FUSION_TASK_ID_TRAILER_KEY } from "./workspace-land-predicate.js";
+import { persistWorkspaceRepoLandFailure } from "./workspace-land-failure.js";
 import { finalizeProvenAutoMergeTask } from "./auto-merge-finalization.js";
 import { getCommitTaskOwnership, detectAlreadyLandedOnMain } from "./already-merged-detector.js";
 import { resolveLegacyAiMergeRootPath } from "../worktree/worktree-paths.js";
@@ -2011,6 +2012,9 @@ export async function landWorkspaceTask(
     } catch (err: unknown) {
       const message = getErrorMessage(err);
       await log(`AI merge (workspace): failed to resolve integration branch for sub-repo ${repoRel}: ${message}`);
+      // FNXC:Workspace 2026-08-15-07:05: failure breadcrumbs are UI-only best effort; unlike
+      // landedSha, losing one cannot cause a double squash, so it must not affect this result.
+      await persistWorkspaceRepoLandFailure(store, taskId, repoRel, { message, at: new Date().toISOString(), branch: entry.branch }).catch(() => undefined);
       repos.push({ repo: repoRel, repoRootDir, integrationBranch: "", branch: entry.branch, status: "failed", error: message });
       allLanded = false;
       break;
@@ -2142,6 +2146,7 @@ export async function landWorkspaceTask(
       const message = getErrorMessage(err);
       await log(`AI merge (workspace): sub-repo ${repoRel} land failed: ${message}`);
       await audit.git({ type: "merge:ai-no-branch", target: entry.branch, metadata: { taskId, kind: "workspace-repo-land-failed", repo: repoRel, error: message } }).catch(() => undefined);
+      await persistWorkspaceRepoLandFailure(store, taskId, repoRel, { message, at: new Date().toISOString(), branch: entry.branch }).catch(() => undefined);
       repos.push({ repo: repoRel, repoRootDir, integrationBranch, branch: entry.branch, status: "failed", error: message });
       allLanded = false;
       // Stop on first failure and return a partial result. The already-landed repos'
@@ -2259,7 +2264,7 @@ async function persistRepoLandedSha(
   if (!entry) return; // entry vanished — nothing to merge into
   // FNXC:Workspace 2026-08-15-06:45: a new landing is strictly after its revert boundary,
   // so clear that invalidation marker while retaining the fresh landedSha as normal proof.
-  const next = { ...current, [repoRel]: { ...entry, landedSha, revertBoundarySha: undefined } };
+  const next = { ...current, [repoRel]: { ...entry, landedSha, landFailure: undefined, revertBoundarySha: undefined } };
   await store.updateTask(taskId, { workspaceWorktrees: next });
 }
 
