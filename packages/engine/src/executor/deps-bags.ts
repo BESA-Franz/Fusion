@@ -896,6 +896,7 @@ export function buildBuildForeachWorktreeDepsDeps(host: any): any {
   return {
     ...facadeFields(host, ["store", "rootDir"]),
     ...facadeMethods(host, ["createWorktree"]),
+    ensureWorkspaceConfig: withWorkspaceResolver(host),
     semaphoreAvailableCount: () => host.options.semaphore?.availableCount ?? 1,
   };
 }

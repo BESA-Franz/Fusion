@@ -308,6 +308,8 @@ export interface WorkflowGraphExecutorDeps {
   /** Step-inversion (KTD-11, U10): resolve the current integration base (main tip)
    *  so reworks land on the updated base. */
   resolveIntegrationBase?: ForeachEnvironment["resolveIntegrationBase"];
+  /** Fail-fast workspace gate for per-instance worktree isolation. */
+  resolveWorktreeIsolationBlock?: ForeachEnvironment["resolveWorktreeIsolationBlock"];
   /** Step-inversion (KTD-11, U10): ordered-integration git mechanics (rebase /
    *  cherry-pick + conflict detection via merger helpers). */
   integrationGitOps?: ForeachEnvironment["integrationGitOps"];
@@ -833,6 +835,7 @@ export class WorkflowGraphExecutor {
             // Worktree isolation + parallel scheduling (KTD-11, U10).
             allocateInstanceWorktree: this.deps.allocateInstanceWorktree,
             resolveIntegrationBase: this.deps.resolveIntegrationBase,
+            resolveWorktreeIsolationBlock: this.deps.resolveWorktreeIsolationBlock,
             integrationGitOps: this.deps.integrationGitOps,
             integrationProjection: this.deps.integrationProjection,
             semaphoreAvailability: this.deps.semaphoreAvailability,
