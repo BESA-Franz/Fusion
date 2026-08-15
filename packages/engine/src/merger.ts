@@ -9334,7 +9334,7 @@ export async function aiMergeTask(
         const verificationCandidateRefs = [auditSha, task.branch].filter((ref): ref is string => Boolean(ref));
         for (const candidateRef of verificationCandidateRefs) {
           try {
-            const { stdout: treeOut } = await execAsync(`git rev-parse ${quoteArg(candidateRef)}^{tree}`, {
+            const { stdout: treeOut } = await execFileAsync("git", ["rev-parse", `${candidateRef}^{tree}`], {
               cwd: rootDir,
               encoding: "utf-8",
             });
