@@ -549,7 +549,7 @@ describe("CronRunner", () => {
     it("records timeout execution", async () => {
       const store = createMockStore();
       const schedule = createMockSchedule({
-        command: "sleep 60",
+        command: "node -e \"setTimeout(function(){},60000)\"",
         timeoutMs: 100, // very short timeout
       });
       const automationStore = createMockAutomationStore([schedule]);
@@ -563,7 +563,7 @@ describe("CronRunner", () => {
 
     it("prevents concurrent runs of the same schedule", async () => {
       const store = createMockStore();
-      const schedule = createMockSchedule({ command: "sleep 0.2 && echo done" });
+      const schedule = createMockSchedule({ command: "node -e \"setTimeout(function(){process.stdout.write('done')},200)\"" });
       const automationStore = createMockAutomationStore([schedule]);
       runner = new CronRunner(store, automationStore);
 
@@ -805,9 +805,9 @@ describe("CronRunner", () => {
   describe("output truncation", () => {
     it("truncates large output to prevent memory exhaustion", async () => {
       const store = createMockStore();
-      // Generate output larger than 10KB using printf
+      // Generate output larger than 10KB without relying on a platform-specific shell tool.
       const schedule = createMockSchedule({
-        command: "python3 -c \"print('x' * 15000)\"",
+        command: "node -e \"process.stdout.write('x'.repeat(15000))\"",
       });
       const automationStore = createMockAutomationStore([schedule]);
       runner = new CronRunner(store, automationStore);
@@ -1003,7 +1003,7 @@ describe("CronRunner", () => {
         command: "",
         timeoutMs: 30000, // schedule-level timeout (large)
         steps: [
-          makeStep({ name: "Slow step", command: "sleep 60", timeoutMs: 100 }), // step-level timeout (tiny)
+          makeStep({ name: "Slow step", command: "node -e \"setTimeout(function(){},60000)\"", timeoutMs: 100 }), // step-level timeout (tiny)
         ],
       });
       const automationStore = createMockAutomationStore([schedule]);
@@ -1022,7 +1022,7 @@ describe("CronRunner", () => {
         command: "",
         timeoutMs: 100, // tiny schedule-level timeout
         steps: [
-          makeStep({ name: "Slow step", command: "sleep 60" }), // no step-level timeout
+          makeStep({ name: "Slow step", command: "node -e \"setTimeout(function(){},60000)\"" }), // no step-level timeout
         ],
       });
       const automationStore = createMockAutomationStore([schedule]);
