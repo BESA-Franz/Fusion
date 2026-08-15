@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { execSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,8 +10,8 @@ import { SelfHealingManager } from "../self-healing.js";
 const hasGit = spawnSync("git", ["--version"], { stdio: "pipe" }).status === 0;
 const describeIfGit = hasGit ? describe : describe.skip;
 
-function git(repo: string, command: string): string {
-  return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+function git(repo: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
 type TaskMap = Map<string, Task>;
@@ -73,10 +73,10 @@ describeIfGit("recoverOrphanOnlyScopeViolations (real git)", () => {
   function setupRepo(): string {
     const repo = mkdtempSync(path.join(os.tmpdir(), "fn-4379-"));
     repos.push(repo);
-    git(repo, "git init -b main");
-    git(repo, 'git config user.email "test@example.com"');
-    git(repo, 'git config user.name "Test"');
-    git(repo, "git commit --allow-empty -m 'init'");
+    git(repo, ["init", "-b", "main"]);
+    git(repo, ["config", "user.email", "test@example.com"]);
+    git(repo, ["config", "user.name", "Test"]);
+    git(repo, ["commit", "--allow-empty", "-m", "init"]);
     return repo;
   }
 
@@ -84,12 +84,13 @@ describeIfGit("recoverOrphanOnlyScopeViolations (real git)", () => {
     const repo = setupRepo();
     mkdirSync(path.join(repo, "packages/dashboard/app/components"), { recursive: true });
     writeFileSync(path.join(repo, "packages/dashboard/app/components/QuickChatFAB.tsx"), "export const QuickChatFAB = () => null;\n", "utf-8");
-    git(repo, "git add packages/dashboard/app/components/QuickChatFAB.tsx && git commit -m 'landed task work' -m 'Fusion-Task-Id: FN-TEST-4379'");
-    const landedSha = git(repo, "git rev-parse HEAD");
+    git(repo, ["add", "packages/dashboard/app/components/QuickChatFAB.tsx"]);
+    git(repo, ["commit", "-m", "landed task work", "-m", "Fusion-Task-Id: FN-TEST-4379"]);
+    const landedSha = git(repo, ["rev-parse", "HEAD"]);
 
     const worktreePath = path.join(repo, ".worktrees", "fn-test-4379");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    git(repo, `git worktree add ${JSON.stringify(worktreePath)} -b fusion/fn-test-4379`);
+    git(repo, ["worktree", "add", worktreePath, "-b", "fusion/fn-test-4379"]);
     mkdirSync(path.join(worktreePath, "packages/dashboard/app/components/__tests__"), { recursive: true });
     writeFileSync(path.join(worktreePath, "packages/dashboard/app/components/__tests__/QuickChatFAB.test.tsx"), "test('orphan', () => {});\n", "utf-8");
 
@@ -134,6 +135,6 @@ describeIfGit("recoverOrphanOnlyScopeViolations (real git)", () => {
     expect(updated.mergeDetails?.mergeConfirmed).toBe(true);
     expect(updated.mergeDetails?.resolutionStrategy).toBe("orphan-discard-no-op");
     expect(existsSync(worktreePath)).toBe(false);
-    expect(git(repo, "git log --oneline -- packages/dashboard/app/components/__tests__/QuickChatFAB.test.tsx")).toBe("");
+    expect(git(repo, ["log", "--oneline", "--", "packages/dashboard/app/components/__tests__/QuickChatFAB.test.tsx"])).toBe("");
   }, 20000);
 });
