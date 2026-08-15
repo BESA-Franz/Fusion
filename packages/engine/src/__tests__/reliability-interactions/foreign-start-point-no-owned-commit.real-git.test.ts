@@ -2,14 +2,14 @@ import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { aiMergeTask } from "../../merger.js";
 import { SelfHealingManager } from "../../self-healing.js";
 
-function git(dir: string, cmd: string): string {
-  return execSync(cmd, { cwd: dir, stdio: "pipe" }).toString().trim();
+function git(dir: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: dir, stdio: "pipe" }).toString().trim();
 }
 
 function makeStore(task: Task, settings: Partial<Settings> = {}, events: unknown[] = []): TaskStore & EventEmitter {
@@ -53,21 +53,22 @@ describe("foreign start-point no-owned-commit interactions (real git)", () => {
   it("merger no-op gate blocks done and auto-requeues to todo", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fn-4656-ri-merge-"));
     try {
-      git(dir, "git init -b main");
-      git(dir, 'git config user.email "test@example.com"');
-      git(dir, 'git config user.name "Test"');
+      git(dir, ["init", "-b", "main"]);
+      git(dir, ["config", "user.email", "test@example.com"]);
+      git(dir, ["config", "user.name", "Test"]);
       writeFileSync(join(dir, "README.md"), "init\n");
-      git(dir, "git add README.md && git commit -m 'init'");
+      git(dir, ["add", "README.md"]);
+      git(dir, ["commit", "-m", "init"]);
 
-      git(dir, "git checkout -b fusion/fn-a");
+      git(dir, ["checkout", "-b", "fusion/fn-a"]);
       writeFileSync(join(dir, "foreign.txt"), "from fn-a\n");
-      git(dir, "git add foreign.txt");
-      git(dir, "git commit -m 'feat(FN-A): foreign' -m 'Fusion-Task-Id: FN-A'");
-      const foreignBaseSha = git(dir, "git rev-parse HEAD");
+      git(dir, ["add", "foreign.txt"]);
+      git(dir, ["commit", "-m", "feat(FN-A): foreign", "-m", "Fusion-Task-Id: FN-A"]);
+      const foreignBaseSha = git(dir, ["rev-parse", "HEAD"]);
 
-      git(dir, "git checkout main");
-      git(dir, "git checkout -b fusion/fn-b");
-      git(dir, "git checkout main");
+      git(dir, ["checkout", "main"]);
+      git(dir, ["checkout", "-b", "fusion/fn-b"]);
+      git(dir, ["checkout", "main"]);
 
       const task = {
         id: "FN-B",
@@ -101,20 +102,20 @@ describe("foreign start-point no-owned-commit interactions (real git)", () => {
   it("self-healing no-op pass requeues unproven candidates to todo", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fn-4656-ri-heal-"));
     try {
-      git(dir, "git init -b main");
-      git(dir, 'git config user.email "test@example.com"');
-      git(dir, 'git config user.name "Test"');
-      git(dir, "git commit --allow-empty -m init");
+      git(dir, ["init", "-b", "main"]);
+      git(dir, ["config", "user.email", "test@example.com"]);
+      git(dir, ["config", "user.name", "Test"]);
+      git(dir, ["commit", "--allow-empty", "-m", "init"]);
 
-      git(dir, "git checkout -b fusion/fn-a");
+      git(dir, ["checkout", "-b", "fusion/fn-a"]);
       writeFileSync(join(dir, "foreign.txt"), "from fn-a\n");
-      git(dir, "git add foreign.txt");
-      git(dir, "git commit -m 'feat(FN-A): foreign' -m 'Fusion-Task-Id: FN-A'");
-      const foreignBaseSha = git(dir, "git rev-parse HEAD");
+      git(dir, ["add", "foreign.txt"]);
+      git(dir, ["commit", "-m", "feat(FN-A): foreign", "-m", "Fusion-Task-Id: FN-A"]);
+      const foreignBaseSha = git(dir, ["rev-parse", "HEAD"]);
 
-      git(dir, "git checkout main");
-      git(dir, "git checkout -b fusion/fn-b");
-      git(dir, "git checkout main");
+      git(dir, ["checkout", "main"]);
+      git(dir, ["checkout", "-b", "fusion/fn-b"]);
+      git(dir, ["checkout", "main"]);
 
       const task = {
         id: "FN-B2",
