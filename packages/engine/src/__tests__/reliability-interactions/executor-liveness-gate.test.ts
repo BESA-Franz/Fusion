@@ -4,7 +4,12 @@ import { TaskExecutor } from "../../executor.js";
 import { createFnAgent } from "../../pi.js";
 import * as worktreePool from "../../worktree/worktree-pool.js";
 import * as worktreeAcquisition from "../../worktree/worktree-acquisition.js";
-import { createMockStore, mockedExecSync, resetExecutorMocks } from "../executor-test-helpers.js";
+import {
+  createMockStore,
+  createWorkflowRoutingAgentStore,
+  mockedExecSync,
+  resetExecutorMocks,
+} from "../executor-test-helpers.js";
 
 const mockedCreateFnAgent = vi.mocked(createFnAgent);
 
@@ -17,6 +22,7 @@ function makeTask(overrides: Record<string, unknown> = {}) {
     dependencies: [],
     worktree: "/repo/.worktrees/stale-path",
     branch: "fusion/fn-4935-t",
+    assignedAgentId: "workflow-test-executor",
     taskDoneRetryCount: 0,
     steps: [{ name: "Step 1", status: "in-progress" as const }],
     currentStep: 0,
@@ -24,6 +30,11 @@ function makeTask(overrides: Record<string, unknown> = {}) {
     updatedAt: new Date().toISOString(),
     ...overrides,
   } as any;
+}
+
+function makeExecutor(store: ReturnType<typeof createMockStore>) {
+  const routing = createWorkflowRoutingAgentStore(store as never);
+  return new TaskExecutor(store as never, "/repo", { agentStore: routing.agentStore as never });
 }
 
 /*
@@ -43,6 +54,7 @@ function seedAssignedWorktree(store: ReturnType<typeof createMockStore>, overrid
     branch: "fusion/fn-4935-t",
     sessionFile: null,
     taskDoneRetryCount: 0,
+    assignedAgentId: "workflow-test-executor",
     ...overrides,
   });
 }
@@ -74,7 +86,7 @@ describe("reliability interactions: FN-4935 executor liveness gate", () => {
     });
 
     const store = createMockStore();
-    const executor = new TaskExecutor(store as any, "/repo");
+    const executor = makeExecutor(store);
     await executor.execute(makeTask());
 
     expect(classifySpy).not.toHaveBeenCalled();
@@ -105,7 +117,7 @@ describe("reliability interactions: FN-4935 executor liveness gate", () => {
     const events: any[] = [];
     store.recordRunAuditEvent = vi.fn(async (event: any) => events.push(event));
 
-    const executor = new TaskExecutor(store as any, "/repo");
+    const executor = makeExecutor(store);
     await executor.execute(makeTask({ sessionFile: null }));
 
     expect(store.logEntry).toHaveBeenCalledWith(
@@ -144,7 +156,7 @@ describe("reliability interactions: FN-4935 executor liveness gate", () => {
     });
 
     const store = createMockStore();
-    const executor = new TaskExecutor(store as any, "/repo");
+    const executor = makeExecutor(store);
     await executor.execute(makeTask());
 
     expect(reanchorSpy).toHaveBeenCalled();
@@ -174,7 +186,7 @@ describe("reliability interactions: FN-4935 executor liveness gate", () => {
     vi.spyOn(worktreePool, "classifyTaskWorktree").mockResolvedValue({ ok: false, classification, reason: `reason-${classification}` });
 
     const store = createMockStore();
-    const executor = new TaskExecutor(store as any, "/repo");
+    const executor = makeExecutor(store);
     await executor.execute(makeTask());
 
     expect(store.logEntry).toHaveBeenCalledWith(
@@ -200,7 +212,7 @@ describe("reliability interactions: FN-4935 executor liveness gate", () => {
     const events: any[] = [];
     store.recordRunAuditEvent = vi.fn(async (event: any) => events.push(event));
 
-    const executor = new TaskExecutor(store as any, "/repo");
+    const executor = makeExecutor(store);
     await executor.execute(makeTask({ taskDoneRetryCount: 999, sessionFile: null }));
 
     // FNXC:ExecutorMoveTask 2026-07-07-08:38: FN-7229 (984e36255d) stopped parking worktree-liveness failures in review — at the retry cap the task is now marked failed in-place via updateTask(status=failed) (executor.ts:9608) instead of moveTask→in-review. `in-review` is reserved for clean completion handoffs, so assert the task is NOT moved there and IS marked failed. The worktree:incomplete-detected audit event below still carries the forensic `terminalAction: "park-in-review"` label (executor.ts:9554), which records what the gate detected, not the (changed) terminal action.
@@ -222,7 +234,7 @@ describe("reliability interactions: FN-4935 executor liveness gate", () => {
 
     const store = createMockStore();
     seedAssignedWorktree(store);
-    const executor = new TaskExecutor(store as any, "/repo");
+    const executor = makeExecutor(store);
     await executor.execute(makeTask({ sessionFile: null }));
 
     expect(store.logEntry).toHaveBeenCalledWith(
