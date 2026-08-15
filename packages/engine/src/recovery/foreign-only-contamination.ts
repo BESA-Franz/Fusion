@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import type { Task, TaskStore } from "@fusion/core";
@@ -11,13 +11,9 @@ import {
 import type { RunAuditor } from "../util/run-audit.js";
 import { isUsableTaskWorktree } from "../worktree/worktree-pool.js";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = 10 * 1024 * 1024;
-
-function quote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
 
 export interface RecoverForeignOnlyContaminationDeps {
   repoDir: string;
@@ -108,8 +104,8 @@ export async function recoverForeignOnlyContamination(
     return { recovered: false, reason: "active-session" };
   }
 
-  await execAsync("git worktree prune", { cwd: deps.repoDir, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER }).catch(() => undefined);
-  await execAsync(`git branch -D ${quote(task.branch)}`, { cwd: deps.repoDir, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER }).catch(() => undefined);
+  await execFileAsync("git", ["worktree", "prune"], { cwd: deps.repoDir, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER }).catch(() => undefined);
+  await execFileAsync("git", ["branch", "-D", task.branch], { cwd: deps.repoDir, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER }).catch(() => undefined);
 
   /* FNXC:WorkflowResolvedColumns 2026-07-30-19:55 (#2808 review — coderabbit): census-invisible moveTask
        DESTINATION — a call argument, not a comparison, so the census never scored it. This requeue is not a

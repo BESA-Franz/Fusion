@@ -1,9 +1,10 @@
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import { resolveIntegrationBranch } from "../merge/integration-branch.js";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const FUSION_TASK_ID_TRAILER_KEY = "Fusion-Task-Id";
 const GIT_TIMEOUT_MS = 120_000;
 const GIT_MAX_BUFFER = 10 * 1024 * 1024;
@@ -137,18 +138,23 @@ async function runGit(repoDir: string, command: string): Promise<string> {
   return stdout.trim();
 }
 
+async function runGitArgs(repoDir: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, {
+    cwd: repoDir,
+    encoding: "utf-8",
+    timeout: GIT_TIMEOUT_MS,
+    maxBuffer: GIT_MAX_BUFFER,
+  });
+  return stdout.trim();
+}
+
 async function revParse(repoDir: string, ref: string): Promise<string> {
-  return runGit(repoDir, `git rev-parse --verify ${quoteShellArg(`${ref}^{commit}`)}`);
+  return runGitArgs(repoDir, ["rev-parse", "--verify", `${ref}^{commit}`]);
 }
 
 async function isAncestor(repoDir: string, sha: string, ref: string): Promise<boolean> {
   try {
-    await execAsync(`git merge-base --is-ancestor ${quoteShellArg(sha)} ${quoteShellArg(ref)}`, {
-      cwd: repoDir,
-      encoding: "utf-8",
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: GIT_MAX_BUFFER,
-    });
+    await runGitArgs(repoDir, ["merge-base", "--is-ancestor", sha, ref]);
     return true;
   } catch {
     return false;
@@ -447,7 +453,7 @@ export async function classifyBootstrapMisbinding(
   input: ClassifyBootstrapMisbindingInput,
 ): Promise<ClassifyBootstrapMisbindingResult> {
   const { repoDir, branchName, baseSha, taskId } = input;
-  const output = await runGit(repoDir, `git log --format=%H%x1f%s%x1f%b ${quoteShellArg(`${baseSha}..${branchName}`)}`)
+  const output = await runGitArgs(repoDir, ["log", "--format=%H%x1f%s%x1f%b", `${baseSha}..${branchName}`])
     .catch(() => "");
   if (!output) {
     return {
@@ -618,8 +624,8 @@ export async function classifyForeignCommits(
   };
 
   try {
-    const comparisonBase = baseSha || await runGit(repoDir, `git merge-base ${quoteShellArg(mainRef)} ${quoteShellArg(branchName)}`);
-    const output = await runGit(repoDir, `git cherry ${quoteShellArg(mainRef)} ${quoteShellArg(branchName)} ${quoteShellArg(comparisonBase)}`);
+    const comparisonBase = baseSha || await runGitArgs(repoDir, ["merge-base", mainRef, branchName]);
+    const output = await runGitArgs(repoDir, ["cherry", mainRef, branchName, comparisonBase]);
     return await classifyFromCherryOutput(output);
   } catch {
     return classifyForeignCommitsViaPatchId(repoDir, mainRef, foreignCommits);
@@ -681,22 +687,22 @@ export async function classifyForeignOnlyContamination(
   // merge-base when it is a descendant of the persisted baseSha.
   let effectiveBaseSha = baseSha;
   try {
-    const mergeBaseRaw = await runGit(repoDir, `git merge-base ${quoteShellArg(branchName)} ${quoteShellArg(mainRef)}`);
+    const mergeBaseRaw = await runGitArgs(repoDir, ["merge-base", branchName, mainRef]);
     const liveMergeBase = mergeBaseRaw.trim();
     if (liveMergeBase && liveMergeBase !== baseSha) {
       // Use live merge-base if it is a descendant of baseSha (newer)
-      const ancestryCheck = await runGit(
+      const isPersistedBaseAncestor = await runGitArgs(
         repoDir,
-        `git merge-base --is-ancestor ${quoteShellArg(baseSha)} ${quoteShellArg(liveMergeBase)} && echo yes || echo no`,
-      ).catch(() => "no");
-      if (ancestryCheck.trim() === "yes") {
+        ["merge-base", "--is-ancestor", baseSha, liveMergeBase],
+      ).then(() => true, () => false);
+      if (isPersistedBaseAncestor) {
         effectiveBaseSha = liveMergeBase;
       }
     }
   } catch {
     // fall back to persisted baseSha on any git failure
   }
-  const persistedRangeOutput = await runGit(repoDir, `git log --format=%H%x1f%s%x1f%b ${quoteShellArg(`${baseSha}..${branchName}`)}`)
+  const persistedRangeOutput = await runGitArgs(repoDir, ["log", "--format=%H%x1f%s%x1f%b", `${baseSha}..${branchName}`])
     .catch(() => "");
   const subjectPattern = /^(feat|fix|test|chore|docs|refactor|perf|build)\((FN-\d+)\):/i;
   const trailerPattern = /(?:^|\n)Fusion-Task-Id:\s*(FN-\d+)\s*(?:\n|$)/i;
@@ -809,12 +815,12 @@ export async function reanchorBranchToBase(
 
   const worktreeHeadSha = await revParse(worktreePath, "HEAD");
   const branchTipSha = previousTipSha;
-  const worktreeHeadBranch = await runGit(worktreePath, "git symbolic-ref --quiet --short HEAD").catch(() => "");
+  const worktreeHeadBranch = await runGitArgs(worktreePath, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => "");
 
   if (worktreeHeadSha === baseSha && branchTipSha === baseSha) {
     if (worktreeHeadBranch !== branchName) {
       try {
-        await runGit(worktreePath, `git checkout ${quoteShellArg(branchName)}`);
+        await runGitArgs(worktreePath, ["checkout", branchName]);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (!message.includes("already used by worktree")) {
@@ -829,8 +835,8 @@ export async function reanchorBranchToBase(
     };
   }
 
-  await runGit(worktreePath, `git checkout --detach ${quoteShellArg(baseSha)}`);
-  await runGit(worktreePath, `git checkout -B ${quoteShellArg(branchName)} ${quoteShellArg(baseSha)}`);
+  await runGitArgs(worktreePath, ["checkout", "--detach", baseSha]);
+  await runGitArgs(worktreePath, ["checkout", "-B", branchName, baseSha]);
   await assertCleanBranchAtBase(repoDir, branchName, baseSha, taskId);
 
   return {

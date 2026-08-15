@@ -2,14 +2,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { classifyForeignOnlyContamination } from "../execution/branch-conflicts.js";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
-async function run(command: string, cwd: string): Promise<string> {
-  const { stdout } = await execAsync(command, { cwd, encoding: "utf-8" });
+async function run(args: string[], cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf-8" });
   return stdout.trim();
 }
 
@@ -24,27 +24,28 @@ describe("classifyForeignOnlyContamination", () => {
     const repoDir = await mkdtemp(path.join(tmpdir(), "fn-4887-"));
     dirs.push(repoDir);
 
-    await run("git init -b main", repoDir);
-    await run("git config user.email test@example.com", repoDir);
-    await run("git config user.name 'Test User'", repoDir);
+    await run(["init", "-b", "main"], repoDir);
+    await run(["config", "user.email", "test@example.com"], repoDir);
+    await run(["config", "user.name", "Test User"], repoDir);
 
     await writeFile(path.join(repoDir, "note.txt"), "base\n", "utf-8");
-    await run("git add note.txt && git commit -m 'chore: base'", repoDir);
-    const baseSha = await run("git rev-parse HEAD", repoDir);
+    await run(["add", "note.txt"], repoDir);
+    await run(["commit", "-m", "chore: base"], repoDir);
+    const baseSha = await run(["rev-parse", "HEAD"], repoDir);
 
-    await run("git checkout -b feature", repoDir);
+    await run(["checkout", "-b", "feature"], repoDir);
     return { repoDir, baseSha };
   }
 
   async function makeCommit(repoDir: string, line: string, subject: string, trailerTaskId?: string) {
     await appendFile(path.join(repoDir, "note.txt"), `${line}\n`, "utf-8");
-    await run("git add note.txt", repoDir);
+    await run(["add", "note.txt"], repoDir);
     if (trailerTaskId) {
-      await run(`git commit -m ${JSON.stringify(subject)} -m ${JSON.stringify(`Fusion-Task-Id: ${trailerTaskId}`)}`, repoDir);
+      await run(["commit", "-m", subject, "-m", `Fusion-Task-Id: ${trailerTaskId}`], repoDir);
     } else {
-      await run(`git commit -m ${JSON.stringify(subject)}`, repoDir);
+      await run(["commit", "-m", subject], repoDir);
     }
-    return run("git rev-parse HEAD", repoDir);
+    return run(["rev-parse", "HEAD"], repoDir);
   }
 
   it("returns foreign-only-no-own-work when only foreign-attributed commits exist", async () => {
@@ -69,9 +70,9 @@ describe("classifyForeignOnlyContamination", () => {
   it("classifies foreign commits already on main without treating them as unique branch work", async () => {
     const { repoDir, baseSha } = await setupRepo();
     const foreignSha = await makeCommit(repoDir, "foreign-b", "feat(FN-4002): foreign upstream", "FN-4002");
-    await run("git checkout main", repoDir);
-    await run(`git cherry-pick ${foreignSha}`, repoDir);
-    await run("git checkout feature", repoDir);
+    await run(["checkout", "main"], repoDir);
+    await run(["cherry-pick", foreignSha], repoDir);
+    await run(["checkout", "feature"], repoDir);
 
     const result = await classifyForeignOnlyContamination({
       repoDir,
