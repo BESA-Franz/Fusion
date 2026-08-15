@@ -17,12 +17,13 @@ Surfaces (FN-5893):
 - FORK-A: branch-gone + landedSha-unset → parked failed; branch-gone + landedSha-set → skipped as landed.
 - regression: a single-repo (non-workspace) task → reconcilers behave identically.
 */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
-import { existsSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { Settings, Task, TaskStore } from "@fusion/core";
+import { registerArchiveWorkspaceWorktreeDisposer, type Settings, type Task, type TaskStore } from "@fusion/core";
+import { createSharedPgTaskStoreTestHarness, pgDescribe, type SharedPgTaskStoreHarness } from "../../../core/src/__test-utils__/pg-test-harness.js";
 import { SelfHealingManager } from "../self-healing.js";
 import { classifyBranchProbeError } from "../self-healing-git-evidence.js";
 import { activeSessionRegistry, executingTaskLock } from "../agents/active-session-registry.js";
@@ -172,6 +173,91 @@ function workspaceTask(workspaceWorktrees: Task["workspaceWorktrees"], extra: Pa
     ...extra,
   } as unknown as Task;
 }
+
+/*
+FNXC:WorkspaceArchiveRestore 2026-08-15-05:55:
+The archive-to-unarchive regression below uses the real PostgreSQL restore transaction and the
+store-scoped archive disposal seam. Booting Executor would add unrelated session lifecycle work;
+the seam is the production boundary that owns removing each sub-repo worktree and branch.
+*/
+const pgDescribeIfGit = hasGit ? pgDescribe : describe.skip;
+
+pgDescribeIfGit("FN-9048 workspace archive restore reaches self-healing cleanly", () => {
+  const h: SharedPgTaskStoreHarness = createSharedPgTaskStoreTestHarness({
+    prefix: "fusion_workspace_archive_restore_e2e",
+  });
+  let fx: WorkspaceFixture;
+
+  beforeAll(h.beforeAll);
+  beforeEach(async () => {
+    await h.beforeEach();
+    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
+  });
+  afterEach(async () => {
+    fx?.cleanup();
+    await h.afterEach();
+  });
+  afterAll(h.afterAll);
+
+  it("archives, disposes, restores, then skips FORK-A after its stale map is reconciled", async () => {
+    const store = h.store();
+    const id = "FN-9048-RESTORE-E2E";
+    const branch = `fusion/${id.toLowerCase()}`;
+    const workspaceWorktrees: NonNullable<Task["workspaceWorktrees"]> = {};
+    for (const repoRel of fx.repos) {
+      const worktreePath = path.join(fx.rootDir, ".worktrees", repoRel);
+      mkdirSync(path.dirname(worktreePath), { recursive: true });
+      fx.git(repoRel, `git worktree add -b ${branch} ${worktreePath} HEAD`);
+      workspaceWorktrees[repoRel] = { worktreePath, branch };
+    }
+    const task = await store.createTaskWithReservedId(
+      { description: "archive workspace restore regression", column: "in-review" },
+      { taskId: id, applyDefaultWorkflowSteps: false },
+    );
+    await store.updateTask(id, { workspaceWorktrees, branch: undefined } as never);
+    const stalePreArchive = (await store.getTask(id))!;
+    const unregister = registerArchiveWorkspaceWorktreeDisposer(store, async (_task, plan) => {
+      for (const entry of plan) {
+        fx.git(entry.repoRel, `git worktree remove --force ${entry.worktreePath}`);
+        fx.git(entry.repoRel, `git branch -D ${entry.branch}`);
+      }
+      return { removed: plan.map((entry) => entry.repoRel), failed: [] };
+    });
+
+    try {
+      await store.archiveTask(id);
+      for (const repoRel of fx.repos) {
+        expect(existsSync(workspaceWorktrees[repoRel]!.worktreePath)).toBe(false);
+        expect(fx.git(repoRel, `git show-ref --verify --quiet refs/heads/${branch}; echo $?`)).toBe("1");
+      }
+
+      /*
+      FNXC:WorkspaceArchiveRestore 2026-08-15-05:55:
+      This captures the exact pre-fix resurrection shape: archive removed both branches, but the
+      soft-deleted row still has the old map and FORK-A proves it is unrecoverable.
+      */
+      const staleStore = createStore([stalePreArchive]);
+      const staleManager = makeManager(staleStore, fx.rootDir);
+      await staleManager.reconcileWorkspacePartialLands();
+      expect(staleStore.updateTask).toHaveBeenCalledWith(id, expect.objectContaining({ status: "failed" }));
+
+      const restored = await store.unarchiveTask(id);
+      expect(restored.workspaceWorktrees).toBeUndefined();
+      const updateTask = vi.spyOn(store, "updateTask");
+      const recordRunAuditEvent = vi.spyOn(store, "recordRunAuditEvent");
+      const manager = makeManager(store, fx.rootDir);
+
+      expect(await manager.reconcileWorkspacePartialLands()).toBe(0);
+      expect(updateTask).not.toHaveBeenCalledWith(id, expect.objectContaining({ status: "failed" }));
+      expect(recordRunAuditEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+        mutationType: "task:reconcile-workspace-partial-land",
+        metadata: expect.objectContaining({ action: "park-failed" }),
+      }));
+    } finally {
+      unregister();
+    }
+  });
+});
 
 describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
   let fx: WorkspaceFixture;
@@ -352,6 +438,25 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     expect(n).toBe(1);
     expect(store.tasks.get(TASK_ID)?.status).toBe("failed");
     expect(store.enqueued).not.toContain(TASK_ID);
+  });
+
+  it("skips a restored fully-disposed workspace task after restore clears its map", async () => {
+    /*
+    FNXC:WorkspaceArchiveRestore 2026-08-15-05:39:
+    The preceding FORK-A case proves stale entries with deleted branches must fail loudly. Restore
+    clears that disposed map, so this same two-repository shape is no longer a workspace candidate.
+    */
+    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
+    const restored = workspaceTask(undefined, { worktree: undefined });
+    const store = createStore([restored]);
+    const manager = makeManager(store, fx.rootDir);
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(0);
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      TASK_ID,
+      expect.objectContaining({ status: "failed" }),
+    );
+    expect(store.emitted.some((event) => event.event === "task:reconcile-workspace-partial-land")).toBe(false);
   });
 
   it("classifies only a clean exit-1 branch probe error as absent", () => {

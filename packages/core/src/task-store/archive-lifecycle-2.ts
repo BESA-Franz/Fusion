@@ -741,7 +741,13 @@ export async function restoreFromArchiveImpl(store: TaskStore, entry: import("..
       noCommitsExpected: entry.noCommitsExpected,
       modifiedFiles: entry.modifiedFiles,
       declaredSymbols: entry.declaredSymbols,
-      // Intentionally NOT restoring: worktree, status, blockedBy, paused, executionStartBranch, baseCommitSha, error
+      /*
+      FNXC:ArchiveRestore 2026-08-15-05:39:
+      Cold archive entries intentionally omit per-repository worktree and landing state. Reconstructing
+      either `workspaceWorktrees` or `branch` would revive disposed paths and let the workspace
+      partial-land reconciler mistake an unarchived card for a recoverable landing.
+      */
+      // Intentionally NOT restoring: worktree, workspaceWorktrees, branch, status, blockedBy, paused, executionStartBranch, baseCommitSha, error
     };
 
     // Write task.json

@@ -29,6 +29,7 @@
  *   interface (U4), not the underlying driver.
  */
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { access } from "node:fs/promises";
 import * as schema from "../../postgres/schema/index.js";
 import { projectScopeFor, type AsyncDataLayer, type DbTransaction } from "../../postgres/data-layer.js";
 import { ACTIVE_TASK_FILTER } from "./async-persistence.js";
@@ -304,6 +305,42 @@ export async function archiveParentTaskWithLineageGate(
  * @param taskRecord The task fields to re-insert (caller builds from the entry).
  * @param context Serialization context for the task insert.
  */
+async function pathExists(path: unknown): Promise<boolean> {
+  if (typeof path !== "string" || !path) return false;
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * FNXC:TaskStoreArchiveLineage 2026-08-15-05:39:
+ * Archive disposal removes each workspace worktree and its `fusion/<id>` branch but does not
+ * persist its in-memory map mutation. Restore therefore drops only entries whose exact recorded
+ * paths are gone, preventing reconcileWorkspacePartialLands FORK-A from parking the card failed.
+ */
+async function reconcileRestoredWorktreeState(
+  workspaceWorktrees: unknown,
+  worktree: unknown,
+): Promise<{ workspaceWorktrees: Record<string, unknown> | null; worktree: string | null }> {
+  const entries = workspaceWorktrees && typeof workspaceWorktrees === "object" && !Array.isArray(workspaceWorktrees)
+    ? Object.entries(workspaceWorktrees as Record<string, unknown>)
+    : [];
+  const surviving = await Promise.all(entries.map(async ([repoRel, value]) => {
+    const worktreePath = value && typeof value === "object" && !Array.isArray(value)
+      ? (value as { worktreePath?: unknown }).worktreePath
+      : undefined;
+    return typeof worktreePath === "string" && await pathExists(worktreePath) ? [repoRel, value] as const : undefined;
+  }));
+  const retained = surviving.filter((entry): entry is readonly [string, unknown] => entry !== undefined);
+  return {
+    workspaceWorktrees: retained.length > 0 ? Object.fromEntries(retained) : null,
+    worktree: typeof worktree === "string" && await pathExists(worktree) ? worktree : null,
+  };
+}
+
 export async function restoreTaskFromArchive(
   layer: AsyncDataLayer,
   entry: ArchivedTaskEntry,
@@ -322,6 +359,10 @@ export async function restoreTaskFromArchive(
     // OUTSIDE the txn.
     const existing = await readTaskRowInTransaction(tx, entry.id, { includeDeleted: true }, layer.projectId);
     if (existing) {
+      const reconciledWorktreeState = await reconcileRestoredWorktreeState(
+        existing.workspaceWorktrees,
+        existing.worktree,
+      );
       // Row exists (was soft-deleted). Restore it: clear deleted_at, keep
       // column as "archived" so the caller (unarchiveTaskImpl) can verify the
       // task is in the archived column and then moveTask it to the target
@@ -331,6 +372,8 @@ export async function restoreTaskFromArchive(
         .update(schema.project.tasks)
         .set({
           deletedAt: null,
+          workspaceWorktrees: reconciledWorktreeState.workspaceWorktrees,
+          worktree: reconciledWorktreeState.worktree,
           /*
           FNXC:TaskStoreArchiveLineage 2026-08-01-23:23 DELIBERATE-LITERAL — STATE MARKER:
           Restore exposes the durable row before the caller's validated move out of the archive state.
