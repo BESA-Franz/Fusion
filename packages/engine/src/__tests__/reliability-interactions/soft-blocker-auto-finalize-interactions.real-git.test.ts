@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { SelfHealingManager } from "../../self-healing.js";
@@ -11,6 +11,10 @@ const MAX_AUTO_MERGE_RETRIES = 3;
 
 function git(dir: string, cmd: string): string {
   return execSync(cmd, { cwd: dir, stdio: "pipe" }).toString().trim();
+}
+
+function gitArgs(dir: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: dir, stdio: "pipe", encoding: "utf-8" }).trim();
 }
 
 function makeStore(tasks: Task[], events: unknown[] = [], settings?: Partial<Settings>): TaskStore & EventEmitter {
@@ -51,7 +55,7 @@ function seedLandedContent(dir: string, branch: string, taskId: string, fileName
   git(dir, `git checkout -b ${branch}`);
   writeFileSync(join(dir, fileName), `${taskId} content\n`);
   git(dir, `git add ${fileName}`);
-  git(dir, `git commit -m 'test(${taskId}): landed content' -m 'Fusion-Task-Id: ${taskId}'`);
+  gitArgs(dir, ["commit", "-m", `test(${taskId}): landed content`, "-m", `Fusion-Task-Id: ${taskId}`]);
   const taskCommit = git(dir, "git rev-parse HEAD");
   git(dir, "git checkout main");
   git(dir, `git cherry-pick ${taskCommit}`);
@@ -62,7 +66,7 @@ function seedUnlandedContent(dir: string, branch: string, taskId: string, fileNa
   git(dir, `git checkout -b ${branch}`);
   writeFileSync(join(dir, fileName), `${taskId} pending\n`);
   git(dir, `git add ${fileName}`);
-  git(dir, `git commit -m 'test(${taskId}): pending content' -m 'Fusion-Task-Id: ${taskId}'`);
+  gitArgs(dir, ["commit", "-m", `test(${taskId}): pending content`, "-m", `Fusion-Task-Id: ${taskId}`]);
   git(dir, "git checkout main");
 }
 
