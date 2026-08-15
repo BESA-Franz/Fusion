@@ -1018,20 +1018,34 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   task ROW lifecycle.)
   */
   /*
-  FNXC:WorkflowResolvedColumns 2026-07-31-23:40:
-  `completeColumns` is REQUIRED and resolved by the caller (async, once per sweep) because this
-  predicate is sync and its caller is not.
+  FNXC:Workspace 2026-08-15-04:11:
+  Archive is cold storage, but `getTask` serves its snapshot as an archived-column task. An archived
+  or soft-deleted owner cannot be running, while this in-memory registry retains a leaked land lease
+  until process exit. Resolve archive columns with the workflow vocabulary and treat them as terminal;
+  the unchanged age, merge-pending, and executing guards still prevent reclaiming a live land.
 
-  MEMBERSHIP of `complete` ONLY, deliberately: the literal it replaces was `done` alone, and the
-  comment above spells out that every non-terminal state must read LIVE so a lease is never yanked
-  from a task that could still be running. Adding `archived` would widen what counts as terminal and
-  reclaim leases the old code kept — a behaviour change riding inside a column conversion.
+  Non-terminal states must continue to read LIVE. The column sets are resolved once by the async
+  caller because this predicate remains synchronous.
   */
-  private isWorkspaceOwnerLive(owner: Task | null | undefined, completeColumns: ReadonlySet<string>): boolean {
-    if (!owner) return false; // not found / deleted → terminal.
-    if (completeColumns.has(owner.column)) return false;
-    if (owner.status === "failed") return false;
-    return true;
+  private workspaceOwnerTerminalReason(
+    owner: Task | null | undefined,
+    completeColumns: ReadonlySet<string>,
+    archivedColumns: ReadonlySet<string>,
+  ): "missing" | "complete" | "archived" | "deleted" | "failed" | null {
+    if (!owner) return "missing";
+    if (completeColumns.has(owner.column)) return "complete";
+    if (archivedColumns.has(owner.column)) return "archived";
+    if (typeof owner.deletedAt === "string" && owner.deletedAt.length > 0) return "deleted";
+    if (owner.status === "failed") return "failed";
+    return null;
+  }
+
+  private isWorkspaceOwnerLive(
+    owner: Task | null | undefined,
+    completeColumns: ReadonlySet<string>,
+    archivedColumns: ReadonlySet<string>,
+  ): boolean {
+    return this.workspaceOwnerTerminalReason(owner, completeColumns, archivedColumns) === null;
   }
 
   private async evaluateBackwardMoveTripleProof(
@@ -10260,9 +10274,10 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
       const entries = activeSessionRegistry.entriesByKind("workspace-repo-land");
       if (entries.length === 0) return 0;
 
-      /* FNXC:WorkflowResolvedColumns 2026-07-31-23:40: resolved once per sweep, AFTER the early
-         return above, so a board with no leases pays nothing. See `isWorkspaceOwnerLive`. */
+      /* FNXC:Workspace 2026-08-15-04:11: resolve terminal lane vocabularies once per sweep, AFTER
+         the early return above, so a board with no leases pays nothing. See `isWorkspaceOwnerLive`. */
       const leaseOwnerCompleteColumns = await resolveProjectColumnsForRoles(this.store, ["complete"]);
+      const leaseOwnerArchivedColumns = await resolveProjectColumnsForRoles(this.store, ["archived"]);
 
       const graceMs = settings.taskStuckTimeoutMs ?? STALE_ACTIVE_BRANCH_EXECUTION_GRACE_MS;
       const staleFloorMs = graceMs * PHANTOM_EXECUTOR_BINDING_AGE_MULTIPLIER;
@@ -10292,8 +10307,9 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
 
           const owner = await this.store.getTask(entry.taskId).catch(() => null);
           const ownerColumn = owner?.column ?? "deleted";
+          const ownerTerminalReason = this.workspaceOwnerTerminalReason(owner, leaseOwnerCompleteColumns, leaseOwnerArchivedColumns);
           // Only a DEMONSTRABLY TERMINAL owner's lease is reclaimed (review C fix).
-          if (this.isWorkspaceOwnerLive(owner, leaseOwnerCompleteColumns)) continue;
+          if (this.isWorkspaceOwnerLive(owner, leaseOwnerCompleteColumns, leaseOwnerArchivedColumns)) continue;
 
           activeSessionRegistry.unregisterPath(entry.path);
           await createRunAuditor(this.store, {
@@ -10304,7 +10320,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
           }).database({
             type: "task:reclaim-phantom-workspace-land-lease",
             target: entry.taskId,
-            metadata: { taskId: entry.taskId, path: entry.path, kind: entry.kind, registeredAt: entry.registeredAt, ageMs, staleBindingAgeFloorMs: staleFloorMs, ownerColumn },
+            metadata: { taskId: entry.taskId, path: entry.path, kind: entry.kind, registeredAt: entry.registeredAt, ageMs, staleBindingAgeFloorMs: staleFloorMs, ownerColumn, ownerTerminalReason },
           }).catch(() => undefined);
           log.warn(`reclaimPhantomWorkspaceLandLeases: reclaimed leaked land lease on ${entry.path} (owner ${entry.taskId}, age ${ageMs}ms)`);
           reclaimed++;

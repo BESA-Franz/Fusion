@@ -397,6 +397,156 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     expect(activeSessionRegistry.isPathActive(leasePath)).toBe(false);
   });
 
+  /*
+  FNXC:Workspace 2026-08-15-04:11:
+  The archived-owner symptom failed before FN-9054: `getTask` returned the cold-storage snapshot
+  in `archived`, which the terminal predicate read as live. After the staleness floor, reclaim must
+  free that real sub-repo path so a different workspace task can acquire the next land lease.
+  */
+  it("reclaims an archived owner's stale lease and makes the repo re-leasable", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const leasePath = fx.repoPath("repo-a");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+    activeSessionRegistry.registerPath(leasePath, { taskId: TASK_ID, kind: "workspace-repo-land", ownerKey: "land" });
+
+    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "archived" });
+    const store = createStore([task]);
+    const manager = makeManager(store, fx.rootDir);
+
+    vi.setSystemTime(new Date("2026-08-15T00:10:00.000Z"));
+    expect(await manager.reclaimPhantomWorkspaceLandLeases()).toBe(1);
+    expect(activeSessionRegistry.isPathActive(leasePath)).toBe(false);
+
+    expect(() => activeSessionRegistry.registerPath(leasePath, {
+      taskId: "FN-7002", kind: "workspace-repo-land", ownerKey: "next-land",
+    })).not.toThrow();
+    expect(activeSessionRegistry.lookupByPath(leasePath)?.taskId).toBe("FN-7002");
+  });
+
+  /*
+  FNXC:Workspace 2026-08-15-04:11:
+  Archive terminality follows the archived trait rather than the legacy literal, so a project that
+  renames its archive lane cannot leave a crashed workspace land holder blocking future tasks.
+  */
+  it("reclaims a land lease whose owner rests in a RENAMED archive lane", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const leasePath = fx.repoPath("repo-a");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+    activeSessionRegistry.registerPath(leasePath, { taskId: TASK_ID, kind: "workspace-repo-land", ownerKey: "land" });
+
+    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "retained" });
+    const store = createStore([task]);
+    (store as unknown as { listWorkflowDefinitions: unknown }).listWorkflowDefinitions = vi.fn(async () => [{
+      id: "custom:renamed-archive",
+      ir: {
+        version: "v2",
+        id: "custom:renamed-archive",
+        nodes: [],
+        edges: [],
+        columns: [
+          { id: "building", name: "building", traits: [{ trait: "wip", config: { limitSetting: "maxConcurrent" } }] },
+          { id: "retained", name: "retained", traits: [{ trait: "archived" }] },
+        ],
+      },
+    }]);
+    const manager = makeManager(store, fx.rootDir);
+
+    vi.setSystemTime(new Date("2026-08-15T00:10:00.000Z"));
+    expect(await manager.reclaimPhantomWorkspaceLandLeases()).toBe(1);
+    expect(activeSessionRegistry.isPathActive(leasePath)).toBe(false);
+  });
+
+  /*
+  FNXC:Workspace 2026-08-15-04:11:
+  Soft-deleted rows and hard misses both have no live owner. Once the unchanged age and execution
+  guards admit them, their leaked in-memory leases must be reclaimable rather than permanently busy.
+  */
+  it("reclaims soft-deleted and missing owners after the staleness floor", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const leasePath = fx.repoPath("repo-a");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+    activeSessionRegistry.registerPath(leasePath, { taskId: TASK_ID, kind: "workspace-repo-land", ownerKey: "land" });
+
+    const softDeleted = workspaceTask(
+      { "repo-a": { worktreePath: leasePath, branch: BRANCH } },
+      { column: "in-progress", deletedAt: "2026-08-14T23:00:00.000Z" },
+    );
+    const store = createStore([softDeleted]);
+    const manager = makeManager(store, fx.rootDir);
+
+    vi.setSystemTime(new Date("2026-08-15T00:10:00.000Z"));
+    expect(await manager.reclaimPhantomWorkspaceLandLeases()).toBe(1);
+    expect(activeSessionRegistry.isPathActive(leasePath)).toBe(false);
+
+    activeSessionRegistry.registerPath(leasePath, { taskId: "FN-7002", kind: "workspace-repo-land", ownerKey: "missing-land" });
+    vi.setSystemTime(new Date("2026-08-15T00:20:00.000Z"));
+    expect(await manager.reclaimPhantomWorkspaceLandLeases()).toBe(1);
+    expect(activeSessionRegistry.isPathActive(leasePath)).toBe(false);
+  });
+
+  /*
+  FNXC:Workspace 2026-08-15-04:11:
+  Archive terminality does not shorten the existing floor; a newly registered archived snapshot
+  remains protected while a legitimate land operation is still warming.
+  */
+  it("does NOT reclaim a young lease owned by an archived task", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const leasePath = fx.repoPath("repo-a");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+    activeSessionRegistry.registerPath(leasePath, { taskId: TASK_ID, kind: "workspace-repo-land", ownerKey: "land" });
+
+    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "archived" });
+    const manager = makeManager(createStore([task]), fx.rootDir);
+
+    vi.setSystemTime(new Date("2026-08-15T00:01:00.000Z"));
+    expect(await manager.reclaimPhantomWorkspaceLandLeases()).toBe(0);
+    expect(activeSessionRegistry.isPathActive(leasePath)).toBe(true);
+  });
+
+  /*
+  FNXC:Workspace 2026-08-15-04:11:
+  An archived snapshot cannot override the merge-pending guard: queued land work remains live until
+  its in-memory merge pipeline releases the lease.
+  */
+  it("does NOT reclaim an archived owner's lease while it is merge-pending", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const leasePath = fx.repoPath("repo-a");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+    activeSessionRegistry.registerPath(leasePath, { taskId: TASK_ID, kind: "workspace-repo-land", ownerKey: "land" });
+
+    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "archived" });
+    const manager = makeManager(createStore([task]), fx.rootDir, { isMergePending: (id: string) => id === TASK_ID });
+
+    vi.setSystemTime(new Date("2026-08-15T00:10:00.000Z"));
+    expect(await manager.reclaimPhantomWorkspaceLandLeases()).toBe(0);
+    expect(activeSessionRegistry.isPathActive(leasePath)).toBe(true);
+  });
+
+  /*
+  FNXC:Workspace 2026-08-15-04:11:
+  An active executor remains authoritative over row terminality; even a stale archived snapshot
+  cannot make self-healing yank its workspace land lease.
+  */
+  it("does NOT reclaim an archived owner's lease while its task is active", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const leasePath = fx.repoPath("repo-a");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+    activeSessionRegistry.registerPath(leasePath, { taskId: TASK_ID, kind: "workspace-repo-land", ownerKey: "land" });
+
+    const task = workspaceTask({ "repo-a": { worktreePath: leasePath, branch: BRANCH } }, { column: "archived" });
+    const manager = makeManager(createStore([task]), fx.rootDir, { isTaskActive: (id: string) => id === TASK_ID });
+
+    vi.setSystemTime(new Date("2026-08-15T00:10:00.000Z"));
+    expect(await manager.reclaimPhantomWorkspaceLandLeases()).toBe(0);
+    expect(activeSessionRegistry.isPathActive(leasePath)).toBe(true);
+  });
+
   it("does NOT reclaim a land lease owned by a live merging task", async () => {
     fx = await createWorkspaceFixture(["repo-a"]);
     const leasePath = fx.repoPath("repo-a");
