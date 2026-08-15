@@ -12,6 +12,11 @@ vi.mock("@fusion/core", async (importOriginal) => {
   return { ...actual, getCurrentRepo: () => ({ owner: "acme", repo: "widgets" }) };
 });
 
+vi.mock("../missions/mission-state-reconcile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../missions/mission-state-reconcile.js")>();
+  return { ...actual, reconcileMissionState: vi.fn(async () => ({ changed: false })) };
+});
+
 /*
 FNXC:WorkflowLifecycleColumns 2026-07-30-19:05:
 Two scheduler decisions that were keyed on column-id literals, on a RENAMED board.
@@ -126,6 +131,16 @@ function createStore(
     updateSettings: vi.fn(async () => resolved),
     parseFileScopeFromPrompt: vi.fn(async (id: string) => scopes[id] ?? []),
     updateTask,
+    transitionQueuedEpisode: vi.fn(async (id: string, transition) => {
+      const task = tasks.find((candidate) => candidate.id === id);
+      if (task) {
+        await updateTask(id, {
+          blockedBy: transition.blockedBy,
+          overlapBlockedBy: transition.overlapBlockedBy,
+        });
+      }
+      return { appended: true, task };
+    }),
     moveTask,
     moveTaskIf,
     getTask: vi.fn(async (id: string) => tasks.find((task) => task.id === id) ?? null),
@@ -139,6 +154,10 @@ function createStore(
     getTaskWorkflowSelection: vi.fn(() => selection),
     getTaskWorkflowSelectionAsync: vi.fn(async () => selection),
     getWorkflowDefinition: vi.fn(async () => ({ ir: workflowIr })),
+    getMissionStore: vi.fn(() => ({
+      listMissions: vi.fn(async () => []),
+      listGoalIdsForMission: vi.fn(async () => []),
+    })),
   } as unknown as TaskStore;
 }
 
@@ -439,6 +458,8 @@ describe("scheduler mission completion advance on a RENAMED board", () => {
       updateFeatureStatus: vi.fn(async () => undefined),
       getFeature: vi.fn(async () => feature),
       getFeatureByTaskId: vi.fn(async () => feature),
+      getSlice: vi.fn(async () => ({ id: "slice-1", milestoneId: "milestone-1" })),
+      getMilestone: vi.fn(async () => ({ id: "milestone-1", missionId: "mission-1" })),
     };
 
     const scheduler = new Scheduler(store, { missionStore } as never);
@@ -478,7 +499,9 @@ describe("scheduler mission completion advance on a RENAMED board", () => {
         listAssertionsForFeature: vi.fn(async () => []),
         updateFeatureStatus: vi.fn(async () => undefined),
         getFeature: vi.fn(async () => feature),
-      getFeatureByTaskId: vi.fn(async () => feature),
+        getFeatureByTaskId: vi.fn(async () => feature),
+        getSlice: vi.fn(async () => ({ id: "slice-1", milestoneId: "milestone-1" })),
+        getMilestone: vi.fn(async () => ({ id: "milestone-1", missionId: "mission-1" })),
       },
     } as never);
     const completion = vi
