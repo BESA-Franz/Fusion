@@ -939,7 +939,7 @@ export class InProcessRuntime
    * ProjectEngine before `start()` via `setMergePendingProvider`. Used by the workspace
    * self-healing reconcilers to avoid re-dispatching / reclaiming a task mid-dequeue→rawMerge.
    */
-  private mergePendingProvider?: (taskId: string) => boolean;
+  private mergePendingProvider?: (taskId: string) => boolean | Promise<boolean>;
   /** Tracks whether startup recovery was intentionally deferred due to pause state. */
   private startupRecoveryDeferred = false;
   /** Prevent duplicate unpause recovery dispatches from racing each other. */
@@ -2426,7 +2426,7 @@ export class InProcessRuntime
     this.activeMergeAborter = abortActiveMerge;
   }
 
-  setMergePendingProvider(isMergePending: (taskId: string) => boolean): void {
+  setMergePendingProvider(isMergePending: (taskId: string) => boolean | Promise<boolean>): void {
     this.mergePendingProvider = isMergePending;
   }
 

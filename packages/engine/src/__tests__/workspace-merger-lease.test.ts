@@ -21,13 +21,15 @@ Coverage (FN-5893 surfaces):
 - cleanup: a repo land that THROWS → the lease for that path is released (not stuck),
   so a subsequent land of the same repo can acquire it.
 */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Task, TaskStore } from "@fusion/core";
-import { landWorkspaceTask, WorkspaceRepoLandBusyError } from "../merge/merger-ai.js";
+import { createSharedPgTaskStoreTestHarness, pgDescribe, type SharedPgTaskStoreHarness } from "../../../core/src/__test-utils__/pg-test-harness.js";
+import { landSquash, landWorkspaceTask, WorkspaceMergeDispatchSupersededError, WorkspaceRepoLandBusyError } from "../merge/merger-ai.js";
+import { ensureTenancyFenceRef, mergeDispatchFenceRef, WorkspaceFenceRefError } from "../merge/workspace-fence-ref.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { createWorkspaceFixture, hasGit, type WorkspaceFixture } from "./_workspace-fixture.js";
 
@@ -133,6 +135,175 @@ function makeTask(id: string, workspaceWorktrees: Task["workspaceWorktrees"]): T
   } as Task;
 }
 
+const pgDescribeIfGit = hasGit ? pgDescribe : describe.skip;
+
+/*
+FNXC:WorkspaceMergeDispatch 2026-08-15-10:09:
+The post-push finalizer must be proven through the production workspace land path and a real
+PostgreSQL owner-and-fence reclaim. A mocked guarded writer cannot show that landWorkspaceTask
+reaches the guarded terminal mutation after git has advanced the integration ref.
+*/
+pgDescribeIfGit("workspace land dispatch finalization (PostgreSQL)", () => {
+  const h: SharedPgTaskStoreHarness = createSharedPgTaskStoreTestHarness({
+    prefix: "fusion_workspace_land_dispatch_finalization",
+  });
+  let fx: WorkspaceFixture;
+
+  beforeAll(h.beforeAll);
+  beforeEach(async () => {
+    await h.beforeEach();
+    fx = await createWorkspaceFixture(["repo-a"]);
+  });
+  afterEach(async () => {
+    fx?.cleanup();
+    await h.afterEach();
+  });
+  afterAll(h.afterAll);
+
+  it("rejects a predecessor's real repo-b push after a successor republished its dispatch fence", async () => {
+    fx.cleanup();
+    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
+    const store = h.store();
+    const taskId = "FN-9059-PG-REPO-B";
+    for (const repoRel of fx.repos) {
+      const remote = path.join(fx.rootDir, `${repoRel}.git`);
+      execSync(`git init --bare ${remote}`, { stdio: "pipe" });
+      fx.git(repoRel, `git remote add origin ${remote}`);
+      fx.git(repoRel, "git push -u origin main");
+      addRepoBranchWithEdit(fx, repoRel, taskId, `${repoRel} stale dispatch push\n`);
+    }
+    await store.createTaskWithReservedId(
+      { description: "cross-node repo-b dispatch fence", column: "in-review" },
+      { taskId, applyDefaultWorkflowSteps: false },
+    );
+    await store.updateTask(taskId, {
+      branch: BRANCH,
+      workspaceWorktrees: Object.fromEntries(fx.repos.map((repoRel) => [repoRel, {
+        worktreePath: fx.repoPath(repoRel), branch: BRANCH,
+      }])),
+    } as Partial<Task>);
+    const task = (await store.getTask(taskId))!;
+    const predecessor = await store.acquireWorkspaceLease({
+      leaseKey: `merge-dispatch:${taskId}`,
+      kind: "merge-dispatch",
+      owner: { taskId, nodeId: "node-b", incarnationId: "inc-b" },
+      leaseMs: 60_000,
+    });
+    if (predecessor.outcome === "conflict") throw new Error("expected predecessor dispatch lease");
+    const repoBTip = fx.git("repo-b", "git rev-parse refs/heads/main");
+    let successorClaimed = false;
+    let mergeAgentCalls = 0;
+
+    await expect(landWorkspaceTask(store, task, fx.rootDir, {
+      workspaceDispatchFence: predecessor.handle,
+    }, {
+      mergeAgent: squashMergeAgent(BRANCH, async () => {
+        mergeAgentCalls++;
+        if (mergeAgentCalls !== 2) return;
+        await h.adminSql().unsafe(`UPDATE project.workspace_coordination_leases
+          SET expires_at = '${new Date(Date.now() - 1_000).toISOString()}'
+          WHERE lease_key = '${predecessor.handle.leaseKey}'`);
+        const successor = await store.acquireWorkspaceLease({
+          leaseKey: predecessor.handle.leaseKey,
+          kind: "merge-dispatch",
+          owner: { taskId, nodeId: "node-a", incarnationId: "inc-a" },
+          leaseMs: 60_000,
+        });
+        expect(successor.outcome).toBe("reclaimed-expired");
+        let successorHandle = successor.handle;
+        for (const repoRel of fx.repos) {
+          successorHandle = await ensureTenancyFenceRef({
+            store,
+            handle: successorHandle,
+            claimOutcome: successor.outcome,
+            remote: "origin",
+            cwd: fx.repoPath(repoRel),
+            fenceRefName: mergeDispatchFenceRef(taskId),
+          });
+        }
+        successorClaimed = true;
+      }),
+      reviewAgent: approveReviewAgent,
+    })).rejects.toBeInstanceOf(WorkspaceRepoLandBusyError);
+
+    expect(successorClaimed).toBe(true);
+    // FNXC:WorkspaceMergeDispatch 2026-08-15-10:09: repo-b's target was unchanged; git refused only its stale dispatch ref pin.
+    expect(fx.git("repo-b", "git rev-parse refs/heads/main")).toBe(repoBTip);
+    expect(fx.git("repo-b", `git ls-remote origin ${mergeDispatchFenceRef(taskId)}`)).toMatch(/^[0-9a-f]{40,64}\s/);
+  });
+
+  it("leaves a real pushed land unfinalized when a successor reclaims the dispatch fence", async () => {
+    const store = h.store();
+    const taskId = "FN-9059-PG-DISPATCH";
+    const repo = fx.repoPath("repo-a");
+    const remote = path.join(fx.rootDir, "origin.git");
+    execSync(`git init --bare ${remote}`, { stdio: "pipe" });
+    fx.git("repo-a", `git remote add origin ${remote}`);
+    fx.git("repo-a", "git push -u origin main");
+    addRepoBranchWithEdit(fx, "repo-a", taskId, "production finalization fence\n");
+
+    await store.createTaskWithReservedId(
+      { description: "production workspace dispatch finalization", column: "in-review" },
+      { taskId, applyDefaultWorkflowSteps: false },
+    );
+    await store.updateTask(taskId, {
+      branch: BRANCH,
+      workspaceWorktrees: { "repo-a": { worktreePath: repo, branch: BRANCH } },
+    } as Partial<Task>);
+    const task = (await store.getTask(taskId))!;
+    const tipBefore = fx.git("repo-a", "git rev-parse refs/heads/main");
+    const predecessor = await store.acquireWorkspaceLease({
+      leaseKey: `merge-dispatch:${taskId}`,
+      kind: "merge-dispatch",
+      owner: { taskId, nodeId: "node-b", incarnationId: "inc-b" },
+      leaseMs: 60_000,
+    });
+    if (predecessor.outcome === "conflict") throw new Error("expected predecessor dispatch lease");
+
+    const mergeWorkspaceWorktreeEntry = store.mergeWorkspaceWorktreeEntry.bind(store);
+    let successorClaimed = false;
+    let terminalCallbackEntered = false;
+    const realWithValidWorkspaceLease = store.withValidWorkspaceLease.bind(store);
+    const finalizer = vi.spyOn(store, "withValidWorkspaceLease").mockImplementation(async (handle, callback) =>
+      realWithValidWorkspaceLease(handle, async () => {
+        terminalCallbackEntered = true;
+        return callback();
+      }));
+    vi.spyOn(store, "mergeWorkspaceWorktreeEntry").mockImplementation(async (...args) => {
+      const result = await mergeWorkspaceWorktreeEntry(...args);
+      if (!successorClaimed && args[0] === taskId && args[1] === "repo-a") {
+        successorClaimed = true;
+        await h.adminSql().unsafe(`UPDATE project.workspace_coordination_leases
+          SET expires_at = '${new Date(Date.now() - 1_000).toISOString()}'
+          WHERE lease_key = '${predecessor.handle.leaseKey}'`);
+        const successor = await store.acquireWorkspaceLease({
+          leaseKey: predecessor.handle.leaseKey,
+          kind: "merge-dispatch",
+          owner: { taskId, nodeId: "node-a", incarnationId: "inc-a" },
+          leaseMs: 60_000,
+        });
+        expect(successor.outcome).toBe("reclaimed-expired");
+      }
+      return result;
+    });
+
+    await expect(landWorkspaceTask(store, task, fx.rootDir, {
+      workspaceDispatchFence: predecessor.handle,
+    }, {
+      mergeAgent: squashMergeAgent(BRANCH),
+      reviewAgent: approveReviewAgent,
+    })).rejects.toBeInstanceOf(WorkspaceMergeDispatchSupersededError);
+
+    expect(successorClaimed).toBe(true);
+    // FNXC:WorkspaceMergeDispatch 2026-08-15-10:09: the real store rejects before invoking the finalizer callback.
+    expect(finalizer).toHaveBeenCalledOnce();
+    expect(terminalCallbackEntered).toBe(false);
+    expect((await store.getTask(taskId))!.column).toBe("in-review");
+    expect((await store.getTask(taskId))!.mergeDetails).toBeUndefined();
+    expect(fx.git("repo-a", "git rev-parse refs/heads/main")).not.toBe(tipBefore);
+  });
+});
+
 describeIfGit("landWorkspaceTask — per-repo land lease (Phase C U3, KTD4)", () => {
   let fx: WorkspaceFixture;
   afterEach(() => {
@@ -141,6 +312,143 @@ describeIfGit("landWorkspaceTask — per-repo land lease (Phase C U3, KTD4)", ()
     vi.restoreAllMocks();
   });
   beforeEach(() => activeSessionRegistry.clear());
+
+  it("rejects a superseded merge-dispatch pin even when the integration tip is unchanged", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const repo = fx.repoPath("repo-a");
+    const remote = path.join(fx.rootDir, "origin.git");
+    execSync(`git init --bare ${remote}`, { stdio: "pipe" });
+    fx.git("repo-a", `git remote add origin ${remote}`);
+    fx.git("repo-a", "git push -u origin main");
+    fx.git("repo-a", "git checkout -b fusion/fn-9059-fence");
+    writeFileSync(path.join(repo, "fence.txt"), "fenced\n", "utf-8");
+    fx.git("repo-a", "git add fence.txt && git commit -m 'fenced source'");
+
+    const tipSha = fx.git("repo-a", "git rev-parse origin/main");
+    const sourceSha = fx.git("repo-a", "git rev-parse HEAD");
+    const tree = fx.git("repo-a", "git mktree </dev/null");
+    const landFenceSha = fx.git("repo-a", `git commit-tree ${tree} -m land-fence`);
+    const staleDispatchSha = fx.git("repo-a", `git commit-tree ${tree} -m stale-dispatch`);
+    const successorDispatchSha = fx.git("repo-a", `git commit-tree ${tree} -m successor-dispatch`);
+    const landRef = "refs/fusion/workspace-lease/test-repo";
+    const dispatchRef = "refs/fusion/merge-dispatch/FN-9059";
+    fx.git("repo-a", `git push origin ${landFenceSha}:${landRef} ${staleDispatchSha}:${dispatchRef}`);
+    fx.git("repo-a", `git push --force-with-lease=${dispatchRef}:${staleDispatchSha} origin ${successorDispatchSha}:${dispatchRef}`);
+
+    /*
+    FNXC:WorkspaceMergeDispatch 2026-08-19-00:00:
+    A dispatch lease renewal may never run while a merge body is suspended. The resource must
+    reject its atomic ref advance after a successor republishes the task fence, even when main
+    still equals the predecessor's observed tip.
+    */
+    await expect(landSquash({
+      projectRootDir: repo,
+      mergeRoot: repo,
+      integrationBranch: "main",
+      tipSha,
+      squashSha: sourceSha,
+      taskId: "FN-9059",
+      audit: { git: vi.fn().mockResolvedValue(undefined) } as any,
+      workspaceFence: { remote: "origin", fenceRefName: landRef, fenceRefSha: landFenceSha },
+      workspaceDispatchFence: { fenceRefName: dispatchRef, fenceRefSha: staleDispatchSha },
+    })).rejects.toBeInstanceOf(WorkspaceFenceRefError);
+    expect(fx.git("repo-a", "git ls-remote origin refs/heads/main").split(/\s+/)[0]).toBe(tipSha);
+  });
+
+  it("publishes one dispatch tenancy pin to every sub-repo remote before fenced pushes", async () => {
+    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
+    for (const repoRel of fx.repos) {
+      const remote = path.join(fx.rootDir, `${repoRel}.git`);
+      execSync(`git init --bare ${remote}`, { stdio: "pipe" });
+      fx.git(repoRel, `git remote add origin ${remote}`);
+      fx.git(repoRel, "git push -u origin main");
+      addRepoBranchWithEdit(fx, repoRel, "FN-9059", `${repoRel} dispatch fence\n`);
+    }
+    const task = makeTask("FN-9059", Object.fromEntries(fx.repos.map((repoRel) => [repoRel, {
+      worktreePath: fx.repoPath(repoRel), branch: BRANCH,
+    }])));
+    const store = createStore(task);
+    let token = 0n;
+    Object.assign(store, {
+      acquireWorkspaceLease: vi.fn(async (input: any) => ({
+        outcome: "acquired",
+        handle: {
+          leaseKey: input.leaseKey, kind: input.kind, owner: input.owner,
+          fenceToken: ++token,
+        },
+      })),
+      recordWorkspaceLeaseFenceRef: vi.fn(async (input: any) => ({
+        ...input.handle, fenceRefName: input.fenceRefName, fenceRefSha: input.fenceRefSha,
+      })),
+      releaseWorkspaceLease: vi.fn().mockResolvedValue(true),
+      recordWorkspaceLandIntent: vi.fn().mockResolvedValue({ outcome: "valid" }),
+      resolveWorkspaceLandIntent: vi.fn(async (input: any) => {
+        await input.persistLandedSha();
+        return { outcome: "resolved" };
+      }),
+    });
+    const dispatchHandle = {
+      leaseKey: "merge-dispatch:FN-9059", kind: "merge-dispatch" as const,
+      owner: { taskId: "FN-9059", nodeId: "node-a", incarnationId: "inc-a" }, fenceToken: ++token,
+    };
+
+    /*
+    FNXC:WorkspaceMergeDispatch 2026-08-15-09:46:
+    A real workspace root is deliberately not a git checkout. Each sub-repo remote must receive
+    the dispatch ref before its own atomic push; publishing only at the root cannot fence either.
+    */
+    const dispatchRef = "refs/fusion/merge-dispatch/FN-9059";
+    const result = await landWorkspaceTask(store, task, fx.rootDir, {
+      workspaceDispatchFence: dispatchHandle,
+    }, {
+      mergeAgent: squashMergeAgent(BRANCH, () => {
+        /*
+        FNXC:WorkspaceMergeDispatch 2026-08-15-10:18:
+        The first repository's merge agent is reached only after dispatch fencing has covered every
+        target remote. This ordering catches a successor that otherwise protects repo-a while a
+        predecessor can still resume and push untouched repo-b.
+        */
+        expect(fx.git("repo-b", `git ls-remote origin ${dispatchRef}`)).toMatch(/^[0-9a-f]{40,64}\s/);
+      }),
+      reviewAgent: approveReviewAgent,
+    });
+
+    expect(result.allLanded).toBe(true);
+    for (const repoRel of fx.repos) {
+      expect(fx.git(repoRel, `git ls-remote origin ${dispatchRef}`)).toMatch(/^[0-9a-f]{40,64}\s/);
+    }
+  });
+
+  it("does not finalize after a dispatch lease expires following a successful workspace push", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    addRepoBranchWithEdit(fx, "repo-a", "FN-9059", "fenced terminal persist\n");
+    const repoAbs = fx.repoPath("repo-a");
+    const task = makeTask("FN-9059", { "repo-a": { worktreePath: repoAbs, branch: BRANCH } });
+    const tipBefore = fx.git("repo-a", "git rev-parse main");
+    const store = createStore(task);
+    const terminalWrite = vi.fn().mockRejectedValue(new Error("Workspace lease is no longer valid"));
+    Object.assign(store, { withValidWorkspaceLease: terminalWrite });
+
+    /*
+    FNXC:WorkspaceMergeDispatch 2026-08-15-09:37:
+    Simulate the renewal callback never firing: a successor has already reclaimed dispatch after
+    the ref advance. The guarded finalizer callback must never run, so stale work cannot mark the
+    task done even though the landed commit remains available to crash recovery.
+    */
+    await expect(landWorkspaceTask(store, task, fx.rootDir, {
+      workspaceDispatchFence: {
+        leaseKey: "merge-dispatch:FN-9059",
+        kind: "merge-dispatch",
+        owner: { taskId: "FN-9059", nodeId: "node-b", incarnationId: "inc-b" },
+        fenceToken: 1n,
+      },
+    }, { mergeAgent: squashMergeAgent(BRANCH), reviewAgent: approveReviewAgent })).rejects.toBeInstanceOf(WorkspaceMergeDispatchSupersededError);
+
+    expect(terminalWrite).toHaveBeenCalledOnce();
+    expect(store.moveTaskCalls).toEqual([]);
+    expect(store.task.mergeDetails).toBeUndefined();
+    expect(fx.git("repo-a", "git rev-parse main")).not.toBe(tipBefore);
+  });
 
   it("concurrency: two tasks landing the SAME sub-repo serialize — one acquires the land lease, the other fast-fails (no interleaved update-ref)", async () => {
     fx = await createWorkspaceFixture(["repo-a"]);

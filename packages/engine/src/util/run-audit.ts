@@ -625,6 +625,8 @@ export type DatabaseMutationType =
   /* FNXC:Workspace 2026-06-22-09:30 (Phase D U1) — workspace-mode self-healing run-audit events. */
   /** Metadata: { taskId, landedRepos: string[], unlandedRepos: string[], failedRepos: string[], action: "re-enqueue" | "park-failed", reason } */
   | "task:reconcile-workspace-partial-land"
+  /** Metadata: { taskId, repo, resolution: "landed" | "not-landed" } */
+  | "task:reconcile-workspace-land-intent"
   /** Metadata: { taskId, reason: "auto-merge-off" | "user-paused" | "live-worktree", livePaths: string[] } */
   | "task:reconcile-workspace-partial-land-no-action"
   /** Metadata: { taskId, path, kind: "workspace-repo-land", registeredAt, ageMs, staleBindingAgeFloorMs, ownerColumn, ownerTerminalReason: "missing" | "complete" | "archived" | "deleted" | "failed" } */

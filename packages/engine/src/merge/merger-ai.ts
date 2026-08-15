@@ -59,8 +59,12 @@ import {
   type MergeResult,
   type MergeTargetResolution,
   type Settings,
+  resolveEngineIncarnationId,
+  resolveEngineNodeId,
   type Task,
-  type TaskStore, resolveReviewColumns
+  type TaskStore,
+  type WorkspaceLeaseHandle,
+  resolveReviewColumns,
 } from "@fusion/core";
 import { selectUserCommentsForAgentContext } from "../agents/agent-user-comments.js";
 import { resolveTaskWorkingBranch } from "../worktree/worktree-names.js";
@@ -107,6 +111,7 @@ import cycle (merger-ai-worktree imports `MIN_TEMP_WORKTREE_REAP_AGE_MS` from se
 */
 import { isRepoLanded, findProvenLandedCommit, FUSION_TASK_ID_TRAILER_KEY } from "./workspace-land-predicate.js";
 import { persistWorkspaceRepoLandFailure } from "./workspace-land-failure.js";
+import { ensureTenancyFenceRef, mergeDispatchFenceRef, pushWithWorkspaceFence, WorkspaceFenceRefError, workspaceLandFenceRef } from "./workspace-fence-ref.js";
 import { finalizeProvenAutoMergeTask } from "./auto-merge-finalization.js";
 import { getCommitTaskOwnership, detectAlreadyLandedOnMain } from "./already-merged-detector.js";
 import { resolveLegacyAiMergeRootPath } from "../worktree/worktree-paths.js";
@@ -642,16 +647,36 @@ export async function landSquash(input: {
    */
   allowDirtyLocalCheckoutSync?: boolean;
   signal?: AbortSignal;
+  /** FNXC:Workspace 2026-08-15-08:36: Workspace lands advance the shared remote under a durable tenant fence before local sync. */
+  workspaceFence?: { remote: string; fenceRefName: string; fenceRefSha: string };
+  /** A task-scoped dispatch pin supplements the repo pin for a workspace merge body. */
+  workspaceDispatchFence?: { fenceRefName: string; fenceRefSha: string };
 }): Promise<LandResult> {
-  const { projectRootDir, mergeRoot, integrationBranch, tipSha, squashSha, taskId, audit, resolveConflicts, allowDirtyLocalCheckoutSync = false, signal } = input;
+  const { projectRootDir, mergeRoot, integrationBranch, tipSha, squashSha, taskId, audit, resolveConflicts, allowDirtyLocalCheckoutSync = false, signal, workspaceFence, workspaceDispatchFence } = input;
   const emit = (outcome: LocalSyncOutcome, extra: Record<string, unknown> = {}) =>
     audit.git({ type: "merge:ai-local-sync", target: integrationBranch, metadata: { taskId, outcome, squashSha, ...extra } }).catch(() => undefined);
 
   const currentBranch = await git(["rev-parse", "--abbrev-ref", "HEAD"], projectRootDir).catch(() => "");
+  let sharedRefAdvanced = false;
+  const advanceSharedWorkspaceRef = async (): Promise<void> => {
+    if (!workspaceFence || sharedRefAdvanced) return;
+    await pushWithWorkspaceFence({
+      cwd: mergeRoot,
+      remote: workspaceFence.remote,
+      sourceSha: squashSha,
+      targetRef: `refs/heads/${integrationBranch}`,
+      expectedTargetSha: tipSha,
+      fenceRefName: workspaceFence.fenceRefName,
+      fenceRefSha: workspaceFence.fenceRefSha,
+      ...(workspaceDispatchFence ? { additionalFenceRefs: [workspaceDispatchFence] } : {}),
+    });
+    sharedRefAdvanced = true;
+  };
 
   // Case B — target not checked out here: bare CAS ref advance.
   if (currentBranch !== integrationBranch) {
     assertMergeGenerationOwned(signal, taskId);
+    await advanceSharedWorkspaceRef();
     const adv = await advanceIntegrationBranchRef({
       rootDir: mergeRoot, projectRootDir, integrationBranch,
       newSha: squashSha, expectedCurrentSha: tipSha, taskId, audit,
@@ -704,6 +729,7 @@ export async function landSquash(input: {
     // stash hook failure). Don't risk `merge --ff-only` aborting/clobbering:
     // advance the ref atomically and leave the user's working tree as-is.
     assertMergeGenerationOwned(signal, taskId);
+    await advanceSharedWorkspaceRef();
     const adv = await advanceIntegrationBranchRef({
       rootDir: mergeRoot, projectRootDir, integrationBranch,
       newSha: squashSha, expectedCurrentSha: tipSha, taskId, audit,
@@ -721,6 +747,7 @@ export async function landSquash(input: {
 
   // Fast-forward the checkout (and the branch ref) to the squash.
   assertMergeGenerationOwned(signal, taskId);
+  await advanceSharedWorkspaceRef();
   if (!(await gitOk(["merge", "--ff-only", squashSha], projectRootDir))) {
     if (stashed) await gitOk(["stash", "pop"], projectRootDir); // restore the user's edits
     return { outcome: "concurrent", localSync: "skipped-other-branch" };
@@ -772,8 +799,9 @@ FNXC:Workspace 2026-06-21-23:40 (Phase C U1, KTD1):
 `runAiMerge`'s former inline clean-room closure: pre-merge prune (rooted at THIS
 repo) → mkdtemp clean room → `git worktree add --detach` → installWorktreeDependencies
 → mergeAndReview → landSquash → the concurrent-advance CAS retry loop → the
-activeSessionRegistry register/unregister + cleanup-finally. It advances ONE local
-integration ref (no remote push) and returns what landed. It deliberately does NOT
+activeSessionRegistry register/unregister + cleanup-finally. Single-repo callers advance one local
+integration ref; workspace callers pin a durable tenancy fence and atomically advance the shared
+remote integration ref before reconciling their local ref. It deliberately does NOT
 move the task or write task-level mergeDetails — that task-global finalization
 (`finalizeMerged`/`finalizeTask`/`evaluateNoCommitsNoOpFinalize`) stays with the
 caller, so the same primitive is callable per sub-repo from `landWorkspaceTask`
@@ -822,6 +850,10 @@ export interface LandRepoContext {
   resolvable in the engine process environment, and avoids unnecessary work.
   */
   noCommitsExpected?: boolean;
+  /** FNXC:Workspace 2026-08-15-08:36: Present only for workspace sub-repos; it fences the durable intent and remote ref advance. */
+  workspaceLand?: { handle: WorkspaceLeaseHandle; repoRelPath: string; remote: string };
+  /** FNXC:WorkspaceMergeDispatch 2026-08-19-00:00: Task-level pin that fences every merge-body ref advance. */
+  workspaceDispatchFence?: { fenceRefName: string; fenceRefSha: string };
   store: TaskStore;
 }
 
@@ -844,14 +876,13 @@ export type LandOneRepoResult =
     };
 
 /**
- * Land `branch` onto `integrationBranch`'s LOCAL ref in `repoRootDir` via a
- * repo-scoped clean room, retrying on concurrent advance. No remote push. See
- * the FNXC note above for the extraction contract.
+ * Land `branch` through a repo-scoped clean room, retrying on concurrent advance.
+ * Workspace contexts publish the shared integration ref under their durable fence;
+ * standalone contexts retain the local-only land contract. See the FNXC note above.
  */
-// FNXC:Workspace 2026-06-22-09:30 (Phase C review B12): `landOneRepo` takes its store access
-// exclusively through the `ctx` callbacks (log/setStatus/audit) and pre-built agents — it never
-// touches a TaskStore directly. The former leading `store` param was dead and misleading at the
-// call sites (they looked like they forwarded a store the function ignored), so it was dropped.
+// FNXC:Workspace 2026-08-15-08:36: `landOneRepo` receives the TaskStore through its context so
+// workspace land intents are written immediately before the fenced shared-ref advance. The former
+// leading store parameter stays absent; context keeps all task-bound dependencies explicit.
 export async function landOneRepo(
   repoRootDir: string,
   branch: string,
@@ -1083,6 +1114,26 @@ export async function landOneRepo(
       if (!freshTask) throw new Error(`AI merge task ${taskId} disappeared before squash gates`);
       await enforceAiMergeSquashGates({ store, task: freshTask, taskId, mergeRoot, branch, tipSha, squashSha, settings, audit, log, repoRel: ctx.repoRel, repoKeys: ctx.repoKeys });
 
+      // FNXC:Workspace 2026-08-15-08:36: Persist the recovery intent before the shared ref can
+      // move. A later reconciler can then settle an interrupted remote advance without re-squashing.
+      let workspaceFence: { remote: string; fenceRefName: string; fenceRefSha: string } | undefined;
+      if (ctx.workspaceLand) {
+        const { handle, repoRelPath, remote } = ctx.workspaceLand;
+        if (!handle.fenceRefName || !handle.fenceRefSha) {
+          throw new Error(`Workspace land lease ${handle.leaseKey} is missing its fence pin`);
+        }
+        await store.recordWorkspaceLandIntent({
+          handle,
+          taskId,
+          repoRelPath,
+          remoteUrl: await git(["remote", "get-url", remote], repoRootDir),
+          integrationRef: `refs/heads/${integrationBranch}`,
+          intendedSha: squashSha,
+          expectedTip: tipSha,
+        });
+        workspaceFence = { remote, fenceRefName: handle.fenceRefName, fenceRefSha: handle.fenceRefSha };
+      }
+
       // 4 + 5. Land the squash on the target branch and sync the user's
       //        checkout (AI reconciles a conflicting restore).
       await setStatus("landing");
@@ -1091,6 +1142,8 @@ export async function landOneRepo(
         resolveConflicts: stashResolveAgent,
         allowDirtyLocalCheckoutSync: ctx.allowDirtyLocalCheckoutSync === true,
         signal,
+        workspaceFence,
+        workspaceDispatchFence: ctx.workspaceDispatchFence,
       });
       if (landed.outcome === "concurrent") {
         if (advanceRetries < MAX_CONCURRENT_ADVANCE_RETRIES) {
@@ -1930,11 +1983,19 @@ export class WorkspaceFinalizeBlockedError extends Error {
   }
 }
 
+/** A fenced merge pushed successfully, but a successor owns terminal finalization. */
+export class WorkspaceMergeDispatchSupersededError extends Error {
+  constructor(public readonly taskId: string) {
+    super(`Workspace merge dispatch lease was superseded before finalization for ${taskId}`);
+    this.name = "WorkspaceMergeDispatchSupersededError";
+  }
+}
+
 export async function landWorkspaceTask(
   store: TaskStore,
   task: Task,
   workspaceRootDir: string,
-  options: MergerOptions = {},
+  options: MergerOptions & { workspaceDispatchFence?: WorkspaceLeaseHandle } = {},
   deps: AgentDeps = {},
 ): Promise<WorkspaceMergeResult> {
   const taskId = task.id;
@@ -1983,6 +2044,44 @@ export async function landWorkspaceTask(
   let allLanded = true;
 
   await setStatus("merging");
+  try {
+
+  let workspaceDispatchFence: { fenceRefName: string; fenceRefSha: string } | undefined;
+  const recordDispatchFence = (store as Partial<TaskStore>).recordWorkspaceLeaseFenceRef;
+  if (options.workspaceDispatchFence && typeof recordDispatchFence === "function") {
+    /*
+    FNXC:WorkspaceMergeDispatch 2026-08-15-10:18:
+    A successor must publish its dispatch pin to EVERY workspace target remote before any land
+    sequence begins. Publishing only when each repository reaches its loop leaves a later remote
+    writable by a resumed predecessor; renewal callbacks are liveness-only, never correctness.
+    */
+    try {
+      for (const repoRel of repoKeys) {
+        const ensuredDispatchFence = await ensureTenancyFenceRef({
+          store,
+          handle: options.workspaceDispatchFence,
+          claimOutcome: "reentrant",
+          remote: "origin",
+          cwd: join(workspaceRootDir, repoRel),
+          fenceRefName: mergeDispatchFenceRef(taskId),
+        });
+        options.workspaceDispatchFence = ensuredDispatchFence;
+      }
+      if (!options.workspaceDispatchFence.fenceRefName || !options.workspaceDispatchFence.fenceRefSha) {
+        throw new WorkspaceFenceRefError(`Workspace merge dispatch lease ${options.workspaceDispatchFence.leaseKey} has no fence pin`, "transport");
+      }
+      workspaceDispatchFence = {
+        fenceRefName: options.workspaceDispatchFence.fenceRefName,
+        fenceRefSha: options.workspaceDispatchFence.fenceRefSha,
+      };
+    } catch (error) {
+      if (error instanceof WorkspaceFenceRefError) {
+        throw new WorkspaceRepoLandBusyError(repoKeys[0] ?? "workspace", "workspace-merge-dispatch-fence", taskId);
+      }
+      throw error;
+    }
+  }
+
   /*
   FNXC:Workspace 2026-06-22-04:10 (Phase C review A3 — status 'merging' must never leak):
   The busy-throw (WorkspaceRepoLandBusyError) and the persist-failure throw
@@ -1994,7 +2093,6 @@ export async function landWorkspaceTask(
   first is safe — finalize overwrites it. This finally only clears the transient merge status;
   it does not move the task.
   */
-  try {
   for (const repoRel of repoKeys) {
     throwIfAborted(options.signal, taskId);
     const entry = workspaceWorktrees[repoRel];
@@ -2083,11 +2181,58 @@ export async function landWorkspaceTask(
     if (landLeaseHolder && landLeaseHolder.taskId !== taskId) {
       throw new WorkspaceRepoLandBusyError(repoRel, landLeaseHolder.taskId, taskId);
     }
-    activeSessionRegistry.registerPath(repoRootDir, {
-      taskId,
-      kind: "workspace-repo-land",
-      ownerKey: WORKSPACE_REPO_LAND_OWNER_KEY,
-    });
+
+    /*
+    FNXC:Workspace 2026-08-15-08:36:
+    A process-local registry cannot serialize workspace landers on separate engine nodes. Claim the
+    repository's durable lease before registering locally, pin its fence ref once, and retain the
+    resulting handle through land-intent resolution. The remote push checks that same pin atomically
+    with the integration ref, so a superseded tenant cannot advance shared history after its TTL.
+    */
+    let durableLandLease: WorkspaceLeaseHandle | undefined;
+    try {
+      const acquireWorkspaceLease = (store as Partial<TaskStore>).acquireWorkspaceLease;
+      /*
+      FNXC:Workspace 2026-08-15-08:47:
+      The optional branch is solely for legacy structural in-memory stores used
+      by single-process tests. A real TaskStore has this API, and any error from
+      it remains a fail-closed land contention rather than a registry fallback.
+      */
+      if (typeof acquireWorkspaceLease === "function") {
+        const claim = await acquireWorkspaceLease.call(store, {
+          leaseKey: `repo:${repoRel}`,
+          kind: "land",
+          owner: { taskId, nodeId: resolveEngineNodeId(), incarnationId: resolveEngineIncarnationId() },
+          leaseMs: 5 * 60_000,
+        });
+        if (claim.outcome === "conflict") {
+          throw new WorkspaceRepoLandBusyError(repoRel, claim.conflict.taskId, taskId);
+        }
+        durableLandLease = claim.handle;
+        durableLandLease = await ensureTenancyFenceRef({
+          store,
+          handle: durableLandLease,
+          claimOutcome: claim.outcome,
+          remote: "origin",
+          cwd: repoRootDir,
+          fenceRefName: workspaceLandFenceRef(repoRel),
+        });
+      }
+    } catch (error) {
+      if (durableLandLease) await store.releaseWorkspaceLease(durableLandLease).catch(() => undefined);
+      if (error instanceof WorkspaceRepoLandBusyError) throw error;
+      throw new WorkspaceRepoLandBusyError(repoRel, "durable-workspace-lease", taskId);
+    }
+    try {
+      activeSessionRegistry.registerPath(repoRootDir, {
+        taskId,
+        kind: "workspace-repo-land",
+        ownerKey: WORKSPACE_REPO_LAND_OWNER_KEY,
+      });
+    } catch (error) {
+      if (durableLandLease) await store.releaseWorkspaceLease(durableLandLease).catch(() => undefined);
+      throw error;
+    }
 
     try {
       const landResult = await landOneRepo(repoRootDir, entry.branch, integrationBranch, {
@@ -2102,6 +2247,8 @@ export async function landWorkspaceTask(
         noCommitsExpected: task.noCommitsExpected === true,
         repoRel,
         repoKeys,
+        ...(durableLandLease ? { workspaceLand: { handle: durableLandLease, repoRelPath: repoRel, remote: "origin" } } : {}),
+        ...(workspaceDispatchFence ? { workspaceDispatchFence } : {}),
         store,
       });
       if (landResult.outcome === "landed") {
@@ -2115,7 +2262,22 @@ export async function landWorkspaceTask(
         recorded as `landed` in the in-memory result first so the error payload is accurate.
         */
         try {
-          await persistRepoLandedSha(store, taskId, repoRel, landResult.squashSha);
+          if (durableLandLease) {
+            const resolved = await store.resolveWorkspaceLandIntent({
+              handle: durableLandLease,
+              taskId,
+              repoRelPath: repoRel,
+              expectedIntentFenceToken: durableLandLease.fenceToken,
+              resolution: "landed",
+              resolvedSha: landResult.squashSha,
+              persistLandedSha: () => persistRepoLandedSha(store, taskId, repoRel, landResult.squashSha),
+            });
+            if (resolved.outcome !== "resolved") {
+              throw new Error(`Workspace land intent for ${repoRel} was not resolved (${resolved.outcome})`);
+            }
+          } else {
+            await persistRepoLandedSha(store, taskId, repoRel, landResult.squashSha);
+          }
         } catch (persistErr: unknown) {
           const pmsg = getErrorMessage(persistErr);
           await log(`AI merge (workspace): sub-repo ${repoRel} landed (${short(landResult.squashSha)}) but persisting landedSha FAILED: ${pmsg} — escalating to partial land so a retry can recover (ref already advanced; retry will skip via trailer ancestor-check)`);
@@ -2143,6 +2305,11 @@ export async function landWorkspaceTask(
       // A WorkspacePartialLandError from the persist-failure window above must PROPAGATE
       // (the engine parks/retries). The outer try/finally below resets status first (A3).
       if (err instanceof WorkspacePartialLandError) throw err;
+      // A dispatch-fence publication failure is contention/transport at the resource boundary,
+      // not a sub-repo merge failure. This body never reached its fenced push.
+      if (err instanceof WorkspaceFenceRefError) {
+        throw new WorkspaceRepoLandBusyError(repoRel, "workspace-merge-dispatch-fence", taskId);
+      }
       const message = getErrorMessage(err);
       await log(`AI merge (workspace): sub-repo ${repoRel} land failed: ${message}`);
       await audit.git({ type: "merge:ai-no-branch", target: entry.branch, metadata: { taskId, kind: "workspace-repo-land-failed", repo: repoRel, error: message } }).catch(() => undefined);
@@ -2164,6 +2331,11 @@ export async function landWorkspaceTask(
       const held = activeSessionRegistry.lookupByPath(repoRootDir);
       if (held && held.taskId === taskId && held.ownerKey === WORKSPACE_REPO_LAND_OWNER_KEY) {
         activeSessionRegistry.unregisterPath(repoRootDir);
+      }
+      if (durableLandLease) {
+        await store.releaseWorkspaceLease(durableLandLease).catch((releaseError: unknown) => {
+          aiMergeLog.warn(`${taskId}: durable workspace land lease release refused for ${repoRel}: ${getErrorMessage(releaseError)}`);
+        });
       }
     }
   }
@@ -2224,7 +2396,38 @@ export async function landWorkspaceTask(
       await fence.write("lifecycle", () => store.moveTask(taskId, reboundColumn, { preserveProgress: true, moveSource: "engine" } as Parameters<TaskStore["moveTask"]>[2]));
       return { taskId, repos, allLanded, finalized: false, finalizeBlockedReason: reason };
     }
-    const finalized = await finalizeWorkspaceTask(store, taskId, task, repos, fence);
+    /*
+    FNXC:WorkspaceMergeDispatch 2026-08-15-09:37:
+    Dispatch admission is not a licence to finalize. The sub-repo pushes may have completed while
+    this tenancy's renewal callback was stalled, so hold the owner+fence transaction lock over the
+    terminal merge-details write and move-to-done sequence. A reclaimed lease never invokes this
+    callback: its already-pushed commits remain recoverable through landedSha/intent evidence, but
+    this stale generation must not write the task outcome. Renewal only improves liveness.
+    */
+    const finalize = () => finalizeWorkspaceTask(store, taskId, task, repos, fence);
+    const withValidDispatchLease = (store as Partial<TaskStore>).withValidWorkspaceLease;
+    if (options.workspaceDispatchFence && typeof withValidDispatchLease === "function") {
+      try {
+        const finalized = await (withValidDispatchLease.call(
+          store,
+          options.workspaceDispatchFence,
+          async () => finalize(),
+        ) as Promise<boolean>);
+        return { taskId, repos, allLanded, finalized };
+      } catch (error) {
+        if (error instanceof Error && error.message === "Workspace lease is no longer valid") {
+          await audit.database({
+            type: "workspace-lease:merge-completed-unrecorded" as Parameters<typeof audit.database>[0]["type"],
+            target: taskId,
+            metadata: { taskId, outcome: "superseded-after-push", landedRepoCount: repos.filter((repo) => repo.status === "landed").length },
+          }).catch(() => undefined);
+          await log("AI merge (workspace): dispatch lease was superseded after landing; left pushed refs intact for durable recovery");
+          throw new WorkspaceMergeDispatchSupersededError(taskId);
+        }
+        throw error;
+      }
+    }
+    const finalized = await finalize();
     return { taskId, repos, allLanded, finalized };
   }
   return { taskId, repos, allLanded, finalized: false };
@@ -2263,12 +2466,34 @@ async function persistRepoLandedSha(
 ): Promise<void> {
   // FNXC:Workspace 2026-08-15-06:45: a new landing is strictly after its revert boundary,
   // so clear that invalidation marker while retaining the fresh landedSha as normal proof.
-  await store.mergeWorkspaceWorktreeEntry(
-    taskId,
-    repoRel,
-    { landedSha, landFailure: undefined, revertBoundarySha: undefined },
-    { requireExistingEntry: true },
-  );
+  const mergeWorkspaceEntry = (store as Partial<TaskStore>).mergeWorkspaceWorktreeEntry;
+  if (typeof mergeWorkspaceEntry === "function") {
+    await mergeWorkspaceEntry.call(
+      store,
+      taskId,
+      repoRel,
+      { landedSha, landFailure: undefined, revertBoundarySha: undefined },
+      { requireExistingEntry: true },
+    );
+    return;
+  }
+
+  /*
+  FNXC:Workspace 2026-08-15-09:08:
+  Production stores use the advisory-locked per-repository merge above. Retain the
+  read/merge/write fallback only for structural single-process test stores that
+  intentionally predate that API; routing a real durable store through it would
+  reintroduce sibling-map clobbering.
+  */
+  const task = await store.getTask(taskId);
+  const current = task.workspaceWorktrees?.[repoRel];
+  if (!current) return;
+  await store.updateTask(taskId, {
+    workspaceWorktrees: {
+      ...task.workspaceWorktrees,
+      [repoRel]: { ...current, landedSha, landFailure: undefined, revertBoundarySha: undefined },
+    },
+  });
 }
 
 /**

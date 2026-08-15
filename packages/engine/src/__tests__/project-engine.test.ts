@@ -1697,6 +1697,71 @@ describe("ProjectEngine workspace merge dispatch hardening (Phase C review)", ()
     ...overrides,
   });
 
+  /*
+  FNXC:WorkspaceMergeDispatch 2026-08-15-08:56:
+  The queue's process-local Set cannot serialize two ProjectEngine instances. These
+  dispatch tests use the real queue path and only mock the durable lease boundary.
+  */
+  it("releases its durable workspace dispatch claim after a successful manual land", async () => {
+    const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
+    const task = workspaceTask();
+    mockStore.store.getTask.mockResolvedValue(task);
+    const handle = {
+      leaseKey: "merge-dispatch:FN-WSH",
+      owner: { taskId: "FN-WSH", nodeId: "node-a", incarnationId: "run-a" },
+      fenceToken: 1n,
+      expiresAt: "2026-08-15T09:01:00.000Z",
+    };
+    const acquireWorkspaceLease = vi.fn(async () => ({ outcome: "acquired" as const, handle }));
+    const releaseWorkspaceLease = vi.fn(async () => true);
+    Object.assign(mockStore.store, { acquireWorkspaceLease, releaseWorkspaceLease });
+    mocks.currentStore = mockStore.store;
+    mocks.landWorkspaceTask.mockResolvedValue({
+      allLanded: true,
+      finalized: true,
+      repos: [{ repo: "repo-a", status: "landed", landedSha: "aaaa1111", integrationBranch: "main" }],
+    });
+
+    const engine = createEngine();
+    await engine.start();
+    await engine.onMerge("FN-WSH");
+
+    expect(acquireWorkspaceLease).toHaveBeenCalledWith(expect.objectContaining({
+      leaseKey: "merge-dispatch:FN-WSH",
+      kind: "merge-dispatch",
+      owner: expect.objectContaining({ taskId: "FN-WSH" }),
+    }));
+    expect(releaseWorkspaceLease).toHaveBeenCalledWith(handle);
+    await engine.stop();
+  });
+
+  it("fails a conflicting manual dispatch without calling the workspace land body", async () => {
+    const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
+    mockStore.store.getTask.mockResolvedValue(workspaceTask());
+    const acquireWorkspaceLease = vi.fn(async () => ({
+      outcome: "conflict" as const,
+      conflict: {
+        leaseKey: "merge-dispatch:FN-WSH",
+        taskId: "FN-other",
+        nodeId: "node-b",
+        incarnationId: "run-b",
+        fenceToken: 2n,
+        expiresAt: "2026-08-15T09:01:00.000Z",
+      },
+    }));
+    Object.assign(mockStore.store, { acquireWorkspaceLease });
+    mocks.currentStore = mockStore.store;
+
+    const engine = createEngine();
+    await engine.start();
+    await expect(engine.onMerge("FN-WSH")).rejects.toThrow("workspace merge dispatch is in progress for task FN-other");
+
+    expect(acquireWorkspaceLease).toHaveBeenCalledTimes(1);
+    expect(mocks.landWorkspaceTask).not.toHaveBeenCalled();
+    expect(mockStore.store.updateTask).not.toHaveBeenCalled();
+    await engine.stop();
+  });
+
   it("rejects a manual workspace merge when finalization is blocked without laundering success", async () => {
     const mockStore = createMockStore({ ...baseSettings, autoMerge: true });
     const task = workspaceTask({
@@ -2665,7 +2730,7 @@ describe("ProjectEngine paused in-review auto-merge behavior", () => {
     };
     expect(privateEngine.mergeQueue).not.toContain("FN-MERGE-WAITING");
     expect(privateEngine.capacityDeferredMergeTaskIds.has("FN-MERGE-WAITING")).toBe(true);
-    expect(engine.isMergePending("FN-MERGE-WAITING")).toBe(true);
+    expect(await engine.isMergePending("FN-MERGE-WAITING")).toBe(true);
     expect(mockStore.store.logEntry).toHaveBeenCalledWith(
       "FN-MERGE-WAITING",
       expect.stringContaining("maxWorktrees capacity exhausted: used=1/1"),
@@ -2689,7 +2754,7 @@ describe("ProjectEngine paused in-review auto-merge behavior", () => {
     expect(mocks.runAiMerge).not.toHaveBeenCalled();
     await engine.stop();
     expect(privateEngine.capacityDeferredMergeTaskIds.size).toBe(0);
-    expect(engine.isMergePending("FN-MERGE-WAITING")).toBe(false);
+    expect(await engine.isMergePending("FN-MERGE-WAITING")).toBe(false);
   });
 
   it("records an audit event (not silent) when auto-promotion of a branch-group member fails (Fix #4)", async () => {

@@ -82,6 +82,54 @@ What is **not** multi-node via shared DB alone:
 
 Canonical ownership / control-plane contract: [`docs/shared-mesh-protocol.md`](./shared-mesh-protocol.md).
 
+## Durable workspace coordination across nodes
+
+Workspace mode uses project-scoped PostgreSQL coordination records, not a node's in-memory registry, for sub-repository acquisition, per-repository landing, workspace-task liveness, merge-pending recovery guards, and merge-body dispatch. The durable records are `project.workspace_coordination_leases` and the write-ahead `project.workspace_land_intents`; lease operations are serialized with a project/resource advisory transaction lock.
+
+Set a stable `FUSION_NODE_ID` on every engine host. Each process also creates a fresh, process-local incarnation ID at startup. A lease owner is the triple `(ownerTaskId, ownerNodeId, ownerIncarnationId)`, with a monotonically increasing fence token:
+
+| Existing owner vs claimant | Result |
+| --- | --- |
+| Same task, node, and incarnation | Re-entrant claim: retain the fence token and refresh the TTL. |
+| Same task, different node or incarnation | Contention: fail closed; the claimant must wait for expiry or authorized reclamation. |
+| Different task | Contention: fail closed. |
+| Expired holder | A new claimant may atomically reclaim the record and receives a new fence token. |
+
+The TTL and its renewal timer indicate liveness; they are not authorization to mutate a shared resource. A caller must prove its owner triple and fence token at the action boundary. Lease-row changes use owner-and-fence-scoped conditional updates, while durable land intent, `landedSha`, merge admission, and merge-outcome writes run inside the same advisory-locked transaction that re-verifies the lease. Do not validate a lease and then act outside that transaction.
+
+### Resource-bound fences
+
+The fence token is enforced by the resource as well as by the database. Fusion uses exactly these mechanisms:
+
+1. **Git fence refs.** A sub-repository land publishes `refs/fusion/workspace-lease/<repo-slug>` and a merge body publishes `refs/fusion/merge-dispatch/<task-id>`. At the irreversible push, one `git push --atomic` compare-and-swaps the target ref observed by that tenancy and every applicable published pin: the repository fence plus the enclosing merge-dispatch fence for workspace land, or the dispatch pin for a merge-only push. A target-tip-only CAS is insufficient: a superseded owner can otherwise push while the target tip is still unchanged. The remote must permit both `refs/fusion/...` namespaces; a rejected namespace or fence-ref publication fails closed and never falls back to a tip-only push.
+2. **Transaction-bound durable writes.** The lease validity check and the protected state write occur in one advisory-locked transaction.
+3. **Owner-and-fence conditional lease updates.** Renew, release, and lease-state transitions cannot alter a successor's row.
+
+A fence ref is published once when a git-writing tenancy is `acquired` or `reclaimed-expired`. A re-entrant claim reuses the existing `fenceRefName` and `fenceRefSha`; it does not rotate the pin or increment the fence. Republishing would invalidate that same tenancy's prepared CAS push and orphan its pending intent. The only re-entrant exception is the publish gap: a git-writing row with no fence ref because the process died after claiming but before publishing may publish its missing pin. For a workspace merge-dispatch tenancy, the same deterministic pin is published to every target sub-repository remote before any workspace land begins; the non-git workspace root is never treated as the protected remote. Acquire-kind leases never carry a fence ref, and renewal never publishes or changes one.
+
+### Merge dispatch and commit points
+
+A merge-dispatch lease is claimed when the queue dispatches a merge body, not when it enqueues one. A losing dispatch claim is a benign drop rather than a task failure; the enqueue-to-dispatch interval intentionally has no active merge body.
+
+The merge body re-proves its fence at every commit point: dispatch admission; the atomic target-plus-dispatch-fence push (and repository fence where a workspace land also owns one); each subsequent PR merge, remote-branch deletion, or status effect; and terminal outcome persistence. The fenced push is the first shared irreversible effect. Non-CASable remote effects must be idempotent and occur after it. Therefore a lease may expire during a long merge without making a second push or outcome valid: a superseded body stops before its next commit point. If the push succeeded but a later outcome write is fenced out, Fusion reports `merge-completed-unrecorded`; operators should inspect the remote target and audit trail rather than retrying blindly or expecting a rollback.
+
+### Crash-safe workspace land recovery
+
+Before a land push, Fusion writes a durable pending land intent containing the task/repository identity, expected target tip, intended SHA, `remoteUrl`, integration ref, and fence-ref pin. The order is intent → atomic target-and-applicable-fences push → one lease-validated transaction that persists `landedSha` and resolves the intent. This closes the crash window between a successful push and durable task state.
+
+Pending intents are enumerated project-wide from PostgreSQL, not from the surviving node's local candidates, registries, or worktrees. Recovery fetches the recorded remote and proves intended-SHA reachability on the recorded integration ref; local tip equality, TTL alone, or a stale local object store are not proof. A subsequent land first resolves any pending intent for its task/repository, so it cannot squash a second time across an unresolved prior commit point.
+
+Exactly two authorities may resolve an intent:
+
+- The holder-authorized resolver holds a live lease handle and may resolve its equal-fence intent or a strictly lower-fence predecessor.
+- The recovery-authorized resolver has no handle and resolves only when its transaction proves no held, unexpired lease exists; it also refuses an intent/lease fence mismatch.
+
+There is no third writer. A pending intent is an operator-visible recovery state: inspect its audit records and remote integration ref, then allow holder or recovery reconciliation to establish ground truth rather than manually assuming the land failed.
+
+### Reclamation and operator behavior
+
+Lease renewal extends a live holder, but restart recovery never clears an unexpired lease—not even for a duplicated `FUSION_NODE_ID`. This deliberately trades a bounded TTL wait for safety. Startup releases only this node's expired predecessor-incarnation rows; periodic maintenance marks expired rows reclaimable without changing intents or fence refs. `isMergePending` first checks local queue state, then queries held `merge-dispatch` leases for every node; a durable-store error is conservatively pending. The phantom land-lease sweep also enumerates durable `land` and `acquire` rows, then reclaims only through an owner-and-fence CAS that derives terminal ownership from the task row in the same transaction; callers cannot supply a stale terminal proof. On contention, Fusion reports a busy/deferred operation and preserves the incumbent holder. Operators should wait for normal release/expiry or investigate a persistently pending intent, instead of bypassing a fence or editing a shared checkout.
+
 ### Cluster membership and process ownership
 
 - Topology visibility is cluster-wide: dashboard mesh reads aggregate node registry state (and optional remote health probes), with degraded fallback metadata when a peer HTTP probe fails.

@@ -4,7 +4,7 @@ import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile 
 import { exec } from "node:child_process";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
-import {acquireWorktreePathReservation, canonicalizeWorktreePath, type RunMutationContext, type Settings, type Task, type TaskStore, type SecretsStore} from "@fusion/core";
+import { acquireWorktreePathReservation, canonicalizeWorktreePath, resolveEngineIncarnationId, resolveEngineNodeId, type RunMutationContext, type Settings, type Task, type TaskStore, type SecretsStore, type WorkspaceLeaseHandle } from "@fusion/core";
 import { generateWorktreeName, resolveTaskWorkingBranch, slugify } from "./worktree-names.js";
 import { resolveTaskWorktreePathForBackend, resolveWorktreesDir, WORKTREE_RECOVERY_DIRNAME } from "./worktree-paths.js";
 import { hydrateWorktreeDb } from "./worktree-db-hydrate.js";
@@ -1293,6 +1293,8 @@ export async function acquireWorkspaceRepoWorktree(
   assertInRootRepoRelPath(repoRelPath, sep, isAbsolute, normalize);
   const repoAbsPath = join(workspaceRootDir, repoRelPath);
 
+  let durableAcquireLease: WorkspaceLeaseHandle | undefined;
+
   /*
   FNXC:WorkspaceWorktree 2026-06-22-00:00:
   A remembered per-repo worktree is only reusable if it still exists and is a registered git
@@ -1323,6 +1325,39 @@ export async function acquireWorkspaceRepoWorktree(
     }
     logger?.warn(`${task.id}: remembered workspace worktree for ${repoRelPath} is missing/unusable (${existing.worktreePath}); re-acquiring`);
     await store.logEntry(task.id, `Remembered workspace worktree for ${repoRelPath} is no longer usable; re-acquiring`, existing.worktreePath, runContext);
+  }
+
+  /*
+  FNXC:Workspace 2026-08-15-08:50:
+  Registry-only acquire serialization is invisible to another engine sharing the
+  central database. Claim before the local lookup/register fast path; a durable
+  conflict (including this task on a different node incarnation) is retryable
+  busy rather than permission to overwrite another process's worktree state.
+  */
+  try {
+    const acquireWorkspaceLease = (store as Partial<TaskStore>).acquireWorkspaceLease;
+    /*
+    FNXC:Workspace 2026-08-15-08:47:
+    Production TaskStore instances always expose the durable API. Structural
+    in-memory test stores predate it and remain single-process fixtures, so they
+    retain the registry fast path; a present API that errors still fails closed.
+    */
+    if (typeof acquireWorkspaceLease === "function") {
+      const claim = await acquireWorkspaceLease.call(store, {
+        leaseKey: `repo:${repoRelPath}`,
+        kind: "acquire",
+        owner: { taskId: task.id, nodeId: resolveEngineNodeId(), incarnationId: resolveEngineIncarnationId() },
+        leaseMs: 5 * 60_000,
+      });
+      if (claim.outcome === "conflict") {
+        throw new WorkspaceRepoAcquireBusyError(repoRelPath, claim.conflict.taskId, task.id);
+      }
+      durableAcquireLease = claim.handle;
+    }
+  } catch (error) {
+    if (error instanceof WorkspaceRepoAcquireBusyError) throw error;
+    // The database is authoritative for cross-node claims; unknown must never degrade to no holder.
+    throw new WorkspaceRepoAcquireBusyError(repoRelPath, "durable-workspace-lease", task.id);
   }
 
   /*
@@ -1377,6 +1412,7 @@ export async function acquireWorkspaceRepoWorktree(
     } catch {
       // best-effort observability only — never mask the busy error
     }
+    if (durableAcquireLease) await store.releaseWorkspaceLease(durableAcquireLease).catch(() => undefined);
     throw err;
   }
   /*
@@ -1579,6 +1615,11 @@ export async function acquireWorkspaceRepoWorktree(
     const held = registry.lookupByPath(repoAbsPath);
     if (held && held.taskId === task.id && held.ownerKey === WORKSPACE_REPO_ACQUIRE_OWNER_KEY) {
       registry.unregisterPath(repoAbsPath);
+    }
+    if (durableAcquireLease) {
+      await store.releaseWorkspaceLease(durableAcquireLease).catch((releaseError: unknown) => {
+        logger?.warn(`${task.id}: durable workspace acquire lease release refused: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`);
+      });
     }
   }
 }

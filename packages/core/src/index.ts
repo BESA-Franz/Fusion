@@ -13,6 +13,9 @@ export type {
   ReleaseSymbolLocksResult,
   ReconcileStaleSymbolLocksResult,
 } from "./tasks/symbol-lock-types.js";
+export { resolveEngineNodeId, resolveEngineIncarnationId } from "./engine-node-identity.js";
+export { isTerminalWorkspaceLeaseOwner } from "./tasks/workspace-lease-types.js";
+export type { WorkspaceLeaseKind, WorkspaceLeaseStatus, WorkspaceLeaseOwner, WorkspaceLeaseHandle, WorkspaceLease, WorkspaceLeaseConflict, WorkspaceLeaseClaimOutcome, WorkspaceLeaseFenceOutcome, WorkspaceLandIntent, WorkspaceLandIntentResolution, WorkspaceLandIntentResolveOutcome, WorkspaceLeaseReclaimOutcome, AcquireWorkspaceLeaseResult } from "./tasks/workspace-lease-types.js";
 export {
   normalizeSymbolLockKey,
   extractSymbolLockIdentity,

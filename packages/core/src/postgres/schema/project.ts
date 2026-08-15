@@ -559,6 +559,37 @@ export const distributedTaskIdReservations = projectSchema.table("distributed_ta
   index("idxDistributedTaskIdReservationsExpiry").on(t.status, t.expiresAt),
 ]);
 
+// ── Durable workspace coordination leases ────────────────────────────
+/*
+FNXC:Workspace 2026-08-15-08:23:
+Acquire and land share a repo key because either tenancy must exclude another
+writer. The owner triple prevents another node or restarted process using the
+same task id from looking reentrant. renewedAt is audit observability only;
+expiresAt is the sole liveness clock and neither is a resource fence. Tokens
+matter only when a database write or git CAS enforces them. Land and
+merge-dispatch retain their published fence pin so a reclaimed tenancy rejects
+a stalled push even with an unchanged tip; reentry preserves it, while reclaim
+clears it for the new tenancy. Acquire leases never publish a pin.
+*/
+export const workspaceCoordinationLeases = projectSchema.table("workspace_coordination_leases", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  leaseKey: text("lease_key").notNull(), kind: text("kind").notNull(),
+  ownerTaskId: text("owner_task_id").notNull(), ownerNodeId: text("owner_node_id").notNull(),
+  ownerIncarnationId: text("owner_incarnation_id").notNull(), ownerRunId: text("owner_run_id"),
+  fenceToken: bigint("fence_token", { mode: "bigint" }).notNull().default(sql`0`),
+  fenceRefName: text("fence_ref_name"), fenceRefSha: text("fence_ref_sha"), status: text("status").notNull(),
+  acquiredAt: text("acquired_at").notNull(), renewedAt: text("renewed_at").notNull(), expiresAt: text("expires_at").notNull(), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.leaseKey] }),
+  check("workspace_coordination_leases_kind_check", sql`${t.kind} IN ('acquire', 'land', 'merge-dispatch')`),
+  check("workspace_coordination_leases_status_check", sql`${t.status} IN ('held', 'released', 'expired')`),
+  index("idxWorkspaceCoordinationLeasesOwnerTask").on(t.projectId, t.ownerTaskId), index("idxWorkspaceCoordinationLeasesOwnerNode").on(t.projectId, t.ownerNodeId), index("idxWorkspaceCoordinationLeasesExpiry").on(t.status, t.expiresAt),
+]);
+/* FNXC:Workspace 2026-08-15-08:23: SIGKILL between push and persist leaves this self-contained, non-TTL evidence. Recovery reads remote reachability, never memory or a local object store; only holder and orphan authorities may resolve it. Reentry preserves its pin. */
+export const workspaceLandIntents = projectSchema.table("workspace_land_intents", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`), taskId: text("task_id").notNull(), repoRelPath: text("repo_rel_path").notNull(), remoteUrl: text("remote_url").notNull(), integrationRef: text("integration_ref").notNull(), intendedSha: text("intended_sha").notNull(), expectedTip: text("expected_tip").notNull(), fenceRefName: text("fence_ref_name").notNull(), fenceRefSha: text("fence_ref_sha").notNull(), ownerTaskId: text("owner_task_id").notNull(), ownerNodeId: text("owner_node_id").notNull(), ownerIncarnationId: text("owner_incarnation_id").notNull(), fenceToken: bigint("fence_token", { mode: "bigint" }).notNull(), status: text("status").notNull(), resolvedSha: text("resolved_sha"), resolution: text("resolution"), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(), resolvedAt: text("resolved_at"),
+}, (t) => [primaryKey({ columns: [t.projectId, t.taskId, t.repoRelPath] }), check("workspace_land_intents_status_check", sql`${t.status} IN ('pending', 'recorded', 'abandoned')`), check("workspace_land_intents_resolution_check", sql`${t.resolution} IS NULL OR ${t.resolution} IN ('landed', 'not-landed')`), index("idxWorkspaceLandIntentsStatus").on(t.projectId, t.status)]);
+
 // ── Durable symbol locks ─────────────────────────────────────────────
 /*
 FNXC:SymbolLock 2026-07-30-14:10:

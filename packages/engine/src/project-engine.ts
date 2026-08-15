@@ -48,6 +48,9 @@ import {
   clearMergeConfirmedTransientStatus,
   classifyGhError,
   createRecallCaptureWriter,
+  resolveEngineIncarnationId,
+  resolveEngineNodeId,
+  type WorkspaceLeaseHandle,
 } from "@fusion/core";
 import { assemblePlannerOverseerRuntimeSnapshot } from "./overseer/planner-overseer-runtime-snapshot.js";
 import { resolveIntegrationBranch } from "./merge/integration-branch.js";
@@ -83,6 +86,7 @@ import {
   runAiMerge,
   landWorkspaceTask,
   WorkspaceFinalizeBlockedError,
+  WorkspaceMergeDispatchSupersededError,
   WorkspacePartialLandError,
   WorkspaceRepoLandBusyError,
 } from "./merge/merger-ai.js";
@@ -100,6 +104,18 @@ import {
   unregisterProjectVerificationLimit,
 } from "./concurrency/verification-concurrency.js";
 import { runtimeLog } from "./logger.js";
+
+class WorkspaceMergeDispatchBusyError extends Error {
+  readonly retryable = true;
+
+  constructor(
+    readonly holderTaskId: string,
+    readonly requestingTaskId: string,
+  ) {
+    super(`workspace merge dispatch is in progress for task ${holderTaskId}`);
+    this.name = "WorkspaceMergeDispatchBusyError";
+  }
+}
 import type { HeartbeatTriggerScheduler } from "./agent-heartbeat.js";
 import { ResearchOrchestrator } from "./research/research-orchestrator.js";
 import { ResearchRunDispatcher } from "./research/research-dispatcher.js";
@@ -538,6 +554,20 @@ export class ProjectEngine {
   private mergeActiveReconcileTimer: ReturnType<typeof setInterval> | null = null;
 
   /*
+  FNXC:Workspace 2026-08-15-08:19:
+  Workspace dispatch now needs one funnel for process-local merge activity so durable
+  dispatch-lease cleanup can be attached without leaving a raw Set mutation behind.
+  Direct `mergeActive.add` or `mergeActive.delete` outside these helpers is a defect.
+  */
+  private markMergeActive(taskId: string): void {
+    this.mergeActive.add(taskId);
+  }
+
+  private clearMergeActive(taskId: string): void {
+    this.mergeActive.delete(taskId);
+  }
+
+  /*
   FNXC:Workspace 2026-06-22-05:10 (Phase C review B4 — separate busy-retry quota):
   Transient sub-repo land-lease contention (WorkspaceRepoLandBusyError) must NOT burn the
   persisted `mergeRetries` quota — two tasks contending for the same sub-repo could otherwise
@@ -563,6 +593,82 @@ export class ProjectEngine {
       if (!this.shuttingDown) this.internalEnqueueMerge(taskId);
     }, delayMs);
     this.workspaceBusyReenqueueTimers.add(timer);
+  }
+
+  /**
+   * FNXC:WorkspaceMergeDispatch 2026-08-15-08:56:
+   * A workspace merge body is claimed only after dequeue, so another engine may
+   * retain an ordinary queued card but cannot begin a competing land sequence.
+   * Legacy structural stores intentionally lack this API; a present durable API
+   * that fails is fail-closed because its holder state is then unknown.
+   */
+  private async withWorkspaceMergeDispatchLease<T>(
+    store: TaskStore,
+    taskId: string,
+    cwd: string,
+    body: (dispatchFence?: WorkspaceLeaseHandle) => Promise<T>,
+  ): Promise<T> {
+    const acquire = (store as Partial<TaskStore>).acquireWorkspaceLease;
+    if (typeof acquire !== "function") return body();
+
+    let claim: Awaited<ReturnType<NonNullable<TaskStore["acquireWorkspaceLease"]>>>;
+    try {
+      claim = await acquire.call(store, {
+        leaseKey: `merge-dispatch:${taskId}`,
+        kind: "merge-dispatch",
+        owner: {
+          taskId,
+          nodeId: resolveEngineNodeId(),
+          incarnationId: resolveEngineIncarnationId(),
+        },
+        leaseMs: 5 * 60_000,
+      });
+    } catch {
+      throw new WorkspaceMergeDispatchBusyError("durable-workspace-lease", taskId);
+    }
+    if (claim.outcome === "conflict") {
+      throw new WorkspaceMergeDispatchBusyError(claim.conflict.taskId, taskId);
+    }
+
+    let handle: WorkspaceLeaseHandle = claim.handle;
+    /*
+    FNXC:WorkspaceMergeDispatch 2026-08-15-09:46:
+    Workspace roots may be non-git directories and each sub-repo has its own remote. The body
+    publishes this tenancy's deterministic dispatch pin at each target remote immediately before
+    its fenced write; publishing here would pin only an unrelated root origin and is not a fence.
+    */
+    let leaseLost = false;
+    const renew = (store as Partial<TaskStore>).renewWorkspaceLease;
+    const timer = typeof renew === "function"
+      ? setInterval(() => {
+        void renew.call(store, handle, 5 * 60_000).then((renewed) => {
+          if (renewed) {
+            handle = renewed;
+          } else {
+            leaseLost = true;
+            this.abortActiveMerge(taskId, "workspace-merge-dispatch-lease-lost");
+          }
+        }).catch(() => {
+          leaseLost = true;
+          this.abortActiveMerge(taskId, "workspace-merge-dispatch-lease-renewal-failed");
+        });
+      }, 60_000)
+      : undefined;
+    timer?.unref?.();
+
+    try {
+      const result = await body(handle);
+      if (leaseLost) {
+        throw new WorkspaceMergeDispatchBusyError("durable-workspace-lease", taskId);
+      }
+      return result;
+    } finally {
+      if (timer) clearInterval(timer);
+      const release = (store as Partial<TaskStore>).releaseWorkspaceLease;
+      if (typeof release === "function") {
+        await release.call(store, handle).catch(() => undefined);
+      }
+    }
   }
 
   /**
@@ -732,11 +838,11 @@ export class ProjectEngine {
       if (this.activeMergeTaskId === taskId) {
         this.abortActiveMerge(taskId, "merge-enqueuer-reclaim");
       }
-      this.mergeActive.delete(taskId);
+      this.clearMergeActive(taskId);
       return this.internalEnqueueMerge(taskId);
     });
     this.runtime.setMergeActiveClearer?.((taskId) => {
-      this.mergeActive.delete(taskId);
+      this.clearMergeActive(taskId);
     });
     // FNXC:Workspace 2026-06-22-16:40 (Phase D P1 TOCTOU): expose the in-memory merge pipeline
     // (mergeQueue + mergeActive) to the workspace self-healing reconcilers so they don't
@@ -832,7 +938,7 @@ export class ProjectEngine {
       this.activeMergeSession.dispose();
       this.activeMergeSession = null;
     }
-    this.mergeActive.delete(taskId);
+    this.clearMergeActive(taskId);
     this.activeMergeTaskId = null;
     this.activeMergeStartedAtMs = null;
     return true;
@@ -931,10 +1037,26 @@ export class ProjectEngine {
   legitimately mid-dispatch. Because `mergeActive` lingers across the entire dequeue→rawMerge
   window, checking it in addition to `mergeQueue` closes that TOCTOU gap.
   */
-  isMergePending(taskId: string): boolean {
-    return this.mergeActive.has(taskId)
+  async isMergePending(taskId: string): Promise<boolean> {
+    if (this.mergeActive.has(taskId)
       || this.mergeQueue.includes(taskId)
-      || this.capacityDeferredMergeTaskIds.has(taskId);
+      || this.capacityDeferredMergeTaskIds.has(taskId)) return true;
+
+    /*
+    FNXC:WorkspaceMergeDispatch 2026-08-15-12:00:
+    A remote engine's dispatch lease is invisible to queue-local state. An
+    unreadable durable probe is conservatively pending, never permission to
+    re-enqueue or reclaim workspace work that another node may be landing.
+    */
+    const inspect = (this.runtime.getTaskStore() as Partial<TaskStore>).inspectWorkspaceLeases;
+    if (typeof inspect !== "function") return false;
+    try {
+      const leases = await inspect.call(this.runtime.getTaskStore(), { taskId });
+      const now = new Date().toISOString();
+      return leases.some((lease) => lease.kind === "merge-dispatch" && lease.status === "held" && lease.expiresAt > now);
+    } catch {
+      return true;
+    }
   }
 
   /**
@@ -1522,7 +1644,7 @@ export class ProjectEngine {
     const queuedTaskIds = [...this.mergeQueue];
     this.mergeQueue.length = 0;
     for (const queuedTaskId of queuedTaskIds) {
-      this.mergeActive.delete(queuedTaskId);
+      this.clearMergeActive(queuedTaskId);
     }
 
     // Terminate active merge session
@@ -2530,7 +2652,7 @@ export class ProjectEngine {
           this.activeMergeSession = null;
         } else if (!this.hasMergeResolvers(taskId)) {
           this.mergeQueue = this.mergeQueue.filter((queuedTaskId) => queuedTaskId !== taskId);
-          this.mergeActive.delete(taskId);
+          this.clearMergeActive(taskId);
         }
         resolver.reject(new Error(`Merge request for ${taskId} aborted`));
       };
@@ -3073,12 +3195,12 @@ export class ProjectEngine {
         runtimeLog.warn(
           `internalEnqueueMerge(${taskId}): skipped — mergeActive entry is leaked (not queued, not active). Reconciling stale entry and retrying enqueue now.`,
         );
-        this.mergeActive.delete(taskId);
+        this.clearMergeActive(taskId);
       } else {
         return false;
       }
     }
-    this.mergeActive.add(taskId);
+    this.markMergeActive(taskId);
     this.mergeQueue.push(taskId);
     void this.drainMergeQueue().catch((err: unknown) => {
       runtimeLog.error(
@@ -3236,7 +3358,7 @@ export class ProjectEngine {
     for (const taskId of [...this.mergeActive]) {
       if (taskId === this.activeMergeTaskId) continue;
       if (this.mergeQueue.includes(taskId)) continue;
-      this.mergeActive.delete(taskId);
+      this.clearMergeActive(taskId);
       cleared++;
     }
     return cleared;
@@ -4260,7 +4382,7 @@ export class ProjectEngine {
             const retryMs = settings.pollIntervalMs ?? 15_000;
             const stashedResolvers = this.takeMergeResolvers(taskId);
             const generation = this.startupGeneration;
-            this.mergeActive.delete(taskId);
+            this.clearMergeActive(taskId);
             this.capacityDeferredMergeTaskIds.add(taskId);
             const timer = setTimeout(() => {
               const deferred = this.capacityDeferredMerges.get(taskId);
@@ -4415,6 +4537,7 @@ export class ProjectEngine {
               const mergeTask = await store.getTask(taskId).catch(() => null);
               const isWorkspaceMerge = !!mergeTask && isWorkspaceTask(mergeTask);
               if (isWorkspaceMerge) {
+                return this.withWorkspaceMergeDispatchLease(store, taskId, cwd, async (dispatchFence) => {
                 // FNXC:Workspace 2026-06-22-00:30 (Phase C U2, KTD3):
                 // Land each acquired sub-repo on its own local integration ref;
                 // `landWorkspaceTask` records each landed `landedSha`, skips
@@ -4428,7 +4551,15 @@ export class ProjectEngine {
                   store,
                   mergeTask!,
                   cwd,
-                  { ...mergerOptions, allowDirtyLocalCheckoutSync: settings.merger?.allowDirtyLocalCheckoutSync === true },
+                  {
+                    ...mergerOptions,
+                    allowDirtyLocalCheckoutSync: settings.merger?.allowDirtyLocalCheckoutSync === true,
+                    // FNXC:WorkspaceMergeDispatch 2026-08-19-00:00:
+                    // Admission is not a licence to write: the per-task dispatch pin travels to
+                    // every workspace ref advance so git rejects an expired predecessor even if
+                    // renewal never ran and the target tip has not moved.
+                    workspaceDispatchFence: dispatchFence,
+                  },
                 );
                 if (!workspaceResult.allLanded) {
                   // FNXC:Workspace 2026-06-22-05:10 (Phase C review B7):
@@ -4473,6 +4604,7 @@ export class ProjectEngine {
                   worktreeRemoved: false,
                   branchDeleted: false,
                 } as MergeResult;
+                });
               }
 
               // FNXC:MergerUnification 2026-06-21-19:05:
@@ -4595,7 +4727,12 @@ export class ProjectEngine {
           land attempt. Reject the resolver so the busy error surfaces to the user (they can retry),
           WITHOUT consuming a mergeRetry. No re-enqueue: manual merges are user-driven, not engine-timed.
           */
-          if (err instanceof WorkspaceRepoLandBusyError && hasManualResolver) {
+          const isWorkspaceBusyError = err instanceof WorkspaceRepoLandBusyError
+            || err instanceof WorkspaceMergeDispatchBusyError
+            // FNXC:WorkspaceMergeDispatch 2026-08-15-09:37: a stale generation that pushed
+            // before losing its lease must yield to durable recovery without failing the task.
+            || err instanceof WorkspaceMergeDispatchSupersededError;
+          if (isWorkspaceBusyError && hasManualResolver) {
             await store
               .logEntry(taskId, `Workspace sub-repo land busy (contention): ${errorMsg}`, "WorkspaceRepoLandBusy")
               .catch(() => undefined);
@@ -4603,7 +4740,7 @@ export class ProjectEngine {
             continue;
           }
 
-          if (err instanceof WorkspaceRepoLandBusyError && !hasManualResolver) {
+          if (isWorkspaceBusyError && !hasManualResolver) {
             const busyCount = this.workspaceBusyReenqueues.get(taskId) ?? 0;
             await store
               .logEntry(taskId, `Workspace sub-repo land busy (contention): ${errorMsg}`, "WorkspaceRepoLandBusy")
@@ -5315,7 +5452,7 @@ export class ProjectEngine {
           }
           this.clearActiveMergeClaim(taskId);
           this.mergeAbortController = null;
-          this.mergeActive.delete(taskId);
+          this.clearMergeActive(taskId);
           // If a manual merge was requested while this task was already in-flight,
           // the waiter(s) were set but not consumed above. Resolve them now.
           if (this.hasMergeResolvers(taskId)) {
@@ -5475,7 +5612,7 @@ export class ProjectEngine {
             this.activeMergeTaskId !== task.id
           ) {
             runtimeLog.warn(`Auto-merge handoff (${task.id}): clearing stale mergeActive before enqueue`);
-            this.mergeActive.delete(task.id);
+            this.clearMergeActive(task.id);
           }
           this.internalEnqueueMerge(task.id);
         } catch (err: unknown) {
@@ -5570,7 +5707,7 @@ export class ProjectEngine {
         const removedFromQueue = this.mergeQueue.length !== queueLengthBefore;
 
         if (removedFromQueue) {
-          this.mergeActive.delete(task.id);
+          this.clearMergeActive(task.id);
           runtimeLog.log(`Paused in-review task removed from merge queue: ${task.id}`);
         }
 
@@ -5618,7 +5755,7 @@ export class ProjectEngine {
 
       if (removedFromQueue) {
         if (this.activeMergeTaskId !== task.id) {
-          this.mergeActive.delete(task.id);
+          this.clearMergeActive(task.id);
         }
         runtimeLog.log(`Soft-deleted task removed from merge queue: ${task.id}`);
       }

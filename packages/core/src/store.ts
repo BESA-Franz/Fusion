@@ -133,6 +133,8 @@ import { reconcilePhantomCommittedReservationsAsync } from "./task-store/async/a
 import { resolveTaskSymbolsForTask, type TaskSymbolResolution } from "./tasks/task-symbol-resolution.js";
 import { acquireSymbolLocksAsync, inspectSymbolLockConflictsAsync, reconcileStaleSymbolLocksAsync, releaseSymbolLocksAsync, renewSymbolLocksAsync } from "./task-store/symbol-locks.js";
 import type { AcquireSymbolLocksResult, ReconcileStaleSymbolLocksResult, ReleaseSymbolLocksResult, RenewSymbolLocksResult, SymbolLockConflict, SymbolLockOwner } from "./tasks/symbol-lock-types.js";
+import { acquireWorkspaceLeaseAsync, inspectWorkspaceLeasesAsync, listPendingWorkspaceLandIntentsAsync, reclaimWorkspaceLeaseAsync, recordWorkspaceLandIntentAsync, recordWorkspaceLeaseFenceRefAsync, reconcileExpiredWorkspaceLeasesAsync, releaseStaleWorkspaceLeasesForNodeAsync, releaseWorkspaceLeaseAsync, renewWorkspaceLeaseAsync, resolveOrphanedWorkspaceLandIntentAsync, resolveWorkspaceLandIntentAsync, validateWorkspaceLeaseFenceAsync, withValidWorkspaceLeaseAsync } from "./task-store/workspace-leases.js";
+import type { WorkspaceLeaseHandle, WorkspaceLeaseKind, WorkspaceLeaseOwner } from "./tasks/workspace-lease-types.js";
 import { queryRunAuditEvents } from "./task-store/async/async-audit.js";
 import { isValidMergeRequestTransitionImpl, releaseMergeQueueLeaseImpl, collectMergeDetailsImpl, applyPrMergedTransitionImpl } from "./task-store/merge-queue-ops-2.js";
 import { upsertWorkflowWorkItemImpl, replaceActiveTaskWorkflowContinuationImpl, seedStrandedPlanReviewContinuationImpl, transitionWorkflowWorkItemImpl, acquireWorkflowWorkItemLeaseImpl } from "./task-store/workflow-workitems-ops-2.js";
@@ -970,6 +972,22 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   async reconcileStaleSymbolLocks(): Promise<ReconcileStaleSymbolLocksResult> {
     return reconcileStaleSymbolLocksAsync(this);
   }
+
+  /** FNXC:Workspace 2026-08-15-08:23: Facade methods preserve the project-bound durable coordination seam. */
+  acquireWorkspaceLease(input: { leaseKey: string; kind: WorkspaceLeaseKind; owner: WorkspaceLeaseOwner; leaseMs: number }) { return acquireWorkspaceLeaseAsync(this, input); }
+  renewWorkspaceLease(handle: WorkspaceLeaseHandle, leaseMs: number) { return renewWorkspaceLeaseAsync(this, handle, leaseMs); }
+  releaseWorkspaceLease(handle: WorkspaceLeaseHandle) { return releaseWorkspaceLeaseAsync(this, handle); }
+  withValidWorkspaceLease<T>(handle: WorkspaceLeaseHandle, fn: (tx: import("./postgres/data-layer.js").DbTransaction) => Promise<T>) { return withValidWorkspaceLeaseAsync(this, handle, fn); }
+  validateWorkspaceLeaseFence(input: { leaseKey: string; owner: WorkspaceLeaseOwner; fenceToken: bigint }) { return validateWorkspaceLeaseFenceAsync(this, input); }
+  recordWorkspaceLeaseFenceRef(input: { handle: WorkspaceLeaseHandle; fenceRefName: string; fenceRefSha: string }) { return recordWorkspaceLeaseFenceRefAsync(this, input); }
+  inspectWorkspaceLeases(filter: { taskId?: string; leaseKeys?: string[] } = {}) { return inspectWorkspaceLeasesAsync(this, filter); }
+  reclaimWorkspaceLease(input: Parameters<typeof reclaimWorkspaceLeaseAsync>[1]) { return reclaimWorkspaceLeaseAsync(this, input); }
+  reconcileExpiredWorkspaceLeases() { return reconcileExpiredWorkspaceLeasesAsync(this); }
+  releaseStaleWorkspaceLeasesForNode(nodeId: string, options: { currentIncarnationId: string }) { return releaseStaleWorkspaceLeasesForNodeAsync(this, nodeId, options); }
+  recordWorkspaceLandIntent(input: Parameters<typeof recordWorkspaceLandIntentAsync>[1]) { return recordWorkspaceLandIntentAsync(this, input); }
+  listPendingWorkspaceLandIntents(filter: Parameters<typeof listPendingWorkspaceLandIntentsAsync>[1] = {}) { return listPendingWorkspaceLandIntentsAsync(this, filter); }
+  resolveWorkspaceLandIntent(input: Parameters<typeof resolveWorkspaceLandIntentAsync>[1]) { return resolveWorkspaceLandIntentAsync(this, input); }
+  resolveOrphanedWorkspaceLandIntent(input: Parameters<typeof resolveOrphanedWorkspaceLandIntentAsync>[1]) { return resolveOrphanedWorkspaceLandIntentAsync(this, input); }
 
   /** FNXC:SymbolLock 2026-07-30-10:00: FN-8306 resolves only durable task declarations; PROMPT is never re-read here. */
   async resolveTaskSymbols(taskId: string): Promise<TaskSymbolResolution> {

@@ -22,7 +22,7 @@ import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { registerArchiveWorkspaceWorktreeDisposer, type Settings, type Task, type TaskStore } from "@fusion/core";
+import { registerArchiveWorkspaceWorktreeDisposer, type Settings, type Task, type TaskStore, type WorkspaceLandIntent } from "@fusion/core";
 import { createSharedPgTaskStoreTestHarness, pgDescribe, type SharedPgTaskStoreHarness } from "../../../core/src/__test-utils__/pg-test-harness.js";
 import { SelfHealingManager } from "../self-healing.js";
 import { classifyBranchProbeError } from "../self-healing-git-evidence.js";
@@ -151,6 +151,20 @@ class PruneFailureWorkspaceTeardownManager extends SelfHealingManager {
       throw new Error("injected prune failure");
     }
     return super.execWorkspaceTeardownGit(command, options);
+  }
+}
+
+class WorkspaceLandIntentManager extends SelfHealingManager {
+  constructor(
+    store: TaskStore,
+    options: ConstructorParameters<typeof SelfHealingManager>[1],
+    private readonly evidence: { resolution: "landed"; resolvedSha: string } | { resolution: "not-landed" } | undefined,
+  ) {
+    super(store, options);
+  }
+
+  protected override async readWorkspaceLandIntentRemoteEvidence(_intent: WorkspaceLandIntent): Promise<{ resolution: "landed"; resolvedSha: string } | { resolution: "not-landed" } | undefined> {
+    return this.evidence;
   }
 }
 
@@ -290,6 +304,53 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     vi.useRealTimers();
     vi.clearAllMocks();
     fx?.cleanup();
+  });
+
+  /*
+  FNXC:Workspace 2026-08-15-08:59:
+  A different engine node must be able to turn an interrupted fenced push into the exact
+  per-repository landed SHA. The resolver callback is the durable seam: it persists first and
+  records the intent only after that task-map update succeeds.
+  */
+  it("reconciles a remotely landed pending intent without the original node", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const task = workspaceTask({ "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } });
+    const store = createStore([task]);
+    const intent: WorkspaceLandIntent = {
+      taskId: TASK_ID,
+      repoRelPath: "repo-a",
+      remoteUrl: "https://example.test/repo-a.git",
+      integrationRef: "refs/heads/main",
+      intendedSha: "landed-sha",
+      expectedTip: "prior-sha",
+      fenceRefName: "refs/fusion/fence/repo-a",
+      fenceRefSha: "fence-sha",
+      owner: { taskId: TASK_ID, nodeId: "dead-node", incarnationId: "dead-incarnation" },
+      fenceToken: 7n,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const listPendingWorkspaceLandIntents = vi.fn().mockResolvedValue([intent]);
+    const resolveOrphanedWorkspaceLandIntent = vi.fn(async (input: { persistLandedSha?: () => Promise<void> }) => {
+      await input.persistLandedSha?.();
+      return { outcome: "resolved" };
+    });
+    Object.assign(store, { listPendingWorkspaceLandIntents, resolveOrphanedWorkspaceLandIntent });
+    const manager = new WorkspaceLandIntentManager(
+      store,
+      managerOptions(store, fx.rootDir) as never,
+      { resolution: "landed", resolvedSha: "landed-sha" },
+    );
+
+    expect(await manager.reconcilePendingWorkspaceLandIntents()).toBe(1);
+    expect(resolveOrphanedWorkspaceLandIntent).toHaveBeenCalledWith(expect.objectContaining({
+      leaseKey: "repo:repo-a",
+      expectedIntentFenceToken: 7n,
+      resolution: "landed",
+      resolvedSha: "landed-sha",
+    }));
+    expect(store.tasks.get(TASK_ID)?.workspaceWorktrees?.["repo-a"]?.landedSha).toBe("landed-sha");
   });
 
   // ── KTD1 P0: partial-landed "merging" task must NOT be finalized done ──────

@@ -39,8 +39,11 @@ import { type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PR
   pruneTaskLifecycleEvents,
   pruneGitHubCheckStatesAsync,
   resolveAgentActivityAttribution,
+  resolveEngineIncarnationId,
+  resolveEngineNodeId,
 } from "@fusion/core";
 import { finalizePlanningSegment } from "@fusion/core";
+import type { WorkspaceLandIntent } from "@fusion/core";
 import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
 import {
@@ -436,7 +439,7 @@ export interface SelfHealingOptions {
   workspace-repo-land lease (the owner is mid-dispatch and is about to register that lease).
   Undefined = "not pending" (graceful when unwired); production always wires it.
   */
-  isMergePending?: (taskId: string) => boolean;
+  isMergePending?: (taskId: string) => boolean | Promise<boolean>;
   /**
    * Minimum blocker age before stale merge fan-out is cleared from downstream
    * blockedBy pointers. Must be >= staleMergingStatusMinAgeMs.
@@ -1025,6 +1028,131 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     return { live, livePaths };
   }
 
+  /**
+   * FNXC:Workspace 2026-08-15-08:55:
+   * A registry only observes this process. Before a self-healing backward move,
+   * also read durable leases for the task; an unreadable durable store is live so
+   * a node never re-enqueues work that another node may still be landing.
+   */
+  private async isWorkspaceTaskLiveDurably(task: Task): Promise<{ live: boolean; livePaths: string[] }> {
+    const local = this.isWorkspaceTaskLive(task);
+    if (local.live) return local;
+    const inspectWorkspaceLeases = (this.store as Partial<TaskStore>).inspectWorkspaceLeases;
+    /*
+    FNXC:Workspace 2026-08-15-08:47:
+    Legacy structural test stores have no durable backend and are intentionally
+    single-process. Once the durable probe exists, an error is unknown/liveness
+    true; only API absence may preserve the established local-fixture behavior.
+    */
+    if (typeof inspectWorkspaceLeases !== "function") return local;
+    try {
+      const now = new Date().toISOString();
+      const leases = await inspectWorkspaceLeases.call(this.store, { taskId: task.id });
+      return {
+        ...local,
+        live: leases.some((lease) => lease.status === "held" && lease.expiresAt > now),
+      };
+    } catch {
+      return { ...local, live: true };
+    }
+  }
+
+  /**
+   * FNXC:Workspace 2026-08-15-08:59:
+   * A pending land intent survives a process death after the fenced remote push but before its
+   * landed SHA is persisted. Fetch the declared remote ref and prove ancestry from that fresh
+   * remote graph; a local checkout or this node's registry is never recovery authority.
+   */
+  protected async readWorkspaceLandIntentRemoteEvidence(
+    intent: WorkspaceLandIntent,
+  ): Promise<{ resolution: "landed"; resolvedSha: string } | { resolution: "not-landed" } | undefined> {
+    const repoRootDir = resolve(this.options.rootDir, intent.repoRelPath);
+    if (relative(this.options.rootDir, repoRootDir).startsWith("..") || isAbsolute(intent.repoRelPath)) return undefined;
+    try {
+      await execAsync(
+        `git fetch --no-tags --quiet ${shellQuote(intent.remoteUrl)} ${shellQuote(intent.integrationRef)}`,
+        { cwd: repoRootDir, timeout: 30_000 },
+      );
+      const { stdout } = await execAsync("git rev-parse --verify FETCH_HEAD", { cwd: repoRootDir, timeout: 30_000 });
+      const remoteTip = stdout.trim();
+      if (!remoteTip) return undefined;
+      try {
+        await execAsync(
+          `git merge-base --is-ancestor ${shellQuote(intent.intendedSha)} FETCH_HEAD`,
+          { cwd: repoRootDir, timeout: 30_000 },
+        );
+        return { resolution: "landed", resolvedSha: intent.intendedSha };
+      } catch (error: unknown) {
+        if (typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === 1) {
+          return { resolution: "not-landed" };
+        }
+        return undefined;
+      }
+    } catch {
+      return undefined;
+    }
+  }
+
+  /*
+  FNXC:Workspace 2026-08-15-08:59:
+  Durable land intents are deliberately reconciled independently of their original node. The
+  orphan resolver serializes against the repo lease and refuses a live replacement holder, while
+  remote reachability decides whether the interrupted push actually landed. Unknown evidence stays
+  pending rather than being converted into an unsafe retry.
+  */
+  async reconcilePendingWorkspaceLandIntents(): Promise<number> {
+    const listPending = (this.store as Partial<TaskStore>).listPendingWorkspaceLandIntents;
+    const resolveOrphaned = (this.store as Partial<TaskStore>).resolveOrphanedWorkspaceLandIntent;
+    const mergeEntry = (this.store as Partial<TaskStore>).mergeWorkspaceWorktreeEntry;
+    if (typeof listPending !== "function" || typeof resolveOrphaned !== "function" || typeof mergeEntry !== "function") return 0;
+
+    let reconciled = 0;
+    try {
+      const intents = await listPending.call(this.store, { limit: 100 });
+      for (const intent of intents) {
+        const evidence = await this.readWorkspaceLandIntentRemoteEvidence(intent);
+        if (!evidence) continue;
+        const result = await resolveOrphaned.call(this.store, {
+          leaseKey: `repo:${intent.repoRelPath}`,
+          taskId: intent.taskId,
+          repoRelPath: intent.repoRelPath,
+          expectedIntentFenceToken: intent.fenceToken,
+          resolution: evidence.resolution,
+          ...(evidence.resolution === "landed" ? {
+            resolvedSha: evidence.resolvedSha,
+            persistLandedSha: async () => {
+              const task = await mergeEntry.call(
+                this.store,
+                intent.taskId,
+                intent.repoRelPath,
+                { landedSha: evidence.resolvedSha },
+                { requireExistingEntry: true },
+              );
+              if (task.workspaceWorktrees?.[intent.repoRelPath]?.landedSha !== evidence.resolvedSha) {
+                throw new Error("Workspace land intent task entry is unavailable");
+              }
+            },
+          } : {}),
+        });
+        if (result.outcome !== "resolved") continue;
+        reconciled++;
+        await createRunAuditor(this.store, {
+          runId: generateSyntheticRunId("self-healing-workspace-land-intent", intent.taskId),
+          agentId: "self-healing",
+          taskId: intent.taskId,
+          phase: "reconcile-workspace-land-intent",
+        }).database({
+          type: "task:reconcile-workspace-land-intent",
+          target: intent.taskId,
+          metadata: { taskId: intent.taskId, repo: intent.repoRelPath, resolution: evidence.resolution },
+        }).catch(() => undefined);
+      }
+    } catch (error: unknown) {
+      log.warn(`reconcilePendingWorkspaceLandIntents failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return reconciled;
+  }
+
   /*
   FNXC:Workspace 2026-06-22-14:10 (Phase D review C — terminal-owner liveness for lease reclaim):
   A `workspace-repo-land` lease may only be reclaimed when its owning task ROW is demonstrably
@@ -1592,6 +1720,24 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       { name: "stale-incomplete-review", fn: () => this.recoverStaleIncompleteReviewTasks().then(() => undefined) },
       { name: "failed-pre-merge-steps", fn: () => this.recoverReviewTasksWithFailedPreMergeSteps().then(() => undefined) },
       { name: "missing-worktree-review-failures", fn: () => this.recoverMissingWorktreeReviewFailures().then(() => undefined) },
+      /*
+      FNXC:Workspace 2026-08-15-08:59:
+      Settle a pre-crash remote advance before stale merge recovery re-enqueues the task, so the
+      retry skips a proven landed repo instead of rebuilding and attempting its squash again.
+      */
+      /*
+      FNXC:Workspace 2026-08-15-09:08:
+      Startup may reclaim only already-expired leases from an earlier incarnation.
+      A stable node id identifies a slot, not a process, so touching an unexpired
+      same-node row could release a live peer after a restart or misconfiguration.
+      */
+      { name: "release-stale-workspace-leases", fn: async () => {
+        const releaseStale = (this.store as Partial<TaskStore>).releaseStaleWorkspaceLeasesForNode;
+        if (typeof releaseStale === "function") {
+          await releaseStale.call(this.store, resolveEngineNodeId(), { currentIncarnationId: resolveEngineIncarnationId() });
+        }
+      } },
+      { name: "reconcile-pending-workspace-land-intents", fn: () => this.reconcilePendingWorkspaceLandIntents().then(() => undefined) },
       { name: "interrupted-merging", fn: () => this.recoverInterruptedMergingTasks().then(() => undefined) },
       { name: "wedged-active-merge", fn: () => this.recoverWedgedActiveMerge().then(() => undefined) },
       { name: "transient-merge-failures", fn: () => this.recoverTransientMergeFailures().then(() => undefined) },
@@ -2706,6 +2852,11 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           { name: "reconcile-stranded-workflow-continuations", fn: () => this.reconcileStrandedWorkflowContinuations() },
           { name: "recover-mergeable-review", fn: () => this.recoverMergeableReviewTasks() },
           // FNXC:Workspace 2026-06-22-09:30 (Phase D U1) — workspace-mode reconcilers.
+          { name: "reconcile-expired-workspace-leases", fn: async () => {
+            const reconcileExpired = (this.store as Partial<TaskStore>).reconcileExpiredWorkspaceLeases;
+            if (typeof reconcileExpired === "function") await reconcileExpired.call(this.store);
+          } },
+          { name: "reconcile-pending-workspace-land-intents", fn: () => this.reconcilePendingWorkspaceLandIntents() },
           { name: "reconcile-workspace-partial-lands", fn: () => this.reconcileWorkspacePartialLands() },
           { name: "reclaim-phantom-workspace-land-leases", fn: () => this.reclaimPhantomWorkspaceLandLeases() },
           { name: "reconcile-orphaned-workspace-worktrees", fn: () => this.reconcileOrphanedWorkspaceWorktrees() },
@@ -10062,7 +10213,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             continue;
           }
           // GUARD 3 — workspace-aware liveness: ANY active sub-repo path / process signal.
-          const liveness = this.isWorkspaceTaskLive(task);
+          const liveness = await this.isWorkspaceTaskLiveDurably(task);
           if (liveness.live) {
             await this.emitWorkspacePartialLandNoAction(task, "live-worktree", liveness.livePaths);
             continue;
@@ -10083,7 +10234,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
           `mergeActive` lingers across the whole window, so this guard closes the gap. Never moves
           the task backward; emits no-action and leaves the in-flight dispatch to finish.
           */
-          if (this.options.isMergePending?.(task.id) === true) {
+          if (await this.options.isMergePending?.(task.id) === true) {
             await this.emitWorkspacePartialLandNoAction(task, "merge-pending", liveness.livePaths);
             continue;
           }
@@ -10339,10 +10490,9 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
       if (settings.globalPause || settings.enginePaused) return 0;
 
       const entries = activeSessionRegistry.entriesByKind("workspace-repo-land");
-      if (entries.length === 0) return 0;
 
-      /* FNXC:Workspace 2026-08-15-04:11: resolve terminal lane vocabularies once per sweep, AFTER
-         the early return above, so a board with no leases pays nothing. See `isWorkspaceOwnerLive`. */
+      /* FNXC:Workspace 2026-08-15-12:00: durable rows must be swept even on a
+         node with no local registry entries; local state cannot represent peers. */
       const leaseOwnerCompleteColumns = await resolveProjectColumnsForRoles(this.store, ["complete"]);
       const leaseOwnerArchivedColumns = await resolveProjectColumnsForRoles(this.store, ["archived"]);
 
@@ -10352,6 +10502,29 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
       const now = Date.now();
 
       let reclaimed = 0;
+      const inspectLeases = (this.store as Partial<TaskStore>).inspectWorkspaceLeases;
+      const reclaimLease = (this.store as Partial<TaskStore>).reclaimWorkspaceLease;
+      if (typeof inspectLeases === "function" && typeof reclaimLease === "function") {
+        try {
+          const leases = await inspectLeases.call(this.store);
+          for (const lease of leases) {
+            if ((lease.kind !== "land" && lease.kind !== "acquire") || lease.status !== "held") continue;
+            const ageMs = now - Date.parse(lease.acquiredAt);
+            if (!Number.isFinite(ageMs) || ageMs < staleFloorMs) continue;
+            if (await this.options.isMergePending?.(lease.owner.taskId) === true) continue;
+            const result = await reclaimLease.call(this.store, {
+              leaseKey: lease.leaseKey,
+              expectedOwner: lease.owner,
+              expectedFenceToken: lease.fenceToken,
+              requireTerminalOwner: true,
+              reason: "phantom-workspace-land-lease",
+            });
+            if (result.outcome === "reclaimed") reclaimed++;
+          }
+        } catch (error: unknown) {
+          log.warn(`reclaimPhantomWorkspaceLandLeases durable sweep failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       for (const entry of entries) {
         try {
           const ageMs = now - entry.registeredAt;
@@ -10370,7 +10543,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
           Reclaiming now would yank the lease out from under a live land. Skip; the existing
           age-floor + terminal-owner guards still apply once the owner truly settles.
           */
-          if (this.options.isMergePending?.(entry.taskId) === true) continue;
+          if (await this.options.isMergePending?.(entry.taskId) === true) continue;
 
           const owner = await this.store.getTask(entry.taskId).catch(() => null);
           const ownerColumn = owner?.column ?? "deleted";
@@ -10528,14 +10701,14 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
         */
         if (task.paused || task.userPaused || task.nextRecoveryAt
           || this.isWorkspaceTaskLive(task).live
-          || this.options.isMergePending?.(task.id) === true
+          || await this.options.isMergePending?.(task.id) === true
           || this.options.getActiveMergeTaskId?.() === task.id) continue;
         if (completeColumns.has(task.column) || task.column === "done") { candidates.push({ task, lane: "complete" }); continue; }
         const lane: Lane | null = task.deletedAt ? "soft-deleted" : task.status === "failed" ? "failed" : null;
         if (!lane) continue;
         const touched = Math.max(Date.parse(task.columnMovedAt ?? "") || 0, Date.parse(task.updatedAt ?? "") || 0, Date.parse(task.deletedAt ?? "") || 0);
         if (!touched || now - touched < TERMINAL_WORKSPACE_WORKTREE_TEARDOWN_MIN_IDLE_MS) continue;
-        if (this.isWorkspaceTaskLive(task).live || this.options.isMergePending?.(task.id) === true || this.options.getActiveMergeTaskId?.() === task.id) continue;
+        if (this.isWorkspaceTaskLive(task).live || await this.options.isMergePending?.(task.id) === true || this.options.getActiveMergeTaskId?.() === task.id) continue;
         candidates.push({ task, lane });
       }
       if (!candidates.length) return 0;
