@@ -1,4 +1,4 @@
-import { TaskStore, COLUMNS, COLUMN_LABELS, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
+import { TaskStore, COLUMNS, COLUMN_LABELS, resolveProjectColumnsForRoles, TERMINAL_ROLES, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isValidRepoSlug, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
 import { isInReviewMissingWorktreeSessionStartFailure, runAiMerge, landWorkspaceTask, installBaselineArchiveWorktreeDisposer } from "@fusion/engine";
 import { createInterface } from "node:readline/promises";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
@@ -444,8 +444,22 @@ async function runCliNearDuplicateCheck(args: {
   process.exit(0);
 }
 
-export async function runTaskCreate(descriptionArg?: string, attachFiles?: string[], depends?: string[], projectName?: string, nodeName?: string, noDedup = false) {
+export async function runTaskCreate(descriptionArg?: string, attachFiles?: string[], depends?: string[], projectName?: string, nodeName?: string, noDedup = false, githubOpts?: { github?: boolean; githubRepo?: string }) {
   let description = descriptionArg;
+
+  /*
+  FNXC:GithubTracking 2026-08-15-03:50:
+  `fn task create --github [--github-repo owner/repo]` decides tracking at CREATE time,
+  because the tracking lifecycle keys off the persisted `task.githubTracking.enabled === true`
+  flag and never re-resolves project/global defaults for existing tasks. Before this flag,
+  CLI-created tasks could not opt in at all (only the dashboard and fn_task_create could).
+  Explicit `--no-github` persists `enabled:false` so a later default flip cannot re-enable it.
+  */
+  const githubRepoOverride = githubOpts?.githubRepo?.trim() || undefined;
+  if (githubRepoOverride && !isValidRepoSlug(githubRepoOverride)) {
+    console.error(`Invalid --github-repo "${githubRepoOverride}" — expected "owner/repo".`);
+    process.exit(1);
+  }
 
   if (!description) {
     const rl = createInterface({ input: process.stdin, output: promptOutputStream() });
@@ -511,10 +525,42 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
           id, so a stale value can never make CLI create throw.
           */
           const originWorkflowId = await store.resolveOriginWorkflowOverrideId("task-create");
+          /*
+          FNXC:GithubTracking 2026-08-15-03:50:
+          Same create-time resolution as fn_task_create: CLI flag > project default >
+          global default. Also fixes CLI creates silently ignoring a project's
+          "GitHub tracking enabled by default" setting (the persisted flag is the only
+          thing the tracking lifecycle reads).
+          */
+          const globalSettingsForTracking = await store.getGlobalSettingsStore().getSettings();
+          const resolvedTracking = resolveTaskGithubTracking(
+            {
+              githubTracking:
+                githubOpts?.github !== undefined || githubRepoOverride
+                  ? {
+                      ...(githubOpts?.github !== undefined ? { enabled: githubOpts.github } : {}),
+                      ...(githubRepoOverride ? { repoOverride: githubRepoOverride } : {}),
+                    }
+                  : undefined,
+            },
+            await store.getSettings(),
+            globalSettingsForTracking,
+          );
+          const githubTracking = resolvedTracking.enabled
+            ? {
+                enabled: true as const,
+                ...(resolvedTracking.repo
+                  ? { repoOverride: `${resolvedTracking.repo.owner}/${resolvedTracking.repo.repo}` }
+                  : {}),
+              }
+            : githubOpts?.github === false
+              ? { enabled: false as const }
+              : undefined;
           const created = await store.createTask({
             description: trimmedDescription,
             dependencies: depends,
             ...(originWorkflowId ? { workflowId: originWorkflowId } : {}),
+            ...(githubTracking ? { githubTracking } : {}),
             source: {
               sourceType: "cli",
               sourceMetadata: Object.keys(sourceMetadata).length > 0 ? sourceMetadata : undefined,
