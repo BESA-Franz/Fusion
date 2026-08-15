@@ -1058,8 +1058,28 @@ export interface WorkspaceRepoRevertResult {
   repo: string;
   classification: TaskRevertClassification;
   revertCommitSha?: string;
+  /** The integration tip that invalidates prior landing proof after a git-mode revert. */
+  revertBoundarySha?: string;
+  /** Lets callers leave repos with no attributable task work untouched. */
+  attributedCommitCount: number;
   conflicts?: TaskRevertConflict[];
   alreadyReverted?: boolean;
+}
+
+/** Apply only successful git-mode revert boundaries; this service remains store-free. */
+export function applyWorkspaceRevertBoundaries(
+  currentWorktrees: Task["workspaceWorktrees"] | undefined,
+  repoResults: readonly WorkspaceRepoRevertResult[],
+): Task["workspaceWorktrees"] | undefined {
+  if (!currentWorktrees) return currentWorktrees;
+  const next = { ...currentWorktrees };
+  for (const result of repoResults) {
+    const entry = next[result.repo];
+    if (entry && result.attributedCommitCount > 0 && result.revertBoundarySha) {
+      next[result.repo] = { ...entry, revertBoundarySha: result.revertBoundarySha };
+    }
+  }
+  return next;
 }
 
 export type WorkspaceTaskRevertResult =
@@ -1215,6 +1235,7 @@ export async function revertWorkspaceTask(opts: RevertWorkspaceTaskOptions): Pro
       classification: ctx.classification.classification,
       conflicts: ctx.classification.conflicts,
       alreadyReverted: ctx.classification.alreadyReverted,
+      attributedCommitCount: ctx.commits.length,
     }));
     const conflicts = contexts.flatMap((ctx) =>
       (ctx.classification.conflicts ?? []).map((conflict) => ({ ...conflict, repo: ctx.repo })),
@@ -1231,7 +1252,11 @@ export async function revertWorkspaceTask(opts: RevertWorkspaceTaskOptions): Pro
   try {
     for (const ctx of contexts) {
       if (ctx.classification.classification === "already-reverted" || ctx.commits.length === 0) {
-        repos.push({ repo: ctx.repo, classification: "already-reverted", alreadyReverted: true });
+        repos.push({
+          repo: ctx.repo, classification: "already-reverted", alreadyReverted: true,
+          attributedCommitCount: ctx.commits.length,
+          revertBoundarySha: ctx.commits.length > 0 ? ctx.preRevertHead : undefined,
+        });
         continue;
       }
 
@@ -1243,13 +1268,20 @@ export async function revertWorkspaceTask(opts: RevertWorkspaceTaskOptions): Pro
       });
 
       if (applied.applied) {
-        repos.push({ repo: ctx.repo, classification: "clean", revertCommitSha: applied.revertCommitSha });
+        repos.push({
+          repo: ctx.repo, classification: "clean", revertCommitSha: applied.revertCommitSha,
+          revertBoundarySha: applied.revertCommitSha, attributedCommitCount: ctx.commits.length,
+        });
         committedRepos.push({ repo: ctx.repo, repoRootDir: ctx.repoRootDir, preRevertHead: ctx.preRevertHead });
         continue;
       }
 
       if ("alreadyReverted" in applied) {
-        repos.push({ repo: ctx.repo, classification: "already-reverted", alreadyReverted: true });
+        repos.push({
+          repo: ctx.repo, classification: "already-reverted", alreadyReverted: true,
+          attributedCommitCount: ctx.commits.length,
+          revertBoundarySha: ctx.commits.length > 0 ? ctx.preRevertHead : undefined,
+        });
         continue;
       }
 
@@ -1262,7 +1294,7 @@ export async function revertWorkspaceTask(opts: RevertWorkspaceTaskOptions): Pro
       }
       const conflictRepos: WorkspaceRepoRevertResult[] = [
         ...repos,
-        { repo: ctx.repo, classification: "conflicting", conflicts: applied.conflicts },
+        { repo: ctx.repo, classification: "conflicting", conflicts: applied.conflicts, attributedCommitCount: ctx.commits.length },
       ];
       const conflicts = (applied.conflicts ?? []).map((conflict) => ({ ...conflict, repo: ctx.repo }));
       return { mode: "git", clean: false, workspace: { repos: conflictRepos }, conflicts };
@@ -1489,6 +1521,7 @@ export async function prepareWorkspaceRevertPrBranches(
       classification: ctx.classification.classification,
       conflicts: ctx.classification.conflicts,
       alreadyReverted: ctx.classification.alreadyReverted,
+      attributedCommitCount: ctx.commits.length,
     }));
     const conflicts = contexts.flatMap((ctx) =>
       (ctx.classification.conflicts ?? []).map((conflict) => ({ ...conflict, repo: ctx.repo })),
@@ -1534,6 +1567,7 @@ export async function prepareWorkspaceRevertPrBranches(
           classification: c.repo === ctx.repo ? "conflicting" : c.classification.classification,
           conflicts: c.repo === ctx.repo ? outcome.conflicts : c.classification.conflicts,
           alreadyReverted: c.classification.alreadyReverted,
+          attributedCommitCount: c.commits.length,
         }));
         return { eligible: false, classification: "conflicting", conflicts, repos };
       }

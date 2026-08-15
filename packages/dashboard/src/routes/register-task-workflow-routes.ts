@@ -98,6 +98,7 @@ import {
   evaluateTaskReleaseGate,
   performTaskRevert,
   revertWorkspaceTask,
+  applyWorkspaceRevertBoundaries,
   TaskRevertError,
   createAiUndoTask,
   prepareRevertPrBranch,
@@ -3037,6 +3038,16 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         });
 
         if (workspaceResult.mode === "git" && "clean" in workspaceResult && workspaceResult.clean === true) {
+          // FNXC:Workspace 2026-08-15-06:45:
+          // The store-free revert service reports boundaries; persist them from a fresh task read so
+          // trailer/landedSha proof at or behind a git-mode revert cannot skip re-done sub-repo work.
+          const latest = await scopedStore.getTask(task.id);
+          if (!latest) throw new TaskRevertError("task disappeared while persisting workspace revert boundaries", "task-not-found");
+          const workspaceWorktrees = applyWorkspaceRevertBoundaries(
+            latest.workspaceWorktrees,
+            workspaceResult.workspace.repos,
+          );
+          await scopedStore.updateTask(task.id, { workspaceWorktrees });
           await stampReverted();
         }
 

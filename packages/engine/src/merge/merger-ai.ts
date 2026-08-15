@@ -2026,6 +2026,7 @@ export async function landWorkspaceTask(
       entry.landedSha,
       taskId,
       entry.branch,
+      entry.revertBoundarySha,
     );
     if (provenLandedSha) {
       /*
@@ -2250,7 +2251,9 @@ async function persistRepoLandedSha(
   const current = latest?.workspaceWorktrees ?? {};
   const entry = current[repoRel];
   if (!entry) return; // entry vanished — nothing to merge into
-  const next = { ...current, [repoRel]: { ...entry, landedSha } };
+  // FNXC:Workspace 2026-08-15-06:45: a new landing is strictly after its revert boundary,
+  // so clear that invalidation marker while retaining the fresh landedSha as normal proof.
+  const next = { ...current, [repoRel]: { ...entry, landedSha, revertBoundarySha: undefined } };
   await store.updateTask(taskId, { workspaceWorktrees: next });
 }
 

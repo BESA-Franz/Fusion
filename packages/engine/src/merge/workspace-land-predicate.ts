@@ -92,16 +92,28 @@ export async function findProvenLandedCommit(
   landedSha: string | undefined,
   taskId?: string,
   branch?: string,
+  revertBoundarySha?: string,
 ): Promise<string | undefined> {
   const intRef = `refs/heads/${integrationBranch}`;
   if (!(await gitOk(["rev-parse", "--verify", intRef], repoRootDir))) {
     return undefined;
   }
+  /*
+  FNXC:Workspace 2026-08-15-06:45:
+  A revert commit carries this task's Fusion-Task-Id trailer, so clearing landedSha alone would
+  still make the trailer fallback skip re-done work. Reject any proof at or behind the durable
+  revert boundary; an unknown boundary deliberately preserves legacy idempotency behavior.
+  */
+  const isAtOrBehindRevertBoundary = async (sha: string): Promise<boolean> => {
+    if (!revertBoundarySha) return false;
+    return gitOk(["merge-base", "--is-ancestor", sha, revertBoundarySha], repoRootDir);
+  };
   // Primary: recorded landedSha is an ancestor of (or equals) the integration tip — that SHA
-  // IS the exact landing commit.
+  // IS the exact landing commit unless a completed revert invalidated it.
   if (
     landedSha &&
-    (await gitOk(["merge-base", "--is-ancestor", landedSha, intRef], repoRootDir))
+    (await gitOk(["merge-base", "--is-ancestor", landedSha, intRef], repoRootDir)) &&
+    !(await isAtOrBehindRevertBoundary(landedSha))
   ) {
     return landedSha;
   }
@@ -133,7 +145,11 @@ export async function findProvenLandedCommit(
       for (const sha of candidates.trim().split("\n")) {
         if (!sha) continue;
         const body = await gitCapture(["show", "-s", "--format=%B", sha], repoRootDir);
-        if (body && body.split("\n").some((line) => line.trim() === trailer)) {
+        if (
+          body &&
+          body.split("\n").some((line) => line.trim() === trailer) &&
+          !(await isAtOrBehindRevertBoundary(sha))
+        ) {
           return sha;
         }
       }
@@ -148,8 +164,9 @@ export async function isRepoLanded(
   landedSha: string | undefined,
   taskId?: string,
   branch?: string,
+  revertBoundarySha?: string,
 ): Promise<boolean> {
   return Boolean(
-    await findProvenLandedCommit(repoRootDir, integrationBranch, landedSha, taskId, branch),
+    await findProvenLandedCommit(repoRootDir, integrationBranch, landedSha, taskId, branch, revertBoundarySha),
   );
 }

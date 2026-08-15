@@ -717,8 +717,13 @@ export interface Task {
    * present AND whose recorded value is an ancestor of (or equals) the repo's
    * integration tip, so an interrupted multi-repo land retries only the un-landed
    * repos and never re-advances an already-landed ref (idempotent retry).
+   *
+   * FNXC:Workspace 2026-08-15-06:45:
+   * `revertBoundarySha` is the integration-branch commit after a completed git-mode revert
+   * (the revert commit, or pre-revert HEAD when already reverted). A proven landing at or behind
+   * it is stale and must re-land; `landedSha` remains for attribution and diff consumers.
    */
-  workspaceWorktrees?: Record<string, { worktreePath: string; branch: string; baseCommitSha?: string; landedSha?: string }>;
+  workspaceWorktrees?: Record<string, { worktreePath: string; branch: string; baseCommitSha?: string; landedSha?: string; revertBoundarySha?: string }>;
   steps: TaskStep[];
   currentStep: number;
   /**

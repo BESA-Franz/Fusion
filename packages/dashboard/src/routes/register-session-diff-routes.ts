@@ -531,7 +531,7 @@ async function computeWorkspaceTaskFiles(
   task: {
     id: string;
     baseBranch?: string;
-    workspaceWorktrees?: Record<string, { worktreePath: string; branch: string; baseCommitSha?: string; landedSha?: string }>;
+    workspaceWorktrees?: Record<string, { worktreePath: string; branch: string; baseCommitSha?: string; landedSha?: string; revertBoundarySha?: string }>;
   },
   rootDir: string,
   timeoutMs: number,

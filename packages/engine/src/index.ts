@@ -430,6 +430,7 @@ export {
   type WorkspaceRepoRevertResult,
   type WorkspaceTaskRevertResult,
   type RevertWorkspaceTaskOptions,
+  applyWorkspaceRevertBoundaries,
   prepareRevertPrBranch,
   type PrepareRevertPrBranchResult,
   type PrepareRevertPrBranchOptions,
