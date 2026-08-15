@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { normalize, resolve } from "node:path";
 import { describeModel, formatModelMarkerDetails, compactSessionContext, COMPACTION_FALLBACK_INSTRUCTIONS, createFnAgent, getProjectRootFromWorktree, isModelAuthTierIncompatibilityError, isRetryableModelSelectionError, promptWithFallback, type AgentOptions } from "../pi.js";
 import { createAgentSession, ModelRegistry, ModelRuntime, type AgentSession } from "@earendil-works/pi-coding-agent";
 import { piLog } from "../logger.js";
@@ -96,17 +97,17 @@ describe("getProjectRootFromWorktree", () => {
   });
 
   it("supports configured candidate worktrees dir paths", () => {
-    expect(
+    expect(normalize(
       getProjectRootFromWorktree("/tmp/.fn-worktrees/repo/fn-001/src", {
         worktreesDirCandidates: ["/tmp/.fn-worktrees/repo"],
-      }),
-    ).toBe("/tmp/.fn-worktrees");
+      })!,
+    )).toBe(normalize(resolve("/tmp/.fn-worktrees")));
 
-    expect(
+    expect(normalize(
       getProjectRootFromWorktree("/tmp/repo.worktrees/fn-001", {
         worktreesDirCandidates: ["/tmp/repo.worktrees"],
-      }),
-    ).toBe("/tmp");
+      })!,
+    )).toBe(normalize(resolve("/tmp")));
   });
 });
 
@@ -375,8 +376,9 @@ describe("createFnAgent skills parameter", () => {
   });
 
   it("skills parameter auto-derives SkillSelectionContext", async () => {
+    const projectRootDir = resolve("/test/project");
     const options: AgentOptions = {
-      cwd: "/test/project",
+      cwd: projectRootDir,
       systemPrompt: "Test",
       skills: ["review", "fusion"],
     };
@@ -386,7 +388,7 @@ describe("createFnAgent skills parameter", () => {
     // Verify resolveSessionSkills was called with auto-derived context
     expect(mockResolveSessionSkills).toHaveBeenCalledTimes(1);
     const callArgs = mockResolveSessionSkills.mock.calls[0]![0];
-    expect(callArgs.projectRootDir).toBe("/test/project");
+    expect(callArgs.projectRootDir).toBe(projectRootDir);
     expect(callArgs.requestedSkillNames).toEqual(["review", "fusion"]);
     expect(callArgs.sessionPurpose).toBe("executor");
   });
@@ -456,8 +458,9 @@ describe("createFnAgent skills parameter", () => {
     // When cwd is a regular directory (not a .worktrees/ path),
     // resolvePiExtensionProjectRoot is used to walk up to .fusion.
     // Since no .fusion exists in test filesystem, it returns cwd as-is.
+    const projectRootDir = resolve("/project/subdirectory");
     const options: AgentOptions = {
-      cwd: "/project/subdirectory",
+      cwd: projectRootDir,
       systemPrompt: "Test",
       skills: ["fusion"],
     };
@@ -468,7 +471,7 @@ describe("createFnAgent skills parameter", () => {
     // No .fusion is found in the test filesystem, so it returns /project/subdirectory.
     expect(mockResolveSessionSkills).toHaveBeenCalledTimes(1);
     const callArgs = mockResolveSessionSkills.mock.calls[0]![0];
-    expect(callArgs.projectRootDir).toBe("/project/subdirectory");
+    expect(callArgs.projectRootDir).toBe(projectRootDir);
     expect(callArgs.requestedSkillNames).toEqual(["fusion"]);
   });
 

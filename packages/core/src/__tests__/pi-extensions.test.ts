@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, normalize, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { getProjectRootFromWorktree, resolvePiExtensionProjectRoot } from "../plugins/pi-extensions.js";
@@ -25,17 +25,17 @@ describe("getProjectRootFromWorktree", () => {
   });
 
   it("supports configured candidate worktrees dir paths", () => {
-    expect(
+    expect(normalize(
       getProjectRootFromWorktree("/tmp/.fn-worktrees/repo/fn-001/src", {
         worktreesDirCandidates: ["/tmp/.fn-worktrees/repo"],
-      }),
-    ).toBe("/tmp/.fn-worktrees");
+      })!,
+    )).toBe(normalize(resolve("/tmp/.fn-worktrees")));
 
-    expect(
+    expect(normalize(
       getProjectRootFromWorktree("/tmp/repo.worktrees/fn-001", {
         worktreesDirCandidates: ["/tmp/repo.worktrees"],
-      }),
-    ).toBe("/tmp");
+      })!,
+    )).toBe(normalize(resolve("/tmp")));
   });
 
   it("returns null without throwing when child_process partial mocks omit spawnSync", async () => {
