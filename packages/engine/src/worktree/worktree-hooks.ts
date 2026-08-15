@@ -88,6 +88,19 @@ if [ "$HEAD_BRANCH_CANONICAL" = "$EXPECTED_BRANCH_CANONICAL" ]; then
   exit 0
 fi
 
+# FNXC:WorktreeIdentity 2026-08-15-00:32: task creation may append a sanitized
+# title slug to the canonical task branch; keep ownership strict to the exact
+# task-id prefix and reject any suffix outside the generated slug alphabet.
+case "$HEAD_BRANCH_CANONICAL" in
+  "$EXPECTED_BRANCH_CANONICAL"-*)
+    TASK_BRANCH_SUFFIX=\${HEAD_BRANCH_CANONICAL#"$EXPECTED_BRANCH_CANONICAL"-}
+    case "$TASK_BRANCH_SUFFIX" in
+      ""|*[!a-z0-9-]*) ;;
+      *) exit 0 ;;
+    esac
+    ;;
+esac
+
 case "$HEAD_BRANCH" in
 ${allowChecks}
 esac

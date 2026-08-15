@@ -155,6 +155,33 @@ describe("pre-commit identity guard (real git)", () => {
     }
   }, 30_000);
 
+  it("allows the owning task's generated slug branch", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "fn-slug-precommit-"));
+    const worktreeDir = join(rootDir, "wt-fsi-001");
+
+    try {
+      git(rootDir, "git init -b main");
+      git(rootDir, 'git config user.email "test@example.com"');
+      git(rootDir, 'git config user.name "Test"');
+      writeFileSync(join(rootDir, "README.md"), "init\n");
+      git(rootDir, "git add README.md && git commit -m 'init'");
+
+      git(rootDir, "git worktree add -b fusion/fsi-001-windows-gate-worktree-backend-pfade wt-fsi-001 HEAD");
+      await installTaskWorktreeIdentityGuard({ worktreePath: worktreeDir, taskId: "FSI-001" });
+
+      writeFileSync(join(worktreeDir, "owned.txt"), "owned slug branch\n");
+      git(worktreeDir, "git add owned.txt");
+
+      const commit = spawnSync("git", ["commit", "-m", "test(FSI-001): allow generated slug branch"], {
+        cwd: worktreeDir,
+        encoding: "utf-8",
+      });
+      expect(commit.status, `${commit.stderr}${commit.stdout}`).toBe(0);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("blocks misbound task-branch commits while allowing owner and step branches", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "fn-4948-precommit-"));
     const worktreeDir = join(rootDir, "wt-fn-a");
