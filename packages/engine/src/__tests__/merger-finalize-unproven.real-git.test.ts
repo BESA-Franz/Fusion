@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { execSync, spawnSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +26,10 @@ const describeIfGit = hasGit ? describe : describe.skip;
 
 function git(repo: string, command: string): string {
   return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+}
+
+function gitArgs(repo: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
 function createStore(
@@ -94,11 +98,12 @@ describeIfGit("aiMergeTask finalize no-op unproven reproduction (real git)", () 
     git(repo, "git init -b main");
     git(repo, 'git config user.email "test@example.com"');
     git(repo, 'git config user.name "Test User"');
-    git(repo, "git commit --allow-empty -m 'init'");
+    gitArgs(repo, ["commit", "--allow-empty", "-m", "init"]);
 
     git(repo, "git checkout -b fusion/fn-owned");
     writeFileSync(join(repo, "owned.txt"), "owned\n", "utf-8");
-    git(repo, "git add owned.txt && git commit -m 'feat(FN-OWNED): landed' -m 'Fusion-Task-Id: FN-OWNED'");
+    gitArgs(repo, ["add", "owned.txt"]);
+    gitArgs(repo, ["commit", "-m", "feat(FN-OWNED): landed", "-m", "Fusion-Task-Id: FN-OWNED"]);
     const ownedSha = git(repo, "git rev-parse HEAD");
     git(repo, "git checkout main");
     git(repo, `git cherry-pick ${ownedSha}`);
@@ -115,7 +120,7 @@ describeIfGit("aiMergeTask finalize no-op unproven reproduction (real git)", () 
     git(repo, "git init -b main");
     git(repo, 'git config user.email "test@example.com"');
     git(repo, 'git config user.name "Test User"');
-    git(repo, "git commit --allow-empty -m 'init'");
+    gitArgs(repo, ["commit", "--allow-empty", "-m", "init"]);
     const baseSha = git(repo, "git rev-parse HEAD");
 
     git(repo, "git checkout -b fusion/fn-noop");
@@ -140,12 +145,12 @@ describeIfGit("aiMergeTask finalize no-op unproven reproduction (real git)", () 
     git(repo, "git init -b main");
     git(repo, 'git config user.email "test@example.com"');
     git(repo, 'git config user.name "Test User"');
-    git(repo, "git commit --allow-empty -m 'init'");
+    gitArgs(repo, ["commit", "--allow-empty", "-m", "init"]);
     const baseSha = git(repo, "git rev-parse HEAD");
 
     git(repo, "git checkout -b fusion/fn-empty-own-diff");
     // 1 own commit with zero net tree change vs merge-base.
-    git(repo, "git commit --allow-empty -m 'test(FN-EMPTY-OWN-DIFF): handoff'");
+    gitArgs(repo, ["commit", "--allow-empty", "-m", "test(FN-EMPTY-OWN-DIFF): handoff"]);
     const branchTipSha = git(repo, "git rev-parse HEAD");
     expect(branchTipSha).not.toBe(baseSha); // aheadCount >= 1
     git(repo, "git checkout main");
@@ -170,7 +175,7 @@ describeIfGit("aiMergeTask finalize no-op unproven reproduction (real git)", () 
     git(repo, "git init -b main");
     git(repo, 'git config user.email "test@example.com"');
     git(repo, 'git config user.name "Test User"');
-    git(repo, "git commit --allow-empty -m 'init'");
+    gitArgs(repo, ["commit", "--allow-empty", "-m", "init"]);
     const baseSha = git(repo, "git rev-parse HEAD");
     git(repo, "git checkout -b fusion/fn-c");
     git(repo, "git checkout main");
@@ -215,7 +220,7 @@ describeIfGit("aiMergeTask finalize no-op unproven reproduction (real git)", () 
     git(repo, "git init -b main");
     git(repo, 'git config user.email "test@example.com"');
     git(repo, 'git config user.name "Test User"');
-    git(repo, "git commit --allow-empty -m 'init'");
+    gitArgs(repo, ["commit", "--allow-empty", "-m", "init"]);
     const baseSha = git(repo, "git rev-parse HEAD");
     git(repo, "git checkout -b fusion/fn-no-commits");
     git(repo, "git checkout main");
@@ -272,7 +277,7 @@ describeIfGit("aiMergeTask finalize no-op unproven reproduction (real git)", () 
     git(repo, "git init -b main");
     git(repo, 'git config user.email "test@example.com"');
     git(repo, 'git config user.name "Test User"');
-    git(repo, "git commit --allow-empty -m 'init'");
+    gitArgs(repo, ["commit", "--allow-empty", "-m", "init"]);
     const baseSha = git(repo, "git rev-parse HEAD");
     git(repo, "git checkout -b fusion/fn-no-commits-done");
     git(repo, "git checkout main");
@@ -309,10 +314,10 @@ describeIfGit("aiMergeTask finalize no-op unproven reproduction (real git)", () 
     git(repo, "git init -b main");
     git(repo, 'git config user.email "test@example.com"');
     git(repo, 'git config user.name "Test User"');
-    git(repo, "git commit --allow-empty -m 'init'");
+    gitArgs(repo, ["commit", "--allow-empty", "-m", "init"]);
     const baseSha = git(repo, "git rev-parse HEAD");
     git(repo, "git checkout -b fusion/fn-empty-block");
-    git(repo, "git commit --allow-empty -m 'test(FN-EMPTY-BLOCK): no content change'");
+    gitArgs(repo, ["commit", "--allow-empty", "-m", "test(FN-EMPTY-BLOCK): no content change"]);
     git(repo, "git checkout main");
 
     const task = {
@@ -340,7 +345,7 @@ describeIfGit("aiMergeTask finalize no-op unproven reproduction (real git)", () 
     expect(result.error).toContain("done=1, incomplete=1");
     expect(store.moveTask).toHaveBeenCalledWith("FN-EMPTY-BLOCK", "todo", expect.objectContaining({ preserveProgress: true, moveSource: "engine" }));
     expect(store.moveTask).not.toHaveBeenCalledWith("FN-EMPTY-BLOCK", "done");
-    expect(git(repo, "git show-ref --verify --quiet refs/heads/fusion/fn-empty-block; echo $?")).toBe("0");
+    expect(() => gitArgs(repo, ["show-ref", "--verify", "--quiet", "refs/heads/fusion/fn-empty-block"])).not.toThrow();
     expect(store.logEntry).toHaveBeenCalledWith(
       "FN-EMPTY-BLOCK",
       expect.stringContaining("Finalize blocked (no-commits incomplete-work guard)"),
@@ -354,10 +359,10 @@ describeIfGit("aiMergeTask finalize no-op unproven reproduction (real git)", () 
     git(repo, "git init -b main");
     git(repo, 'git config user.email "test@example.com"');
     git(repo, 'git config user.name "Test User"');
-    git(repo, "git commit --allow-empty -m 'init'");
+    gitArgs(repo, ["commit", "--allow-empty", "-m", "init"]);
     const baseSha = git(repo, "git rev-parse HEAD");
     git(repo, "git checkout -b fusion/fn-empty-done");
-    git(repo, "git commit --allow-empty -m 'test(FN-EMPTY-DONE): no content change'");
+    gitArgs(repo, ["commit", "--allow-empty", "-m", "test(FN-EMPTY-DONE): no content change"]);
     git(repo, "git checkout main");
 
     const task = {
@@ -393,11 +398,12 @@ describeIfGit("aiMergeTask finalize no-op unproven reproduction (real git)", () 
     git(repo, 'git config user.email "test@example.com"');
     git(repo, 'git config user.name "Test User"');
     writeFileSync(join(repo, "README.md"), "init\n", "utf-8");
-    git(repo, "git add README.md && git commit -m 'chore: init'");
+    gitArgs(repo, ["add", "README.md"]);
+    gitArgs(repo, ["commit", "-m", "chore: init"]);
     git(repo, "git checkout -b fusion/fn-a");
     writeFileSync(join(repo, "foreign.txt"), "from fn-a\n", "utf-8");
     git(repo, "git add foreign.txt");
-    git(repo, "git commit -m 'feat(FN-A): foreign start point' -m 'Fusion-Task-Id: FN-A'");
+    gitArgs(repo, ["commit", "-m", "feat(FN-A): foreign start point", "-m", "Fusion-Task-Id: FN-A"]);
     const foreignBaseSha = git(repo, "git rev-parse HEAD");
 
     git(repo, "git checkout main");
@@ -448,7 +454,7 @@ describeIfGit("aiMergeTask finalize no-op unproven reproduction (real git)", () 
     git(repo, "git init -b main");
     git(repo, 'git config user.email "test@example.com"');
     git(repo, 'git config user.name "Test User"');
-    git(repo, "git commit --allow-empty -m 'init'");
+    gitArgs(repo, ["commit", "--allow-empty", "-m", "init"]);
     const baseSha = git(repo, "git rev-parse HEAD");
 
     // Shared group integration branch (NOT a fusion/fn-* sibling) that the
@@ -460,7 +466,7 @@ describeIfGit("aiMergeTask finalize no-op unproven reproduction (real git)", () 
     const memberBranch = "fusion/fn-grp-member";
     git(repo, `git checkout -b ${memberBranch} ${groupBranch}`);
     // 1 own commit with zero net tree change vs the group merge-base.
-    git(repo, "git commit --allow-empty -m 'test(FN-GRP): handoff'");
+    gitArgs(repo, ["commit", "--allow-empty", "-m", "test(FN-GRP): handoff"]);
     expect(git(repo, "git rev-parse HEAD")).not.toBe(baseSha); // aheadCount >= 1
     git(repo, "git checkout main");
 
