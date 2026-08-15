@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { execSync, spawnSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +12,10 @@ const describeIfGit = hasGit ? describe : describe.skip;
 
 function git(repo: string, command: string): string {
   return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+}
+
+function gitArgs(repo: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
 function parseShortstat(output: string): { filesChanged: number; insertions: number; deletions: number } {
@@ -89,10 +93,12 @@ describeIfGit("SelfHealingManager recoverDoneTaskMergeMetadata stale stats", () 
     git(repo, 'git config user.name "Test"');
     writeFileSync(path.join(repo, "a.ts"), "const a = 1;\n", "utf-8");
     writeFileSync(path.join(repo, "b.ts"), "const b = 1;\n", "utf-8");
-    git(repo, "git add a.ts b.ts && git commit -m 'init'");
+    gitArgs(repo, ["add", "a.ts", "b.ts"]);
+    gitArgs(repo, ["commit", "-m", "init"]);
     writeFileSync(path.join(repo, "a.ts"), "const a = 2;\nconst c = 3;\n", "utf-8");
     writeFileSync(path.join(repo, "b.ts"), "const b = 2;\n", "utf-8");
-    git(repo, "git add a.ts b.ts && git commit -m 'landed' -m 'Fusion-Task-Id: FN-4526-STATS'");
+    gitArgs(repo, ["add", "a.ts", "b.ts"]);
+    gitArgs(repo, ["commit", "-m", "landed", "-m", "Fusion-Task-Id: FN-4526-STATS"]);
     return { repo, sha: git(repo, "git rev-parse HEAD") };
   }
 
@@ -107,16 +113,19 @@ describeIfGit("SelfHealingManager recoverDoneTaskMergeMetadata stale stats", () 
     writeFileSync(path.join(repo, "b.ts"), "const b = 1;\n", "utf-8");
     writeFileSync(path.join(repo, "c.ts"), "const c = 1;\n", "utf-8");
     writeFileSync(path.join(repo, "d.ts"), "const d = 1;\n", "utf-8");
-    git(repo, "git add a.ts b.ts c.ts d.ts && git commit -m 'init'");
+    gitArgs(repo, ["add", "a.ts", "b.ts", "c.ts", "d.ts"]);
+    gitArgs(repo, ["commit", "-m", "init"]);
 
     git(repo, "git checkout -b feature/fn-4672");
     writeFileSync(path.join(repo, "a.ts"), "const a = 2;\nconst a2 = 3;\n", "utf-8");
     writeFileSync(path.join(repo, "b.ts"), "const b = 2;\n", "utf-8");
-    git(repo, "git add a.ts b.ts && git commit -m 'feature-1'");
+    gitArgs(repo, ["add", "a.ts", "b.ts"]);
+    gitArgs(repo, ["commit", "-m", "feature-1"]);
 
     writeFileSync(path.join(repo, "c.ts"), "const c = 2;\nconst c2 = 3;\n", "utf-8");
     writeFileSync(path.join(repo, "d.ts"), "const d = 1;\n", "utf-8");
-    git(repo, "git add c.ts d.ts && git commit -m 'feature-2' -m 'Fusion-Task-Id: FN-4672-REBASE'");
+    gitArgs(repo, ["add", "c.ts", "d.ts"]);
+    gitArgs(repo, ["commit", "-m", "feature-2", "-m", "Fusion-Task-Id: FN-4672-REBASE"]);
 
     const rebaseBaseSha = git(repo, "git merge-base main HEAD");
 
