@@ -1,7 +1,7 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 10_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
 
@@ -17,13 +17,9 @@ export type BranchAutocorrectResult = {
   reason?: string;
 };
 
-function quoteShellArg(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-async function runGit(command: string, worktreePath: string): Promise<{ ok: true; stdout: string } | { ok: false; reason: string }> {
+async function runGit(args: string[], worktreePath: string): Promise<{ ok: true; stdout: string } | { ok: false; reason: string }> {
   try {
-    const { stdout } = await execAsync(command, {
+    const { stdout } = await execFileAsync("git", args, {
       cwd: worktreePath,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: GIT_MAX_BUFFER,
@@ -59,17 +55,15 @@ export async function attemptBranchAutocorrect({
     return { status: "failed", reason: "invalid-input" };
   }
 
-  const observedArg = quoteShellArg(observed);
-  const expectedArg = quoteShellArg(expected);
-  const upstream = await runGit(`git rev-parse --abbrev-ref --symbolic-full-name ${observedArg}@{u}`, worktreePath);
+  const upstream = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", `${observed}@{u}`], worktreePath);
 
   let isFreshBranch = false;
   if (!upstream.ok) {
-    const observedShaResult = await runGit(`git rev-parse ${observedArg}`, worktreePath);
+    const observedShaResult = await runGit(["rev-parse", observed], worktreePath);
     if (observedShaResult.ok) {
       const observedSha = observedShaResult.stdout.trim();
       if (/^[0-9a-f]{4,64}$/i.test(observedSha)) {
-        const contains = await runGit(`git for-each-ref --format='%(refname:short)' --contains ${observedSha} refs/heads/`, worktreePath);
+        const contains = await runGit(["for-each-ref", "--format=%(refname:short)", "--contains", observedSha, "refs/heads/"], worktreePath);
         if (contains.ok) {
           const refs = contains.stdout
             .split("\n")
@@ -84,7 +78,7 @@ export async function attemptBranchAutocorrect({
   if (isFreshBranch) {
     // `-M` (force) lets us recover from case-only renames on case-insensitive
     // filesystems (macOS, default Windows) where `-m` rejects `foo` → `Foo`.
-    const rename = await runGit(`git branch -M ${observedArg} ${expectedArg}`, worktreePath);
+    const rename = await runGit(["branch", "-M", observed, expected], worktreePath);
     if (rename.ok) {
       return { status: "renamed" };
     }
@@ -96,9 +90,8 @@ export async function attemptBranchAutocorrect({
   // contamination pattern). Restrict the verify to refs/heads/ so a stray tag
   // or remote ref with the same name cannot satisfy the check and lead the
   // subsequent `git checkout` to a detached HEAD on the wrong object.
-  const expectedRefArg = quoteShellArg(`refs/heads/${expected}`);
   const verifyExpected = await runGit(
-    `git show-ref --verify --quiet ${expectedRefArg}`,
+    ["show-ref", "--verify", "--quiet", `refs/heads/${expected}`],
     worktreePath,
   );
   if (!verifyExpected.ok) {
@@ -106,7 +99,7 @@ export async function attemptBranchAutocorrect({
   }
   // `--` disambiguates against a same-named tracked path; we already proved
   // the ref exists, so this can only resolve as the branch.
-  const checkout = await runGit(`git checkout ${expectedArg} --`, worktreePath);
+  const checkout = await runGit(["checkout", expected, "--"], worktreePath);
   if (checkout.ok) {
     return { status: "checked-out" };
   }
