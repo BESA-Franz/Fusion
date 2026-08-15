@@ -138,7 +138,7 @@ describe("FN-4114 worktree liveness assertion", () => {
         classification: "repo-root",
         observed: "/repo",
         observedRealpath: "/repo",
-        expected: "/repo/.worktrees/* (usable, registered)",
+        expected: `${resolveWorktreesDir("/repo", undefined)}/* (usable, registered)`,
         registered: ["/repo", "/repo/.worktrees/swift-falcon"],
         registeredContainsObserved: true,
         invalidCheckoutPath: "repo-root",
