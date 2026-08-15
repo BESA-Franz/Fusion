@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
 import "./executor-test-helpers.js";
 import { TaskExecutor } from "../executor.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
@@ -196,7 +197,7 @@ describe("FN-4973: executor worktree conflict cleanup", () => {
     expect(result).toEqual({ path: "/tmp/test/.worktrees/fresh-eagle", branch: "fusion/fn-4973-2" });
     expect(createSpy).toHaveBeenCalledWith(
       "fusion/fn-4973-2",
-      "/tmp/test/.worktrees/fresh-eagle",
+      join("/tmp/test", ".worktrees", "fresh-eagle"),
       "FN-4973",
       "fusion/fn-4973",
       0,
