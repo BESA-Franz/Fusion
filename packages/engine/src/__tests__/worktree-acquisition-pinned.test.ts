@@ -282,7 +282,8 @@ describe("acquireTaskWorktree — task-pinned mode", () => {
     });
 
     expect(removeWorktree).not.toHaveBeenCalled();
-    expect(rename).toHaveBeenCalledWith(PINNED, expect.stringContaining("/.fusion/recovery/worktrees/fn-7996-"));
+    expect(rename).toHaveBeenCalledWith(PINNED, expect.any(String));
+    expect(vi.mocked(rename).mock.calls[0]?.[1].replace(/\\/g, "/")).toContain("/.fusion/recovery/worktrees/fn-7996-");
     expect(createWorktree).toHaveBeenCalledWith("fusion/fn-7996", PINNED, "FN-7996", "main", false);
     expect(result.worktreePath).toBe(PINNED);
   });
