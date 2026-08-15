@@ -11,6 +11,12 @@ import { NativeSandboxBackend } from "../native.js";
 describe("NativeSandboxBackend", () => {
   let tempDir: string;
 
+  async function writeNodeScript(name: string, source: string): Promise<string> {
+    const scriptPath = join(tempDir, name);
+    await writeFile(scriptPath, source, "utf-8");
+    return `${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)}`;
+  }
+
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "fusion-native-sandbox-"));
   });
@@ -21,7 +27,8 @@ describe("NativeSandboxBackend", () => {
 
   it("returns stdout on success", async () => {
     const backend = new NativeSandboxBackend();
-    const result = await backend.run("node -e 'process.stdout.write(\"ok\")'", {
+    const command = await writeNodeScript("stdout.cjs", 'process.stdout.write("ok");');
+    const result = await backend.run(command, {
       cwd: cwd(),
       timeoutMs: 5_000,
       maxBuffer: 1024 * 1024,
@@ -36,7 +43,8 @@ describe("NativeSandboxBackend", () => {
 
   it("maps timeout failures", async () => {
     const backend = new NativeSandboxBackend();
-    const result = await backend.run("node -e 'setTimeout(() => {}, 1000)'", {
+    const command = await writeNodeScript("timeout.cjs", "setTimeout(() => {}, 1000);");
+    const result = await backend.run(command, {
       cwd: cwd(),
       timeoutMs: 50,
       maxBuffer: 1024 * 1024,
@@ -111,7 +119,11 @@ setInterval(() => {}, 1000);
 
   it("maps non-zero exits", async () => {
     const backend = new NativeSandboxBackend();
-    const result = await backend.run("node -e 'process.stderr.write(\"fail\"); process.exit(7)'", {
+    const command = await writeNodeScript(
+      "non-zero.cjs",
+      'process.stderr.write("fail"); process.exit(7);',
+    );
+    const result = await backend.run(command, {
       cwd: cwd(),
       timeoutMs: 5_000,
       maxBuffer: 1024 * 1024,
@@ -125,7 +137,11 @@ setInterval(() => {}, 1000);
 
   it("maps maxBuffer failures", async () => {
     const backend = new NativeSandboxBackend();
-    const result = await backend.run("node -e 'process.stdout.write(\"x\".repeat(5000))'", {
+    const command = await writeNodeScript(
+      "max-buffer.cjs",
+      'process.stdout.write("x".repeat(5000));',
+    );
+    const result = await backend.run(command, {
       cwd: cwd(),
       timeoutMs: 5_000,
       maxBuffer: 512,
