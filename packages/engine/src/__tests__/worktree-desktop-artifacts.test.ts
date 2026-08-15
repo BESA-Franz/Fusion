@@ -66,7 +66,7 @@ describe("removeDesktopBuildArtifacts", () => {
       mkdirSync(join(root, path), { recursive: true });
     }
     const rmSpy = vi.mocked(fsPromises.rm).mockImplementation(async (pathLike: PathLike) => {
-      if (String(pathLike).endsWith("packages/desktop/dist")) {
+      if (String(pathLike).replaceAll("\\", "/").endsWith("packages/desktop/dist")) {
         throw new Error("boom");
       }
     });
