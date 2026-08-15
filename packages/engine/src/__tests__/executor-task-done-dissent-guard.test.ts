@@ -39,7 +39,7 @@ async function setup(overrides: Record<string, unknown> = {}) {
   });
 
   const executor = new TaskExecutor(store as any, "/repo");
-  await executor.execute(createTask() as any);
+  await (executor as any).runImplementation(createTask() as any, vi.fn());
 
   return { store, doneTool };
 }

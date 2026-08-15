@@ -39,7 +39,7 @@ async function setup() {
   });
 
   const executor = new TaskExecutor(store as any, "/repo");
-  await executor.execute(baseTask() as any);
+  await (executor as any).runImplementation(baseTask() as any, vi.fn());
   return { tool, store };
 }
 
