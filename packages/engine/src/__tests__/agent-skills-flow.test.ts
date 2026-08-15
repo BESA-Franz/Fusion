@@ -5,6 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolve } from "node:path";
 
 /*
 FNXC:EngineTests 2026-07-18-06:40:
@@ -33,14 +34,15 @@ import type { Agent, AgentStore } from "@fusion/core";
 
 vi.mock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  const mockPath = (value: unknown): string => String(value).replaceAll("\\", "/");
   return {
     ...actual,
-    existsSync: (path: unknown) => mockFiles.has(String(path)),
-    readFileSync: (path: unknown) => mockFiles.get(String(path)) ?? "{}",
+    existsSync: (path: unknown) => mockFiles.has(mockPath(path)),
+    readFileSync: (path: unknown) => mockFiles.get(mockPath(path)) ?? "{}",
     mkdtempSync: () => `/tmp/agent-skills-flow-mock-${++mockDirCounter.value}`,
-    writeFileSync: (path: unknown, content: unknown) => mockFiles.set(String(path), String(content)),
+    writeFileSync: (path: unknown, content: unknown) => mockFiles.set(mockPath(path), String(content)),
     rmSync: (path: unknown) => {
-      const pathStr = String(path);
+      const pathStr = mockPath(path);
       for (const key of mockFiles.keys()) {
         if (key.startsWith(pathStr)) mockFiles.delete(key);
       }
@@ -51,9 +53,9 @@ vi.mock("node:fs", async () => {
 // ── Test Helpers ─────────────────────────────────────────────────────────────
 
 function createMockProjectDir(settings: Record<string, unknown> | null): string {
-  const dir = `/tmp/agent-skills-flow-mock-${++mockDirCounter.value}`;
+  const dir = resolve(`/tmp/agent-skills-flow-mock-${++mockDirCounter.value}`);
   if (settings !== null) {
-    mockFiles.set(`${dir}/.fusion/settings.json`, JSON.stringify(settings));
+    mockFiles.set(`${dir}/.fusion/settings.json`.replaceAll("\\", "/"), JSON.stringify(settings));
   }
   return dir;
 }
