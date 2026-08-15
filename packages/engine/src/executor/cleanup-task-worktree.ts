@@ -34,7 +34,13 @@ export async function cleanupTaskWorktree(
 
   deps.activeWorktrees.delete(taskId);
 
-  // FNXC:Workspace 2026-06-21-12:00: KTD1 — in workspace mode the tracked path is the non-git workspace root (browse-only), never a removable worktree. Drop the in-memory tracking above but never remove the root. Per-repo worktree teardown returns in Phase B.
+  /*
+  FNXC:Workspace 2026-08-15-05:13:
+  In workspace mode the tracked path is the browse-only non-git root, never a removable worktree.
+  Per-repo teardown belongs to SelfHealingManager.reconcileOrphanedWorkspaceWorktrees for complete
+  and terminal lanes, while archive-lifecycle owns archived rows. A failed task may be retried, so
+  executor cleanup only drops in-memory tracking and must not discard sub-repo work at this boundary.
+  */
   if (workspaceConfig) {
     return;
   }

@@ -626,7 +626,12 @@ export type DatabaseMutationType =
   | "task:reconcile-workspace-partial-land-no-action"
   /** Metadata: { taskId, path, kind: "workspace-repo-land", registeredAt, ageMs, staleBindingAgeFloorMs, ownerColumn, ownerTerminalReason: "missing" | "complete" | "archived" | "deleted" | "failed" } */
   | "task:reclaim-phantom-workspace-land-lease"
-  /** Metadata: { taskId, repo, worktreePath, success, reason } */
+  /*
+  FNXC:Workspace 2026-08-15-05:13:
+  Metadata: { taskId, repo, worktreePath, success, reason, lane, worktreeOutcome, pruned, branch,
+  branchOutcome, attempt }. Values are ids/counts/fixed outcomes only; branch cleanup is auditable
+  without recording repository prose.
+  */
   | "task:reconcile-orphaned-workspace-worktree"
   /**
    * FNXC:AgentTaskStateDrift 2026-06-23-08:50:

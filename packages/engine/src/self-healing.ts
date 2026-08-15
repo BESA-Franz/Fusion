@@ -29,7 +29,7 @@ import { setImmediate as setImmediateCb } from "node:timers";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveReboundTarget, resolveReboundTargetForTask, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr,
   resolveNearDuplicateCanonicalFlags,
   LEGACY_COLUMN_IDS_BY_ROLE,
@@ -571,6 +571,12 @@ const RECONCILE_SCOPE_OVERRIDE_MERGE_ACTIVE_STATUS_SET = new Set<string>(MERGE_A
 import { classifyTransientMergeError } from "./errors/transient-merge-error-classifier.js";
 export { classifyTransientMergeError } from "./errors/transient-merge-error-classifier.js";
 const MAX_STARVATION_DROPS = 3;
+/*
+FNXC:Workspace 2026-08-15-05:13:
+Failed workspace tasks are routinely retried with their progress preserved. Terminal teardown therefore
+waits a full day, unlike short lease recovery floors, so a transient park cannot discard repo worktrees.
+*/
+const TERMINAL_WORKSPACE_WORKTREE_TEARDOWN_MIN_IDLE_MS = 24 * 60 * 60 * 1000;
 const DEADLOCK_RECOVERY_COOLDOWN_MS = 15 * 60_000;
 // DEFAULT_STALE_MERGING_STATUS_MIN_AGE_MS now lives in ./merge-active-status.js (imported above)
 // so the manual Retry gate and this sweep cannot drift apart (FN-8004 follow-up).
@@ -704,7 +710,21 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   */
   private workspacePartialLandDrops: Map<string, number> = new Map();
   private workspacePartialLandEvidenceDefers: Map<string, number> = new Map();
+  /*
+  FNXC:Workspace 2026-08-15-05:13:
+  A prune-only entry performs git work even when its recorded directory is permanently absent. The same
+  MAX_STARVATION_DROPS budget bounds remove, prune, evidence, and branch work; settlement retires a
+  completed entry when a durable row update is unavailable.
+  */
   private orphanWorktreeRemovalFailures: Map<string, number> = new Map();
+  private settledWorkspaceWorktreeTeardowns = new Set<string>();
+  /*
+  FNXC:Workspace 2026-08-15-05:39:
+  A duplicate branch claimant must preserve future branch-deletion eligibility, but a completed
+  worktree/prune phase must not rerun `git worktree prune` every maintenance tick. This phase marker
+  records that safe half of teardown until the claim index becomes unambiguous or the entry settles.
+  */
+  private prunedWorkspaceWorktreeTeardowns = new Set<string>();
   private finalizeUnprovenWarned = new Set<string>();
   /*
    * FNXC:Lifecycle 2026-07-16-10:30:
@@ -10448,96 +10468,186 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
   active, mirroring the temp-dir sweep at the AI-merge worktree guard) so a still-live path is never
   yanked. Emit `task:reconcile-orphaned-workspace-worktree` per removed path.
   */
+  /*
+  FNXC:Workspace 2026-08-15-05:39:
+  Keep terminal teardown on the production timed async-git path, while exposing only this narrow seam
+  for a deterministic prune-failure regression. Real fixtures continue to prove normal git behavior.
+  */
+  protected async execWorkspaceTeardownGit(command: string, options: { cwd: string; timeout: number }): Promise<{ stdout: string }> {
+    return execAsync(command, options);
+  }
+
   async reconcileOrphanedWorkspaceWorktrees(): Promise<number> {
     try {
       const settings = await this.store.getSettings();
       if (settings.globalPause || settings.enginePaused) return 0;
-
-      // Done workspace tasks are the canonical "safe to clean" set (their lands are finalized).
-      /*
-      FNXC:WorkflowResolvedColumns 2026-07-30-21:40 (the query-filter class, thirty-fourth sweep):
-      Removes the per-repo worktrees a finished workspace task left behind. The literal read meant that
-      on a renamed board they were never removed — disk held by tasks that finished, growing quietly.
-
-      `complete` only, NOT the terminal union: the comment above calls DONE tasks "the canonical safe to
-      clean set" precisely because their lands are finalized, and an archived row is a different claim.
-      No per-card verdict: the filter is `isWorkspaceTask`, not a lane test.
-      */
-      const wsDoneColumns = await resolveProjectColumnsForRoles(this.store, ["complete"]);
-      const wsDoneById = new Map<string, Task>();
-      for (const column of wsDoneColumns) {
-        for (const entry of await this.store.listTasks({ column, slim: true })) wsDoneById.set(entry.id, entry);
-      }
-      const candidates = [...wsDoneById.values()].filter((task) => isWorkspaceTask(task));
-      if (candidates.length === 0) return 0;
-
-      let cleaned = 0;
-      for (const task of candidates) {
-        const workspaceWorktrees = task.workspaceWorktrees ?? {};
-        for (const repoRel of Object.keys(workspaceWorktrees)) {
-          const worktreePath = workspaceWorktrees[repoRel]?.worktreePath;
-          if (!worktreePath) continue;
-          // GUARD: skip an active path (mirror self-healing temp-dir sweep isPathActive guard).
-          if (activeSessionRegistry.isPathActive(worktreePath)) continue;
-          // Nothing on disk → nothing to remove (already cleaned). Skip silently; clear any prior
-          // failure count so a re-created path starts fresh.
-          if (!existsSync(worktreePath)) {
-            this.orphanWorktreeRemovalFailures.delete(worktreePath);
-            continue;
-          }
-          /*
-          FNXC:Workspace 2026-06-22-14:10 (Phase D review E — bounded + observable orphan removal):
-          A `git worktree remove --force` failure was caught + audit-logged but NOT engine-logged,
-          and retried EVERY tick FOREVER (a genuinely stuck path pins this sweep indefinitely). Bound
-          the retry per-path: after MAX_STARVATION_DROPS consecutive failures stop attempting (leave
-          the path for manual cleanup) and `log.warn` each failure for observability.
-          */
-          if ((this.orphanWorktreeRemovalFailures.get(worktreePath) ?? 0) >= MAX_STARVATION_DROPS) {
-            continue; // exhausted retries — stop hammering a stuck path.
-          }
-
-          const repoRootDir = join(this.options.rootDir, repoRel);
-          let success = false;
-          let reason = "removed";
-          try {
-            await execAsync(`git worktree remove --force ${shellQuote(worktreePath)}`, {
-              cwd: repoRootDir,
-              timeout: 120_000,
-            });
-            success = true;
-          } catch (err: unknown) {
-            reason = `git-remove-failed: ${err instanceof Error ? err.message : String(err)}`;
-          }
-          try {
-            await createRunAuditor(this.store, {
-              runId: generateSyntheticRunId("self-healing-orphaned-workspace-worktree", task.id),
-              agentId: "self-healing",
-              taskId: task.id,
-              taskLineageId: task.lineageId,
-              phase: "reconcile-orphaned-workspace-worktree",
-            }).database({
-              type: "task:reconcile-orphaned-workspace-worktree",
-              target: task.id,
-              metadata: { taskId: task.id, repo: repoRel, worktreePath, success, reason },
-            });
-          } catch { /* audit best-effort */ }
-          if (success) {
-            this.orphanWorktreeRemovalFailures.delete(worktreePath);
-            log.log(`reconcileOrphanedWorkspaceWorktrees: removed ${worktreePath} (task ${task.id}, repo ${repoRel})`);
-            cleaned++;
-          } else {
-            const failures = (this.orphanWorktreeRemovalFailures.get(worktreePath) ?? 0) + 1;
-            this.orphanWorktreeRemovalFailures.set(worktreePath, failures);
-            log.warn(`reconcileOrphanedWorkspaceWorktrees: ${reason} for ${worktreePath} (task ${task.id}, repo ${repoRel}) [${failures}/${MAX_STARVATION_DROPS}]${failures >= MAX_STARVATION_DROPS ? " — giving up; manual cleanup required" : ""}`);
-          }
+      const now = Date.now();
+      const archivedColumns = new Set(await resolveProjectColumnsForRoles(this.store, ["archived"]));
+      // One forensic read includes deleted and live rows: live claimants must veto destructive cleanup.
+      const allRows = await this.store.listTasks({ slim: true, includeDeleted: true });
+      const completeColumns = new Set(await resolveProjectColumnsForRoles(this.store, ["complete"]));
+      // Preserve resolved-column semantics for stores whose forensic list is filter-blind or omits lanes.
+      for (const column of completeColumns) {
+        for (const row of await this.store.listTasks({ column, slim: true })) {
+          if (!allRows.some((known) => known.id === row.id)) allRows.push(row);
         }
       }
-      if (cleaned > 0) log.log(`reconcileOrphanedWorkspaceWorktrees: removed ${cleaned} orphaned per-repo worktree(s)`);
+      type Lane = "complete" | "failed" | "soft-deleted";
+      type Candidate = { task: Task; lane: Lane };
+      const candidates: Candidate[] = [];
+      for (const task of allRows) {
+        if (!isWorkspaceTask(task)) continue;
+        if (archivedColumns.has(task.column)) continue;
+        /*
+        FNXC:Workspace 2026-08-15-06:11:
+        Complete-lane placement proves no retry floor is needed, not that ownership has ended. Every
+        destructive terminal teardown must still yield to pauses, scheduled recovery, executor/task
+        liveness, and queued or active merge work before considering its lane-specific eligibility.
+        */
+        if (task.paused || task.userPaused || task.nextRecoveryAt
+          || this.isWorkspaceTaskLive(task).live
+          || this.options.isMergePending?.(task.id) === true
+          || this.options.getActiveMergeTaskId?.() === task.id) continue;
+        if (completeColumns.has(task.column) || task.column === "done") { candidates.push({ task, lane: "complete" }); continue; }
+        const lane: Lane | null = task.deletedAt ? "soft-deleted" : task.status === "failed" ? "failed" : null;
+        if (!lane) continue;
+        const touched = Math.max(Date.parse(task.columnMovedAt ?? "") || 0, Date.parse(task.updatedAt ?? "") || 0, Date.parse(task.deletedAt ?? "") || 0);
+        if (!touched || now - touched < TERMINAL_WORKSPACE_WORKTREE_TEARDOWN_MIN_IDLE_MS) continue;
+        if (this.isWorkspaceTaskLive(task).live || this.options.isMergePending?.(task.id) === true || this.options.getActiveMergeTaskId?.() === task.id) continue;
+        candidates.push({ task, lane });
+      }
+      if (!candidates.length) return 0;
+
+      const canonicalPath = (value: string): string => {
+        const absolute = resolve(value);
+        try { return realpathSync(absolute); } catch {
+          /*
+          FNXC:Workspace 2026-08-15-05:33:
+          A manually removed worktree has no leaf to realpath. Canonicalize its existing parent so
+          /var and /private/var aliases still share one destructive claim and one retry budget.
+          */
+          try { return join(realpathSync(dirname(absolute)), basename(absolute)); } catch { return absolute; }
+        }
+      };
+      type Claim = { taskId: string; repoRel: string; candidate: boolean };
+      const pathClaims = new Map<string, Claim[]>();
+      const branchClaims = new Map<string, Claim[]>();
+      const candidateIds = new Set(candidates.map(({ task }) => task.id));
+      /*
+      FNXC:Workspace 2026-08-15-05:33:
+      Terminal cleanup is destructive, so claims are indexed across every forensic row before any
+      git call. A shared path or branch may still belong to a live row; ambiguity is always skipped.
+      */
+      for (const task of allRows) for (const [repoRel, entry] of Object.entries(task.workspaceWorktrees ?? {})) {
+        const claim = { taskId: task.id, repoRel, candidate: candidateIds.has(task.id) };
+        if (entry?.worktreePath) {
+          const key = canonicalPath(entry.worktreePath);
+          pathClaims.set(key, [...(pathClaims.get(key) ?? []), claim]);
+        }
+        if (entry?.branch) {
+          const branchKey = `${repoRel}::${entry.branch}`;
+          branchClaims.set(branchKey, [...(branchClaims.get(branchKey) ?? []), claim]);
+        }
+      }
+      let cleaned = 0;
+      for (const { task, lane } of candidates) for (const [repoRel, entry] of Object.entries(task.workspaceWorktrees ?? {})) {
+        const worktreePath = entry?.worktreePath;
+        if (!worktreePath) continue;
+        const pathKey = canonicalPath(worktreePath);
+        const entryKey = `${task.id}::${repoRel}::${pathKey}`;
+        if (this.settledWorkspaceWorktreeTeardowns.has(entryKey) || (this.orphanWorktreeRemovalFailures.get(entryKey) ?? 0) >= MAX_STARVATION_DROPS) continue;
+        const repoRootDir = join(this.options.rootDir, repoRel);
+        const canonicalRootDir = canonicalPath(this.options.rootDir);
+        const claims = pathClaims.get(pathKey) ?? [];
+        const uniqueClaims = new Set(claims.map((claim) => `${claim.taskId}::${claim.repoRel}`));
+        // FNXC:Workspace 2026-08-15-05:13: destructive terminal cleanup treats shared, foreign, and
+        // misattributed paths as ambiguous. Skipping is safer than deleting another row's worktree.
+        if (uniqueClaims.size !== 1 || claims.some((claim) => !claim.candidate)
+          || !relative(canonicalRootDir, pathKey) || relative(canonicalRootDir, pathKey).startsWith("..")
+          || pathKey === canonicalRootDir || pathKey === canonicalPath(repoRootDir) || pathKey === canonicalPath(join(repoRootDir, ".git"))) continue;
+        const resolvedPath = resolve(worktreePath);
+        if (activeSessionRegistry.isPathActive(worktreePath) || activeSessionRegistry.isPathActive(resolvedPath) || activeSessionRegistry.isPathActive(pathKey)) continue;
+        const branch = entry.branch;
+        const branchKey = branch ? `${repoRel}::${branch}` : "";
+        const branchClaimCount = branch ? new Set((branchClaims.get(branchKey) ?? []).map((claim) => claim.taskId)).size : 0;
+        const pruneCompleted = this.prunedWorkspaceWorktreeTeardowns.has(entryKey);
+        // While a duplicate claim remains, do not spend maintenance cycles repeatedly pruning an
+        // already removed worktree. Re-evaluate the cheap in-memory claim index next tick instead.
+        if (pruneCompleted && branchClaimCount > 1) continue;
+        let failed = false;
+        let worktreeGone = pruneCompleted || !existsSync(worktreePath);
+        let pruned = pruneCompleted;
+        let branchOutcome = "absent";
+        try {
+          if (!worktreeGone) {
+            const listing = await this.execWorkspaceTeardownGit("git worktree list --porcelain", { cwd: repoRootDir, timeout: 120_000 });
+            const owned = listing.stdout.split("\n").some((line) => line.startsWith("worktree ") && canonicalPath(line.slice(9)) === pathKey);
+            /* FNXC:Workspace 2026-08-15-05:33: Only the attributed sub-repo may prove a directory removable. */
+            if (!owned) continue;
+            await this.execWorkspaceTeardownGit(`git worktree remove --force ${shellQuote(worktreePath)}`, { cwd: repoRootDir, timeout: 120_000 });
+            worktreeGone = !existsSync(worktreePath);
+          }
+          // Prune is required even for an already-gone path; git otherwise retains .git/worktrees metadata.
+          if (!pruneCompleted) {
+            await this.execWorkspaceTeardownGit("git worktree prune", { cwd: repoRootDir, timeout: 120_000 });
+            pruned = true;
+            this.prunedWorkspaceWorktreeTeardowns.add(entryKey);
+          }
+          if (branch && branch === canonicalFusionBranchName(task.id) && worktreeGone) {
+            if (branchClaimCount > 1) branchOutcome = "retained-duplicate-claim";
+            else {
+              /*
+              FNXC:Workspace 2026-08-15-06:11:
+              A failed row's recorded landed SHA is evidence to verify, never an operator discard
+              instruction. Use the canonical landed predicate against this sub-repo's integration
+              branch; only soft deletion authorizes discard without land proof.
+              */
+              let safe = Boolean(task.deletedAt);
+              if (!safe && entry.landedSha) {
+                const integrationBranch = await resolveIntegrationBranch(
+                  repoRootDir,
+                  { ...settings, integrationBranch: undefined, baseBranch: undefined },
+                );
+                safe = await isRepoLanded(repoRootDir, integrationBranch, entry.landedSha, task.id, branch);
+              }
+              if (!safe && entry.baseCommitSha) {
+                const count = await this.execWorkspaceTeardownGit(`git rev-list --count ${shellQuote(entry.baseCommitSha)}..${shellQuote(branch)}`, { cwd: repoRootDir, timeout: 120_000 });
+                safe = count.stdout.trim() === "0";
+              }
+              if (safe) {
+                /* FNXC:Workspace 2026-08-15-05:33: An absent ref is already a completed teardown, not retryable failure. */
+                const listed = await this.execWorkspaceTeardownGit(`git branch --list ${shellQuote(branch)}`, { cwd: repoRootDir, timeout: 120_000 });
+                if (!listed.stdout.trim()) branchOutcome = "absent";
+                else {
+                  await this.execWorkspaceTeardownGit(`git branch -D ${shellQuote(branch)}`, { cwd: repoRootDir, timeout: 120_000 });
+                  branchOutcome = "deleted";
+                }
+              } else branchOutcome = "retained-unlanded";
+            }
+          } else if (branch) branchOutcome = "retained-non-canonical";
+        } catch (err: unknown) { failed = true; log.warn(`reconcileOrphanedWorkspaceWorktrees: git teardown failed for ${worktreePath}: ${err instanceof Error ? err.message : String(err)}`); }
+        const attempt = failed ? (this.orphanWorktreeRemovalFailures.get(entryKey) ?? 0) + 1 : this.orphanWorktreeRemovalFailures.get(entryKey) ?? 0;
+        if (failed) this.orphanWorktreeRemovalFailures.set(entryKey, attempt);
+        /* FNXC:Workspace 2026-08-15-05:33: A duplicate branch claim remains eligible after ambiguity clears. */
+        const settled = !failed && worktreeGone && pruned && ["deleted", "absent", "retained-unlanded", "retained-non-canonical"].includes(branchOutcome);
+        if (settled) {
+          this.orphanWorktreeRemovalFailures.delete(entryKey); this.settledWorkspaceWorktreeTeardowns.add(entryKey); cleaned++;
+          try {
+            /*
+            FNXC:Workspace 2026-08-15-05:33:
+            Settlement retires only the disposable path. Retained branches preserve their branch/base/
+            landed evidence for operator recovery and later safe deletion; deleting the whole entry
+            would turn a safe retain into a permanent leak.
+            */
+            const worktrees = { ...(task.workspaceWorktrees ?? {}) };
+            if (worktrees[repoRel]) worktrees[repoRel] = { ...worktrees[repoRel], worktreePath: "" };
+            await this.store.updateTask(task.id, { workspaceWorktrees: worktrees });
+          } catch { /* soft-deleted rows may reject best-effort settlement */ }
+        }
+        try { await createRunAuditor(this.store, { runId: generateSyntheticRunId("self-healing-orphaned-workspace-worktree", task.id), agentId: "self-healing", taskId: task.id, taskLineageId: task.lineageId, phase: "reconcile-orphaned-workspace-worktree" }).database({ type: "task:reconcile-orphaned-workspace-worktree", target: task.id, metadata: { taskId: task.id, repo: repoRel, worktreePath, success: settled, reason: failed ? "git-teardown-failed" : "settled", lane, worktreeOutcome: worktreeGone ? "gone" : "present", pruned, branch: entry.branch, branchOutcome, attempt } }); } catch { /* audit best-effort */ }
+      }
       return cleaned;
-    } catch (err: unknown) {
-      log.error(`reconcileOrphanedWorkspaceWorktrees sweep failed: ${err instanceof Error ? err.message : String(err)}`);
-      return 0;
-    }
+    } catch (err: unknown) { log.error(`reconcileOrphanedWorkspaceWorktrees sweep failed: ${err instanceof Error ? err.message : String(err)}`); return 0; }
   }
 
 

@@ -20,12 +20,12 @@ Surfaces (FN-5893):
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { SelfHealingManager } from "../self-healing.js";
 import { classifyBranchProbeError } from "../self-healing-git-evidence.js";
-import { activeSessionRegistry } from "../agents/active-session-registry.js";
+import { activeSessionRegistry, executingTaskLock } from "../agents/active-session-registry.js";
 import { landWorkspaceTask } from "../merge/merger-ai.js";
 import { createWorkspaceFixture, hasGit, type WorkspaceFixture } from "./_workspace-fixture.js";
 
@@ -58,8 +58,8 @@ function createStore(rows: Task[], settings: Partial<Settings> = {}): TaskStore 
     emitted,
     enqueued,
     getSettings: vi.fn().mockResolvedValue({ autoMerge: true, globalPause: false, enginePaused: false, taskStuckTimeoutMs: 60_000, ...settings } as unknown as Settings),
-    listTasks: vi.fn(async (opts?: { column?: string }) => {
-      const all = [...tasks.values()];
+    listTasks: vi.fn(async (opts?: { column?: string; includeDeleted?: boolean }) => {
+      const all = [...tasks.values()].filter((task) => opts?.includeDeleted || !task.deletedAt);
       return opts?.column ? all.filter((t) => t.column === opts.column) : all;
     }),
     getTask: vi.fn(async (id: string) => tasks.get(id) ?? null),
@@ -121,6 +121,18 @@ class UnavailableBranchProbeManager extends SelfHealingManager {
   }
 }
 
+class PruneFailureWorkspaceTeardownManager extends SelfHealingManager {
+  pruneCalls = 0;
+
+  protected override async execWorkspaceTeardownGit(command: string, options: { cwd: string; timeout: number }): Promise<{ stdout: string }> {
+    if (command === "git worktree prune") {
+      this.pruneCalls++;
+      throw new Error("injected prune failure");
+    }
+    return super.execWorkspaceTeardownGit(command, options);
+  }
+}
+
 /** Add a real `fusion/<id>` branch in a sub-repo with one non-conflicting own commit. */
 function addRepoBranch(fx: WorkspaceFixture, repoRel: string, content: string): void {
   const repoDir = fx.repoPath(repoRel);
@@ -168,6 +180,7 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
   });
   afterEach(() => {
     activeSessionRegistry.clear();
+    executingTaskLock.release(TASK_ID);
     vi.useRealTimers();
     vi.clearAllMocks();
     fx?.cleanup();
@@ -750,7 +763,7 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
       { column: "done" },
     );
     // Mark repo-b's worktree as active → it must be SKIPPED.
-    activeSessionRegistry.registerPath(wtB, { taskId: TASK_ID, kind: "executor", ownerKey: "x" });
+    activeSessionRegistry.registerPath(wtB, { taskId: "FN-other", kind: "executor", ownerKey: "x" });
 
     const store = createStore([task]);
     const manager = makeManager(store, fx.rootDir);
@@ -760,6 +773,302 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     expect(cleaned).toBe(1);
     expect(existsSync(wtA)).toBe(false); // removed
     expect(existsSync(wtB)).toBe(true); // active → skipped
+  });
+
+  it("keeps a complete-lane workspace task's worktree while its executor is live", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-complete-live");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH } }, { column: "done" });
+    activeSessionRegistry.registerPath(worktreePath, { taskId: TASK_ID, kind: "executor", ownerKey: "live" });
+
+    expect(await makeManager(createStore([task]), fx.rootDir).reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(existsSync(worktreePath)).toBe(true);
+  });
+
+  it("tears down an idle failed workspace worktree and its safely landed branch", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-terminal");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const landedSha = fx.git("repo-a", "git rev-parse HEAD").trim();
+    const task = workspaceTask(
+      { "repo-a": { worktreePath, branch: BRANCH, landedSha } },
+      { status: "failed", updatedAt: old, columnMovedAt: old },
+    );
+    const store = createStore([task]);
+    const manager = makeManager(store, fx.rootDir);
+
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(1);
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(fx.git("repo-a", `git branch --list ${BRANCH}`).trim()).toBe("");
+    expect(store.updateTask).toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:Workspace 2026-08-15-05:33:
+  Failed and soft-deleted workspace rows are destructive candidates only after their one-day floor.
+  These real-git cases lock the worktree/prune/branch policy so terminal cleanup cannot regress into
+  either leaking abandoned repositories or destroying an unlanded failed-task branch.
+  */
+  it("tears down a soft-deleted workspace worktree and branch as operator-discarded", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-deleted");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH } }, { deletedAt: old, updatedAt: old, columnMovedAt: old });
+    const manager = makeManager(createStore([task]), fx.rootDir);
+
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(1);
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(fx.git("repo-a", `git branch --list ${BRANCH}`).trim()).toBe("");
+  });
+
+  it("retains a failed-task branch when its recorded landed SHA is not reachable from integration", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-stale-landed-sha");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, landedSha: "not-a-real-commit" } }, { status: "failed", updatedAt: old, columnMovedAt: old });
+
+    expect(await makeManager(createStore([task]), fx.rootDir).reconcileOrphanedWorkspaceWorktrees()).toBe(1);
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(fx.git("repo-a", `git branch --list ${BRANCH}`).trim()).toContain(BRANCH);
+  });
+
+  it("retains an unlanded failed-task branch while retiring only its worktree path", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const repo = fx.repoPath("repo-a");
+    const baseCommitSha = fx.git("repo-a", "git rev-parse HEAD").trim();
+    const worktreePath = path.join(repo, ".wt-unlanded");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    configureIdentity(worktreePath);
+    writeFileSync(path.join(worktreePath, "unlanded.txt"), "keep\n");
+    execSync("git add unlanded.txt && git commit -m unlanded", { cwd: worktreePath, stdio: "pipe" });
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, baseCommitSha } }, { status: "failed", updatedAt: old, columnMovedAt: old });
+    const store = createStore([task]);
+
+    expect(await makeManager(store, fx.rootDir).reconcileOrphanedWorkspaceWorktrees()).toBe(1);
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(fx.git("repo-a", `git branch --list ${BRANCH}`).trim()).toContain(BRANCH);
+    expect(store.updateTask).toHaveBeenCalledWith(TASK_ID, expect.objectContaining({
+      workspaceWorktrees: expect.objectContaining({ "repo-a": expect.objectContaining({ branch: BRANCH, baseCommitSha, worktreePath: "" }) }),
+    }));
+  });
+
+  it("prunes an already-gone recorded worktree and settles its absent branch", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-prune-only");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    rmSync(worktreePath, { recursive: true, force: true });
+    expect(fx.git("repo-a", "git worktree list --porcelain")).toContain(worktreePath);
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const landedSha = fx.git("repo-a", "git rev-parse HEAD").trim();
+    const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, landedSha } }, { status: "failed", updatedAt: old, columnMovedAt: old });
+    const store = createStore([task]);
+    const manager = makeManager(store, fx.rootDir);
+
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(1);
+    expect(fx.git("repo-a", "git worktree list --porcelain")).not.toContain(worktreePath);
+    expect(fx.git("repo-a", `git branch --list ${BRANCH}`).trim()).toBe("");
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+  });
+
+  it("settles an already-absent safe branch without spending the retry budget", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-absent-branch");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    fx.git("repo-a", `git worktree remove --force ${worktreePath}`);
+    fx.git("repo-a", `git branch -D ${BRANCH}`);
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, landedSha: "landed" } }, { status: "failed", updatedAt: old, columnMovedAt: old });
+    const store = createStore([task]);
+    const manager = makeManager(store, fx.rootDir);
+
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(1);
+    expect(store.updateTask).toHaveBeenCalledWith(TASK_ID, expect.objectContaining({
+      workspaceWorktrees: expect.objectContaining({ "repo-a": expect.objectContaining({ branch: BRANCH, worktreePath: "" }) }),
+    }));
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+  });
+
+  it("skips a terminal path claimed by a live workspace row without settling it", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-shared");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const terminal = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, landedSha: "landed" } }, { status: "failed", updatedAt: old, columnMovedAt: old });
+    const live = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH } }, { id: "FN-7002", column: "in-progress", status: null });
+    const store = createStore([terminal, live]);
+
+    expect(await makeManager(store, fx.rootDir).reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(store.updateTask).not.toHaveBeenCalled();
+  });
+
+  it("skips duplicate repo-entry claims from the same terminal task before git work", async () => {
+    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-duplicate");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const task = workspaceTask({
+      "repo-a": { worktreePath, branch: BRANCH, landedSha: "landed" },
+      "repo-b": { worktreePath, branch: BRANCH, landedSha: "landed" },
+    }, { status: "failed", updatedAt: old, columnMovedAt: old });
+    const store = createStore([task]);
+
+    expect(await makeManager(store, fx.rootDir).reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(store.updateTask).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:Workspace 2026-08-15-05:39:
+  Each liveness veto below starts from a real failed worktree that the positive terminal cases prove
+  removable. Keeping these cases isolated means deleting one guard makes its own destructive-path
+  regression fail instead of being hidden by another veto.
+  */
+  it.each([
+    "raw-path-session",  "resolved-path-session", "task-session-path", "executing-lock", "task-active", "merge-pending", "active-merge", "paused", "user-paused", "recovery-scheduled",
+  ])("keeps a proven terminal worktree when the %s veto alone is present", async (veto) => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-veto");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const recordedPath = veto === "resolved-path-session"
+      ? path.join(fx.repoPath("repo-a"), ".wt-veto-alias")
+      : worktreePath;
+    if (recordedPath !== worktreePath) symlinkSync(worktreePath, recordedPath, "dir");
+    const extra: Partial<Task> = { status: "failed", updatedAt: old, columnMovedAt: old, landedSha: undefined };
+    if (veto === "paused") extra.paused = true;
+    if (veto === "user-paused") extra.userPaused = true;
+    if (veto === "recovery-scheduled") extra.nextRecoveryAt = new Date(Date.now() + 60_000).toISOString();
+    const task = workspaceTask({ "repo-a": { worktreePath: recordedPath, branch: BRANCH, landedSha: "landed" } }, extra);
+    const companionPath = path.join(fx.repoPath("repo-a"), ".wt-veto-companion");
+    const companionBranch = "fusion/fn-7002";
+    fx.git("repo-a", `git worktree add -b ${companionBranch} ${companionPath} HEAD`);
+    const companionLandedSha = fx.git("repo-a", "git rev-parse HEAD").trim();
+    const companion = workspaceTask({ "repo-a": { worktreePath: companionPath, branch: companionBranch, landedSha: companionLandedSha } }, { id: "FN-7002", status: "failed", updatedAt: old, columnMovedAt: old });
+    const options: Record<string, unknown> = {};
+    if (veto === "raw-path-session") activeSessionRegistry.registerPath(recordedPath, { taskId: "FN-elsewhere", kind: "executor", ownerKey: "raw" });
+    // Register the physical path while the row records a symlink alias: only canonical lookup can veto.
+    if (veto === "resolved-path-session") activeSessionRegistry.registerPath(realpathSync(worktreePath), { taskId: "FN-elsewhere", kind: "executor", ownerKey: "resolved" });
+    if (veto === "task-session-path") activeSessionRegistry.registerPath(fx.repoPath("repo-a"), { taskId: TASK_ID, kind: "executor", ownerKey: "task" });
+    if (veto === "executing-lock") executingTaskLock.tryClaim(TASK_ID);
+    if (veto === "task-active") options.isTaskActive = (id: string) => id === TASK_ID;
+    if (veto === "merge-pending") options.isMergePending = (id: string) => id === TASK_ID;
+    if (veto === "active-merge") options.getActiveMergeTaskId = () => TASK_ID;
+    const store = createStore([task, companion]);
+
+    expect(await makeManager(store, fx.rootDir, options).reconcileOrphanedWorkspaceWorktrees()).toBe(1);
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(fx.git("repo-a", `git branch --list ${BRANCH}`).trim()).toContain(BRANCH);
+    // Negative scope: one primary veto cannot silently disable teardown of another terminal row.
+    expect(existsSync(companionPath)).toBe(false);
+    expect(fx.git("repo-a", `git branch --list ${companionBranch}`).trim()).toBe("");
+    expect(store.updateTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles the prune phase while retaining a duplicate branch claim without re-pruning", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-duplicate-branch");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const first = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, landedSha: "landed" } }, { status: "failed", updatedAt: old, columnMovedAt: old });
+    // This stale forensic claim cannot own a second checkout of the same branch, but it must veto
+    // branch deletion until its task row is gone.
+    const second = workspaceTask({ "repo-a": { worktreePath: path.join(fx.repoPath("repo-a"), ".missing-claim"), branch: BRANCH } }, { id: "FN-7002", status: "failed", updatedAt: old, columnMovedAt: old });
+    const store = createStore([first, second]);
+    const manager = makeManager(store, fx.rootDir);
+
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(1);
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(fx.git("repo-a", `git branch --list ${BRANCH}`).trim()).toContain(BRANCH);
+    const phase = (manager as unknown as { prunedWorkspaceWorktreeTeardowns: Set<string> }).prunedWorkspaceWorktreeTeardowns;
+    expect(phase.size).toBeGreaterThan(0);
+    // A second tick sees the same ambiguity but performs no git work for the completed first entry.
+    expect(await manager.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(phase.size).toBeGreaterThan(0);
+  });
+
+  it("skips terminal paths claimed by two terminal task rows", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-two-terminal");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const one = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, landedSha: "landed" } }, { status: "failed", updatedAt: old, columnMovedAt: old });
+    const two = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH } }, { id: "FN-7002", status: "failed", updatedAt: old, columnMovedAt: old });
+    const store = createStore([one, two]);
+    expect(await makeManager(store, fx.rootDir).reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(store.updateTask).not.toHaveBeenCalled();
+  });
+
+  it("skips a path attributed to the wrong repo and a path outside the workspace root", async () => {
+    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
+    const ownedByA = path.join(fx.repoPath("repo-a"), ".wt-wrong-owner");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${ownedByA} HEAD`);
+    const outside = path.join(path.dirname(fx.rootDir), ".outside-worktree");
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const task = workspaceTask({
+      "repo-b": { worktreePath: ownedByA, branch: BRANCH, landedSha: "landed" },
+      "repo-a": { worktreePath: outside, branch: "fusion/fn-7001-outside", landedSha: "landed" },
+    }, { status: "failed", updatedAt: old, columnMovedAt: old });
+    const store = createStore([task]);
+    expect(await makeManager(store, fx.rootDir).reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(existsSync(ownedByA)).toBe(true);
+    expect(store.updateTask).not.toHaveBeenCalled();
+  });
+
+  it("canonicalizes symlinked duplicate claims before destructive teardown", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-symlink");
+    const alias = path.join(fx.repoPath("repo-a"), ".wt-symlink-alias");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    symlinkSync(worktreePath, alias, "dir");
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const first = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, landedSha: "landed" } }, { status: "failed", updatedAt: old, columnMovedAt: old });
+    const second = workspaceTask({ "repo-a": { worktreePath: alias, branch: BRANCH } }, { id: "FN-7002", status: "failed", updatedAt: old, columnMovedAt: old });
+    expect(await makeManager(createStore([first, second]), fx.rootDir).reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(existsSync(worktreePath)).toBe(true);
+  });
+
+  it("bounds a prune-only git failure and keeps soft-delete settlement in memory when persistence rejects", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const missingPath = path.join(fx.repoPath("repo-a"), ".gone");
+    const broken = workspaceTask({ "repo-a": { worktreePath: missingPath, branch: BRANCH, landedSha: "landed" } }, { status: "failed", updatedAt: old, columnMovedAt: old });
+    const brokenStore = createStore([broken]);
+    const manager = new PruneFailureWorkspaceTeardownManager(brokenStore, managerOptions(brokenStore, fx.rootDir) as never);
+    // Use the production reconciliation loop with only the git runner narrowed to a failing prune.
+    for (let attempt = 0; attempt < 4; attempt++) await manager.reconcileOrphanedWorkspaceWorktrees();
+    const failures = (manager as unknown as { orphanWorktreeRemovalFailures: Map<string, number> }).orphanWorktreeRemovalFailures;
+    expect([...failures.values()]).toEqual([3]);
+    expect(manager.pruneCalls).toBe(3);
+
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-reject-settle");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    rmSync(worktreePath, { recursive: true, force: true });
+    const rejected = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, landedSha: "landed" } }, { id: "FN-7003", deletedAt: old, updatedAt: old, columnMovedAt: old });
+    const store = createStore([rejected]);
+    store.updateTask.mockRejectedValue(new Error("soft-deleted"));
+    const settled = makeManager(store, fx.rootDir);
+    expect(await settled.reconcileOrphanedWorkspaceWorktrees()).toBe(1);
+    expect(await settled.reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+  });
+
+  it.each(["globalPause", "enginePaused"])("short-circuits all workspace teardown for %s", async (pauseFlag) => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    const worktreePath = path.join(fx.repoPath("repo-a"), ".wt-pause");
+    fx.git("repo-a", `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+    const old = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    const task = workspaceTask({ "repo-a": { worktreePath, branch: BRANCH, landedSha: "landed" } }, { status: "failed", updatedAt: old, columnMovedAt: old });
+    const store = createStore([task], { [pauseFlag]: true });
+
+    expect(await makeManager(store, fx.rootDir).reconcileOrphanedWorkspaceWorktrees()).toBe(0);
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(store.updateTask).not.toHaveBeenCalled();
   });
 
   // ── regression: single-repo task untouched by workspace reconcilers ────────
