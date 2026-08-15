@@ -71,7 +71,7 @@ describe("GrokRuntimeAdapter (ACP)", () => {
     expect(result.session.model).toBe("grok/default");
     expect(result.session.systemPrompt).toBe("sys");
     const args = settingsOut[0]?.acpArgs as string[];
-    expect(args).toContain("--no-auto-update");
+    expect(args).not.toContain("--no-auto-update");
     expect(args).toContain("agent");
     expect(args).toContain("--plugin-dir");
     expect(args.at(-1)).toBe("stdio");
@@ -85,11 +85,10 @@ describe("GrokRuntimeAdapter (ACP)", () => {
     expect(session.model).toBe("grok-4.5");
     expect(settingsOut[0]?.acpBinaryPath).toBe("grok");
     const args = settingsOut[0]?.acpArgs as string[];
-    expect(args).toContain("--no-auto-update");
+    expect(args).not.toContain("--no-auto-update");
     expect(args).toContain("--plugin-dir");
     expect(args).toEqual(expect.arrayContaining(["-m", "grok-4.5", "stdio"]));
-    // plugin-dir precedes model flag; no-auto-update precedes agent
-    expect(args.indexOf("--no-auto-update")).toBeLessThan(args.indexOf("agent"));
+    // plugin-dir precedes the optional model flag.
     expect(args.indexOf("--plugin-dir")).toBeLessThan(args.indexOf("-m"));
   });
 

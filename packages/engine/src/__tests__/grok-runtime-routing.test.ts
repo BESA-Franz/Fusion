@@ -230,11 +230,11 @@ describe("Grok CLI runtime routing (FN-7725)", () => {
     expect(result.runtimeId).toBe("grok");
     expect(result.wasConfigured).toBe(true);
     expect(mockCreateFnAgent).not.toHaveBeenCalled();
-    // FNXC:GrokAcp 2026-07-11-14:00 / 15:00: ACP args include --no-auto-update
-    // (official headless scripting docs), session-scoped --plugin-dir for Fusion
-    // skills, then stdio (optional -m when a model is set).
+    // Grok CLI v1.0.0 rejects --no-auto-update. ACP args keep the
+    // session-scoped --plugin-dir for Fusion skills, then stdio (and optional
+    // -m when a model is set).
     const acpArgs = settingsOut[0]?.acpArgs as string[];
-    expect(acpArgs).toContain("--no-auto-update");
+    expect(acpArgs).not.toContain("--no-auto-update");
     expect(acpArgs).toContain("agent");
     expect(acpArgs).toContain("--plugin-dir");
     expect(acpArgs.at(-1)).toBe("stdio");
