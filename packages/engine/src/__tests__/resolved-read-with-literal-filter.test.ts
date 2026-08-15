@@ -26,7 +26,7 @@ and the literal only answers when resolution produced nothing.
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 
@@ -115,7 +115,7 @@ describe("a function that resolves lanes does not also compare a column id", () 
   });
 
   for (const path of files) {
-    const name = path.split("/").pop()!;
+    const name = basename(path);
     const allowance = ALLOWED.find((entry) => entry.file === name);
 
     it(`${name} keeps no literal beside a resolved read`, () => {
