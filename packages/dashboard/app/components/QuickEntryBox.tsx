@@ -23,6 +23,7 @@ import { PendingAttachmentPreviews } from "./PendingAttachmentPreviews";
 import { getPriorityColorVar, getPriorityIcon, getPriorityLabel } from "../utils/priorityIndicator";
 import { validateQuickAddStartWorkflow, workflowSupportsQuickAddStart, resolveQuickAddStartInitialColumn, resolveQuickAddStartTargetColumn, type ValidatedQuickAddWorkflow } from "../utils/quickAddStart";
 import { computeFixedMenuPosition, getLayoutViewportSize } from "../utils/fixedMenuPosition";
+import { isInsidePortaledModelMenu } from "../utils/portalSurfaces";
 
 const STORAGE_KEY = "kb-quick-entry-text";
 const ALLOWED_TASK_ATTACHMENT_TYPES = new Set([
@@ -584,7 +585,7 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
       const clickedInsideTrigger = modelTriggerRef.current?.contains(target);
       const clickedInsidePortal = modelMenuPortalRef.current?.contains(target);
       // Also check for clicks inside CustomModelDropdown's portaled dropdown
-      const clickedInsideCombobox = (target instanceof Element) && (target.closest?.(".model-combobox-dropdown--portal") != null);
+      const clickedInsideCombobox = isInsidePortaledModelMenu(target);
 
       if (!clickedInsideTrigger && !clickedInsidePortal && !clickedInsideCombobox) {
         setIsModelMenuOpen(false);
@@ -2410,7 +2411,7 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
                 focus for its filter input. Plain menu chrome still preserves the quick-entry focus.
                 */
                 const target = e.target as Element;
-                if (target.closest("input, textarea, select, [contenteditable], .model-combobox-dropdown--portal")) {
+                if (target.closest("input, textarea, select, [contenteditable]") || isInsidePortaledModelMenu(target)) {
                   return;
                 }
                 e.preventDefault();

@@ -28,6 +28,7 @@ import {
 } from "../utils/heartbeatIntervals";
 import { isEphemeralAgent, getErrorMessage, resolvePermanentAgentEffectiveModel, type Settings } from "@fusion/core";
 import { formatAgentSkillBadgeLabel } from "../utils/agentSkills";
+import { isInsidePortaledModelMenu } from "../utils/portalSurfaces";
 import {
   ORG_CHART_LAYOUT_STORAGE_KEY,
   isOrgChartLayoutPreference,
@@ -833,6 +834,11 @@ export function AgentsView({ addToast, projectId, onOpenTaskLogs, agentOnboardin
       if (!target) return;
       if (controlsPanelRef.current?.contains(target)) return;
       if (controlsTriggerRef.current?.contains(target)) return;
+      /*
+      FNXC:ModelDropdown 2026-08-15-12:27:
+      Body-portaled model controls are logical children of their host; shared pointer and touch dismissal must not close a panel from their gesture origin.
+      */
+      if (isInsidePortaledModelMenu(target)) return;
       setIsControlsPanelOpen(false);
     };
 

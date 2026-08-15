@@ -22,6 +22,7 @@ import { SkillMultiselect } from "./SkillMultiselect";
 import { AgentAvatar } from "./AgentAvatar";
 import { ExperimentalAgentOnboardingModal } from "./ExperimentalAgentOnboardingModal";
 import { useFavorites } from "../hooks/useFavorites";
+import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
 
 export interface NewAgentDialogProps {
   isOpen: boolean;
@@ -267,8 +268,6 @@ export function NewAgentDialog({
     applyDraftToForm(prefillDraft);
   }, [isOpen, prefillDraft, applyDraftToForm]);
 
-  if (!isOpen) return null;
-
   const handleClose = () => {
     setStep(0);
     setStepZeroTab("presets");
@@ -293,6 +292,13 @@ export function NewAgentDialog({
     setIsInterviewOpen(false);
     onClose();
   };
+  /*
+  FNXC:ModalDismissal 2026-08-15-12:27:
+  A model-menu gesture can end on the overlay after mobile re-anchoring. Preserve outside dismissal only when the press itself started on this overlay.
+  */
+  const overlayDismiss = useOverlayDismiss(handleClose, { enabled: true });
+
+  if (!isOpen) return null;
 
   const handleCreate = async () => {
     if (!name.trim()) return;
@@ -418,7 +424,7 @@ export function NewAgentDialog({
   // mobile (the header isn't taller than the dialog top — it's just stacked
   // above it because the dialog couldn't escape its container).
   return createPortal(
-    <div className="agent-dialog-overlay" onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}>
+    <div className="agent-dialog-overlay" {...overlayDismiss}>
       <div className="agent-dialog" role="dialog" aria-modal="true" aria-label={t("agents.dialogAriaLabel", "Create new agent")}>
         {/* Header */}
         <div className="agent-dialog-header">
