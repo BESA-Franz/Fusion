@@ -20,9 +20,13 @@ vi.mock("node:child_process", async () => {
     }
   });
 
-  const execFileFn: any = vi.fn((file: string, args: string[] | undefined, opts: any, cb: any) =>
-    execFn([file, ...(Array.isArray(args) ? args : [])].join(" "), opts, cb),
-  );
+  const execFileFn: any = vi.fn((file: string, args: string[] | undefined, opts: any, cb: any) => {
+    const values = Array.isArray(args) ? args : [];
+    const command = [file, ...values.map((value, index) => (
+      index === 0 || value.startsWith("-") ? value : `'${value}'`
+    ))].join(" ");
+    return execFn(command, opts, cb);
+  });
 
   execFn[promisify.custom] = (cmd: string, opts?: any) =>
     new Promise((resolve, reject) => {
@@ -37,8 +41,13 @@ vi.mock("node:child_process", async () => {
       });
     });
 
-  execFileFn[promisify.custom] = (file: string, args?: string[], opts?: any) =>
-    execFn[promisify.custom]([file, ...(Array.isArray(args) ? args : [])].join(" "), opts);
+  execFileFn[promisify.custom] = (file: string, args?: string[], opts?: any) => {
+    const values = Array.isArray(args) ? args : [];
+    const command = [file, ...values.map((value, index) => (
+      index === 0 || value.startsWith("-") ? value : `'${value}'`
+    ))].join(" ");
+    return execFn[promisify.custom](command, opts);
+  };
 
   return { exec: execFn, execSync: execSyncFn, execFile: execFileFn };
 });

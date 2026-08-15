@@ -163,10 +163,7 @@ async function isAncestor(repoDir: string, sha: string, ref: string): Promise<bo
 
 async function listStrandedCommits(repoDir: string, startPoint: string, branchName: string): Promise<BranchConflictCommit[]> {
   try {
-    const output = await runGit(
-      repoDir,
-      `git log --reverse --format=%H%x09%s ${quoteShellArg(`${startPoint}..${branchName}`)}`,
-    );
+    const output = await runGitArgs(repoDir, ["log", "--reverse", "--format=%H%x09%s", `${startPoint}..${branchName}`]);
     if (!output) return [];
     return output
       .split("\n")
@@ -184,7 +181,7 @@ async function listStrandedCommits(repoDir: string, startPoint: string, branchNa
 async function resolveBranchComparisonRef(repoDir: string, startPoint: string, branchName: string): Promise<string> {
   try {
     await revParse(repoDir, startPoint);
-    await runGit(repoDir, `git merge-base ${quoteShellArg(startPoint)} ${quoteShellArg(branchName)}`);
+    await runGitArgs(repoDir, ["merge-base", startPoint, branchName]);
     return startPoint;
   } catch {
     const resolved = await resolveIntegrationBranch(repoDir, undefined);
@@ -199,11 +196,8 @@ export async function listUniqueBranchCommits(
 ): Promise<UniqueBranchCommitListResult> {
   const mainRef = await resolveBranchComparisonRef(repoDir, startPoint, branchName);
   try {
-    const comparisonBase = await runGit(repoDir, `git merge-base ${quoteShellArg(mainRef)} ${quoteShellArg(branchName)}`);
-    const cherryOutput = await runGit(
-      repoDir,
-      `git cherry ${quoteShellArg(mainRef)} ${quoteShellArg(branchName)} ${quoteShellArg(comparisonBase)}`,
-    );
+    const comparisonBase = await runGitArgs(repoDir, ["merge-base", mainRef, branchName]);
+    const cherryOutput = await runGitArgs(repoDir, ["cherry", mainRef, branchName, comparisonBase]);
     const plusTokens = cherryOutput
       .split("\n")
       .map((line) => line.trim())
@@ -214,8 +208,8 @@ export async function listUniqueBranchCommits(
     const commits: BranchConflictCommit[] = [];
     for (const token of plusTokens) {
       const [sha, subject] = await Promise.all([
-        runGit(repoDir, `git rev-parse --verify ${quoteShellArg(`${token}^{commit}`)}`).catch(() => token),
-        runGit(repoDir, `git log -1 --format=%s ${quoteShellArg(token)}`).catch(() => ""),
+        runGitArgs(repoDir, ["rev-parse", "--verify", `${token}^{commit}`]).catch(() => token),
+        runGitArgs(repoDir, ["log", "-1", "--format=%s", token]).catch(() => ""),
       ]);
       commits.push({ sha, subject });
     }
@@ -269,7 +263,7 @@ async function summarizeTaskAttributedCommits(repoDir: string, range: string, ta
   const genericTrailerPattern = new RegExp(`(?:^|\\n)${FUSION_TASK_ID_TRAILER_KEY}:\\s*(FN-\\d+)(?:\\n|$)`, "i");
   let output = "";
   try {
-    output = await runGit(repoDir, `git log --format=%H%x00%s%x00%b ${quoteShellArg(range)}`);
+    output = await runGitArgs(repoDir, ["log", "--format=%H%x00%s%x00%b", range]);
   } catch {
     return { ownCount: 0, foreignCount: 0 };
   }
@@ -330,7 +324,7 @@ export async function reportBranchAttribution(
   taskId: string,
 ): Promise<BranchAttributionReport> {
   const report: BranchAttributionReport = { ownTrailed: 0, ownUntrailed: [], foreign: [], unattributed: [] };
-  const output = await runGit(repoDir, `git log --format=%H%x1f%s%x1f%b%x1e ${quoteShellArg(`${baseSha}..${branch}`)}`)
+  const output = await runGitArgs(repoDir, ["log", "--format=%H%x1f%s%x1f%b%x1e", `${baseSha}..${branch}`])
     .catch(() => "");
   if (!output) return report;
   const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
