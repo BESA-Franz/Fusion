@@ -2,7 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import "./executor-test-helpers.js";
 import { TaskExecutor } from "../executor.js";
 import { executorLog } from "../logger.js";
-import { createMockStore, mockedCreateFnAgent, mockedExecSync, resetExecutorMocks } from "./executor-test-helpers.js";
+import {
+  captureNamedTool,
+  createMockStore,
+  createWorkflowRoutingAgentStore,
+  mockedCreateFnAgent,
+  mockedExecSync,
+  resetExecutorMocks,
+} from "./executor-test-helpers.js";
 
 function baseTask(overrides: Record<string, unknown> = {}) {
   return {
@@ -14,6 +21,7 @@ function baseTask(overrides: Record<string, unknown> = {}) {
     worktree: "/repo/.worktrees/swift-falcon",
     branch: "fusion/fn-4482",
     baseCommitSha: "abc123",
+    assignedAgentId: "workflow-test-executor",
     taskDoneRetryCount: 0,
     steps: [{ name: "Step 1", status: "in-progress" as const }],
     currentStep: 0,
@@ -35,7 +43,7 @@ async function setup(params?: {
   gitFailure?: boolean;
 }) {
   const store = createMockStore();
-  let task = baseTask({
+  const task = baseTask({
     prompt: `## Review Level: ${params?.reviewLevel ?? 1}`,
     scopeOverride: params?.scopeOverride,
   });
@@ -72,11 +80,12 @@ async function setup(params?: {
   });
 
   mockedCreateFnAgent.mockImplementation(async ({ customTools }: any) => {
-    tool = customTools.find((t: any) => t.name === "fn_task_done");
+    tool = captureNamedTool(customTools, "fn_task_done", tool);
     return { session: { prompt: vi.fn().mockResolvedValue(undefined), dispose: vi.fn() } } as any;
   });
 
-  const executor = new TaskExecutor(store as any, "/repo");
+  const routing = createWorkflowRoutingAgentStore(store as never);
+  const executor = new TaskExecutor(store as any, "/repo", { agentStore: routing.agentStore as never });
   await executor.execute(task as any);
 
   return { store, tool, executor };
