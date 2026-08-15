@@ -31,6 +31,7 @@ import type { AgentSession, ToolDefinition } from "@earendil-works/pi-coding-age
 import { createTaskPromptWriteTool } from "./shared-worker-tools.js";
 import type { PluginRunner } from "../plugins/plugin-runner.js";
 import { AgentLogger } from "../agents/agent-logger.js";
+import { attachAgentUsageTelemetry, emitAgentSessionStart } from "../agents/agent-usage-telemetry.js";
 import { buildSystemPromptWithInstructions } from "../agents/agent-instructions.js";
 import {
   createResolvedAgentSession,
@@ -489,6 +490,16 @@ ${planReviewFeedbackHistory.map((feedback, index) => `  ${index + 1}. ${feedback
     const primaryModelId = useOverride ? workflowStep.modelId : laneModel.modelId;
     // FNXC:ProviderAuth 2026-08-01-08:39: A workflow-step model override has no paired instance selection, so only the resolved primary task lane may carry its requested credential instance. Fallback attempts must retain their provider-default behavior rather than inheriting a primary-provider identity.
     const primaryCredentialInstanceId = useOverride ? undefined : laneModel.credentialInstanceId;
+    attachAgentUsageTelemetry(agentLogger, {
+      store: deps.store,
+      agentId: task.assignedAgentId ?? null,
+      taskId: task.id,
+      nodeId: null,
+      model: primaryModelId ?? null,
+      provider: primaryProvider ?? null,
+      lane: "workflow-step",
+      ephemeral: true,
+    });
 
     const workflowFallback = isReviewTypeWorkflowStep
       ? resolveValidatorFallbackModel(settings)
@@ -689,6 +700,18 @@ ${planReviewFeedbackHistory.map((feedback, index) => `  ${index + 1}. ${feedback
         ...(additionalSkillPaths ? { additionalSkillPaths } : {}),
         ...(readonlyCustomTools.allowed.length > 0 ? { customTools: readonlyCustomTools.allowed } : {}),
       });
+      const sessionTelemetryContext = {
+        store: deps.store,
+        agentId: task.assignedAgentId ?? null,
+        taskId: task.id,
+        nodeId: null,
+        model: modelId ?? null,
+        provider: provider ?? null,
+        lane: "workflow-step" as const,
+        ephemeral: true,
+      };
+      attachAgentUsageTelemetry(agentLogger, sessionTelemetryContext);
+      emitAgentSessionStart(sessionTelemetryContext);
 
       const workflowModelDetails = formatModelMarkerDetails(
         describeModel(session),

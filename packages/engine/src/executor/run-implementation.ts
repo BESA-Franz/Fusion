@@ -110,6 +110,7 @@ import type { ProviderInstanceRef } from "@fusion/core";
 import type { ReviewVerdict } from "../execution/reviewer.js";
 import { buildPluginPromptSection } from "../agents/agent-instructions.js";
 import { AgentLogger } from "../agents/agent-logger.js";
+import { attachAgentUsageTelemetry } from "../agents/agent-usage-telemetry.js";
 import {
   createResolvedAgentSession,
   extractRuntimeHint,
@@ -1991,6 +1992,14 @@ export async function runImplementation(
           }
         },
       });
+      attachAgentUsageTelemetry(agentLogger, {
+        store: deps.store,
+        agentId: engineRunContext.agentId ?? null,
+        taskId: task.id,
+        nodeId: detail.effectiveNodeId ?? detail.nodeId ?? null,
+        lane: "executor",
+        ephemeral: true,
+      });
 
       let agentRotationEvent: import("../credential-instance-rotation.js").RotationEvent | undefined;
       let agentRotationDeclined = false;
@@ -2043,11 +2052,15 @@ export async function runImplementation(
         // give the agent logger the context it needs to emit usage_events tool
         // rows (KTD3). nodeId is sourced from the routed/effective node, null
         // when the task has no node context.
-        agentLogger.setUsageContext({
+        attachAgentUsageTelemetry(agentLogger, {
+          store: deps.store,
           model: executorModelId ?? null,
           provider: executorProvider ?? null,
           nodeId: detail.effectiveNodeId ?? detail.nodeId ?? null,
           agentId: engineRunContext.agentId ?? null,
+          taskId: task.id,
+          lane: "executor",
+          ephemeral: true,
         });
 
         // Determine whether we're resuming a previous session (pause/resume)

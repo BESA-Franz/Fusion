@@ -6,8 +6,11 @@ import { describe, expect, it } from "vitest";
 const sourceRoot = join(process.cwd(), "src");
 const WINDOW_LINES = 80;
 const expectedSites = new Map([
-  ["agent-heartbeat.ts", 2], ["executor.ts", 3], ["merger.ts", 5], ["merge/merger-ai.ts", 2],
+  ["agent-heartbeat.ts", 2], ["merger.ts", 5], ["merge/merger-ai.ts", 2],
   ["triage.ts", 1], ["execution/reviewer.ts", 1], ["execution/step-session-executor.ts", 1],
+  ["executor/attempt-executor-verification-fix.ts", 1],
+  ["executor/execute-workflow-step.ts", 1],
+  ["executor/run-implementation.ts", 1],
 ]);
 
 /*
@@ -19,6 +22,7 @@ later refresh cannot mask a dark logger site in a multi-site file.
 const PRE_RESOLUTION_ATTACH_FILES = new Set([
   "agent-heartbeat.ts", "executor.ts", "merger.ts", "triage.ts",
   "execution/reviewer.ts", "execution/step-session-executor.ts",
+  "executor/run-implementation.ts",
 ]);
 
 function files(directory: string): string[] {
@@ -65,7 +69,7 @@ describe("FN-8868 agent usage telemetry wiring", () => {
 
     for (const file of files(sourceRoot)) {
       const source = readFileSync(file, "utf8");
-      const relativeFile = relative(sourceRoot, file);
+      const relativeFile = relative(sourceRoot, file).replaceAll("\\", "/");
       const { loggers, attaches, preResolutionAttaches, lineAt } = collectSites(source);
       if (loggers.length === 0) continue;
 

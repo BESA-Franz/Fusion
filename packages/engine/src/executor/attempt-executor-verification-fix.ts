@@ -15,6 +15,7 @@
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { resolveExecutorFallbackModel, resolvePersistAgentThinkingLog } from "@fusion/core";
 import { AgentLogger } from "../agents/agent-logger.js";
+import { attachAgentUsageTelemetry, emitAgentSessionStart } from "../agents/agent-usage-telemetry.js";
 import {
   createResolvedAgentSession,
   resolveExecutorSessionModel,
@@ -111,6 +112,17 @@ export async function attemptExecutorVerificationFix(
     const { provider: executorProvider, modelId: executorModelId } = executorSessionModel;
 
     const executorFallback = resolveExecutorFallbackModel(settings);
+    const telemetryContext = {
+      store: deps.store,
+      agentId: task.assignedAgentId ?? null,
+      taskId: task.id,
+      nodeId: null,
+      model: executorModelId ?? null,
+      provider: executorProvider ?? null,
+      lane: "executor" as const,
+      ephemeral: true,
+    };
+    attachAgentUsageTelemetry(logger, telemetryContext);
 
     // Create the fix agent session
     const { session } = await createResolvedAgentSession({
@@ -157,6 +169,7 @@ Do not refactor, rename broadly, or make opportunistic improvements.
       ...(skillContext?.skillSelectionContext ? { skillSelection: skillContext.skillSelectionContext } : {}),
       ...(skillContext && skillContext.additionalSkillPaths.length > 0 ? { additionalSkillPaths: skillContext.additionalSkillPaths } : {}),
     });
+    emitAgentSessionStart(telemetryContext);
 
     await deps.store.logEntry(
       task.id,
