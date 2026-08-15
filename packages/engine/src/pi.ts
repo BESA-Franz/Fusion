@@ -49,6 +49,7 @@ import {
   mergeBuiltInZaiProviderModels,
   mergeSupplementalAnthropicModels,
   mergeSupplementalOpenAiCodexModels,
+  toExecutionModelProviderId,
   registerBuiltInGrokProvider,
   registerBuiltInZaiProvider,
   registerFusionSessionIdentity,
@@ -1167,7 +1168,12 @@ function resolveConfiguredModel(
     return undefined;
   }
 
-  const model = modelRegistry.find(provider, modelId);
+  /*
+  FNXC:ProviderAuth 2026-08-15-20:57:
+  Persisted model settings from the split Anthropic authentication cards may name an auth id. pi-ai only knows the direct execution provider, so normalize before registry lookup and template fallback; never register the auth id as a provider.
+  */
+  const executionProvider = toExecutionModelProviderId(provider);
+  const model = modelRegistry.find(executionProvider, modelId);
   if (model) {
     return model;
   }
@@ -1176,15 +1182,15 @@ function resolveConfiguredModel(
   // This mirrors the pi CLI's buildFallbackModel behaviour, which accepts any
   // model ID for a configured provider (e.g. any OpenRouter model string) even
   // when it isn't in the built-in or custom model list.
-  const providerModels = modelRegistry.getAll().filter((m) => m.provider === provider);
+  const providerModels = modelRegistry.getAll().filter((m) => m.provider === executionProvider);
   if (providerModels.length > 0) {
     const baseModel = providerModels[0]!;
-    piLog.warn(`${kind} model ${provider}/${modelId} not in registry; using provider base model as template`);
+    piLog.warn(`${kind} model ${executionProvider}/${modelId} not in registry; using provider base model as template`);
     return { ...baseModel, id: modelId, name: modelId };
   }
 
   throw new Error(
-    `Configured model ${provider}/${modelId} (${kind} selection) was not found in the pi model registry. `
+    `Configured model ${executionProvider}/${modelId} (${kind} selection) was not found in the pi model registry. `
     + "If this model comes from a custom provider, verify Settings → Custom Providers (stored in ~/.fusion/settings.json) includes this provider/model, "
     + "or choose an available model from /api/models.",
   );

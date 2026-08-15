@@ -577,6 +577,7 @@ describe("GET /models", () => {
         getAvailable: vi.fn().mockReturnValue([
           { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", provider: "anthropic", reasoning: true, contextWindow: 200000 },
           { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5 OAuth", provider: "anthropic-subscription", reasoning: true, contextWindow: 200000 },
+          { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5 API Key", provider: "anthropic-api-key", reasoning: true, contextWindow: 200000 },
           { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5 (CLI)", provider: "pi-claude-cli", reasoning: true, contextWindow: 200000 },
           { id: "claude-sonnet-5", name: "Claude Sonnet 5 (CLI)", provider: "pi-claude-cli", reasoning: true, contextWindow: 1_000_000 },
           { id: "claude-sonnet-5", name: "Claude Sonnet 5 Duplicate (CLI)", provider: "pi-claude-cli", reasoning: true, contextWindow: 1_000_000 },
@@ -658,6 +659,7 @@ describe("GET /models", () => {
         expect(providers).toContain("anthropic");
         expect(providers).toContain("pi-claude-cli");
         expect(providers).not.toContain("anthropic-subscription");
+        expect(providers).not.toContain("anthropic-api-key");
         const cliSonnetFiveRows = res.body.models.filter((m: { provider: string; id: string }) => m.provider === "pi-claude-cli" && m.id === "claude-sonnet-5");
         expect(cliSonnetFiveRows).toHaveLength(1);
       });

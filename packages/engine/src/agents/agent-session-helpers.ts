@@ -27,6 +27,7 @@ import {
   resolveTaskPlanningModel,
   resolveTaskValidatorModel,
   TEST_MODE_RESOLVED,
+  toExecutionModelProviderId,
   type ResolvedModelSelection,
   type Settings,
   type ThinkingLevel,
@@ -783,11 +784,20 @@ export async function createResolvedAgentSession(
   options: ResolvedSessionOptions,
 ): Promise<ResolvedSessionResult> {
   const { sessionPurpose, pluginRunner, runtimeHint, runAuditor, settings, authStorage: injectedAuthStorage, credentialInstanceId: requestedCredentialInstanceId, ...runtimeOptionsRaw } = options;
+  /*
+  FNXC:ProviderAuth 2026-08-15-20:57:
+  This shared session seam receives persisted task, lane, and agent selections from every runtime. Convert Anthropic auth-card ids before credential-instance lookup and runtime creation, so pi-ai receives only `anthropic` while Fusion auth storage still resolves its subscription material through that execution id.
+  */
+  const executionRuntimeOptions = {
+    ...runtimeOptionsRaw,
+    ...(runtimeOptionsRaw.defaultProvider ? { defaultProvider: toExecutionModelProviderId(runtimeOptionsRaw.defaultProvider) } : {}),
+    ...(runtimeOptionsRaw.fallbackProvider ? { fallbackProvider: toExecutionModelProviderId(runtimeOptionsRaw.fallbackProvider) } : {}),
+  };
   let credentialResolution: ReturnType<typeof resolveCredentialInstanceRef> | undefined;
   if (requestedCredentialInstanceId) {
     try {
       const storage = injectedAuthStorage ?? createFusionAuthStorage();
-      credentialResolution = resolveCredentialInstanceRef(storage, runtimeOptionsRaw.defaultProvider ?? "", requestedCredentialInstanceId);
+      credentialResolution = resolveCredentialInstanceRef(storage, executionRuntimeOptions.defaultProvider ?? "", requestedCredentialInstanceId);
     } catch (error) {
       /*
       FNXC:ProviderAuth 2026-08-03-17:35:
@@ -800,7 +810,7 @@ export async function createResolvedAgentSession(
       */
       if ((error as Error).name === "CredentialInstanceResolutionError") {
         sessionLog.warn(
-          `[${sessionPurpose}] credential instance "${requestedCredentialInstanceId}" for provider "${runtimeOptionsRaw.defaultProvider ?? ""}" unresolved; continuing with legacy provider auth (custom provider apiKey / unscoped default)`,
+          `[${sessionPurpose}] credential instance "${requestedCredentialInstanceId}" for provider "${executionRuntimeOptions.defaultProvider ?? ""}" unresolved; continuing with legacy provider auth (custom provider apiKey / unscoped default)`,
         );
       } else {
         sessionLog.warn(`[${sessionPurpose}] credential instance resolution unavailable; using provider default`);
@@ -823,9 +833,9 @@ export async function createResolvedAgentSession(
     );
   }
 
-  const skillNamesFromSelection = extractSkillNamesFromSelection(runtimeOptionsRaw.skillSelection);
-  const mergedSkillNames = runtimeOptionsRaw.skills && runtimeOptionsRaw.skills.length > 0
-    ? runtimeOptionsRaw.skills
+  const skillNamesFromSelection = extractSkillNamesFromSelection(executionRuntimeOptions.skillSelection);
+  const mergedSkillNames = executionRuntimeOptions.skills && executionRuntimeOptions.skills.length > 0
+    ? executionRuntimeOptions.skills
     : skillNamesFromSelection;
 
   /*
@@ -840,9 +850,9 @@ export async function createResolvedAgentSession(
   the finite default, custom cap, or explicit no-limit sentinel interpretation.
   */
   const runtimeOptions: AgentRuntimeOptions = {
-    ...runtimeOptionsRaw,
-    toolOutputMaxChars: runtimeOptionsRaw.toolOutputMaxChars !== undefined
-      ? runtimeOptionsRaw.toolOutputMaxChars
+    ...executionRuntimeOptions,
+    toolOutputMaxChars: executionRuntimeOptions.toolOutputMaxChars !== undefined
+      ? executionRuntimeOptions.toolOutputMaxChars
       : resolveAgentToolOutputMaxChars(settings ?? {}),
     ...(mergedSkillNames.length > 0 ? { skills: mergedSkillNames } : {}),
     ...(credentialResolution ? {
