@@ -200,6 +200,34 @@ describe("Hermes runtime integration via engine resolution pipeline", () => {
     }));
   });
 
+  it("routes a no-hint Hermes picker selection through Hermes before pi model resolution", async () => {
+    const hermesRegistration = createHermesRegistration();
+    const pluginRunner = createMockPluginRunner({ getRuntimeById: vi.fn().mockReturnValue(hermesRegistration) });
+
+    const result = await createResolvedAgentSession({
+      sessionPurpose: "executor",
+      pluginRunner,
+      cwd: "/tmp/project",
+      systemPrompt: "Use Hermes",
+      defaultProvider: "hermes",
+      defaultModelId: "hermes/default",
+    });
+
+    expect(result.runtimeId).toBe("hermes");
+    expect(mockCreateFnAgent).not.toHaveBeenCalled();
+  });
+
+  it("reports Hermes plugin remediation when a no-hint picker selection lacks its runtime", async () => {
+    await expect(createResolvedAgentSession({
+      sessionPurpose: "executor",
+      pluginRunner: createMockPluginRunner(),
+      cwd: "/tmp/project",
+      systemPrompt: "Use Hermes",
+      defaultProvider: "hermes",
+      defaultModelId: "hermes/default",
+    })).rejects.toThrow(/Hermes CLI/);
+  });
+
   it("falls back to default pi runtime when Hermes factory throws", async () => {
     const hermesRegistration = createHermesRegistration(() => {
       throw new Error("factory exploded");

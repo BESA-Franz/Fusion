@@ -46,6 +46,12 @@ import {
 import type { RunAuditor } from "../util/run-audit.js";
 import { createFusionAuthStorage, resolveCredentialInstanceRef, type FusionAuthStorage } from "../auth/auth-storage.js";
 import { MockAgentRuntime } from "../providers/mock-provider.js";
+import {
+  applyCliRuntimeOptions,
+  assertExplicitCliRuntimeHint,
+  deriveCliRuntimeHint,
+  dropUnsupportedCliFallback,
+} from "./cli-provider-routing.js";
 
 /** Logger for agent session helpers */
 const sessionLog = createLogger("agent-session");
@@ -130,6 +136,11 @@ export interface ResolvedSessionOptions extends AgentRuntimeOptions {
   pluginRunner?: PluginRunner;
   /** Optional runtime hint from task/agent configuration */
   runtimeHint?: string;
+  /**
+   * Injected Cursor support status for routing conformance. Production leaves it
+   * unset while the bundled Cursor adapter remains a non-executable stub.
+   */
+  cursorCliExecutionSupported?: boolean;
   /**
    * Optional run-audit emitter; when provided, a `session:runtime-resolved`
    * database event is recorded at resolution time. No-ops when omitted to
@@ -371,112 +382,6 @@ function stripGrokCliModelProviderPrefix(modelId: string | undefined): string | 
   return normalized.startsWith(grokCliPrefix)
     ? normalized.slice(grokCliPrefix.length)
     : normalized;
-}
-
-const OMP_CLI_PROVIDER_ID = "omp-cli";
-
-function isOmpCliSelection(runtimeOptions: AgentRuntimeOptions): boolean {
-  return runtimeOptions.defaultProvider === OMP_CLI_PROVIDER_ID
-    || runtimeOptions.fallbackProvider === OMP_CLI_PROVIDER_ID;
-}
-
-function stripOmpCliModelProviderPrefix(modelId: string | undefined): string | undefined {
-  const normalized = modelId?.trim();
-  if (!normalized) return normalized;
-  const ompCliPrefix = `${OMP_CLI_PROVIDER_ID}/`;
-  return normalized.startsWith(ompCliPrefix)
-    ? normalized.slice(ompCliPrefix.length)
-    : normalized;
-}
-
-/*
-FNXC:OmpAcp 2026-07-18-09:00:
-FN-8262: `omp-cli/*` models are dynamically discovered from `omp models` and are never registered in pi's execution registry, so route primary and fallback selections to the bundled `omp` ACP runtime before pi resolves a model. Test mode must short-circuit to mock without looking up OMP; an unavailable explicit `runtimeHint: "omp"` must report the OMP plugin remediation rather than pi's misleading model-not-found error.
-*/
-function buildMissingOmpRuntimeError(): Error {
-  return new Error(
-    "Oh My Pi (omp) models require the bundled OMP runtime plugin. "
-    + "Install and enable the OMP Runtime plugin (fusion-plugin-omp-runtime) and ensure the `omp` binary is installed and authenticated (`omp acp`, credentials under ~/.omp).",
-  );
-}
-
-function deriveOmpRuntimeHint(
-  runtimeOptions: AgentRuntimeOptions,
-  pluginRunner: PluginRunner | undefined,
-): string | undefined {
-  if (!isOmpCliSelection(runtimeOptions)) return undefined;
-  try {
-    if (pluginRunner?.getRuntimeById("omp")) return "omp";
-  } catch {
-    throw buildMissingOmpRuntimeError();
-  }
-  throw buildMissingOmpRuntimeError();
-}
-
-function applyOmpCliRuntimeOptions(runtimeOptions: AgentRuntimeOptions): AgentRuntimeOptions {
-  if (runtimeOptions.defaultProvider === OMP_CLI_PROVIDER_ID) {
-    return {
-      ...runtimeOptions,
-      defaultModelId: stripOmpCliModelProviderPrefix(runtimeOptions.defaultModelId),
-    };
-  }
-
-  if (runtimeOptions.fallbackProvider === OMP_CLI_PROVIDER_ID) {
-    return {
-      ...runtimeOptions,
-      defaultProvider: runtimeOptions.fallbackProvider,
-      defaultModelId: stripOmpCliModelProviderPrefix(runtimeOptions.fallbackModelId),
-      defaultThinkingLevel: runtimeOptions.fallbackThinkingLevel ?? runtimeOptions.defaultThinkingLevel,
-      fallbackProvider: undefined,
-      fallbackModelId: undefined,
-      fallbackThinkingLevel: undefined,
-    };
-  }
-
-  return runtimeOptions;
-}
-
-function buildMissingGrokRuntimeError(): Error {
-  return new Error(
-    "Grok CLI models require the bundled Grok CLI runtime when no Fusion-visible GROK_API_KEY is set. "
-    + "Install and enable the Grok CLI runtime plugin, or set GROK_API_KEY to use the direct xAI endpoint.",
-  );
-}
-
-/*
-FNXC:GrokCliRouting 2026-07-22-14:30:
-The no-visible-key Grok CLI auto-derive fires only when grok-cli is the PRIMARY provider.
-FN-7758 used to fire on a grok-cli FALLBACK too and promoted it to primary up front, which
-silently replaced a healthy configured primary (e.g. planning openai-codex/gpt-5.6-sol ran
-as grok/grok-4.5 on every triage session because the workflow's planningFallback was
-grok-cli). A fallback must never preempt a primary that has not failed; the fallback-only
-case is handled by dropGrokCliFallbackForNoVisibleKey below.
-*/
-function deriveGrokRuntimeHintForNoVisibleKey(
-  runtimeOptions: AgentRuntimeOptions,
-  pluginRunner: PluginRunner | undefined,
-): string | undefined {
-  if (runtimeOptions.defaultProvider !== GROK_CLI_PROVIDER_ID) return undefined;
-  if (isGrokApiKeyFusionVisible()) return undefined;
-  try {
-    if (pluginRunner?.getRuntimeById("grok")) return "grok";
-  } catch {
-    throw buildMissingGrokRuntimeError();
-  }
-  throw buildMissingGrokRuntimeError();
-}
-
-function applyGrokCliNoKeyRuntimeOptions(
-  runtimeOptions: AgentRuntimeOptions,
-): AgentRuntimeOptions {
-  if (runtimeOptions.defaultProvider === GROK_CLI_PROVIDER_ID) {
-    return {
-      ...runtimeOptions,
-      defaultModelId: stripGrokCliModelProviderPrefix(runtimeOptions.defaultModelId),
-    };
-  }
-
-  return runtimeOptions;
 }
 
 /** The deferred grok-cli fallback pair a session swaps to when its primary fails (see below). */
@@ -878,7 +783,7 @@ export function resolveMergerSessionModel(
 export async function createResolvedAgentSession(
   options: ResolvedSessionOptions,
 ): Promise<ResolvedSessionResult> {
-  const { sessionPurpose, pluginRunner, runtimeHint, runAuditor, settings, authStorage: injectedAuthStorage, credentialInstanceId: requestedCredentialInstanceId, ...runtimeOptionsRaw } = options;
+  const { sessionPurpose, pluginRunner, runtimeHint, cursorCliExecutionSupported, runAuditor, settings, authStorage: injectedAuthStorage, credentialInstanceId: requestedCredentialInstanceId, ...runtimeOptionsRaw } = options;
   let credentialResolution: ReturnType<typeof resolveCredentialInstanceRef> | undefined;
   if (requestedCredentialInstanceId) {
     try {
@@ -980,35 +885,40 @@ export async function createResolvedAgentSession(
   FNXC:GrokCliRouting 2026-07-09-23:05:
   FN-7761 closes the packaged serve/daemon/dashboard gap: if grok-cli is selected and no Fusion-visible key exists, this seam must never silently fall through to the key-requiring pi/openai-completions runtime when the Grok plugin was not pre-installed. The hosts eagerly install/load the bundled runtime; if that genuinely fails, throw an operator-actionable error naming the two supported remediations.
   */
-  const autoGrokRuntimeHint = !useMockRuntime && !runtimeHint
-    ? deriveGrokRuntimeHintForNoVisibleKey(runtimeOptions, pluginRunner)
+  const autoCliRuntimeHint = !useMockRuntime && !runtimeHint
+    ? deriveCliRuntimeHint({
+      runtimeOptions,
+      pluginRunner,
+      grokApiKeyVisible: isGrokApiKeyFusionVisible(),
+      cursorCliExecutionSupported,
+    })
     : undefined;
-  const autoOmpRuntimeHint = !useMockRuntime && !runtimeHint
-    ? deriveOmpRuntimeHint(runtimeOptions, pluginRunner)
-    : undefined;
-  const effectiveRuntimeHint = autoGrokRuntimeHint ?? autoOmpRuntimeHint ?? runtimeHint;
-  const usesOmpRuntime = effectiveRuntimeHint === "omp" && isOmpCliSelection(runtimeOptions);
-  if (usesOmpRuntime) {
-    // resolveRuntime intentionally falls back to pi for an unavailable hint; OMP
-    // selections must fail here instead so pi never attempts registry resolution.
-    deriveOmpRuntimeHint(runtimeOptions, pluginRunner);
+  const effectiveRuntimeHint = autoCliRuntimeHint ?? runtimeHint;
+  if (!useMockRuntime) {
+    // Explicit CLI hints with assert-available policy must pre-empt resolveRuntime's pi fallback.
+    assertExplicitCliRuntimeHint({ runtimeHint, runtimeOptions, pluginRunner, cursorCliExecutionSupported });
   }
+  const usesAutoGrokRuntime = autoCliRuntimeHint === "grok" && runtimeOptions.defaultProvider === GROK_CLI_PROVIDER_ID;
   /*
   FNXC:GrokCliRouting 2026-07-22-15:10:
   When only the fallback is grok-cli with no visible key (and the session is not explicitly
   hinted onto the Grok runtime), withhold the pair from the primary runtime and arm a
   prompt-time swap to the Grok CLI runtime instead of preempting the configured primary.
   */
-  const grokFallbackDeferral = !useMockRuntime && !autoGrokRuntimeHint && effectiveRuntimeHint !== "grok"
+  const grokFallbackDeferral = !useMockRuntime && !usesAutoGrokRuntime && effectiveRuntimeHint !== "grok"
     ? deferGrokCliFallbackForNoVisibleKey(effectiveRuntimeOptions, pluginRunner)
     : { options: effectiveRuntimeOptions, dropped: false as const };
-  const effectiveRuntimeOptionsWithModel: AgentRuntimeOptions = autoGrokRuntimeHint
-    ? applyGrokCliNoKeyRuntimeOptions(effectiveRuntimeOptions)
-    : usesOmpRuntime
-      ? applyOmpCliRuntimeOptions(grokFallbackDeferral.options)
-      : grokFallbackDeferral.options;
+  const droppedCliFallback = dropUnsupportedCliFallback(grokFallbackDeferral.options);
+  const effectiveRuntimeOptionsWithModel = applyCliRuntimeOptions(
+    droppedCliFallback.options,
+    effectiveRuntimeHint,
+  );
   const deferredGrokFallback = "deferred" in grokFallbackDeferral ? grokFallbackDeferral.deferred : undefined;
-  if (grokFallbackDeferral.dropped) {
+  if (droppedCliFallback.droppedProvider) {
+    sessionLog.warn(
+      `[${sessionPurpose}] configured ${droppedCliFallback.droppedProvider} fallback "${runtimeOptions.fallbackModelId ?? "unknown"}" dropped: primary "${runtimeOptions.defaultProvider}/${runtimeOptions.defaultModelId}" is unchanged because the fallback requires its own CLI runtime.`,
+    );
+  } else if (grokFallbackDeferral.dropped) {
     sessionLog.warn(
       `[${sessionPurpose}] configured grok-cli fallback "${runtimeOptions.fallbackModelId ?? "unknown"}" dropped: no Fusion-visible GROK_API_KEY and the Grok CLI runtime plugin is unavailable; primary "${runtimeOptions.defaultProvider}/${runtimeOptions.defaultModelId}" is unchanged. Install/enable the Grok CLI runtime plugin or set GROK_API_KEY.`,
     );
@@ -1131,11 +1041,11 @@ export async function createResolvedAgentSession(
             }
           : {}),
         ...(effectiveRuntimeHint ? { runtimeHint: effectiveRuntimeHint } : {}),
-        ...(autoGrokRuntimeHint ? { reason: "grok-cli-no-visible-key" } : {}),
-        ...(autoOmpRuntimeHint ? { reason: "omp-cli-runtime" } : {}),
+        ...(autoCliRuntimeHint === "grok" ? { reason: "grok-cli-no-visible-key" } : {}),
+        ...(autoCliRuntimeHint === "omp" ? { reason: "omp-cli-runtime" } : {}),
         ...(grokFallbackDeferral.dropped ? { reason: "grok-cli-fallback-dropped-no-visible-key" } : {}),
         ...(deferredGrokFallback ? { reason: "grok-cli-fallback-deferred-no-visible-key" } : {}),
-        ...(!autoGrokRuntimeHint && !autoOmpRuntimeHint && !grokFallbackDeferral.dropped && !deferredGrokFallback && "fallbackReason" in resolved && resolved.fallbackReason ? { reason: resolved.fallbackReason } : {}),
+        ...(!autoCliRuntimeHint && !grokFallbackDeferral.dropped && !deferredGrokFallback && "fallbackReason" in resolved && resolved.fallbackReason ? { reason: resolved.fallbackReason } : {}),
       },
     });
   } catch (err) {

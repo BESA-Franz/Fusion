@@ -1957,3 +1957,32 @@ Settings → Authentication can hold multiple named credential accounts for each
 `knowledgeGraphDir` is an optional project setting. Its default is `.fusion-knowledge/graph`; keep it outside `.fusion`, which is ignored. The directory is intentionally committable and is refreshed with `fn knowledge-graph build`.
 
 `agentMemoryInclusionMode` also controls memory-first pre-steering across triage, execution, review, heartbeat, and agent chat instruction assembly: `full` supplies detailed search-first guidance, `index` supplies a terse form, and `off` suppresses it.
+
+## CLI provider runtime routing
+
+<!--
+FNXC:CliRuntimeRouting 2026-08-15-13:51:
+A model picker row must name an executable route, not merely a discovery source.
+The routing census makes plugin absence actionable before pi can misidentify a
+CLI selection as a Custom Provider configuration problem; each path is declared
+independently because Grok intentionally has different direct-key behavior.
+-->
+
+Fusion routes picker providers through `packages/engine/src/agents/cli-provider-routing.ts`. Operator-installed CLIs remain the plugin README's source of install and upstream provenance.
+
+| Picker provider | Classification and runtime | Binary / unavailable result | Auto-derive / no guard / explicit hint | Fallback policy |
+| --- | --- | --- | --- | --- |
+| `pi-claude-cli` | Registry-native pi extension | Managed by pi | n/a / n/a / n/a | none |
+| `droid-cli` | Registry-native pi extension | Managed by pi | n/a / n/a / n/a | none |
+| `llama-server` | Non-CLI route | Not a bundled CLI runtime | n/a / n/a / n/a | none |
+| `omp-cli` | Plugin runtime `omp` | `omp`; missing plugin reports OMP remediation | fail-fast / n/a / assert available | promote to primary |
+| `grok-cli` | Plugin runtime `grok` | `grok`; missing plugin fails fast only for no-visible-key primary routing | fail-fast / pinned pi fallback / defer to `resolveRuntime` | defer to runtime |
+| `hermes` | Plugin runtime `hermes` | `hermes`; missing plugin names Hermes installation and login remediation | fail-fast / pinned pi fallback / assert available | drop fallback with warning |
+| `claude-cli` | Plugin runtime `claude` | Claude Code; missing plugin names Claude install/auth remediation | fail-fast / pinned pi fallback / assert available | drop fallback with warning |
+| `cursor-cli` | Withheld unsupported | `cursor-agent`; this build's stub transport fails fast with a Cursor-named plugin remediation | fail-fast / pinned pi fallback / assert available | none |
+
+A `grok-cli` primary selection without a Fusion-visible `GROK_API_KEY` uses the Grok runtime and fails fast if it is absent. With a visible key, as a fallback-only selection, or under an explicit `runtimeHint: "grok"`, Grok deliberately retains the shipped pi/direct-xAI fallback behavior. This is intentional and differs from OMP's explicit-hint reassertion.
+
+Cursor support detection does not make the current `TODO(FN-3396)` adapter executable: this engine seam owns the Cursor-named fail-fast result for both support-predicate values. See the [Cursor runtime plugin README](../plugins/fusion-plugin-cursor-runtime/README.md), [Hermes README](../plugins/fusion-plugin-hermes-runtime/README.md), and [Claude README](../plugins/fusion-plugin-claude-runtime/README.md) for operator installation details.
+
+When adding a picker provider, add a census entry with `autoDerive`, `guardNotApplicable`, and `onExplicitHint` policies. The blocking `check-cli-runtime-routing` static gate parses picker admission and fails on an unclassified, stale, or policy-incomplete entry.
