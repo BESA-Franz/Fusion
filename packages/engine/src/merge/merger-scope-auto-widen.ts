@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -9,6 +9,7 @@ import { resolveWorkflowIrForTask, columnsWithFlag } from "@fusion/core";
 import { toTaskToken } from "../merger.js";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const GIT_MAX_BUFFER = 10 * 1024 * 1024;
 
 type Attribution = "subject-prefix" | "bracketed-prefix" | "trailer";
@@ -83,13 +84,26 @@ function classifyCommitAttribution(subject: string, body: string, taskToken: str
   return null;
 }
 
-async function isGitIgnored(file: string, rootDir: string, execImpl: typeof execAsync): Promise<boolean> {
+async function isGitIgnored(
+  file: string,
+  rootDir: string,
+  execImpl: typeof execAsync,
+  useInjectedExec: boolean,
+): Promise<boolean> {
   try {
-    await execImpl(`git check-ignore -- ${quoteArg(file)}`, {
-      cwd: rootDir,
-      encoding: "utf-8",
-      maxBuffer: GIT_MAX_BUFFER,
-    });
+    if (useInjectedExec) {
+      await execImpl(`git check-ignore -- ${quoteArg(file)}`, {
+        cwd: rootDir,
+        encoding: "utf-8",
+        maxBuffer: GIT_MAX_BUFFER,
+      });
+    } else {
+      await execFileAsync("git", ["check-ignore", "--", file], {
+        cwd: rootDir,
+        encoding: "utf-8",
+        maxBuffer: GIT_MAX_BUFFER,
+      });
+    }
     return true;
   } catch {
     return false;
@@ -112,6 +126,7 @@ function scopeContainsPath(scope: string[], file: string): boolean {
 export async function evaluateScopeAutoWiden(params: EvaluateScopeAutoWidenParams): Promise<ScopeAutoWidenResult> {
   const { store, task, taskId, rootDir, branch, baseRef, candidateFiles } = params;
   const execImpl = params.execAsyncImpl ?? execAsync;
+  const useInjectedExec = params.execAsyncImpl != null;
   const widened: ScopeAutoWidenAccepted[] = [];
   const refused: ScopeAutoWidenRefused[] = [];
   const taskToken = toTaskToken(task.id || taskId);
@@ -157,7 +172,7 @@ export async function evaluateScopeAutoWiden(params: EvaluateScopeAutoWidenParam
       continue;
     }
 
-    if (await isGitIgnored(file, rootDir, execImpl)) {
+    if (await isGitIgnored(file, rootDir, execImpl, useInjectedExec)) {
       refused.push({ file, reason: "ignored-path" });
       continue;
     }
@@ -177,14 +192,24 @@ export async function evaluateScopeAutoWiden(params: EvaluateScopeAutoWidenParam
     }
     if (claimed) continue;
 
-    const { stdout } = await execImpl(
-      `git log ${quoteArg(`${baseRef}..${branch}`)} --format=%H%x00%s%x00%B%x1e -- ${quoteArg(file)}`,
-      {
+    const { stdout } = useInjectedExec
+      ? await execImpl(
+        `git log ${quoteArg(`${baseRef}..${branch}`)} --format=%H%x00%s%x00%B%x1e -- ${quoteArg(file)}`,
+        {
+          cwd: rootDir,
+          encoding: "utf-8",
+          maxBuffer: GIT_MAX_BUFFER,
+        },
+      )
+      : await execFileAsync(
+        "git",
+        ["log", `${baseRef}..${branch}`, "--format=%H%x00%s%x00%B%x1e", "--", file],
+        {
         cwd: rootDir,
         encoding: "utf-8",
         maxBuffer: GIT_MAX_BUFFER,
-      },
-    );
+        },
+      );
 
     const records = stdout.split("\x1e").map((entry) => entry.trim()).filter(Boolean);
     if (records.length === 0) {

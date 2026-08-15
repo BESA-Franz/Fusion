@@ -2,41 +2,45 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { assertSquashOverlapsFileScope, applyLayer3ConflictScopePartition, getConflictedFiles } from "../../merger.js";
 
 const hasGit = spawnSync("git", ["--version"], { stdio: "pipe" }).status === 0;
 const describeIfGit = hasGit ? describe : describe.skip;
 
-function git(cwd: string, cmd: string): string {
-  return execSync(cmd, { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+function git(cwd: string, args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
 async function setupConflictRepo() {
   const rootDir = await mkdtemp(join(tmpdir(), "fn-4956-ri-"));
-  git(rootDir, "git init -b main");
-  git(rootDir, 'git config user.email "test@example.com"');
-  git(rootDir, 'git config user.name "Test User"');
+  git(rootDir, ["init", "-b", "main"]);
+  git(rootDir, ["config", "user.email", "test@example.com"]);
+  git(rootDir, ["config", "user.name", "Test User"]);
 
   await mkdir(join(rootDir, "packages/desktop/src"), { recursive: true });
   await writeFile(join(rootDir, "AGENTS.md"), "line\nshared\n", "utf-8");
   await writeFile(join(rootDir, "packages/desktop/src/foo.ts"), "export const value = 'base';\n", "utf-8");
-  git(rootDir, "git add AGENTS.md packages/desktop/src/foo.ts");
-  git(rootDir, "git commit -m 'chore: base'");
+  git(rootDir, ["add", "AGENTS.md", "packages/desktop/src/foo.ts"]);
+  git(rootDir, ["commit", "-m", "chore: base"]);
 
-  git(rootDir, "git checkout -b fusion/fn-4956");
+  git(rootDir, ["checkout", "-b", "fusion/fn-4956"]);
   await writeFile(join(rootDir, "AGENTS.md"), "line\nbranch\n", "utf-8");
   await writeFile(join(rootDir, "packages/desktop/src/foo.ts"), "export const value = 'branch';\n", "utf-8");
-  git(rootDir, "git add AGENTS.md packages/desktop/src/foo.ts");
-  git(rootDir, "git commit -m 'feat: branch edits'");
+  git(rootDir, ["add", "AGENTS.md", "packages/desktop/src/foo.ts"]);
+  git(rootDir, ["commit", "-m", "feat: branch edits"]);
 
-  git(rootDir, "git checkout main");
+  git(rootDir, ["checkout", "main"]);
   await writeFile(join(rootDir, "AGENTS.md"), "line\nmain\n", "utf-8");
   await writeFile(join(rootDir, "packages/desktop/src/foo.ts"), "export const value = 'main';\n", "utf-8");
-  git(rootDir, "git add AGENTS.md packages/desktop/src/foo.ts");
-  git(rootDir, "git commit -m 'feat: main edits'");
+  git(rootDir, ["add", "AGENTS.md", "packages/desktop/src/foo.ts"]);
+  git(rootDir, ["commit", "-m", "feat: main edits"]);
 
-  git(rootDir, "git merge --squash fusion/fn-4956 || true");
+  try {
+    git(rootDir, ["merge", "--squash", "fusion/fn-4956"]);
+  } catch {
+    // The conflicting index is the fixture state exercised below.
+  }
   return rootDir;
 }
 
@@ -80,7 +84,7 @@ describeIfGit("reliability interactions: layer3 ai arbiter file scope", () => {
     expect(partitioned.inScopeConflicts).toEqual(["packages/desktop/src/foo.ts"]);
     expect(partitioned.skippedFiles).toEqual(["AGENTS.md"]);
 
-    const staged = git(rootDir, "git diff --cached --name-only").split("\n").filter(Boolean);
+    const staged = git(rootDir, ["diff", "--cached", "--name-only"]).split("\n").filter(Boolean);
     expect(staged).toContain("packages/desktop/src/foo.ts");
     expect(staged).not.toContain("AGENTS.md");
 
