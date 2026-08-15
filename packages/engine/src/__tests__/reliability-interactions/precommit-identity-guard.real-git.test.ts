@@ -10,6 +10,14 @@ function git(dir: string, cmd: string): string {
   return execSync(cmd, { cwd: dir, stdio: "pipe" }).toString().trim();
 }
 
+function gitArgs(dir: string, args: string[]): string {
+  const result = spawnSync("git", args, { cwd: dir, encoding: "utf-8" });
+  if (result.status !== 0) {
+    throw new Error(`${result.stderr}${result.stdout}`);
+  }
+  return result.stdout.trim();
+}
+
 describe("pre-commit identity guard (real git)", () => {
   it("refreshes a recycled worktree owner so the reassigned task can commit", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "fn-8400-precommit-"));
@@ -87,11 +95,11 @@ describe("pre-commit identity guard (real git)", () => {
 
       writeFileSync(join(activeDir, "active.txt"), "active branch\n");
       git(activeDir, "git add active.txt");
-      git(activeDir, "git commit -m 'feat(FN-ACTIVE): owner commit'");
+      gitArgs(activeDir, ["commit", "-m", "feat(FN-ACTIVE): owner commit"]);
 
       writeFileSync(join(staleDir, "stale.txt"), "stale branch\n");
       git(staleDir, "git add stale.txt");
-      git(staleDir, "git commit -m 'feat(FN-STALE): owner commit'");
+      gitArgs(staleDir, ["commit", "-m", "feat(FN-STALE): owner commit"]);
 
       git(activeDir, "git checkout -b fusion/fn-other");
       writeFileSync(join(activeDir, "other.txt"), "other branch\n");
@@ -219,16 +227,16 @@ describe("pre-commit identity guard (real git)", () => {
       git(worktreeDir, "git checkout fusion/fn-a");
       writeFileSync(join(worktreeDir, "owned.txt"), "owned branch\n");
       git(worktreeDir, "git add owned.txt");
-      git(worktreeDir, "git commit -m 'feat(FN-A): allowed owner commit'");
+      gitArgs(worktreeDir, ["commit", "-m", "feat(FN-A): allowed owner commit"]);
 
       git(worktreeDir, "git checkout -b fusion/step-1-lemon-lotus");
       writeFileSync(join(worktreeDir, "step.txt"), "step branch\n");
       git(worktreeDir, "git add step.txt");
-      git(worktreeDir, "git commit -m 'test(FN-A): step branch commit'");
+      gitArgs(worktreeDir, ["commit", "-m", "test(FN-A): step branch commit"]);
 
       writeFileSync(rootFile, "root commit\n");
       git(rootDir, "git add root.txt");
-      git(rootDir, "git commit -m 'chore: root commit succeeds without task hook'");
+      gitArgs(rootDir, ["commit", "-m", "chore: root commit succeeds without task hook"]);
 
       const currentStepSha = git(worktreeDir, "git rev-parse HEAD");
       git(worktreeDir, `${"git checkout --detach "}${currentStepSha}`);
