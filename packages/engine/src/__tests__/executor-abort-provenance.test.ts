@@ -22,6 +22,7 @@ accepted the old catch-all `hard-cancel`.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "./executor-test-helpers.js";
 import { TaskExecutor } from "../executor.js";
+import { isBenignInReviewPauseAbort } from "../executor/graph-resume-predicates.js";
 import { createMockStore, resetExecutorMocks } from "./executor-test-helpers.js";
 import type { TaskDetail } from "@fusion/core";
 
@@ -245,12 +246,11 @@ describe("pause-abort provenance truthfulness (KB-PROV)", () => {
     it.each(["engine-abort", "hard-cancel"] as const)(
       "classifies a clean completed in-review row as a benign pause-abort under provenance '%s'",
       async (provenance) => {
-        const { executor } = makeExecutor();
         const live = makeTask({
           column: "in-review",
           steps: [{ name: "Implement", status: "done" }],
         });
-        const benign = (executor as any).isBenignInReviewPauseAbort(
+        const benign = isBenignInReviewPauseAbort(
           live,
           { disposition: "failed", outcome: "failure", visitedNodeIds: ["plan", "execute"], context: {} },
           provenance,
@@ -260,12 +260,9 @@ describe("pause-abort provenance truthfulness (KB-PROV)", () => {
           FNXC:WorkflowLifecycleColumns 2026-07-30-21:45:
           THE REVIEW LANE, which this call was silently omitting.
 
-          #2703 added a seventh parameter so the lane is resolved by the caller instead of through the
-          sync resolver (a no-op under the shipped backend). The call goes through `as any`, so the
-          missing argument was not a type error — it arrived `undefined`, `live.column !== reviewLane`
-          was true for every row, and the classifier returned false for BOTH provenances. That reads as
-          "FN-6796 regressed and clean in-review rows are being stranded again" when the product is
-          fine and the call is short one argument.
+          #2703 added the lane parameter so it is resolved by the caller instead of through the sync
+          resolver (a no-op under the shipped backend). The direct typed classifier call keeps a missing
+          argument as a compile-time failure rather than silently passing `undefined` and returning false.
 
           Passed explicitly rather than defaulted inside the classifier: a default would restore the
           literal this parameter exists to remove.
@@ -285,10 +282,9 @@ describe("pause-abort provenance truthfulness (KB-PROV)", () => {
     census counts as a win. A card resting in a RENAMED review lane is the differential.
     */
     it("honours the caller's review lane: a renamed lane classifies the same, a mismatched one does not", () => {
-      const { executor } = makeExecutor();
       const result = { disposition: "failed", outcome: "failure", visitedNodeIds: ["plan", "execute"], context: {} };
       const classify = (column: string, reviewLane: string) =>
-        (executor as any).isBenignInReviewPauseAbort(
+        isBenignInReviewPauseAbort(
           makeTask({ column, steps: [{ name: "Implement", status: "done" }] }),
           result,
           "engine-abort",
