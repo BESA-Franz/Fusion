@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "./executor-test-helpers.js";
 import { TaskExecutor } from "../executor.js";
-import { createMockStore, mockedCreateFnAgent, mockedExec, resetExecutorMocks } from "./executor-test-helpers.js";
+import { resolveContaminationBaseRef } from "../executor/worktree-git-refs.js";
+import { createWorkflowRoutingAgentStore, createMockStore, mockedCreateFnAgent, mockedExec, resetExecutorMocks } from "./executor-test-helpers.js";
 import * as branchConflicts from "../execution/branch-conflicts.js";
 
 /**
@@ -22,8 +23,7 @@ describe("resolveContaminationBaseRef (FN-4417)", () => {
       return {} as any;
     }) as any);
 
-    const executor = new TaskExecutor(createMockStore(), "/tmp/test");
-    const result = await (executor as any).resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
+    const result = await resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
 
     expect(result).toBe("fresh_main_sha");
     const mergeBaseCall = calls.find((c) => c.includes("merge-base"));
@@ -41,8 +41,7 @@ describe("resolveContaminationBaseRef (FN-4417)", () => {
       return {} as any;
     }) as any);
 
-    const executor = new TaskExecutor(createMockStore(), "/tmp/test");
-    const result = await (executor as any).resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
+    const result = await resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
     expect(result).toBeUndefined();
   });
 
@@ -52,11 +51,10 @@ describe("resolveContaminationBaseRef (FN-4417)", () => {
       return {} as any;
     }) as any);
 
-    const executor = new TaskExecutor(createMockStore(), "/tmp/test");
-    const result = await (executor as any).resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
+    const result = await resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
 
     expect(result).toBe("currentMainSHA");
-    expect((executor as any).resolveContaminationBaseRef.length).toBe(1);
+    expect(resolveContaminationBaseRef.length).toBe(1);
   });
 });
 
@@ -87,12 +85,18 @@ describe("branch cross-contamination recovery (FN-4428/FN-4499)", () => {
     });
   }
 
+  function makeExecutor(store: ReturnType<typeof createMockStore>) {
+    const routing = createWorkflowRoutingAgentStore(store);
+    return new TaskExecutor(store as never, "/tmp/test", { agentStore: routing.agentStore as never });
+  }
+
   function makeTask(recoveryRetryCount?: number) {
     return {
       id: "FN-4428",
       title: "Test",
       description: "Test",
       column: "in-progress",
+      assignedAgentId: "workflow-test-executor",
       worktree: "/tmp/test/.worktrees/fn-4428",
       branch: "fusion/fn-4428",
       dependencies: [],
@@ -141,7 +145,7 @@ describe("branch cross-contamination recovery (FN-4428/FN-4499)", () => {
       newTipSha: "4444444444444444444444444444444444444444",
     });
 
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = makeExecutor(store);
     const task = { ...makeTask(), id: "FN-4488", branch: "fusion/fn-4488" } as any;
     seedTaskRow(store, task);
     await executor.execute(task);
@@ -170,7 +174,7 @@ describe("branch cross-contamination recovery (FN-4428/FN-4499)", () => {
       droppedShas: ["1111111111111111111111111111111111111111"],
     });
 
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = makeExecutor(store);
     const task = makeTask();
     seedTaskRow(store, task);
     await executor.execute(task);
@@ -206,7 +210,7 @@ describe("branch cross-contamination recovery (FN-4428/FN-4499)", () => {
       droppedShas: ["1111111111111111111111111111111111111111"],
     });
 
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = makeExecutor(store);
     await executor.execute({ ...makeTask(), worktree: undefined } as any);
 
     expect(recoverySpy).toHaveBeenCalledWith(expect.objectContaining({ repoDir: "/tmp/test" }));
@@ -240,7 +244,7 @@ describe("branch cross-contamination recovery (FN-4428/FN-4499)", () => {
       droppedShas: [misroutedCommit.sha],
     });
 
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = makeExecutor(store);
     await executor.execute(makeTask());
 
     expect(recoverySpy).toHaveBeenCalledWith(expect.objectContaining({ shasToDrop: [misroutedCommit.sha] }));
@@ -275,7 +279,7 @@ describe("branch cross-contamination recovery (FN-4428/FN-4499)", () => {
       droppedShas: [],
     });
 
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = makeExecutor(store);
     await executor.execute(makeTask());
 
     expect(recoverySpy).not.toHaveBeenCalled();
@@ -310,7 +314,7 @@ describe("branch cross-contamination recovery (FN-4428/FN-4499)", () => {
       droppedShas: [upstreamCommit.sha, misroutedCommit.sha],
     });
 
-    const executor = new TaskExecutor(firstStore, "/tmp/test");
+    const executor = makeExecutor(firstStore);
     await executor.execute(makeTask());
     expect(recoverySpy).toHaveBeenCalledWith(expect.objectContaining({ shasToDrop: [upstreamCommit.sha, misroutedCommit.sha] }));
 
@@ -320,7 +324,7 @@ describe("branch cross-contamination recovery (FN-4428/FN-4499)", () => {
     vi.spyOn(branchConflicts, "classifyForeignCommits").mockResolvedValueOnce({ alreadyUpstream: [upstreamCommit], unique: [misroutedCommit] });
     vi.spyOn(branchConflicts, "classifyMisroutedForeignCommit").mockResolvedValueOnce({ misrouted: true, foreignTaskId: "FN-5003", paths: [".changeset/fn-5003-fix.md"] });
 
-    const secondExecutor = new TaskExecutor(secondStore, "/tmp/test");
+    const secondExecutor = makeExecutor(secondStore);
     const secondTask = makeTask(1);
     seedTaskRow(secondStore, secondTask);
     await secondExecutor.execute(secondTask);
@@ -341,7 +345,7 @@ describe("branch cross-contamination recovery (FN-4428/FN-4499)", () => {
     vi.spyOn(branchConflicts, "reanchorBranchToBase").mockRejectedValueOnce(new Error("reanchor failed"));
     vi.spyOn(branchConflicts, "classifyForeignCommits").mockResolvedValueOnce({ alreadyUpstream: [], unique: contamination.foreignCommits });
 
-    const executor = new TaskExecutor(store, "/tmp/test");
+    const executor = makeExecutor(store);
     await executor.execute({ ...makeTask(), id: "FN-4488", branch: "fusion/fn-4488" } as any);
 
     expect(store.updateTask).toHaveBeenCalledWith("FN-4488", expect.objectContaining({ status: "failed", paused: true, pausedReason: "branch-cross-contamination" }));
