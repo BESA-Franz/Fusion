@@ -23,6 +23,7 @@ import {
   isTaskAwaitingPlanning,
   getTaskDuplicateLineage,
   parseExplicitDuplicateMarker,
+  resolveExplicitDuplicateMarker,
   resolveAgentPrompt,
   buildPlanningDuplicatePolicyInstruction,
   builtinSeamPrompt,
@@ -245,6 +246,7 @@ import { runGhostBugPreflight } from "./triage-domain/triage-preflight.js";
 import { archiveAsGhostBug } from "./self-healing.js";
 import {
   TRIAGE_MARKER_CLEARED_REPLAN_LOG_ACTION,
+  buildDuplicateRedirectClearedTitle,
   buildInactiveDuplicateClearFeedback,
   buildKeepDuplicateClearFeedback,
   buildMarkerClearedReplanTaskPatch,
@@ -2500,6 +2502,21 @@ export class TriageProcessor {
       return;
     }
 
+    /*
+    FNXC:DuplicateIntake 2026-08-15-04:05:
+    An exact title redirect is already a complete duplicate decision. Resolve it before claiming
+    planning capacity or starting an agent; PROMPT.md may contain a valuable operator-authored plan.
+    */
+    if (typeof task.title === "string" && parseExplicitDuplicateMarker(task.title)) {
+      const promptPath = join(this.rootDir, relativePromptPath(task.id));
+      const written = existsSync(promptPath) ? await readFile(promptPath, "utf-8").catch(() => "") : "";
+      const settings = await mergeEffectiveSettings(this.store, task, await this.store.getSettings());
+      if (await this.tryFinalizeExplicitDuplicateMarker(task, written, settings, {})) {
+        if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
+        return;
+      }
+    }
+
     if (await this.flagImportNearDuplicateBeforePlanning(task)) {
       if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
       return;
@@ -4445,7 +4462,12 @@ export class TriageProcessor {
     report: PlanningHandoffReport = { outcome: "parked" },
   ): Promise<boolean> {
     try {
-      const explicitDuplicateMarker = parseExplicitDuplicateMarker(written);
+      const markerResolution = resolveExplicitDuplicateMarker(written, task.title);
+      if (markerResolution.conflict) {
+        planLog.warn(`${task.id}: conflicting PROMPT.md and title duplicate redirects; refusing planning`);
+        return true;
+      }
+      const explicitDuplicateMarker = markerResolution.marker;
       if (!explicitDuplicateMarker) {
         return false;
       }
@@ -4471,7 +4493,10 @@ export class TriageProcessor {
       }
       // FNXC:PlanningHandoffOutcome 2026-07-28-10:20: surface what finalize did to
       // the caller's reaction without changing what this method's boolean means.
-      report.outcome = (await this.finalizeApprovedTask(task, written, settings, options)).outcome;
+      report.outcome = (await this.finalizeApprovedTask(task, written, settings, {
+        ...options,
+        preservePromptContent: markerResolution.source === "title",
+      })).outcome;
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -4640,10 +4665,12 @@ export class TriageProcessor {
     task: Task,
     canonicalId: string,
     feedback: string,
-    options?: { exhausted?: boolean; priorClearCount?: number },
+    options?: { exhausted?: boolean; priorClearCount?: number; preservePromptContent?: boolean; clearTitle?: boolean },
   ): Promise<boolean> {
     if (!await this.runIfStillPlanningUnderTaskLock(task, async () => {
-      await rm(join(this.rootDir, ".fusion", "tasks", task.id, "PROMPT.md"), { force: true });
+      if (!options?.preservePromptContent) {
+        await rm(join(this.rootDir, ".fusion", "tasks", task.id, "PROMPT.md"), { force: true });
+      }
     })) return false;
 
     const priorClearCount = options?.priorClearCount ?? 0;
@@ -4669,10 +4696,14 @@ export class TriageProcessor {
       planLog.warn(`${task.id}: failed to log marker-clear replan feedback: ${msg}`);
     }
 
-    return await this.updatePlanningStateIfStillCurrent(
+    const updated = await this.updatePlanningStateIfStillCurrent(
       task,
       buildMarkerClearedReplanTaskPatch(canonicalId, priorClearCount),
     );
+    if (updated && options?.clearTitle) {
+      await this.store.updateTask(task.id, { title: buildDuplicateRedirectClearedTitle(canonicalId) });
+    }
+    return updated;
   }
 
   private async finalizeApprovedTaskBody(
@@ -4688,18 +4719,22 @@ export class TriageProcessor {
     report: PlanningHandoffReport = { outcome: "parked" },
   ): Promise<void> {
     let written = writtenInput;
+    const markerResolution = resolveExplicitDuplicateMarker(written, task.title);
+    if (markerResolution.conflict) return;
+    const explicitDuplicateMarker = markerResolution.marker;
+    const titleMarker = typeof task.title === "string" ? parseExplicitDuplicateMarker(task.title) : null;
     // FNXC:WorkflowArtifacts 2026-07-21-17:00: Confirm the authoritative plan
     // exists before persisting any dependencies, steps, metadata, or review state
     // derived from it; a missing plan must leave no partially accepted projection.
-    if (await this.recoverMissingPromptBeforeRelease(task)) return;
-    const explicitDuplicateMarker = parseExplicitDuplicateMarker(written);
+    if (!explicitDuplicateMarker && await this.recoverMissingPromptBeforeRelease(task)) return;
 
     /*
      * FNXC:DuplicateIntake 2026-07-16-13:00:
      * Issue #2225 makes triage marker deletion opt-in. Prompt parks a visible linked
      * near-duplicate decision; keep removes the marker before the next real plan.
-     */
+    */
     if (explicitDuplicateMarker) {
+      if (task.userPaused === true) return;
       await this.updatePlanningStateIfStillCurrent(task, (live) => {
         const customFields = { ...(live.customFields ?? {}) };
         delete customFields[PLANNING_LIFECYCLE_LOCK_TRANSPORT_FAILURE_KEY];
@@ -4707,8 +4742,7 @@ export class TriageProcessor {
       });
       const canonicalId = explicitDuplicateMarker.canonicalId;
       const canonicalTask = await this.store.getTask(canonicalId).catch(() => null);
-      const canClearInactiveMarker = task.userPaused !== true
-        && (task.paused !== true || task.pausedReason === "duplicate-decision-required")
+      const canClearInactiveMarker = (task.paused !== true || task.pausedReason === "duplicate-decision-required")
         && (task.pausedReason == null || task.pausedReason === "duplicate-decision-required");
 
       /*
@@ -4739,7 +4773,12 @@ export class TriageProcessor {
             task,
             canonicalId,
             buildInactiveDuplicateClearFeedback(canonicalId),
-            { exhausted: false, priorClearCount },
+            {
+              exhausted: false,
+              priorClearCount,
+              preservePromptContent: options.preservePromptContent === true,
+              clearTitle: Boolean(titleMarker),
+            },
           );
         }
         return;
@@ -4760,7 +4799,12 @@ export class TriageProcessor {
             task,
             canonicalId,
             buildKeepDuplicateClearFeedback(canonicalId),
-            { exhausted: priorClearCount >= 1, priorClearCount },
+            {
+              exhausted: priorClearCount >= 1,
+              priorClearCount,
+              preservePromptContent: options.preservePromptContent === true,
+              clearTitle: Boolean(titleMarker),
+            },
           );
         }
         return;
@@ -4797,6 +4841,10 @@ export class TriageProcessor {
         task,
         canonicalId,
         buildKeepDuplicateClearFeedback(canonicalId),
+        {
+          preservePromptContent: options.preservePromptContent === true,
+          clearTitle: Boolean(titleMarker),
+        },
       );
       return;
     }

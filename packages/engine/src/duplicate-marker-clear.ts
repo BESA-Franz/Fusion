@@ -26,6 +26,10 @@ export function buildKeepDuplicateClearFeedback(canonicalId: string): string {
   return `Duplicate marker for ${canonicalId} was cleared (Keep / keep-acknowledged). Write a full PROMPT.md for this work. Do not re-emit DUPLICATE: ${canonicalId}.`;
 }
 
+export function buildDuplicateRedirectClearedTitle(canonicalId: string): string {
+  return `Duplicate redirect cleared: ${canonicalId}`;
+}
+
 export function buildDuplicateReplanExhaustedError(canonicalId: string): string {
   return `${DUPLICATE_REPLAN_EXHAUSTED_PREFIX} planner re-emitted DUPLICATE: ${canonicalId} after that inactive or dismissed canonical was already cleared. Write a real plan for this card, or archive it.`;
 }

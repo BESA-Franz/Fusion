@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync,
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveReboundTarget, resolveReboundTargetForTask, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr,
+import { type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, hasSharedBranchMemberAutoMergeHold, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isLiveSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, resolveExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveReboundTarget, resolveReboundTargetForTask, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr,
   resolveNearDuplicateCanonicalFlags,
   LEGACY_COLUMN_IDS_BY_ROLE,
   TERMINAL_ROLES,
@@ -45,6 +45,7 @@ import type { MeshLeaseManager } from "./project/mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
 import {
   TRIAGE_MARKER_CLEARED_REPLAN_LOG_ACTION,
+  buildDuplicateRedirectClearedTitle,
   buildInactiveDuplicateClearFeedback,
   buildKeepDuplicateClearFeedback,
   buildMarkerClearedReplanTaskPatch,
@@ -7080,17 +7081,29 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           without a real PROMPT. Drop a still-present DUPLICATE marker file when present.
           */
           const promptPath = join(this.options.rootDir, ".fusion", "tasks", task.id, "PROMPT.md");
+          let written: string | null = null;
           if (existsSync(promptPath)) {
             try {
-              const written = readFileSync(promptPath, "utf-8");
-              if (parseExplicitDuplicateMarker(written)) {
-                rmSync(promptPath, { force: true });
-              }
+              written = readFileSync(promptPath, "utf-8");
             } catch {
-              // best-effort marker removal; status write still proceeds
+              // A transient prompt read failure must not invent a marker conflict.
             }
           }
-          await this.store.updateTask(task.id, buildMarkerClearedReplanTaskPatch(canonicalId));
+          const markerResolution = resolveExplicitDuplicateMarker(written, task.title);
+          const metadataCanonicalId = canonicalId.toUpperCase();
+          if (markerResolution.conflict
+            || (markerResolution.marker && markerResolution.marker.canonicalId !== metadataCanonicalId)) {
+            continue;
+          }
+          const promptMarker = written == null ? null : parseExplicitDuplicateMarker(written);
+          const titleMarker = typeof task.title === "string" ? parseExplicitDuplicateMarker(task.title) : null;
+          if (promptMarker) {
+            rmSync(promptPath, { force: true });
+          }
+          await this.store.updateTask(task.id, {
+            ...buildMarkerClearedReplanTaskPatch(canonicalId),
+            ...(titleMarker ? { title: buildDuplicateRedirectClearedTitle(canonicalId) } : {}),
+          });
           if (typeof this.store.logEntry === "function") {
             await Promise.resolve(this.store.logEntry(
               task.id,
@@ -15069,15 +15082,15 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
       for (const task of candidates) {
         try {
           const promptPath = join(this.options.rootDir, ".fusion", "tasks", task.id, "PROMPT.md");
-          if (!existsSync(promptPath)) {
+          const promptExists = existsSync(promptPath);
+          const written = promptExists ? readFileSync(promptPath, "utf-8") : null;
+          const markerResolution = resolveExplicitDuplicateMarker(written, task.title);
+          if (markerResolution.conflict || !markerResolution.marker) {
             continue;
           }
-
-          const written = readFileSync(promptPath, "utf-8");
-          const marker = parseExplicitDuplicateMarker(written);
-          if (!marker) {
-            continue;
-          }
+          const marker = markerResolution.marker;
+          const promptMarker = written == null ? null : parseExplicitDuplicateMarker(written);
+          const titleMarker = typeof task.title === "string" ? parseExplicitDuplicateMarker(task.title) : null;
           if (processedMarkers >= 50) {
             break;
           }
@@ -15104,12 +15117,15 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
           const canonicalFlags = await resolveNearDuplicateCanonicalFlags(this.store, canonicalTask);
           if (!canonicalTask || isNearDuplicateCanonicalInactive(canonicalTask, canonicalFlags)) {
             if (canClearInactiveMarker) {
-              rmSync(promptPath, { force: true });
+              if (promptMarker) rmSync(promptPath, { force: true });
               const priorClearCount = typeof task.sourceMetadata?.duplicateMarkerClearCount === "number"
                 ? task.sourceMetadata.duplicateMarkerClearCount
                 : 0;
               const patch = buildMarkerClearedReplanTaskPatch(marker.canonicalId, priorClearCount);
-              await this.store.updateTask(task.id, patch);
+              await this.store.updateTask(task.id, {
+                ...patch,
+                ...(titleMarker ? { title: buildDuplicateRedirectClearedTitle(marker.canonicalId) } : {}),
+              });
               if (typeof this.store.logEntry === "function") {
                 await Promise.resolve(this.store.logEntry(
                   task.id,
@@ -15131,17 +15147,17 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
           */
           if (resolution === "prompt" && isTriageDuplicateKeepAcknowledged(task.sourceMetadata, canonicalTask.id)) {
             if (canClearInactiveMarker) {
-              rmSync(promptPath, { force: true });
+              if (promptMarker) rmSync(promptPath, { force: true });
               const priorKeepClears = typeof task.sourceMetadata?.duplicateMarkerClearCount === "number"
                 ? task.sourceMetadata.duplicateMarkerClearCount
                 : 0;
               const keepExhausted = priorKeepClears >= 1;
-              await this.store.updateTask(
-                task.id,
-                keepExhausted
+              await this.store.updateTask(task.id, {
+                ...(keepExhausted
                   ? buildMarkerExhaustedFailedTaskPatch(canonicalTask.id, priorKeepClears)
-                  : buildMarkerClearedReplanTaskPatch(canonicalTask.id, priorKeepClears),
-              );
+                  : buildMarkerClearedReplanTaskPatch(canonicalTask.id, priorKeepClears)),
+                ...(titleMarker ? { title: buildDuplicateRedirectClearedTitle(canonicalTask.id) } : {}),
+              });
               if (typeof this.store.logEntry === "function") {
                 await Promise.resolve(this.store.logEntry(
                   task.id,
@@ -15161,8 +15177,11 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             await flagTriageDuplicate(this.store, task.id, canonicalTask.id);
             await this.store.updateTask(task.id, { paused: true, pausedReason: "duplicate-decision-required", status: null });
           } else {
-            rmSync(promptPath, { force: true });
-            await this.store.updateTask(task.id, buildMarkerClearedReplanTaskPatch(canonicalTask.id));
+            if (promptMarker) rmSync(promptPath, { force: true });
+            await this.store.updateTask(task.id, {
+              ...buildMarkerClearedReplanTaskPatch(canonicalTask.id),
+              ...(titleMarker ? { title: buildDuplicateRedirectClearedTitle(canonicalTask.id) } : {}),
+            });
             if (typeof this.store.logEntry === "function") {
               await Promise.resolve(this.store.logEntry(
                 task.id,
