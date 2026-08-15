@@ -556,6 +556,18 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
             : githubOpts?.github === false
               ? { enabled: false as const }
               : undefined;
+          /*
+          FNXC:GithubTracking 2026-08-15-04:50:
+          Suppress the task-created hook here and invoke tracking-issue creation
+          DIRECTLY after the create block instead. With autoSummarizeTitles on, a
+          long, title-less description routes the hook onto the deferred
+          fire-and-forget summarize chain, and the short-lived CLI process closes
+          the store and exits before it runs — the task ends up with
+          githubTracking.enabled=true but no issue ever created (observed:
+          FN-9045..FN-9061). A synchronous post-create call is exactly-once and
+          deterministic; maybeCreateTrackingIssue does its own title summarization
+          when the task has none.
+          */
           const created = await store.createTask({
             description: trimmedDescription,
             dependencies: depends,
@@ -565,7 +577,7 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
               sourceType: "cli",
               sourceMetadata: Object.keys(sourceMetadata).length > 0 ? sourceMetadata : undefined,
             },
-          });
+          }, { invokeTaskCreatedHook: false });
 
           const reconcileResult = await reconcileDeterministicDuplicate(store, {
             createdTask: created,
@@ -622,6 +634,26 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
       console.log(`    Node: ${resolvedNode.name || resolvedNode.id}`);
     }
     console.log(`    Path:   .fusion/tasks/${resolvedTask.id}/`);
+
+    /*
+    FNXC:GithubTracking 2026-08-15-04:50:
+    Create the tracking issue synchronously before the CLI exits (the create
+    call above suppressed the task-created hook; see the create-site note).
+    Runs only for fresh creates: a linked-existing canonical already had its
+    own create-time pass.
+    */
+    if (!linkedExisting && resolvedTask.githubTracking?.enabled === true && !resolvedTask.githubTracking?.issue) {
+      try {
+        await dashboard.createTrackingIssueForTask?.(store, resolvedTask);
+        const refreshed = await store.getTask(resolvedTask.id).catch(() => undefined);
+        const issue = refreshed?.githubTracking?.issue;
+        if (issue) {
+          console.log(`    GitHub: ${issue.owner}/${issue.repo}#${issue.number}`);
+        }
+      } catch (error) {
+        console.error(`    ✗ GitHub tracking issue not created: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
 
     if (attachFiles && attachFiles.length > 0) {
       const { readFile } = await import("node:fs/promises");
