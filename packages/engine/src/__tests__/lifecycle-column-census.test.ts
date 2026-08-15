@@ -27,6 +27,7 @@ import {
 } from "../../../../scripts/lib/lifecycle-column-census.mjs";
 
 import { execFileSync as memoExecFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 /*
 FNXC:LifecycleColumnCensus 2026-07-31-17:12 (test wall-time — memoize identical full-repo census spawns):
@@ -42,14 +43,14 @@ Only deterministic real-repo, default-env, no-baseline-override READS use this c
 their own process, since their output depends on inputs the argv cache cannot key on. These read-only
 commands always exit 0 (they report, never gate), so a cache miss cannot swallow a nonzero exit.
 */
-const MEMO_CENSUS_CLI_PATH = new URL("../../../../scripts/lifecycle-column-census.mjs", import.meta.url).pathname;
-const MEMO_CENSUS_REPO_ROOT = new URL("../../../..", import.meta.url).pathname;
+const MEMO_CENSUS_CLI_PATH = fileURLToPath(new URL("../../../../scripts/lifecycle-column-census.mjs", import.meta.url));
+const MEMO_CENSUS_REPO_ROOT = fileURLToPath(new URL("../../../..", import.meta.url));
 const readOnlyCensusCache = new Map<string, string>();
 function readOnlyCensus(args: string[]): string {
   const key = args.join("\u0000");
   const cached = readOnlyCensusCache.get(key);
   if (cached !== undefined) return cached;
-  const out = memoExecFileSync("node", [MEMO_CENSUS_CLI_PATH, ...args], {
+  const out = memoExecFileSync(process.execPath, [MEMO_CENSUS_CLI_PATH, ...args], {
     encoding: "utf8",
     cwd: MEMO_CENSUS_REPO_ROOT,
     maxBuffer: 32 * 1024 * 1024,
@@ -400,7 +401,7 @@ marker slices rather than character windows, and each marker checked for uniquen
 repeated marker is the magic-number problem wearing a name.
 */
 describe("the baseline can always be re-recorded", () => {
-  const cliPath = new URL("../../../../scripts/lifecycle-column-census.mjs", import.meta.url).pathname;
+  const cliPath = fileURLToPath(new URL("../../../../scripts/lifecycle-column-census.mjs", import.meta.url));
 
   /*
   FNXC:LifecycleColumnCensus 2026-07-31-06:30:
@@ -478,14 +479,14 @@ describe("the baseline can always be re-recorded", () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const path = require("node:path");
 
-    const repoRoot = new URL("../../../..", import.meta.url).pathname;
+    const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
 
     function runCli(args: string[], baseline: unknown): { status: number; stdout: string } {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fusion-census-"));
       const baselinePath = path.join(dir, "baseline.json");
       fs.writeFileSync(baselinePath, JSON.stringify(baseline));
       try {
-        const stdout = execFileSync("node", [cliPath, ...args], {
+        const stdout = execFileSync(process.execPath, [cliPath, ...args], {
           encoding: "utf8",
           /* The CLI globs with `git ls-files` relative to CWD, and vitest runs from the
              package dir where that finds nothing — the run then exits on "file list is
@@ -598,19 +599,32 @@ describe("the baseline can always be re-recorded", () => {
     it actively tells the reader to start work another lane already holds, which is the exact failure
     this flag exists to prevent (three overlapping conversions on self-healing.ts, two on executor.ts).
     */
-    function runWithStubbedGh(stub: string, extraArgs: string[] = []): string {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fusion-census-gh-"));
-      const ghPath = path.join(dir, "gh");
-      fs.writeFileSync(ghPath, stub);
-      fs.chmodSync(ghPath, 0o755);
+    function runWithStubbedGh(output: string | null, extraArgs: string[] = [], files?: Record<string, string>): string {
+      const fixtureRoot = files ? fs.mkdtempSync(path.join(os.tmpdir(), "fusion-census-claims-")) : undefined;
+      if (fixtureRoot) {
+        for (const [file, source] of Object.entries(files ?? {})) {
+          const target = path.join(fixtureRoot, file);
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          fs.writeFileSync(target, source);
+        }
+      }
       try {
-        return execFileSync("node", [cliPath, "--claims", ...extraArgs], {
+        return execFileSync(process.execPath, [cliPath, "--claims", ...extraArgs], {
           encoding: "utf8",
           cwd: repoRoot,
-          env: { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` },
+          env: {
+            ...process.env,
+            FUSION_CENSUS_GH_PR_LIST_JSON: output ?? "not-json",
+            ...(fixtureRoot ? {
+              FUSION_CENSUS_FILE_ROOT: fixtureRoot,
+              FUSION_CENSUS_FILE_LIST: Object.keys(files ?? {}).join(","),
+            } : {}),
+          },
         }) as string;
       } catch (err) {
         return (err as { stdout?: string }).stdout ?? "";
+      } finally {
+        if (fixtureRoot) fs.rmSync(fixtureRoot, { recursive: true, force: true });
       }
     }
 
@@ -629,7 +643,7 @@ describe("the baseline can always be re-recorded", () => {
         return;
       }
       const payload = JSON.stringify([{ number: 9999, title: "stub pr", files: [{ path: target }] }]);
-      const out = runWithStubbedGh(`#!/bin/sh\ncat <<'JSON'\n${payload}\nJSON\n`);
+      const out = runWithStubbedGh(payload);
 
       const claimed = out.slice(out.indexOf("CLAIMED by an open PR"), out.indexOf("UNCLAIMED:"));
       expect(claimed).toContain(target);
@@ -661,7 +675,11 @@ describe("the baseline can always be re-recorded", () => {
     */
     it("never lists a deferral-noted or sync-resolver file under start-here", () => {
       const payload = JSON.stringify([]);
-      const out = runWithStubbedGh(`#!/bin/sh\ncat <<'JSON'\n${payload}\nJSON\n`);
+      const out = runWithStubbedGh(payload, [], {
+        "packages/engine/src/available.ts": `export const available = (t: { column: string }) => t.column === "archived";`,
+        "packages/engine/src/deferred.ts": `// deliberately NOT converted: fixture debt\nexport const deferred = (t: { column: string }) => t.column === "archived";`,
+        "packages/engine/src/sync-risk.ts": `resolveTaskWorkflowIrSync();\nexport const syncRisk = (t: { column: string }) => t.column === "archived";`,
+      });
 
       const section = (start: string, end?: string) => {
         const from = out.indexOf(start);
@@ -688,7 +706,7 @@ describe("the baseline can always be re-recorded", () => {
     });
 
     it("says so loudly when gh cannot answer, instead of reporting everything as unclaimed", () => {
-      const out = runWithStubbedGh("#!/bin/sh\nexit 1\n");
+      const out = runWithStubbedGh(null);
       expect(out).toContain("CLAIMS: unavailable");
       expect(out).toContain("POSSIBLY CLAIMED");
       /* The dangerous output is the one that invites a duplicate claim. */
@@ -796,9 +814,9 @@ describe("mixed-vocabulary detection", () => {
 });
 
 describe("the ratchet follows the count down", () => {
-  const repoRoot = new URL("../../../../", import.meta.url).pathname;
-  const cliPath = `${repoRoot}scripts/lifecycle-column-census.mjs`;
-  const realBaseline = `${repoRoot}scripts/lib/lifecycle-column-census-baseline.json`;
+  const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+  const cliPath = fileURLToPath(new URL("../../../../scripts/lifecycle-column-census.mjs", import.meta.url));
+  const realBaseline = fileURLToPath(new URL("../../../../scripts/lib/lifecycle-column-census-baseline.json", import.meta.url));
 
   /*
   FNXC:LifecycleColumnCensus 2026-07-31-17:12 (test wall-time): the `--update-baseline` tree-sync below
@@ -1088,8 +1106,8 @@ that gate regressing, and they could not see it, because they import the matcher
 without creating files inside a live checkout that the operator is writing to concurrently.
 */
 describe("the census scans the files it claims to scan", () => {
-  const repoRootPath = new URL("../../../../", import.meta.url).pathname;
-  const cli = `${repoRootPath}scripts/lifecycle-column-census.mjs`;
+  const repoRootPath = fileURLToPath(new URL("../../../../", import.meta.url));
+  const cli = fileURLToPath(new URL("../../../../scripts/lifecycle-column-census.mjs", import.meta.url));
 
   async function runOnFixture(files: Record<string, string>, args: string[] = []) {
     const { mkdtemp, writeFile, mkdir } = await import("node:fs/promises");
@@ -1106,7 +1124,7 @@ describe("the census scans the files it claims to scan", () => {
     await writeFile(baseline, JSON.stringify({ byFile: {} }));
 
     return await new Promise<{ code: number; out: string }>((resolve) => {
-      execFile("node", [cli, ...args], {
+      execFile(process.execPath, [cli, ...args], {
         cwd: repoRootPath,
         env: {
           ...process.env,

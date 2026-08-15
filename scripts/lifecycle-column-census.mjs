@@ -130,9 +130,18 @@ try {
   disagreeing on WHICH FILES EXIST is how one probe can be caught by one and missed by the other
   (#3252) — that discrepancy cost a full investigation to attribute, so the scopes are aligned here.
   */
-  const PATHSPECS = "'packages/*/src/**/*.ts' 'packages/*/src/*.ts' 'packages/*/src/**/*.tsx' 'packages/*/app/**/*.ts' 'packages/*/app/**/*.tsx' 'plugins/*/src/**/*.ts' 'plugins/*/src/**/*.tsx'";
-  files = injectedList !== undefined ? injectedList : execSync(
-    `git ls-files --cached --others --exclude-standard ${PATHSPECS}`,
+  const PATHSPECS = [
+    "packages/*/src/**/*.ts",
+    "packages/*/src/*.ts",
+    "packages/*/src/**/*.tsx",
+    "packages/*/app/**/*.ts",
+    "packages/*/app/**/*.tsx",
+    "plugins/*/src/**/*.ts",
+    "plugins/*/src/**/*.tsx",
+  ];
+  files = injectedList !== undefined ? injectedList : execFileSync(
+    "git",
+    ["-C", REPO_ROOT, "ls-files", "--cached", "--others", "--exclude-standard", "--", ...PATHSPECS],
     { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
   )
     .split("\n")
@@ -425,17 +434,19 @@ function unclaimedGuardTotal(entries) {
 /** Open PRs keyed by the census-relevant files they touch. Returns null when `gh` cannot answer. */
 function openPrClaims(files) {
   const wanted = new Set(files);
-  let raw;
-  try {
-    /* One bulk call — per-PR `gh pr view` would be a request per PR and is what made this too slow
-       to be habitual. --limit is generous because a partial list reads as "unclaimed". */
-    raw = execFileSync("gh", ["pr", "list", "--state", "open", "--limit", "200", "--json", "number,title,files"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 30_000,
-    });
-  } catch {
-    return null;
+  let raw = process.env.FUSION_CENSUS_GH_PR_LIST_JSON;
+  if (raw === undefined) {
+    try {
+      /* One bulk call — per-PR `gh pr view` would be a request per PR and is what made this too slow
+         to be habitual. --limit is generous because a partial list reads as "unclaimed". */
+      raw = execFileSync("gh", ["pr", "list", "--state", "open", "--limit", "200", "--json", "number,title,files"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 30_000,
+      });
+    } catch {
+      return null;
+    }
   }
   let prs;
   try {
