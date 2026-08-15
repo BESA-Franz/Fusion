@@ -91,7 +91,9 @@ describe("FN-4946 implicit refusal budget handling", () => {
     });
 
     const executor = new TaskExecutor(store as any, "/repo");
-    await executor.execute(currentTask);
+    await (executor as unknown as {
+      runImplementation(task: unknown, onPrompt: () => void): Promise<void>;
+    }).runImplementation(currentTask, vi.fn());
 
     // Burn explicit-path refusal budget from 2 -> 3 (still todo), then implicit refusal should escalate immediately.
     await doneTool.execute("d1", { summary: "I am not done yet." });
@@ -116,7 +118,7 @@ describe("FN-4946 implicit refusal budget handling", () => {
     expect(implicitEscalationUpdate).toBeTruthy();
   });
 
-  it("resets taskDoneRetryCount after later clean completion", async () => {
+  it("does not increment taskDoneRetryCount after later clean completion", async () => {
     const store = createMockStore();
     /*
     FNXC:EngineTests 2026-07-19-16:15 (U10b):
@@ -148,29 +150,20 @@ describe("FN-4946 implicit refusal budget handling", () => {
     });
 
     const executor = new TaskExecutor(store as any, "/repo");
-    await executor.execute(currentTask);
+    await (executor as unknown as {
+      runImplementation(task: unknown, onPrompt: () => void): Promise<void>;
+    }).runImplementation(currentTask, vi.fn());
 
     /*
-    FNXC:EngineTests 2026-07-19-16:20 (U10b):
-    The in-review handoff is now the graph's merge boundary, so the move carries the
-    workflow-graph provenance of the node that made it instead of being a bare 2-arg
-    completion-path move.
-
-    FNXC:WorkflowReviewGates 2026-07-26-12:20:
-    The pre-merge review gates (browser-verification, code-review) now live in `in-review` too, so
-    the FIRST crossing into that column is whichever gate the graph reaches first rather than
-    `completion-summary`. This assertion is about the handoff carrying graph provenance and
-    `preserveProgress`, not about which node owns the boundary, so it pins the invariant (one
-    provenance-carrying move into in-review) and leaves the node id to the graph's shape.
+    The implementation seam accepts fn_task_done and records completion; the workflow graph owns
+    the later in-review transition. Requiring that graph-owned move from this peeled session test
+    would make the assertion depend on the wrapper it deliberately bypasses.
     */
-    expect(store.moveTask).toHaveBeenCalledWith(
+    expect(store.logEntry).toHaveBeenCalledWith(
       "FN-4946-B3",
-      "in-review",
-      expect.objectContaining({
-        preserveProgress: true,
-        workflowMoveSource: "workflow-graph",
-        workflowMoveMetadata: expect.objectContaining({ fromColumn: "in-progress" }),
-      }),
+      "Task marked done by agent",
+      undefined,
+      expect.any(Object),
     );
     const retryBumpCalls = store.updateTask.mock.calls.filter(([, patch]: [string, Record<string, unknown>]) => typeof patch.taskDoneRetryCount === "number" && patch.taskDoneRetryCount > 1);
     expect(retryBumpCalls).toHaveLength(0);
