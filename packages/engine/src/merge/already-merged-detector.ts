@@ -1,9 +1,36 @@
-import { exec, execSync } from "node:child_process";
+import { exec, execFile, execSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 import { canonicalFusionBranchName, resolveTaskWorkingBranch } from "../worktree/worktree-names.js";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+async function gitWithInput(repoDir: string, args: string[], input: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, { cwd: repoDir, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error(`git ${args.join(" ")} timed out`));
+    }, 60_000);
+    child.stdout.setEncoding("utf-8");
+    child.stderr.setEncoding("utf-8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`git ${args.join(" ")} failed (${code}): ${stderr}`));
+    });
+    child.stdin.end(input);
+  });
+}
 
 export type AlreadyMergedDetectionStrategy = "trailer" | "ancestry" | "patch-id" | "tree-equal" | "no-diff";
 
@@ -303,26 +330,24 @@ export async function findAlreadyMergedTaskCommit(
       return null;
     }
 
-    const branchPatchIdCommand = `git diff ${shellQuote(branchBase)}..${shellQuote(branchTip)} | git patch-id`;
-    const { stdout: branchPatchIdOut } = await execAsync(branchPatchIdCommand, {
+    const { stdout: branchDiff } = await execFileAsync("git", ["diff", `${branchBase}..${branchTip}`], {
       cwd: repoDir,
-      shell: "/bin/sh",
       timeout: 60_000,
       maxBuffer: 32 * 1024 * 1024,
     });
+    const branchPatchIdOut = await gitWithInput(repoDir, ["patch-id"], String(branchDiff));
     const branchPatchIdLine = branchPatchIdOut
       .trim()
       .split("\n")
       .find((line) => line.trim().length > 0);
     const branchPatchId = branchPatchIdLine?.trim().split(/\s+/)[0];
     if (branchPatchId) {
-      const basePatchMapCommand = `git log -n 200 -p --format='%H' ${shellQuote(baseBranch)} | git patch-id`;
-      const { stdout: basePatchIdsOut } = await execAsync(basePatchMapCommand, {
+      const { stdout: baseLog } = await execFileAsync("git", ["log", "-n", "200", "-p", "--format=%H", baseBranch], {
         cwd: repoDir,
-        shell: "/bin/sh",
         timeout: 60_000,
         maxBuffer: 32 * 1024 * 1024,
       });
+      const basePatchIdsOut = await gitWithInput(repoDir, ["patch-id"], String(baseLog));
 
       const basePatchMap = new Map<string, string>();
       for (const line of basePatchIdsOut.split("\n")) {
@@ -351,12 +376,12 @@ export async function findAlreadyMergedTaskCommit(
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
 
-    const { stdout: baseTreeStdout } = await execAsync(`git rev-parse ${shellQuote(baseBranch)}^{tree}`, {
+    const { stdout: baseTreeStdout } = await execAsync(`git rev-parse ${shellQuote(`${baseBranch}^{tree}`)}`, {
       cwd: repoDir,
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
     });
-    const { stdout: branchTreeStdout } = await execAsync(`git rev-parse ${shellQuote(treeBranchName)}^{tree}`, {
+    const { stdout: branchTreeStdout } = await execAsync(`git rev-parse ${shellQuote(`${treeBranchName}^{tree}`)}`, {
       cwd: repoDir,
       timeout: 30_000,
       maxBuffer: 1024 * 1024,

@@ -1,7 +1,7 @@
 // Real-git wallclock under parallel CI load; do not lower per-test timeouts
 // without re-measuring under pnpm test:full. (FN-4839)
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { execSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,8 +12,17 @@ import { SelfHealingManager } from "../self-healing.js";
 const hasGit = spawnSync("git", ["--version"], { stdio: "pipe" }).status === 0;
 const describeIfGit = hasGit ? describe : describe.skip;
 
-function git(repo: string, command: string): string {
-  return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+function git(repo: string, ...args: string[]): string {
+  const result = spawnSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed (${result.status}): ${result.stderr}`);
+  }
+  return result.stdout.trim();
+}
+
+function commit(repo: string, pathspec: string | null, subject: string, ...bodies: string[]): void {
+  if (pathspec) git(repo, "add", pathspec);
+  git(repo, "commit", ...(pathspec ? [] : ["--allow-empty"]), "-m", subject, ...bodies.flatMap((body) => ["-m", body]));
 }
 
 type TaskMap = Map<string, Task>;
@@ -95,10 +104,10 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
   function setupRepo(): string {
     const repo = mkdtempSync(path.join(os.tmpdir(), "fn-3865-"));
     repos.push(repo);
-    git(repo, "git init -b main");
-    git(repo, 'git config user.email "test@example.com"');
-    git(repo, 'git config user.name "Test"');
-    git(repo, "git commit --allow-empty -m 'init'");
+    git(repo, "init", "-b", "main");
+    git(repo, "config", "user.email", "test@example.com");
+    git(repo, "config", "user.name", "Test");
+    commit(repo, null, "init");
     return repo;
   }
 
@@ -106,12 +115,12 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "file.txt"), "trailer\n", "utf-8");
-    git(repo, "git add src/file.txt && git commit -m 'feat: landed' -m 'Fusion-Task-Id: FN-TEST-1'");
-    const landedSha = git(repo, "git rev-parse HEAD");
+    commit(repo, "src/file.txt", "feat: landed", "Fusion-Task-Id: FN-TEST-1");
+    const landedSha = git(repo, "rev-parse", "HEAD");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-test-1");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    git(repo, `git worktree add ${JSON.stringify(worktreePath)} -b fusion/fn-test-1`);
+    git(repo, "worktree", "add", worktreePath, "-b", "fusion/fn-test-1");
 
     const tasks: TaskMap = new Map([
       ["FN-TEST-1", makeTask({ id: "FN-TEST-1", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-test-1", worktree: worktreePath })],
@@ -128,7 +137,7 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     expect(task.mergeDetails?.commitSha).toBe(landedSha);
     expect(task.mergeDetails?.mergeConfirmed).toBe(true);
     expect(existsSync(worktreePath)).toBe(false);
-    expect(git(repo, "git worktree list")).not.toContain(worktreePath);
+    expect(git(repo, "worktree", "list")).not.toContain(worktreePath);
     // Exercise only the already-merged recovery path here. Assert the recovery
     // audit events by type rather than exact total count so unrelated
     // environment-specific audit noise cannot re-flake this real-git test.
@@ -152,23 +161,23 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     "recovers via patch-id fallback",
     async () => {
       const repo = setupRepo();
-      git(repo, "git checkout -b fusion/fn-test-2");
+      git(repo, "checkout", "-b", "fusion/fn-test-2");
       mkdirSync(path.join(repo, "src"), { recursive: true });
       writeFileSync(path.join(repo, "src", "patch.txt"), "patch-a\n", "utf-8");
-      git(repo, "git add src/patch.txt && git commit -m 'task branch commit'");
-      const branchTip = git(repo, "git rev-parse HEAD");
-      git(repo, "git checkout main");
+      commit(repo, "src/patch.txt", "task branch commit");
+      const branchTip = git(repo, "rev-parse", "HEAD");
+      git(repo, "checkout", "main");
       mkdirSync(path.join(repo, "src"), { recursive: true });
       writeFileSync(path.join(repo, "src", "patch.txt"), "patch-a\n", "utf-8");
-      git(repo, "git add src/patch.txt && git commit -m 'land equivalent change'");
-      const landedSha = git(repo, "git rev-parse HEAD");
+      commit(repo, "src/patch.txt", "land equivalent change");
+      const landedSha = git(repo, "rev-parse", "HEAD");
 
       const worktreePath = path.join(repo, ".worktrees", "fn-test-2");
       mkdirSync(path.dirname(worktreePath), { recursive: true });
-      git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-test-2`);
+      git(repo, "worktree", "add", worktreePath, "fusion/fn-test-2");
 
       const tasks: TaskMap = new Map([
-        ["FN-TEST-2", makeTask({ id: "FN-TEST-2", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-test-2", baseCommitSha: git(repo, "git merge-base main fusion/fn-test-2"), worktree: worktreePath })],
+        ["FN-TEST-2", makeTask({ id: "FN-TEST-2", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-test-2", baseCommitSha: git(repo, "merge-base", "main", "fusion/fn-test-2"), worktree: worktreePath })],
       ]);
       const store = createStore(tasks);
       const manager = new SelfHealingManager(store, { rootDir: repo, getExecutingTaskIds: () => new Set() });
@@ -185,21 +194,21 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
 
   it("recovers via tree-equal fallback when tips have identical trees but no trailer/ancestry/patch-id match", async () => {
     const repo = setupRepo();
-    git(repo, "git checkout -b fusion/fn-test-tree");
+    git(repo, "checkout", "-b", "fusion/fn-test-tree");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "tree-equal.txt"), "line-1\nline-2\n", "utf-8");
-    git(repo, "git add src/tree-equal.txt && git commit -m 'branch aggregate change'");
-    git(repo, "git checkout main");
+    commit(repo, "src/tree-equal.txt", "branch aggregate change");
+    git(repo, "checkout", "main");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "tree-equal.txt"), "line-1\n", "utf-8");
-    git(repo, "git add src/tree-equal.txt && git commit -m 'main part 1'");
+    commit(repo, "src/tree-equal.txt", "main part 1");
     writeFileSync(path.join(repo, "src", "tree-equal.txt"), "line-1\nline-2\n", "utf-8");
-    git(repo, "git add src/tree-equal.txt && git commit -m 'main part 2'");
-    const landedSha = git(repo, "git rev-parse HEAD");
+    commit(repo, "src/tree-equal.txt", "main part 2");
+    const landedSha = git(repo, "rev-parse", "HEAD");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-test-tree");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-test-tree`);
+    git(repo, "worktree", "add", worktreePath, "fusion/fn-test-tree");
 
     const tasks: TaskMap = new Map([
       ["FN-TEST-TREE", makeTask({ id: "FN-TEST-TREE", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-test-tree", worktree: worktreePath })],
@@ -221,15 +230,15 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
 
   it("does nothing when no match exists", async () => {
     const repo = setupRepo();
-    git(repo, "git checkout -b fusion/fn-test-3");
+    git(repo, "checkout", "-b", "fusion/fn-test-3");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "no-match.txt"), "branch-only\n", "utf-8");
-    git(repo, "git add src/no-match.txt && git commit -m 'branch only'");
-    git(repo, "git checkout main");
+    commit(repo, "src/no-match.txt", "branch only");
+    git(repo, "checkout", "main");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-test-3");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-test-3`);
+    git(repo, "worktree", "add", worktreePath, "fusion/fn-test-3");
 
     const tasks: TaskMap = new Map([
       ["FN-TEST-3", makeTask({ id: "FN-TEST-3", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-test-3", worktree: worktreePath })],
@@ -250,17 +259,17 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "other.txt"), "other\n", "utf-8");
-    git(repo, "git add src/other.txt && git commit -m 'feat: unrelated generic tip'");
-    const unrelatedSha = git(repo, "git rev-parse HEAD");
+    commit(repo, "src/other.txt", "feat: unrelated generic tip");
+    const unrelatedSha = git(repo, "rev-parse", "HEAD");
 
     writeFileSync(path.join(repo, "src", "misbound.txt"), "landed\n", "utf-8");
-    git(repo, "git add src/misbound.txt && git commit -m 'feat: landed' -m 'Fusion-Task-Id: FN-TEST-MISBOUND'");
-    const landedSha = git(repo, "git rev-parse HEAD");
+    commit(repo, "src/misbound.txt", "feat: landed", "Fusion-Task-Id: FN-TEST-MISBOUND");
+    const landedSha = git(repo, "rev-parse", "HEAD");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-test-misbound");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    git(repo, `git branch fusion/fn-test-misbound ${unrelatedSha}`);
-    git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-test-misbound`);
+    git(repo, "branch", "fusion/fn-test-misbound", unrelatedSha);
+    git(repo, "worktree", "add", worktreePath, "fusion/fn-test-misbound");
 
     const tasks: TaskMap = new Map([
       ["FN-TEST-MISBOUND", makeTask({ id: "FN-TEST-MISBOUND", column: "in-review", status: "failed", paused: false, baseBranch: "main", branch: "fusion/fn-test-misbound", worktree: worktreePath })],
@@ -284,15 +293,15 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "previous-tip.txt"), "previous landed task\n", "utf-8");
-    git(repo, "git add src/previous-tip.txt && git commit -m 'feat: previous landed' -m 'Fusion-Task-Id: FN-7477'");
-    const previousLandedSha = git(repo, "git rev-parse HEAD");
+    commit(repo, "src/previous-tip.txt", "feat: previous landed", "Fusion-Task-Id: FN-7477");
+    const previousLandedSha = git(repo, "rev-parse", "HEAD");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-7486-noop");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    git(repo, `git branch fusion/fn-7486-noop ${previousLandedSha}`);
-    git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-7486-noop`);
+    git(repo, "branch", "fusion/fn-7486-noop", previousLandedSha);
+    git(repo, "worktree", "add", worktreePath, "fusion/fn-7486-noop");
     writeFileSync(path.join(repo, "src", "unrelated-after-noop.txt"), "unrelated after no-op branch\n", "utf-8");
-    git(repo, "git add src/unrelated-after-noop.txt && git commit -m 'feat: unrelated after noop branch'");
+    commit(repo, "src/unrelated-after-noop.txt", "feat: unrelated after noop branch");
 
     const tasks: TaskMap = new Map([
       ["FN-7486-NOOP", makeTask({ id: "FN-7486-NOOP", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-7486-noop", worktree: worktreePath })],
@@ -323,18 +332,18 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
   it("rejects already-merged recovery when the task branch tip has branch-only foreign work", async () => {
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
-    git(repo, "git checkout -b fusion/fn-7143");
+    git(repo, "checkout", "-b", "fusion/fn-7143");
     writeFileSync(path.join(repo, "src", "foreign-tip.txt"), "foreign\n", "utf-8");
-    git(repo, "git add src/foreign-tip.txt && git commit -m 'feat: foreign branch work' -m 'Fusion-Task-Id: FN-7187'");
+    commit(repo, "src/foreign-tip.txt", "feat: foreign branch work", "Fusion-Task-Id: FN-7187");
 
-    git(repo, "git checkout main");
+    git(repo, "checkout", "main");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "owned-landed.txt"), "owned landed\n", "utf-8");
-    git(repo, "git add src/owned-landed.txt && git commit -m 'feat: owned landed' -m 'Fusion-Task-Id: FN-7143'");
+    commit(repo, "src/owned-landed.txt", "feat: owned landed", "Fusion-Task-Id: FN-7143");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-7143");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-7143`);
+    git(repo, "worktree", "add", worktreePath, "fusion/fn-7143");
 
     const tasks: TaskMap = new Map([
       ["FN-7143", makeTask({ id: "FN-7143", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-7143", worktree: worktreePath })],
@@ -359,18 +368,18 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
   it("rejects already-merged recovery when the task branch tip carries a foreign lineage", async () => {
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
-    git(repo, "git checkout -b fusion/fn-7143-lineage");
+    git(repo, "checkout", "-b", "fusion/fn-7143-lineage");
     writeFileSync(path.join(repo, "src", "foreign-lineage-tip.txt"), "foreign lineage\n", "utf-8");
-    git(repo, "git add src/foreign-lineage-tip.txt && git commit -m 'feat: foreign lineage branch work' -m 'Fusion-Task-Lineage: LINEAGE-OTHER'");
+    commit(repo, "src/foreign-lineage-tip.txt", "feat: foreign lineage branch work", "Fusion-Task-Lineage: LINEAGE-OTHER");
 
-    git(repo, "git checkout main");
+    git(repo, "checkout", "main");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "owned-lineage-landed.txt"), "owned lineage landed\n", "utf-8");
-    git(repo, "git add src/owned-lineage-landed.txt && git commit -m 'feat: owned lineage landed' -m 'Fusion-Task-Id: FN-7143-LINEAGE' -m 'Fusion-Task-Lineage: LINEAGE-OWN'");
+    commit(repo, "src/owned-lineage-landed.txt", "feat: owned lineage landed", "Fusion-Task-Id: FN-7143-LINEAGE", "Fusion-Task-Lineage: LINEAGE-OWN");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-7143-lineage");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-7143-lineage`);
+    git(repo, "worktree", "add", worktreePath, "fusion/fn-7143-lineage");
 
     const tasks: TaskMap = new Map([
       ["FN-7143-LINEAGE", makeTask({ id: "FN-7143-LINEAGE", lineageId: "LINEAGE-OWN", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-7143-lineage", worktree: worktreePath })],
@@ -395,16 +404,16 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "other.txt"), "other\n", "utf-8");
-    git(repo, "git add src/other.txt && git commit -m 'feat: unrelated' -m 'Fusion-Task-Id: FN-OTHER'");
-    const foreignSha = git(repo, "git rev-parse HEAD");
+    commit(repo, "src/other.txt", "feat: unrelated", "Fusion-Task-Id: FN-OTHER");
+    const foreignSha = git(repo, "rev-parse", "HEAD");
 
     writeFileSync(path.join(repo, "src", "owned.txt"), "owned\n", "utf-8");
-    git(repo, "git add src/owned.txt && git commit -m 'feat: landed' -m 'Fusion-Task-Id: FN-TEST-FOREIGN-MISBOUND'");
+    commit(repo, "src/owned.txt", "feat: landed", "Fusion-Task-Id: FN-TEST-FOREIGN-MISBOUND");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-test-foreign-misbound");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    git(repo, `git branch fusion/fn-test-foreign-misbound ${foreignSha}`);
-    git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-test-foreign-misbound`);
+    git(repo, "branch", "fusion/fn-test-foreign-misbound", foreignSha);
+    git(repo, "worktree", "add", worktreePath, "fusion/fn-test-foreign-misbound");
 
     const tasks: TaskMap = new Map([
       ["FN-TEST-FOREIGN-MISBOUND", makeTask({ id: "FN-TEST-FOREIGN-MISBOUND", column: "in-review", status: "failed", paused: false, baseBranch: "main", branch: "fusion/fn-test-foreign-misbound", worktree: worktreePath })],
@@ -430,11 +439,11 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "idempotent.txt"), "same\n", "utf-8");
-    git(repo, "git add src/idempotent.txt && git commit -m 'feat: done' -m 'Fusion-Task-Id: FN-TEST-4'");
+    commit(repo, "src/idempotent.txt", "feat: done", "Fusion-Task-Id: FN-TEST-4");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-test-4");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    git(repo, `git worktree add ${JSON.stringify(worktreePath)} -b fusion/fn-test-4`);
+    git(repo, "worktree", "add", worktreePath, "-b", "fusion/fn-test-4");
 
     const tasks: TaskMap = new Map([
       ["FN-TEST-4", makeTask({ id: "FN-TEST-4", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-test-4", worktree: worktreePath })],
@@ -477,10 +486,10 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     const remoteParent = mkdtempSync(path.join(os.tmpdir(), "fn-stale-remote-"));
     repos.push(remoteParent);
     const remote = path.join(remoteParent, "origin.git");
-    execSync(`git init --bare -b main ${JSON.stringify(remote)}`, { stdio: ["pipe", "pipe", "pipe"] });
+    git(remoteParent, "init", "--bare", "-b", "main", remote);
     const repo = setupRepo();
-    git(repo, `git remote add origin ${JSON.stringify(remote)}`);
-    git(repo, "git push origin main");
+    git(repo, "remote", "add", "origin", remote);
+    git(repo, "push", "origin", "main");
     return { repo, remote };
   }
 
@@ -491,35 +500,35 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     const cloneParent = mkdtempSync(path.join(os.tmpdir(), "fn-stale-clone-"));
     repos.push(cloneParent);
     const clone = path.join(cloneParent, "clone");
-    execSync(`git clone ${JSON.stringify(remote)} ${JSON.stringify(clone)}`, { stdio: ["pipe", "pipe", "pipe"] });
-    git(clone, 'git config user.email "test@example.com"');
-    git(clone, 'git config user.name "Test"');
+    git(cloneParent, "clone", remote, clone);
+    git(clone, "config", "user.email", "test@example.com");
+    git(clone, "config", "user.name", "Test");
     mutate(clone);
-    git(clone, "git push origin main");
-    return git(clone, "git rev-parse HEAD");
+    git(clone, "push", "origin", "main");
+    return git(clone, "rev-parse", "HEAD");
   }
 
   it("fetch-then-prove: finalizes a failed card whose PR merged on the remote (stale local base)", async () => {
     const { repo, remote } = setupRepoWithRemote();
 
     // Task branch tip lives locally (owned by nothing foreign).
-    git(repo, "git checkout -b fusion/fn-stale");
+    git(repo, "checkout", "-b", "fusion/fn-stale");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "stale.txt"), "work\n", "utf-8");
-    git(repo, "git add src/stale.txt && git commit -m 'task work'");
-    git(repo, "git checkout main");
+    commit(repo, "src/stale.txt", "task work");
+    git(repo, "checkout", "main");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-stale");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
-    git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-stale`);
+    git(repo, "worktree", "add", worktreePath, "fusion/fn-stale");
 
     // Simulate the merge-train squash landing on the remote — never fetched locally.
     const landedSha = landOnRemoteMain(remote, (clone) => {
-      git(clone, "git commit --allow-empty -m 'feat: landed' -m 'Fusion-Task-Id: FN-STALE'");
+      commit(clone, null, "feat: landed", "Fusion-Task-Id: FN-STALE");
     });
 
     // Local base is stale: neither main nor origin/main has the owned commit yet.
-    expect(git(repo, "git rev-parse origin/main")).not.toBe(landedSha);
+    expect(git(repo, "rev-parse", "origin/main")).not.toBe(landedSha);
 
     const tasks: TaskMap = new Map([
       ["FN-STALE", makeTask({ id: "FN-STALE", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-stale", worktree: worktreePath, prInfo: { number: 77 } as any })],
@@ -530,7 +539,7 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     await (manager as any).recoverAlreadyMergedReviewTasks();
 
     // Fetch advanced origin/main, and the detector proved the owned commit against it.
-    expect(git(repo, "git rev-parse origin/main")).toBe(landedSha);
+    expect(git(repo, "rev-parse", "origin/main")).toBe(landedSha);
     const task = tasks.get("FN-STALE")!;
     expect(task.column).toBe("done");
     expect(task.status).toBeNull();
@@ -543,15 +552,15 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
   it("fetch-then-prove: does NOT heal when the remote base carries only a foreign commit", async () => {
     const { repo, remote } = setupRepoWithRemote();
 
-    git(repo, "git checkout -b fusion/fn-guard");
+    git(repo, "checkout", "-b", "fusion/fn-guard");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "guard.txt"), "work\n", "utf-8");
-    git(repo, "git add src/guard.txt && git commit -m 'task work'");
-    git(repo, "git checkout main");
+    commit(repo, "src/guard.txt", "task work");
+    git(repo, "checkout", "main");
 
     // Remote base advances, but the landed commit is owned by a DIFFERENT task.
     const foreignSha = landOnRemoteMain(remote, (clone) => {
-      git(clone, "git commit --allow-empty -m 'feat: other' -m 'Fusion-Task-Id: FN-OTHER'");
+      commit(clone, null, "feat: other", "Fusion-Task-Id: FN-OTHER");
     });
 
     const tasks: TaskMap = new Map([
@@ -564,7 +573,7 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
 
     // The fetch still ran (proves the guard, not a missing fetch), but no owned
     // commit exists → the card is left untouched, never phantom-finalized.
-    expect(git(repo, "git rev-parse origin/main")).toBe(foreignSha);
+    expect(git(repo, "rev-parse", "origin/main")).toBe(foreignSha);
     const task = tasks.get("FN-GUARD")!;
     expect(task.column).toBe("in-review");
     expect(task.status).toBe("failed");
