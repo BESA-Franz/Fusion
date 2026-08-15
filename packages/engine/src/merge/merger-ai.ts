@@ -1778,11 +1778,13 @@ export interface WorkspaceMergeResult {
   /** True iff every acquired sub-repo landed (or was empty) with no failure. */
   allLanded: boolean;
   /**
-   * FNXC:Workspace 2026-06-22-00:30 (Phase C U2, KTD3):
-   * True iff the finalize-once move-to-done ran this call (only when `allLanded`).
-   * False on a partial land (the task stays put for the engine dispatch's auto-retry).
+   * FNXC:Workspace 2026-08-15-04:22:
+   * `allLanded` means no sub-repo failed, but `finalized` is the ONLY proof this call
+   * reached `done`. When all repos land but finalization is blocked, expose the
+   * operator-facing reason so every merge door reports a blocked outcome honestly.
    */
   finalized: boolean;
+  finalizeBlockedReason?: string;
 }
 
 /*
@@ -1891,6 +1893,22 @@ export class WorkspacePartialLandError extends Error {
   ) {
     super(message);
     this.name = "WorkspacePartialLandError";
+  }
+}
+
+/*
+FNXC:Workspace 2026-08-15-04:22:
+A blocked workspace finalize is non-retryable because the empty-merge guard has already
+parked the task with `task.error`. Keep it distinct from retryable partial lands so callers
+never consume merge retries or report a merge success for work that did not reach `done`.
+*/
+export class WorkspaceFinalizeBlockedError extends Error {
+  constructor(
+    public readonly taskId: string,
+    public readonly reason: string,
+  ) {
+    super(`Workspace finalize blocked for ${taskId}: ${reason}`);
+    this.name = "WorkspaceFinalizeBlockedError";
   }
 }
 
@@ -2160,7 +2178,7 @@ export async function landWorkspaceTask(
       const reason =
         "branch had no net changes vs main — work may have been reverted or lost; operator review required";
       await fence.write("lifecycle", () => store.updateTask(taskId, { error: reason }));
-      if (fence.isOrphaned()) return { taskId, repos, allLanded, finalized: false };
+      if (fence.isOrphaned()) return { taskId, repos, allLanded, finalized: false, finalizeBlockedReason: reason };
       const reboundColumn = await resolveFinalizeReboundColumn(store, taskId);
       await fence.write("log", () => store.logEntry(
         taskId,
@@ -2173,7 +2191,7 @@ export async function landWorkspaceTask(
         metadata: { reason, lane: "ai-empty-merge-workspace", repoCount: repos.length, landedCount, hadPriorNoOpProof: false },
       }).catch(() => undefined);
       await fence.write("lifecycle", () => store.moveTask(taskId, reboundColumn, { preserveProgress: true, moveSource: "engine" } as Parameters<TaskStore["moveTask"]>[2]));
-      return { taskId, repos, allLanded, finalized: false };
+      return { taskId, repos, allLanded, finalized: false, finalizeBlockedReason: reason };
     }
     const finalized = await finalizeWorkspaceTask(store, taskId, task, repos, fence);
     return { taskId, repos, allLanded, finalized };

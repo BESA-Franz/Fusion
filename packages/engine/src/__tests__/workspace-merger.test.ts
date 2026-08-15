@@ -321,6 +321,7 @@ describeIfGit("landWorkspaceTask — per-repo merge loop (Phase C U1)", () => {
     // No sub-repo FAILED, but nothing landed → blocked, NOT finalized.
     expect(result.allLanded).toBe(true);
     expect(result.finalized).toBe(false);
+    expect(result.finalizeBlockedReason).toEqual(expect.stringContaining("operator review required"));
     for (const r of result.repos) expect(r.status).toBe("empty");
 
     // Moved back to todo with error set; never moved done and never emitted task:merged.

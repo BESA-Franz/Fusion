@@ -79,7 +79,13 @@ import { createFusionAuthStorage, getFusionOAuthAlertStatePath } from "./auth/au
 import { CronRunner, createAiPromptExecutor } from "./scheduling/cron-runner.js";
 import type { RoutineRunner } from "./scheduling/routine-runner.js";
 import { sweepStaleAutostashes, VerificationError } from "./merger.js";
-import { runAiMerge, landWorkspaceTask, WorkspacePartialLandError, WorkspaceRepoLandBusyError } from "./merge/merger-ai.js";
+import {
+  runAiMerge,
+  landWorkspaceTask,
+  WorkspaceFinalizeBlockedError,
+  WorkspacePartialLandError,
+  WorkspaceRepoLandBusyError,
+} from "./merge/merger-ai.js";
 import { promoteBranchGroup, type BranchGroupPromotionResult, type CreateGroupPrFn, type SyncGroupPrFn } from "./merge/group-merge-coordinator.js";
 import {
   formatAdmissionCapacityQueuedReason,
@@ -4438,6 +4444,20 @@ export class ProjectEngine {
                     `Workspace partial land for ${taskId}: ${landedCount} repo(s) landed, ${failed.length} failed — ${detail}`,
                   );
                 }
+                /*
+                FNXC:Workspace 2026-08-15-04:22:
+                `allLanded` only proves no sub-repo failed; `finalized` proves the task reached
+                `done`. A blocked finalize is already parked and non-retryable, so never let it
+                reach the success path that resets retries, resolves manual waiters, or promotes
+                a branch group.
+                */
+                if (!workspaceResult.finalized) {
+                  throw new WorkspaceFinalizeBlockedError(
+                    taskId,
+                    workspaceResult.finalizeBlockedReason
+                      ?? "workspace finalize was blocked after all sub-repos landed; task progress was preserved",
+                  );
+                }
                 // Finalized to done by landWorkspaceTask; report the merge as merged so
                 // the success path (retry reset + branch-group promotion) runs normally.
                 const latest = await store.getTask(taskId).catch(() => mergeTask!);
@@ -4608,6 +4628,26 @@ export class ProjectEngine {
                 `Auto-merge: ${taskId} workspace land busy ${ProjectEngine.WORKSPACE_BUSY_MAX_REENQUEUES} times — parked as failed (sustained sub-repo lease contention)`,
               );
             }
+            continue;
+          }
+
+          /*
+          FNXC:Workspace 2026-08-15-04:22:
+          A workspace finalize blocked after all repos landed is NOT merge success and is NOT
+          retryable: the producer already parked it with task.error. Do not reset or consume
+          mergeRetries, double-park it as failed, resolve a manual waiter with ok:true, or promote
+          a branch group. Clear transient busy bookkeeping and surface the real blocked reason.
+          */
+          if (err instanceof WorkspaceFinalizeBlockedError) {
+            runtimeLog.error(
+              `${hasManualResolver ? "Manual" : "Auto"}-merge blocked for ${taskId}: ${err.reason}`,
+            );
+            await store.logEntry(taskId, `Workspace finalize blocked: ${err.reason}`, "WorkspaceFinalizeBlocked")
+              .catch(() => undefined);
+            if (hasManualResolver) {
+              this.rejectMergeResolvers(taskId, err);
+            }
+            this.workspaceBusyReenqueues.delete(taskId);
             continue;
           }
 

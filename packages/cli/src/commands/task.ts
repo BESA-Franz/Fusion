@@ -1256,14 +1256,21 @@ export async function runTaskMerge(id: string, projectName?: string) {
           : `failed: ${repo.error ?? "unknown"}`;
         console.log(`  ${repo.status === "failed" ? "✗" : "✓"} ${repo.repo}: ${label}`);
       }
-      // FNXC:Workspace 2026-06-22-05:10 (Phase C review B3):
-      // landWorkspaceTask now finalizes the workspace task to done on allLanded (Phase C U2),
-      // so report it as merged rather than "remains in review until U2". A partial land leaves
-      // the task in review (landed repos stay landed locally) and exits non-zero.
+      /*
+      FNXC:Workspace 2026-08-15-04:22:
+      `finalized`, not `allLanded`, is the merged signal. A blocked finalize is already parked
+      with progress preserved, so the CLI must report it as blocked and exit non-zero rather than
+      claiming success for sub-repos that landed without the task reaching `done`.
+      */
+      const workspaceMerged = workspaceResult.allLanded && workspaceResult.finalized;
       console.log(
-        `\n  ${workspaceResult.allLanded ? "✓ All sub-repos landed — task finalized to done" : "✗ Partial land — see failures above (task remains in review; landed repos stay landed locally)"}\n`,
+        `\n  ${workspaceMerged
+          ? "✓ All sub-repos landed — task finalized to done"
+          : workspaceResult.allLanded
+            ? `✗ Merge blocked — ${workspaceResult.finalizeBlockedReason ?? "workspace finalize was blocked"} (task moved back with progress preserved)`
+            : "✗ Partial land — see failures above (task remains in review; landed repos stay landed locally)"}\n`,
       );
-      if (!workspaceResult.allLanded) await closeBoardContextAndExit(context, 1);
+      if (!workspaceMerged) await closeBoardContextAndExit(context, 1);
       return;
     }
 
