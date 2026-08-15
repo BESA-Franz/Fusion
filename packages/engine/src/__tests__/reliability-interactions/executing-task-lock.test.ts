@@ -23,7 +23,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import "../executor-test-helpers.js";
 import { TaskExecutor } from "../../executor.js";
 import { executingTaskLock } from "../../agents/active-session-registry.js";
-import { mockedCreateFnAgent, createMockStore, resetExecutorMocks } from "../executor-test-helpers.js";
+import { createWorkflowRoutingAgentStore, mockedCreateFnAgent, createMockStore, resetExecutorMocks } from "../executor-test-helpers.js";
 
 function makeTask(overrides: Record<string, unknown> = {}) {
   return {
@@ -34,7 +34,7 @@ function makeTask(overrides: Record<string, unknown> = {}) {
     paused: false,
     worktree: "/tmp/test/.worktrees/rapid-fern",
     branch: "fusion/fn-4809",
-    assignedAgentId: "agent-test-executor",
+    assignedAgentId: "workflow-test-executor",
     dependencies: [],
     steps: [],
     currentStep: 0,
@@ -73,8 +73,10 @@ describe("FN-4811 follow-up (FN-4809): process-wide executingTaskLock", () => {
       } as any;
     });
 
-    const executorA = new TaskExecutor(storeA as any, "/tmp/test");
-    const executorB = new TaskExecutor(storeB as any, "/tmp/test");
+    const routingA = createWorkflowRoutingAgentStore(storeA);
+    const routingB = createWorkflowRoutingAgentStore(storeB);
+    const executorA = new TaskExecutor(storeA as any, "/tmp/test", { agentStore: routingA.agentStore as never });
+    const executorB = new TaskExecutor(storeB as any, "/tmp/test", { agentStore: routingB.agentStore as never });
     const task = makeTask();
 
     const [resultA, resultB] = await Promise.allSettled([
@@ -117,7 +119,8 @@ describe("FN-4811 follow-up (FN-4809): process-wide executingTaskLock", () => {
       },
     }) as any);
 
-    const executor = new TaskExecutor(store as any, "/tmp/test");
+    const routing = createWorkflowRoutingAgentStore(store);
+    const executor = new TaskExecutor(store as any, "/tmp/test", { agentStore: routing.agentStore as never });
     await executor.execute(makeTask());
     expect(executingTaskLock.has("FN-4809")).toBe(false);
 
