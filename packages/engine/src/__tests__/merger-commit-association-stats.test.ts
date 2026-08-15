@@ -1,29 +1,29 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { execSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import type { TaskStore } from "@fusion/core";
 import { recordCommitAssociationFromHead } from "../merger.js";
 
 const hasGit = spawnSync("git", ["--version"], { stdio: "pipe" }).status === 0;
 const describeIfGit = hasGit ? describe : describe.skip;
 
-function git(repo: string, command: string): string {
-  return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+function git(repo: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
 function makeRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), "fusion-merger-commit-assoc-"));
-  git(repo, "git init -b main");
-  git(repo, "git config user.email fusion@example.com");
-  git(repo, "git config user.name Fusion");
+  git(repo, ["init", "-b", "main"]);
+  git(repo, ["config", "user.email", "fusion@example.com"]);
+  git(repo, ["config", "user.name", "Fusion"]);
   writeFileSync(join(repo, "file.txt"), "one\ntwo\n");
-  git(repo, "git add file.txt");
-  git(repo, "git commit -m 'initial commit'");
+  git(repo, ["add", "file.txt"]);
+  git(repo, ["commit", "-m", "initial commit"]);
   writeFileSync(join(repo, "file.txt"), "one\ntwo\nthree\nfour\n");
-  git(repo, "git add file.txt");
-  git(repo, "git commit -m 'update file'");
+  git(repo, ["add", "file.txt"]);
+  git(repo, ["commit", "-m", "update file"]);
   return repo;
 }
 
@@ -69,12 +69,17 @@ describeIfGit("recordCommitAssociationFromHead", () => {
     const repo = makeRepo();
     const fakeBin = mkdtempSync(join(tmpdir(), "fusion-fake-git-"));
     cleanup.push(repo, fakeBin);
-    const realGit = execSync("command -v git", { encoding: "utf-8" }).trim();
-    const fakeGit = join(fakeBin, "git");
-    writeFileSync(fakeGit, `#!/bin/sh\nif [ "$1" = "show" ] && [ "$2" = "--shortstat" ]; then\n  echo shortstat failed >&2\n  exit 42\nfi\nexec ${realGit} "$@"\n`);
-    chmodSync(fakeGit, 0o755);
+    const lookupCommand = process.platform === "win32" ? "where.exe" : "which";
+    const realGit = execFileSync(lookupCommand, ["git"], { encoding: "utf-8" }).split(/\r?\n/, 1)[0]!.trim();
+    const fakeGit = join(fakeBin, process.platform === "win32" ? "git.cmd" : "git");
+    if (process.platform === "win32") {
+      writeFileSync(fakeGit, `@echo off\r\nif "%~1"=="show" if "%~2"=="--shortstat" (\r\n  echo shortstat failed 1>&2\r\n  exit /b 42\r\n)\r\n"${realGit}" %*\r\n`);
+    } else {
+      writeFileSync(fakeGit, `#!/bin/sh\nif [ "$1" = "show" ] && [ "$2" = "--shortstat" ]; then\n  echo shortstat failed >&2\n  exit 42\nfi\nexec ${JSON.stringify(realGit)} "$@"\n`);
+      chmodSync(fakeGit, 0o755);
+    }
     originalPath = process.env.PATH;
-    process.env.PATH = `${fakeBin}:${originalPath ?? ""}`;
+    process.env.PATH = `${fakeBin}${delimiter}${originalPath ?? ""}`;
     const store = makeStore();
 
     await recordCommitAssociationFromHead(store as TaskStore, repo, "FN-6704", "lineage-1");
