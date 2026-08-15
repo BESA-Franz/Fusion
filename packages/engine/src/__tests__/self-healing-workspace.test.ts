@@ -24,6 +24,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { SelfHealingManager } from "../self-healing.js";
+import { classifyBranchProbeError } from "../self-healing-git-evidence.js";
 import { activeSessionRegistry } from "../agents/active-session-registry.js";
 import { landWorkspaceTask } from "../merge/merger-ai.js";
 import { createWorkspaceFixture, hasGit, type WorkspaceFixture } from "./_workspace-fixture.js";
@@ -86,17 +87,38 @@ function createStore(rows: Task[], settings: Partial<Settings> = {}): TaskStore 
   return store;
 }
 
-function makeManager(store: TaskStore, rootDir: string, opts: Record<string, unknown> = {}): SelfHealingManager {
+function managerOptions(store: TaskStore, rootDir: string, opts: Record<string, unknown> = {}): Record<string, unknown> {
   const enqueueMerge = (taskId: string) => {
     (store as unknown as RecordingStore).enqueued.push(taskId);
     return true;
   };
-  return new SelfHealingManager(store, {
-    rootDir,
-    enqueueMerge,
-    clearMergeActive: vi.fn(),
-    ...opts,
-  } as never);
+  return { rootDir, enqueueMerge, clearMergeActive: vi.fn(), ...opts };
+}
+
+function makeManager(store: TaskStore, rootDir: string, opts: Record<string, unknown> = {}): SelfHealingManager {
+  return new SelfHealingManager(store, managerOptions(store, rootDir, opts) as never);
+}
+
+/*
+FNXC:Workspace 2026-08-15-04:42:
+These harnesses inject only the exec boundary so timeout tests execute the production probe try/catch
+and classifier. Returning an outcome from an overridden probe would make the regression tautological.
+*/
+class BranchProbeHarness extends SelfHealingManager {
+  async readBranchEvidence(repoRootDir: string, branch: string): Promise<"present" | "absent" | "unknown"> {
+    return this.probeRepoBranch(repoRootDir, branch);
+  }
+}
+
+class UnavailableBranchProbeManager extends SelfHealingManager {
+  unavailable = true;
+
+  protected override async execBranchProbe(repoRootDir: string, branch: string): Promise<void> {
+    if (this.unavailable) {
+      throw Object.assign(new Error("Command failed: git show-ref"), { killed: true, signal: "SIGTERM", code: null });
+    }
+    return super.execBranchProbe(repoRootDir, branch);
+  }
 }
 
 /** Add a real `fusion/<id>` branch in a sub-repo with one non-conflicting own commit. */
@@ -316,6 +338,104 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     const n = await manager.reconcileWorkspacePartialLands();
     expect(n).toBe(1);
     expect(store.tasks.get(TASK_ID)?.status).toBe("failed");
+    expect(store.enqueued).not.toContain(TASK_ID);
+  });
+
+  it("classifies only a clean exit-1 branch probe error as absent", () => {
+    expect(classifyBranchProbeError({ code: 1 })).toBe("absent");
+    for (const error of [
+      { code: 1, killed: true, signal: "SIGTERM" },
+      { code: 128 },
+      { code: "ENOENT" },
+      { code: "EACCES" },
+      { killed: true, signal: "SIGTERM", code: null },
+      {},
+      "non-error throw",
+    ]) {
+      expect(classifyBranchProbeError(error)).toBe("unknown");
+    }
+  });
+
+  it("probes real existing and deleted branches as present and absent", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    addRepoBranch(fx, "repo-a", "a\n");
+    const store = createStore([]);
+    const manager = new BranchProbeHarness(store, managerOptions(store, fx.rootDir) as never);
+
+    expect(await manager.readBranchEvidence(fx.repoPath("repo-a"), BRANCH)).toBe("present");
+    fx.git("repo-a", `git branch -D ${BRANCH}`);
+    expect(await manager.readBranchEvidence(fx.repoPath("repo-a"), BRANCH)).toBe("absent");
+  });
+
+  it("defers missing sub-repo evidence without failing, moving, or enqueuing", async () => {
+    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
+    const task = workspaceTask({
+      "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH },
+      "missing-repo": { worktreePath: path.join(fx.rootDir, "missing-repo"), branch: BRANCH },
+    });
+    const store = createStore([task]);
+    const manager = makeManager(store, fx.rootDir);
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(0);
+    expect(store.tasks.get(TASK_ID)?.status).not.toBe("failed");
+    expect(store.tasks.get(TASK_ID)?.column).toBe("in-review");
+    expect(store.enqueued).not.toContain(TASK_ID);
+    expect((store.recordRunAuditEvent as ReturnType<typeof vi.fn>).mock.calls.some(
+      ([event]) => (event as { metadata?: { reason?: string } }).metadata?.reason === "evidence-unavailable",
+    )).toBe(true);
+  });
+
+  it("defers timeout-shaped evidence through the real probe classifier", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    addRepoBranch(fx, "repo-a", "a\n");
+    const task = workspaceTask({ "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } });
+    const store = createStore([task]);
+    const manager = new UnavailableBranchProbeManager(store, managerOptions(store, fx.rootDir) as never);
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(0);
+    expect(store.tasks.get(TASK_ID)?.status).not.toBe("failed");
+    expect(store.tasks.get(TASK_ID)?.column).toBe("in-review");
+    expect(store.enqueued).not.toContain(TASK_ID);
+    expect((store.recordRunAuditEvent as ReturnType<typeof vi.fn>).mock.calls.some(
+      ([event]) => (event as { metadata?: { reason?: string } }).metadata?.reason === "evidence-unavailable",
+    )).toBe(true);
+  });
+
+  it("parks only after bounded unavailable-evidence deferrals and resets after recovery", async () => {
+    fx = await createWorkspaceFixture(["repo-a"]);
+    addRepoBranch(fx, "repo-a", "a\n");
+    const task = workspaceTask({ "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } });
+    const store = createStore([task]);
+    const manager = new UnavailableBranchProbeManager(store, managerOptions(store, fx.rootDir) as never);
+
+    await manager.reconcileWorkspacePartialLands();
+    await manager.reconcileWorkspacePartialLands();
+    expect(store.tasks.get(TASK_ID)?.status).not.toBe("failed");
+    manager.unavailable = false;
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(1);
+    expect(store.enqueued).toContain(TASK_ID);
+
+    store.enqueued.length = 0;
+    manager.unavailable = true;
+    await manager.reconcileWorkspacePartialLands();
+    await manager.reconcileWorkspacePartialLands();
+    await manager.reconcileWorkspacePartialLands();
+    expect(store.tasks.get(TASK_ID)?.status).toBe("failed");
+    expect(store.tasks.get(TASK_ID)?.error).toContain("evidence unavailable");
+    expect(store.tasks.get(TASK_ID)?.error).not.toContain("no fusion/");
+  });
+
+  it("defers when unknown evidence is mixed with a genuinely absent branch", async () => {
+    fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
+    const task = workspaceTask({
+      "missing-repo": { worktreePath: path.join(fx.rootDir, "missing-repo"), branch: BRANCH },
+      "repo-b": { worktreePath: fx.repoPath("repo-b"), branch: BRANCH },
+    });
+    const store = createStore([task]);
+    const manager = makeManager(store, fx.rootDir);
+
+    expect(await manager.reconcileWorkspacePartialLands()).toBe(0);
+    expect(store.tasks.get(TASK_ID)?.status).not.toBe("failed");
     expect(store.enqueued).not.toContain(TASK_ID);
   });
 
