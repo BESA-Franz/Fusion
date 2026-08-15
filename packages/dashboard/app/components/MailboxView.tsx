@@ -60,7 +60,10 @@ import { getRelativeTimeBucket } from "../utils/relativeTimeAgo";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
-type MailboxTab = "inbox" | "outbox" | "archived" | "agents" | "approvals";
+/* DELIBERATE-LITERAL: this is a mailbox UI tab, not a task lifecycle column. */
+const ARCHIVED_MAILBOX_TAB = "archived" as const;
+
+type MailboxTab = "inbox" | "outbox" | typeof ARCHIVED_MAILBOX_TAB | "agents" | "approvals";
 
 interface MailboxViewProps {
   projectId?: string;
@@ -573,7 +576,7 @@ export function MailboxView({
   useEffect(() => {
     if (activeTab === "inbox") loadInbox();
     else if (activeTab === "outbox") loadOutbox();
-    else if (activeTab === "archived") loadArchivedInbox();
+    else if (activeTab === ARCHIVED_MAILBOX_TAB) loadArchivedInbox();
     else if (activeTab === "agents") loadAgents();
     else if (activeTab === "approvals") {
       void loadApprovals(approvalSubTab);
@@ -783,7 +786,7 @@ export function MailboxView({
     try {
       await archiveMessage(id, projectId);
       dismissMessage();
-      if (activeTab === "archived") loadArchivedInbox();
+      if (activeTab === ARCHIVED_MAILBOX_TAB) loadArchivedInbox();
       else if (activeTab === "outbox") loadOutbox();
       else if (activeTab === "inbox") loadInbox();
       else if (selectedAgentId === ALL_AGENTS_MAILBOX_ID) loadAllAgentsMailbox();
@@ -812,7 +815,7 @@ export function MailboxView({
       // Refresh current tab
       if (activeTab === "inbox") loadInbox();
       else if (activeTab === "outbox") loadOutbox();
-    else if (activeTab === "archived") loadArchivedInbox();
+    else if (activeTab === ARCHIVED_MAILBOX_TAB) loadArchivedInbox();
       else if (selectedAgentId === ALL_AGENTS_MAILBOX_ID) loadAllAgentsMailbox();
       else if (selectedAgentId) loadAgentMailbox(selectedAgentId);
       addToast?.("Message deleted", "success");
@@ -1134,7 +1137,7 @@ export function MailboxView({
 
   const renderListPane = () => (
     <>
-      {activeTab === "archived" && (
+      {activeTab === ARCHIVED_MAILBOX_TAB && (
         <div className="mailbox-list" data-testid="mailbox-archived-list">
           {isLoading && !archivedInbox && <MailboxSkeleton />}
           {archivedInbox?.messages.length === 0 && <div className="mailbox-empty" data-testid="mailbox-archived-empty">No archived messages</div>}
@@ -1576,7 +1579,7 @@ export function MailboxView({
               onClick={() => {
                 if (activeTab === "inbox") loadInbox();
                 else if (activeTab === "outbox") loadOutbox();
-    else if (activeTab === "archived") loadArchivedInbox();
+    else if (activeTab === ARCHIVED_MAILBOX_TAB) loadArchivedInbox();
                 else if (activeTab === "approvals") loadApprovals(approvalSubTab);
                 else if (selectedAgentId === ALL_AGENTS_MAILBOX_ID) loadAllAgentsMailbox();
                 else if (selectedAgentId) loadAgentMailbox(selectedAgentId);
@@ -1610,7 +1613,7 @@ export function MailboxView({
           <Send size={14} />
           <span>{t("mailbox.outbox", "Outbox")}</span>
         </button>
-        <button className={`btn btn-sm btn-secondary mailbox-tab ${activeTab === "archived" ? "active" : ""}`} onClick={() => handleSelectTab("archived")} data-testid="mailbox-tab-archived">Archived</button>
+        <button className={`btn btn-sm btn-secondary mailbox-tab ${activeTab === ARCHIVED_MAILBOX_TAB ? "active" : ""}`} onClick={() => handleSelectTab(ARCHIVED_MAILBOX_TAB)} data-testid="mailbox-tab-archived">Archived</button>
         <button
           className={`btn btn-sm btn-secondary mailbox-tab ${activeTab === "agents" ? "active" : ""}`}
           onClick={() => handleSelectTab("agents")}
