@@ -13,8 +13,6 @@ unwired, and a test either passes vacuously or later resembles a product regress
 file-plus-specifier because repeated strings must not let one file hide another file's new defect.
 */
 const KNOWN_DEAD_SPECIFIERS = [
-  { file: "__tests__/self-healing-stalled-card-watchdog.test.ts", specifier: "../run-audit.js" },
-  { file: "__tests__/self-healing-orphaned-pending-step-results.test.ts", specifier: "../run-audit.js" },
   { file: "__tests__/merge-single-flight-invariant.test.ts", specifier: "../pr-monitor.js" },
   { file: "__tests__/merge-single-flight-invariant.test.ts", specifier: "../pr-comment-handler.js" },
   { file: "__tests__/merge-single-flight-invariant.test.ts", specifier: "../auth-storage.js" },
@@ -180,7 +178,7 @@ function testSpecifierExpressions(source: string): SpecifierExpression[] {
     }
 
     if (isWordAt(source, index, "import")) {
-      let importStart = skipTrivia(source, index + "import".length);
+      const importStart = skipTrivia(source, index + "import".length);
       if (source[importStart] === "(") {
         expressions.push({ expression: firstArgument(source, importStart + 1), inspectNonLiteral: false });
       } else if (source[importStart] === '"' || source[importStart] === "'") {
@@ -246,8 +244,8 @@ describe("relative engine test specifiers", () => {
   });
 
   it("resolves relative literals and ratchets the remaining moved-module exceptions downward", () => {
-    expect(KNOWN_DEAD_SPECIFIERS).toHaveLength(11);
-    expect(new Set(KNOWN_DEAD_SPECIFIERS.map((entry) => entry.file))).toHaveLength(7);
+    expect(KNOWN_DEAD_SPECIFIERS).toHaveLength(9);
+    expect(new Set(KNOWN_DEAD_SPECIFIERS.map((entry) => entry.file))).toHaveLength(5);
     expect(KNOWN_DEAD_SPECIFIERS.some((entry) => entry.file === "__tests__/self-healing-query-filter-blindness.test.ts")).toBe(false);
 
     const allowed = new Set(KNOWN_DEAD_SPECIFIERS.map((entry) => `${entry.file}\0${entry.specifier}`));
@@ -256,7 +254,7 @@ describe("relative engine test specifiers", () => {
 
     for (const file of walk(ENGINE_SRC)) {
       if (![".ts", ".tsx"].includes(extname(file))) continue;
-      const fileName = relative(ENGINE_SRC, file);
+      const fileName = relative(ENGINE_SRC, file).replaceAll("\\", "/");
       if (fileName === GUARD_FILE || !fileName.includes("__tests__/")) continue;
       for (const entry of testSpecifierExpressions(readFileSync(file, "utf8"))) {
         const specifier = literalExpression(entry.expression);
