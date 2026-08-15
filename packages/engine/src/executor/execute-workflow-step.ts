@@ -65,6 +65,10 @@ import {
   filterCustomToolsForReadonly,
 } from "../workflows/workflow-step-tool-policy.js";
 import { executorLog } from "../logger.js";
+import {
+  collectPlanReviewFeedbackHistory,
+  countPlanReviewRevisionAttempts,
+} from "../plan-review-feedback-history.js";
 import { mergeEffectiveSettings } from "../project/effective-settings.js";
 import { injectReviewAdvisoryNotes } from "./workflow-step-failure-injection.js";
 import { parseAwaitInputQuestionToolCall } from "./await-input-parse.js";
@@ -127,7 +131,6 @@ export async function executeWorkflowStep(
     // assumptions and proceed instead of parking on a question. Explicit opt-in
     // only (default false = board run); see runGraphCustomNode / KTD-3.
     const unattended = stepOptions?.unattended === true;
-    const isPlanReviewStep = workflowStep.id === "graph:plan-review-step" || workflowStep.name === "Plan Review";
     /*
     FNXC:WorkflowReviewFindings 2026-08-05-06:29:
     reviewKind is carried from graph synthesis (cfg.reviewKind / optional-group context) so prompt
@@ -141,6 +144,10 @@ export async function executeWorkflowStep(
       requireExternalIntegrationEvidence?: boolean;
     };
     const optionalGroupId = workflowStepMetadata.optionalGroupId;
+    const isPlanReviewStep = workflowStep.id === "graph:plan-review-step"
+      || workflowStep.name === "Plan Review"
+      || optionalGroupId === "plan-review"
+      || workflowStepMetadata.reviewKind === "plan";
     const isReviewTypeWorkflowStep =
       isPlanReviewStep
       || workflowStepMetadata.reviewCanFixInline === true
@@ -394,6 +401,30 @@ export async function executeWorkflowStep(
   - Code Review and Browser Verification may fix implementation issues inside the assigned task worktree. Report each self-fixed issue as a finding with resolution resolved-in-review; list a fixed prior-lane finding in supersededFindingIds.`
       : "";
 
+    const planReviewRevisionKey = optionalGroupId
+      ?? (workflowStep.id === "graph:plan-review-step" ? "plan-review" : workflowStep.id);
+    const completedPlanReviewAttempts = isPlanReviewStep
+      ? countPlanReviewRevisionAttempts(task.workflowStepResults, { revisionKey: planReviewRevisionKey })
+      : 0;
+    const planReviewFeedbackHistory = completedPlanReviewAttempts > 0
+      ? collectPlanReviewFeedbackHistory(task.workflowStepResults, { revisionKey: planReviewRevisionKey })
+      : [];
+    const nextPlanReviewAttempt = completedPlanReviewAttempts + 1;
+    const planReviewConvergenceBlock = planReviewFeedbackHistory.length > 0
+      ? `
+
+  ## Convergence — Plan Review attempt ${nextPlanReviewAttempt}
+
+  ### Cumulative prior Plan Review ledger
+${planReviewFeedbackHistory.map((feedback, index) => `  ${index + 1}. ${feedback}`).join("\n")}
+
+  Resolve every still-applicable blocker above. Do not repeat an already rejected plan without explaining the concrete change that addresses the feedback.${nextPlanReviewAttempt >= 3 ? `
+
+  ### Severity ratchet (attempt 3+)
+  - A newly reported blocker must identify the revision that introduced it or the prior evidence that made it newly discoverable.
+  - Re-check prior severe findings against the complete plan; never demote a critical defect merely because it was missed before.` : ""}`
+      : "";
+
     const systemPrompt = `You are a workflow step agent executing: ${workflowStep.name}
 
   Task Context:
@@ -413,7 +444,7 @@ export async function executeWorkflowStep(
   Your Instructions:
   ${workflowStep.prompt}
 
-  You have access to the file system to review changes.${inlineFixBlock}${verdictBlock}`;
+  You have access to the file system to review changes.${planReviewConvergenceBlock}${inlineFixBlock}${verdictBlock}`;
 
     const agentLogger = new AgentLogger({
       store: deps.store,
