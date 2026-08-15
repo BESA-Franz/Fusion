@@ -199,6 +199,7 @@ export {
   buildSourceIssueRef,
 } from "./execution-prompt.js";
 export { clearTerminalWorkflowStepFailures } from "./workflow-step-failures.js";
+export { resolveWorkflowGateActivityClaim } from "./agent-activity-writers.js";
 export {
   hasNonTerminalWorkflowSteps,
   workflowStepResultPassed,

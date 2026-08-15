@@ -49,6 +49,7 @@ import {
   admitWorkflowPrincipalBeforeNode,
   type ActiveWorkflowAuthority,
 } from "./workflow-principal-before-node.js";
+import { resolveWorkflowGateActivityClaim } from "./agent-activity-writers.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirror TaskExecutor method/map surface
 type AnyFn = (...args: any[]) => any;
@@ -137,10 +138,18 @@ export async function persistWorkflowStepResult(
   deps: Pick<ExecuteWorkflowGraphDeps, "store" | "getRunContextFor" | "readTaskArtifact">,
   taskId: string,
   result: CoreWorkflowStepResult,
+  workflowPrincipalId?: string,
 ): Promise<void> {
+  /*
+  FNXC:AgentActivityStream 2026-08-15-02:42:
+  Terminal workflow results and their monitoring event share this production persistence sink. The
+  node-scoped principal id survives the handler's release callback without extending its capacity lease.
+  */
   if (typeof deps.store.updateTask !== "function") return;
   try {
     const live = await deps.store.getTask(taskId);
+    const previous = live?.workflowStepResults?.find((existing) => existing.workflowStepId === result.workflowStepId);
+    const attempt = previous ? (previous.priorAttempts?.length ?? 0) + 1 : 0;
     const isPlanReviewResult = result.workflowStepId === PLAN_REVIEW_GROUP_ID
       || result.workflowStepName === "Plan Review";
     const resultToPersist = isPlanReviewResult
@@ -190,6 +199,16 @@ export async function persistWorkflowStepResult(
       });
     } else {
       await deps.store.updateTask(taskId, { workflowStepResults: existing }, deps.getRunContextFor(taskId));
+    }
+    if (result.status !== "pending" && typeof deps.store.recordAgentActivity === "function") {
+      await deps.store.recordAgentActivity({
+        type: result.status === "failed" ? "workflow:gate-failed" : "workflow:gate-passed",
+        attributionClaim: resolveWorkflowGateActivityClaim(workflowPrincipalId, live?.assignedAgentId),
+        taskId,
+        occurredAt: result.completedAt ?? new Date().toISOString(),
+        discriminator: `${result.workflowStepId}:${result.startedAt ?? result.completedAt ?? "terminal"}`,
+        metadata: { stepId: result.workflowStepId, status: result.status, attempt },
+      });
     }
   } catch {
     // Result recording is additive visibility — never affect the graph run.
@@ -414,6 +433,7 @@ export async function executeWorkflowGraph(
       during CLOSE_NO_OP terminalization failure without a TDZ (FN-8841).
       */
       let continuation: WorkflowWorkItem | undefined;
+      const workflowGatePrincipalIds = new Map<string, string>();
       const runner = new WorkflowGraphTaskRunner({
         localNodeId: deps.options.getLocalNodeId?.(),
         store: {
@@ -436,8 +456,8 @@ export async function executeWorkflowGraph(
         seams: deps.createAuthoritativeWorkflowSeams(settings),
         prepareNodeExecution: (node, nodeTask, requirement) =>
           deps.prepareGraphNodeExecution(node, nodeTask, settings, requirement),
-        beforeNodeExecution: async (node, nodeTask, context) =>
-          admitWorkflowPrincipalBeforeNode(
+        beforeNodeExecution: async (node, nodeTask, context) => {
+          const refusal = await admitWorkflowPrincipalBeforeNode(
             {
               store: deps.store,
               options: deps.options,
@@ -455,7 +475,11 @@ export async function executeWorkflowGraph(
             node,
             nodeTask,
             context,
-          ),
+          );
+          const principal = deps.activeWorkflowPrincipals.get(nodeTask.id);
+          if (!refusal && principal) workflowGatePrincipalIds.set(`${nodeTask.id}:${node.id}`, principal.agentId);
+          return refusal;
+        },
         runCustomNode: customNodeExecution.runner(settings),
         publishTaskProjection: async (taskId, patch) => {
           await deps.store.updateTaskAtomic(taskId, (liveTask) => {
@@ -533,7 +557,12 @@ export async function executeWorkflowGraph(
           continuation = await deps.holdPlanReviewNoOpContinuation(nodeTask, suspension, continuation, resolvedRunId);
         },
         recordWorkflowStepResult: (taskId: string, result: CoreWorkflowStepResult) =>
-          persistWorkflowStepResult(deps, taskId, result),
+          persistWorkflowStepResult(
+            deps,
+            taskId,
+            result,
+            workflowGatePrincipalIds.get(`${taskId}:${result.workflowStepId}`),
+          ),
         requestPreMergeOptionalStepFix: (taskId, info) => deps.requestPreMergeOptionalStepFix(taskId, task, info),
         // U5c (U1 KTD-1/2/3/12): wire the production lifecycle-move hooks so the
         // graph interpreter owns the card's column moves (was reverted in U5a

@@ -20,6 +20,7 @@ import { isMergeRequestContractShadowEnabled } from "@fusion/core";
 import { ensureWorkflowCompletionSummary } from "../workflows/workflow-completion-summary.js";
 import { executorLog } from "../logger.js";
 import type { EngineRunContext } from "../util/run-audit.js";
+import { resolveWorkflowGateActivityClaim } from "./agent-activity-writers.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mirror TaskExecutor method surface
 type AnyFn = (...args: any[]) => any;
@@ -54,6 +55,24 @@ export async function handoffTaskToReview(
       agentId,
     },
   });
+
+  /*
+  FNXC:AgentActivityStream 2026-08-15-02:42:
+  Record only after the real handoff succeeds. Monitoring remains fail-soft and its deterministic
+  run/reason discriminator deduplicates a replay of the same executor transition.
+  */
+  try {
+    await deps.store.recordAgentActivity({
+      type: "task:handed-off",
+      attributionClaim: resolveWorkflowGateActivityClaim(agentId, handedOff.assignedAgentId),
+      taskId: task.id,
+      occurredAt: handedOff.updatedAt ?? new Date().toISOString(),
+      discriminator: `${runId ?? handedOff.updatedAt ?? task.id}:${reason}`,
+      metadata: { runId, reason, source: "executor" },
+    });
+  } catch {
+    // Monitoring must not prevent the executor from handing completed work to review.
+  }
 
   const settings = await deps.store.getSettings();
   if (isMergeRequestContractShadowEnabled(settings)) {
