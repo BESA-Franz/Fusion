@@ -2,14 +2,14 @@ import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { classifyOwnedLandedEvidence } from "../../merger.js";
 import { SelfHealingManager } from "../../self-healing.js";
 
-function git(dir: string, cmd: string): string {
-  return execSync(cmd, { cwd: dir, stdio: "pipe" }).toString().trim();
+function git(dir: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: dir, stdio: "pipe" }).toString().trim();
 }
 
 function makeStore(task: Task, settings: Partial<Settings> = {}, events: unknown[] = []): TaskStore & EventEmitter {
@@ -53,11 +53,11 @@ describe("done-task verification benign integrity reconcile (real git)", () => {
   it("suppresses unproven warning for no-branch verification-only shape", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fn-4700-ri-benign-"));
     try {
-      git(dir, "git init -b main");
-      git(dir, 'git config user.email "test@example.com"');
-      git(dir, 'git config user.name "Test"');
-      git(dir, "git commit --allow-empty -m init");
-      const baseSha = git(dir, "git rev-parse HEAD");
+      git(dir, ["init", "-b", "main"]);
+      git(dir, ["config", "user.email", "test@example.com"]);
+      git(dir, ["config", "user.name", "Test"]);
+      git(dir, ["commit", "--allow-empty", "-m", "init"]);
+      const baseSha = git(dir, ["rev-parse", "HEAD"]);
 
       const task = {
         id: "FN-VERIFY",
@@ -99,16 +99,16 @@ describe("done-task verification benign integrity reconcile (real git)", () => {
   it("keeps warning path when branch exists with foreign-only deltas", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fn-4700-ri-foreign-"));
     try {
-      git(dir, "git init -b main");
-      git(dir, 'git config user.email "test@example.com"');
-      git(dir, 'git config user.name "Test"');
-      git(dir, "git commit --allow-empty -m init");
+      git(dir, ["init", "-b", "main"]);
+      git(dir, ["config", "user.email", "test@example.com"]);
+      git(dir, ["config", "user.name", "Test"]);
+      git(dir, ["commit", "--allow-empty", "-m", "init"]);
 
-      git(dir, "git checkout -b fusion/fn-verify-foreign");
+      git(dir, ["checkout", "-b", "fusion/fn-verify-foreign"]);
       writeFileSync(join(dir, "foreign.txt"), "from foreign\n");
-      git(dir, "git add foreign.txt");
-      git(dir, "git commit -m 'feat(FN-OTHER): foreign' -m 'Fusion-Task-Id: FN-OTHER'");
-      git(dir, "git checkout main");
+      git(dir, ["add", "foreign.txt"]);
+      git(dir, ["commit", "-m", "feat(FN-OTHER): foreign", "-m", "Fusion-Task-Id: FN-OTHER"]);
+      git(dir, ["checkout", "main"]);
 
       const task = {
         id: "FN-VERIFY-FOREIGN",
@@ -146,18 +146,18 @@ describe("done-task verification benign integrity reconcile (real git)", () => {
   it("still reconciles owned-commit by restoring commitSha", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fn-4700-ri-owned-"));
     try {
-      git(dir, "git init -b main");
-      git(dir, 'git config user.email "test@example.com"');
-      git(dir, 'git config user.name "Test"');
-      git(dir, "git commit --allow-empty -m init");
+      git(dir, ["init", "-b", "main"]);
+      git(dir, ["config", "user.email", "test@example.com"]);
+      git(dir, ["config", "user.name", "Test"]);
+      git(dir, ["commit", "--allow-empty", "-m", "init"]);
 
-      git(dir, "git checkout -b fusion/fn-owned");
+      git(dir, ["checkout", "-b", "fusion/fn-owned"]);
       writeFileSync(join(dir, "owned.txt"), "owned\n");
-      git(dir, "git add owned.txt");
-      git(dir, "git commit -m 'feat(FN-OWNED): change' -m 'Fusion-Task-Id: FN-OWNED'");
-      const ownedSha = git(dir, "git rev-parse HEAD");
-      git(dir, "git checkout main");
-      git(dir, `git cherry-pick ${ownedSha}`);
+      git(dir, ["add", "owned.txt"]);
+      git(dir, ["commit", "-m", "feat(FN-OWNED): change", "-m", "Fusion-Task-Id: FN-OWNED"]);
+      const ownedSha = git(dir, ["rev-parse", "HEAD"]);
+      git(dir, ["checkout", "main"]);
+      git(dir, ["cherry-pick", ownedSha]);
 
       const task = {
         id: "FN-OWNED",
