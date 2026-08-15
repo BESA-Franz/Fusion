@@ -3,7 +3,7 @@
 // the detector must NOT attribute a task to a commit that merely *mentions*
 // the task ID in prose (the historical `git log --grep` first-hit bug).
 import { afterEach, describe, expect, it } from "vitest";
-import { execSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,8 +13,17 @@ import { findAlreadyMergedTaskCommit } from "../merge/already-merged-detector.js
 const hasGit = spawnSync("git", ["--version"], { stdio: "pipe" }).status === 0;
 const describeIfGit = hasGit ? describe : describe.skip;
 
-function git(repo: string, command: string): string {
-  return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+function git(repo: string, ...args: string[]): string {
+  const result = spawnSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+  }
+  return result.stdout.trim();
+}
+
+function commit(repo: string, pathspec: string, subject: string, ...bodies: string[]): void {
+  git(repo, "add", pathspec);
+  git(repo, "commit", "-m", subject, ...bodies.flatMap((body) => ["-m", body]));
 }
 
 describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () => {
@@ -29,10 +38,10 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
   function setupRepo(): string {
     const repo = mkdtempSync(path.join(os.tmpdir(), "fn-amd-"));
     repos.push(repo);
-    git(repo, "git init -b main");
-    git(repo, 'git config user.email "test@example.com"');
-    git(repo, 'git config user.name "Test"');
-    git(repo, "git commit --allow-empty -m 'init'");
+    git(repo, "init", "-b", "main");
+    git(repo, "config", "user.email", "test@example.com");
+    git(repo, "config", "user.name", "Test");
+    git(repo, "commit", "--allow-empty", "-m", "init");
     return repo;
   }
 
@@ -40,8 +49,8 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "owned.txt"), "owned\n", "utf-8");
-    git(repo, "git add src/owned.txt && git commit -m 'feat: landed work' -m 'Fusion-Task-Id: FN-AMD-1'");
-    const landedSha = git(repo, "git rev-parse HEAD");
+    commit(repo, "src/owned.txt", "feat: landed work", "Fusion-Task-Id: FN-AMD-1");
+    const landedSha = git(repo, "rev-parse", "HEAD");
 
     const result = await findAlreadyMergedTaskCommit({
       taskId: "FN-AMD-1",
@@ -59,11 +68,8 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "legacy-lineage.txt"), "owned legacy lineage\n", "utf-8");
-    git(
-      repo,
-      "git add src/legacy-lineage.txt && git commit -m 'feat: legacy lineage landed' -m 'Fusion-Task-Id: FN-AMD-LEGACY' -m 'Fusion-Task-Lineage: LINEAGE-OPTIONAL'",
-    );
-    const landedSha = git(repo, "git rev-parse HEAD");
+    commit(repo, "src/legacy-lineage.txt", "feat: legacy lineage landed", "Fusion-Task-Id: FN-AMD-LEGACY", "Fusion-Task-Lineage: LINEAGE-OPTIONAL");
+    const landedSha = git(repo, "rev-parse", "HEAD");
 
     const result = await findAlreadyMergedTaskCommit({
       taskId: "FN-AMD-LEGACY",
@@ -81,8 +87,8 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "lineage.txt"), "lineage\n", "utf-8");
-    git(repo, "git add src/lineage.txt && git commit -m 'feat: lineage work' -m 'Fusion-Task-Lineage: LINEAGE-XYZ'");
-    const landedSha = git(repo, "git rev-parse HEAD");
+    commit(repo, "src/lineage.txt", "feat: lineage work", "Fusion-Task-Lineage: LINEAGE-XYZ");
+    const landedSha = git(repo, "rev-parse", "HEAD");
 
     const result = await findAlreadyMergedTaskCommit({
       taskId: "FN-AMD-LIN",
@@ -108,20 +114,17 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
     // An unrelated commit whose BODY mentions FN-AMD-2 in prose only.
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "unrelated.txt"), "unrelated\n", "utf-8");
-    git(
-      repo,
-      "git add src/unrelated.txt && git commit -m 'feat: unrelated change' -m 'This also touches things related to FN-AMD-2 in passing.'",
-    );
-    const proseSha = git(repo, "git rev-parse HEAD");
+    commit(repo, "src/unrelated.txt", "feat: unrelated change", "This also touches things related to FN-AMD-2 in passing.");
+    const proseSha = git(repo, "rev-parse", "HEAD");
 
     // The task's own branch landed by being merged into main, but its commits
     // carry NO trailer and NO conventional-subject anchor — only a generic
     // message — so the only `--grep=FN-AMD-2` hit is the prose-mention above.
-    git(repo, "git checkout -b fusion/fn-amd-2");
+    git(repo, "checkout", "-b", "fusion/fn-amd-2");
     writeFileSync(path.join(repo, "src", "task.txt"), "task work\n", "utf-8");
-    git(repo, "git add src/task.txt && git commit -m 'wip: generic message with no anchor'");
-    git(repo, "git checkout main");
-    git(repo, "git merge --no-ff --no-edit fusion/fn-amd-2 -m 'merge generic branch'");
+    commit(repo, "src/task.txt", "wip: generic message with no anchor");
+    git(repo, "checkout", "main");
+    git(repo, "merge", "--no-ff", "--no-edit", "fusion/fn-amd-2", "-m", "merge generic branch");
 
     const result = await findAlreadyMergedTaskCommit({
       taskId: "FN-AMD-2",
@@ -140,8 +143,8 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
     // It may legitimately attribute via patch-id/tree-equal to the REAL owned
     // content, but it must NEVER return the unrelated prose-mention commit.
     if (result && result.strategy === "ancestry") {
-      const subject = git(repo, `git show -s --format=%s ${result.sha}`);
-      const body = git(repo, `git show -s --format=%b ${result.sha}`);
+      const subject = git(repo, "show", "-s", "--format=%s", result.sha);
+      const body = git(repo, "show", "-s", "--format=%b", result.sha);
       const ownedBySubject = /^(?:[A-Za-z]+\([^)]*FN-AMD-2[^)]*\):|FN-AMD-2:)/.test(subject);
       const ownedByTrailer = /(?:^|\n)Fusion-Task-Id: FN-AMD-2\s*(?:\n|$)/.test(body);
       expect(ownedBySubject || ownedByTrailer).toBe(true);
@@ -152,9 +155,9 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "previous.txt"), "previous landed task\n", "utf-8");
-    git(repo, "git add src/previous.txt && git commit -m 'feat: previous landed' -m 'Fusion-Task-Id: FN-AMD-PREVIOUS'");
-    const previousLandedSha = git(repo, "git rev-parse HEAD");
-    git(repo, "git branch fusion/fn-amd-noop");
+    commit(repo, "src/previous.txt", "feat: previous landed", "Fusion-Task-Id: FN-AMD-PREVIOUS");
+    const previousLandedSha = git(repo, "rev-parse", "HEAD");
+    git(repo, "branch", "fusion/fn-amd-noop");
 
     const result = await findAlreadyMergedTaskCommit({
       taskId: "FN-AMD-NOOP",
@@ -173,11 +176,11 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "previous-advanced.txt"), "previous landed task\n", "utf-8");
-    git(repo, "git add src/previous-advanced.txt && git commit -m 'feat: previous landed' -m 'Fusion-Task-Id: FN-AMD-PREVIOUS-ADVANCED'");
-    const previousLandedSha = git(repo, "git rev-parse HEAD");
-    git(repo, "git branch fusion/fn-amd-noop-advanced");
+    commit(repo, "src/previous-advanced.txt", "feat: previous landed", "Fusion-Task-Id: FN-AMD-PREVIOUS-ADVANCED");
+    const previousLandedSha = git(repo, "rev-parse", "HEAD");
+    git(repo, "branch", "fusion/fn-amd-noop-advanced");
     writeFileSync(path.join(repo, "src", "unrelated-after-noop.txt"), "unrelated after branch\n", "utf-8");
-    git(repo, "git add src/unrelated-after-noop.txt && git commit -m 'feat: unrelated after noop branch'");
+    commit(repo, "src/unrelated-after-noop.txt", "feat: unrelated after noop branch");
 
     const result = await findAlreadyMergedTaskCommit({
       taskId: "FN-AMD-NOOP-ADVANCED",
@@ -194,15 +197,15 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
 
   it("rejects a patch-id match when the landed candidate carries a foreign task trailer", async () => {
     const repo = setupRepo();
-    git(repo, "git checkout -b fusion/fn-amd-foreign");
+    git(repo, "checkout", "-b", "fusion/fn-amd-foreign");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "foreign-patch.txt"), "same-content\n", "utf-8");
-    git(repo, "git add src/foreign-patch.txt && git commit -m 'work without owner'");
-    const branchBase = git(repo, "git merge-base main fusion/fn-amd-foreign");
-    git(repo, "git checkout main");
+    commit(repo, "src/foreign-patch.txt", "work without owner");
+    const branchBase = git(repo, "merge-base", "main", "fusion/fn-amd-foreign");
+    git(repo, "checkout", "main");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "foreign-patch.txt"), "same-content\n", "utf-8");
-    git(repo, "git add src/foreign-patch.txt && git commit -m 'feat: foreign landed' -m 'Fusion-Task-Id: FN-AMD-OTHER'");
+    commit(repo, "src/foreign-patch.txt", "feat: foreign landed", "Fusion-Task-Id: FN-AMD-OTHER");
 
     const result = await findAlreadyMergedTaskCommit({
       taskId: "FN-AMD-FOREIGN",
@@ -217,15 +220,15 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
 
   it("rejects a patch-id match when the landed candidate carries a foreign lineage trailer", async () => {
     const repo = setupRepo();
-    git(repo, "git checkout -b fusion/fn-amd-foreign-lineage");
+    git(repo, "checkout", "-b", "fusion/fn-amd-foreign-lineage");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "foreign-lineage-patch.txt"), "same-lineage-content\n", "utf-8");
-    git(repo, "git add src/foreign-lineage-patch.txt && git commit -m 'work without owner'");
-    const branchBase = git(repo, "git merge-base main fusion/fn-amd-foreign-lineage");
-    git(repo, "git checkout main");
+    commit(repo, "src/foreign-lineage-patch.txt", "work without owner");
+    const branchBase = git(repo, "merge-base", "main", "fusion/fn-amd-foreign-lineage");
+    git(repo, "checkout", "main");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "foreign-lineage-patch.txt"), "same-lineage-content\n", "utf-8");
-    git(repo, "git add src/foreign-lineage-patch.txt && git commit -m 'feat: foreign lineage landed' -m 'Fusion-Task-Lineage: LINEAGE-OTHER'");
+    commit(repo, "src/foreign-lineage-patch.txt", "feat: foreign lineage landed", "Fusion-Task-Lineage: LINEAGE-OTHER");
 
     const result = await findAlreadyMergedTaskCommit({
       taskId: "FN-AMD-FOREIGN-LINEAGE",
@@ -241,14 +244,14 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
 
   it("rejects branch-fallback attribution when task metadata points at another task branch", async () => {
     const repo = setupRepo();
-    git(repo, "git checkout -b fusion/fn-amd-other-tip");
+    git(repo, "checkout", "-b", "fusion/fn-amd-other-tip");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "other-tip.txt"), "other\n", "utf-8");
-    git(repo, "git add src/other-tip.txt && git commit -m 'feat: other tip' -m 'Fusion-Task-Id: FN-AMD-OTHER-TIP'");
-    git(repo, "git checkout main");
+    commit(repo, "src/other-tip.txt", "feat: other tip", "Fusion-Task-Id: FN-AMD-OTHER-TIP");
+    git(repo, "checkout", "main");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "other-tip.txt"), "other\n", "utf-8");
-    git(repo, "git add src/other-tip.txt && git commit -m 'land equivalent other tip'");
+    commit(repo, "src/other-tip.txt", "land equivalent other tip");
 
     const result = await findAlreadyMergedTaskCommit({
       taskId: "FN-AMD-RECOVERED",
@@ -265,12 +268,12 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
 
     // The merge into main carries a conventional subject anchored on the task
     // ID; ancestry attribution should accept it (it is genuinely owned).
-    git(repo, "git checkout -b fusion/fn-amd-3");
+    git(repo, "checkout", "-b", "fusion/fn-amd-3");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "anchored.txt"), "anchored\n", "utf-8");
-    git(repo, "git add src/anchored.txt && git commit -m 'feat(FN-AMD-3): real anchored work'");
-    git(repo, "git checkout main");
-    git(repo, "git merge --ff-only fusion/fn-amd-3");
+    commit(repo, "src/anchored.txt", "feat(FN-AMD-3): real anchored work");
+    git(repo, "checkout", "main");
+    git(repo, "merge", "--ff-only", "fusion/fn-amd-3");
 
     const result = await findAlreadyMergedTaskCommit({
       taskId: "FN-AMD-3",
@@ -281,7 +284,7 @@ describeIfGit("findAlreadyMergedTaskCommit ownership anchoring (real git)", () =
 
     expect(result).not.toBeNull();
     // Trailer path won't match (no trailer); ownership-anchored ancestry should.
-    const subject = git(repo, `git show -s --format=%s ${result!.sha}`);
+    const subject = git(repo, "show", "-s", "--format=%s", result!.sha);
     expect(subject).toContain("FN-AMD-3");
     expect(result!.ownershipProof).toBe("subject-anchor");
   });
