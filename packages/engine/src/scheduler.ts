@@ -1533,7 +1533,11 @@ export class Scheduler {
    * @param id - The task ID to validate
    * @returns Object with `valid: true` if checks pass, or `valid: false` with a `reason` string if they fail
    */
-  private async validateTaskFilesystem(id: string): Promise<{ valid: boolean; reason?: string }> {
+  private async validateTaskFilesystem(task: Pick<Task, "id" | "title">): Promise<{ valid: boolean; reason?: string }> {
+    const titleRedirect = nonExecutableDuplicateRedirectReason(undefined, task.title);
+    if (titleRedirect) {
+      return { valid: false, reason: titleRedirect };
+    }
     if (typeof this.store.getTasksDir !== "function") {
       /*
       FNXC:WorkflowScheduling 2026-06-23-11:38:
@@ -1541,7 +1545,7 @@ export class Scheduler {
       */
       return { valid: true };
     }
-    const taskDir = join(this.store.getTasksDir(), id);
+    const taskDir = join(this.store.getTasksDir(), task.id);
     
     // Check if task directory exists
     if (!existsSync(taskDir)) {
@@ -1570,7 +1574,7 @@ export class Scheduler {
       }
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      schedulerLog.warn(`PROMPT.md read failed for task dispatch validation (${id}): ${errorMessage}`);
+      schedulerLog.warn(`PROMPT.md read failed for task dispatch validation (${task.id}): ${errorMessage}`);
       return { valid: false, reason: "missing or empty PROMPT.md" };
     }
     
@@ -2546,7 +2550,7 @@ export class Scheduler {
           FNXC:WorkflowScheduling 2026-06-23-11:12:
           The workflow sweep is the only dispatcher, so the scheduler-only pre-dispatch gates must run before a capacity hold moves to an execution column. Keep dependency, filesystem, node-routing, permanent-agent, and oscillation checks on this path instead of relying on the retired todo loop.
           */
-          const validation = await this.validateTaskFilesystem(task.id);
+          const validation = await this.validateTaskFilesystem(task);
           if (!validation.valid) {
             schedulerLog.warn(`Task ${task.id} filesystem validation failed: ${validation.reason}`);
             /*
