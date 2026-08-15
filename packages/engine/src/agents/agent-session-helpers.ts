@@ -140,7 +140,6 @@ export interface ResolvedSessionOptions extends AgentRuntimeOptions {
    * Injected Cursor support status for routing conformance. Production leaves it
    * unset while the bundled Cursor adapter remains a non-executable stub.
    */
-  cursorCliExecutionSupported?: boolean;
   /**
    * Optional run-audit emitter; when provided, a `session:runtime-resolved`
    * database event is recorded at resolution time. No-ops when omitted to
@@ -783,7 +782,7 @@ export function resolveMergerSessionModel(
 export async function createResolvedAgentSession(
   options: ResolvedSessionOptions,
 ): Promise<ResolvedSessionResult> {
-  const { sessionPurpose, pluginRunner, runtimeHint, cursorCliExecutionSupported, runAuditor, settings, authStorage: injectedAuthStorage, credentialInstanceId: requestedCredentialInstanceId, ...runtimeOptionsRaw } = options;
+  const { sessionPurpose, pluginRunner, runtimeHint, runAuditor, settings, authStorage: injectedAuthStorage, credentialInstanceId: requestedCredentialInstanceId, ...runtimeOptionsRaw } = options;
   let credentialResolution: ReturnType<typeof resolveCredentialInstanceRef> | undefined;
   if (requestedCredentialInstanceId) {
     try {
@@ -890,13 +889,12 @@ export async function createResolvedAgentSession(
       runtimeOptions,
       pluginRunner,
       grokApiKeyVisible: isGrokApiKeyFusionVisible(),
-      cursorCliExecutionSupported,
     })
     : undefined;
   const effectiveRuntimeHint = autoCliRuntimeHint ?? runtimeHint;
   if (!useMockRuntime) {
     // Explicit CLI hints with assert-available policy must pre-empt resolveRuntime's pi fallback.
-    assertExplicitCliRuntimeHint({ runtimeHint, runtimeOptions, pluginRunner, cursorCliExecutionSupported });
+    assertExplicitCliRuntimeHint({ runtimeHint, runtimeOptions, pluginRunner });
   }
   const usesAutoGrokRuntime = autoCliRuntimeHint === "grok" && runtimeOptions.defaultProvider === GROK_CLI_PROVIDER_ID;
   /*

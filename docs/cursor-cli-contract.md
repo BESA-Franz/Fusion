@@ -116,3 +116,24 @@ The original FN-3396 preflight treated the following as canonical pending strong
 - Model discovery must be dynamic-first with resilient fallback and no hardcoded static catalog by default.
 
 Binary candidates and expected failure states above remain accurate. The dynamic-first/no-static-catalog principle also still holds, but the specific commands are now confirmed rather than assumed — see "Structured output and model discovery" and "Windows PATH shim invocation" above for the verified `cursor-agent models` / `cursor-agent status --format json` contract that replaces the earlier `--json`-flag guesswork.
+
+<!--
+FNXC:CursorCli 2026-08-15-15:16:
+FN-9097 verified the non-interactive Cursor transport against cursor-agent 2026.08.11-e8db854. Prompt content travels on stdin and cwd alone binds the workspace, so the streaming transport omits --workspace and avoids an avoidable command-boundary token.
+-->
+
+**Update history:** 2026-08-15 — FN-9097 verified the execution transport and added the supervised Windows launch contract.
+
+## Execution transport contract
+
+External integration evidence: Cursor CLI is closed-source with no canonical upstream source repository; public tracker: https://github.com/cursor/cursor. Docs: https://cursor.com/docs/cli/overview. Installation: `curl https://cursor.com/install -fsS | bash` or `irm 'https://cursor.com/install?win32=true' | iex`. Binary: `cursor-agent`. Checksum: `upstream-pending-verification` because Cursor publishes no per-release manifest; local observed version: `2026.08.11-e8db854`.
+
+On 2026-08-15, in an external scratch directory, `printf 'Reply with exactly: ok\\n' | cursor-agent --print --output-format stream-json --force --trust --model auto` exited 0 and emitted NDJSON `system/init`, `user`, `thinking`, `assistant`, and `result` events. The init event reported the process cwd, proving no `--workspace` argument is needed. A `--mode plan --trust` run read a scratch file, emitted a `readToolCall` started/completed pair, and terminated without `--force`. `-p` help states it has write/shell tool access; `--force` controls approvals, while `--trust` clears workspace trust. `--sandbox` was left config-driven. `--resume <session_id>` and `--model <id>` are supported; no system-prompt flag exists, so the first prompt contains the fused system context. `mcp --help` confirms MCP configuration is `.cursor/mcp.json`-based and has no `--mcp-config` flag.
+
+Contract supports non-interactive execution: **yes**. The transport maps coding to `--force --trust`; readonly and unset tools to `--mode plan --trust`, never `--force`. `--stream-partial-output` is omitted: assistant messages are deduplicated by emitted content because Cursor can emit the same response with and without `model_call_id`.
+
+### Streaming Windows launch decision
+
+Prompt turns always use `superviseSpawn` with `shell:false`, a first-line deadline, and an inactivity deadline reset by every stream line; active output has no total-duration cap. When no binary override is configured, an absent `cursor-agent` launch retries the documented `cursor` PATH fallback. They prefer direct executable targets, send the prompt on stdin, and omit `--workspace`. A cmd shim is the sole cmd boundary: each token is validated then rejected for `" % ! ^ & | < > ( )` and controls before quote-only escaping, ComSpec must be an absolute `cmd.exe`, and command lines over 8000 characters fail. `windowsVerbatimArguments` is used only there (it had no prior repository call site). A `.ps1` target uses PowerShell `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File`; unknown extensions fail.
+
+This avoids cmd's re-parse (Node argv escaping is not cmd-safe), Node's refusal to direct-spawn batch files, and launcher-only kills that orphan agents. Resolution honors the first `where.exe` directory and PATHEXT only within it. POSIX teardown uses the supervisor process group; Windows additionally invokes `taskkill /T /F`. Windows PATH shim shape remains unverified on this macOS host, so launch is shape-agnostic. Probe/discovery retains its existing shell-backed behavior described above; only streaming turns use this hardened branch.

@@ -128,7 +128,6 @@ describe("CLI provider routing conformance", () => {
             await expect(createResolvedAgentSession(options(entry, {
               runtimeHint,
               pluginRunner: runner(runtimeHint, availability),
-              cursorCliExecutionSupported: true,
             }))).rejects.toThrow(/Cursor CLI/);
           }
           return;
@@ -195,16 +194,14 @@ describe("CLI provider routing conformance", () => {
     const result = await createResolvedAgentSession(options(entry, {
       pluginRunner,
       settings: { testMode: true },
-      cursorCliExecutionSupported: true,
     }));
     expect(result.runtimeId).toBe("mock");
     expect(pluginRunner.getRuntimeById).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("injects Cursor support=%s into the withheld Cursor session seam", async (cursorCliExecutionSupported) => {
-    await expect(createResolvedAgentSession(options(
-      CLI_PROVIDER_ROUTING_CENSUS.find((entry) => entry.providerId === "cursor-cli"),
-      { cursorCliExecutionSupported, runtimeHint: "cursor", pluginRunner: runner("cursor") },
-    ))).rejects.toThrow(/Cursor CLI/);
+  it("routes Cursor primary selection through its installed runtime", async () => {
+    const entry = CLI_PROVIDER_ROUTING_CENSUS.find((candidate) => candidate.providerId === "cursor-cli");
+    const result = await createResolvedAgentSession(options(entry, { runtimeHint: "cursor", pluginRunner: runner("cursor") }));
+    expect(result.runtimeId).toBe("cursor");
   });
 });

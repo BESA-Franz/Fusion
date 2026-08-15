@@ -44,11 +44,8 @@ export function buildMissingClaudeRuntimeError(): Error {
   return unavailable("Claude Code CLI", "Install and enable the Claude runtime plugin (fusion-plugin-claude-runtime), install Claude Code, and authenticate with `claude`.");
 }
 
-export function buildMissingCursorRuntimeError(cursorCliExecutionSupported = false): Error {
-  const transportDetail = cursorCliExecutionSupported
-    ? "The host reports Cursor CLI support, but this build has no executable Cursor CLI transport."
-    : "This build has no executable Cursor CLI transport.";
-  return unavailable("Cursor CLI", `Install and enable the Cursor runtime plugin (fusion-plugin-cursor-runtime). ${transportDetail}`);
+export function buildMissingCursorRuntimeError(): Error {
+  return unavailable("Cursor CLI", "Install and enable the Cursor runtime plugin (fusion-plugin-cursor-runtime), install `cursor-agent`, and authenticate with `cursor-agent login`.");
 }
 
 /*
@@ -61,10 +58,9 @@ while visible-key, fallback-only, and explicit-hint paths retain their shipped
 pi fallback. Factory failures remain observations because read-only
 resolveRuntime decides them after this seam confirms a registration exists.
 
-Cursor Branch C applies on this revision: the support predicate is absent and
-the adapter remains TODO(FN-3396), so both injectable support states fail fast
-at this seam rather than claiming the stub can execute prompts. Completeness is
-checked by a repository static guard instead of importing dashboard from engine.
+FN-9097 verified the supervised cursor-agent stream-json transport. Cursor now
+uses the same runtime-routed contract as Hermes/Claude: a missing runtime fails
+fast and fallback-only selection is dropped rather than delegated to pi.
 */
 export const CLI_PROVIDER_ROUTING_CENSUS: readonly CliProviderRouting[] = [
   { providerId: "pi-claude-cli", classification: "registry-native", autoDerive: "n/a", guardNotApplicable: "n/a", onExplicitHint: "n/a", fallbackPolicy: "none", rationale: "Vendored pi extension resolves through pi's registry." },
@@ -74,7 +70,7 @@ export const CLI_PROVIDER_ROUTING_CENSUS: readonly CliProviderRouting[] = [
   { providerId: "grok-cli", classification: "runtime-routed", runtimeId: "grok", autoDerive: "fail-fast", guardNotApplicable: "pinned-pi-fallback", onExplicitHint: "defer-to-resolve-runtime", fallbackPolicy: "defer-to-runtime", missingRuntimeError: buildMissingGrokRuntimeError, rationale: "Visible-key, fallback-only, and explicit-hint paths intentionally preserve the shipped direct xAI/pi fallback." },
   { providerId: "hermes", classification: "runtime-routed", runtimeId: "hermes", autoDerive: "fail-fast", guardNotApplicable: "pinned-pi-fallback", onExplicitHint: "assert-available", fallbackPolicy: "drop-with-warning", missingRuntimeError: buildMissingHermesRuntimeError, rationale: "Fallback-only Hermes cannot be resolved by a healthy primary pi runtime." },
   { providerId: "claude-cli", classification: "runtime-routed", runtimeId: "claude", autoDerive: "fail-fast", guardNotApplicable: "pinned-pi-fallback", onExplicitHint: "assert-available", fallbackPolicy: "drop-with-warning", missingRuntimeError: buildMissingClaudeRuntimeError, rationale: "Fallback-only Claude CLI cannot be resolved by a healthy primary pi runtime." },
-  { providerId: "cursor-cli", classification: "withheld-unsupported", runtimeId: "cursor", autoDerive: "fail-fast", guardNotApplicable: "pinned-pi-fallback", onExplicitHint: "assert-available", fallbackPolicy: "none", missingRuntimeError: buildMissingCursorRuntimeError, rationale: "The registered adapter is a TODO(FN-3396) transport stub; support detection cannot make it executable." },
+  { providerId: "cursor-cli", classification: "runtime-routed", runtimeId: "cursor", autoDerive: "fail-fast", guardNotApplicable: "pinned-pi-fallback", onExplicitHint: "assert-available", fallbackPolicy: "drop-with-warning", missingRuntimeError: buildMissingCursorRuntimeError, rationale: "FN-9097 verified Cursor's supervised stream-json transport and session resume contract." },
 ] as const;
 
 export function getCliProviderRouting(providerId: string | undefined): CliProviderRouting | undefined {
@@ -106,9 +102,8 @@ export function deriveCliRuntimeHint(args: {
   runtimeOptions: AgentRuntimeOptions;
   pluginRunner: PluginRunner | undefined;
   grokApiKeyVisible: boolean;
-  cursorCliExecutionSupported?: boolean;
 }): string | undefined {
-  const { runtimeOptions, pluginRunner, grokApiKeyVisible, cursorCliExecutionSupported } = args;
+  const { runtimeOptions, pluginRunner, grokApiKeyVisible } = args;
   const primary = getCliProviderRouting(runtimeOptions.defaultProvider);
   const omp = getCliProviderRouting("omp-cli")!;
   if (runtimeOptions.defaultProvider === "omp-cli" || runtimeOptions.fallbackProvider === "omp-cli") {
@@ -117,8 +112,6 @@ export function deriveCliRuntimeHint(args: {
   }
   if (!primary || primary.classification === "registry-native" || primary.classification === "non-cli") return undefined;
   if (primary.classification === "withheld-unsupported") {
-    // FNXC:CliRuntimeRouting 2026-08-15-14:06: The Cursor adapter is a transport stub, so a registered plugin must not make either injected support state executable.
-    if (primary.providerId === "cursor-cli") throw buildMissingCursorRuntimeError(cursorCliExecutionSupported);
     throw primary.missingRuntimeError?.() ?? new Error(`${primary.providerId} is unavailable.`);
   }
   if (primary.providerId === "grok-cli" && grokApiKeyVisible) return undefined;
@@ -130,17 +123,13 @@ export function assertExplicitCliRuntimeHint(args: {
   runtimeHint: string | undefined;
   runtimeOptions: AgentRuntimeOptions;
   pluginRunner: PluginRunner | undefined;
-  cursorCliExecutionSupported?: boolean;
 }): void {
   if (!args.runtimeHint) return;
   const selected = getCliProviderRouting(args.runtimeOptions.defaultProvider)
     ?? (args.runtimeOptions.fallbackProvider === "omp-cli" ? getCliProviderRouting("omp-cli") : undefined);
   if (!selected || selected.runtimeId !== args.runtimeHint || selected.onExplicitHint !== "assert-available") return;
-  // FNXC:CliRuntimeRouting 2026-08-15-14:06: Explicit hints cannot bypass a withheld Cursor adapter merely because its non-executable stub registration exists.
   if (selected.classification === "withheld-unsupported") {
-    throw selected.providerId === "cursor-cli"
-      ? buildMissingCursorRuntimeError(args.cursorCliExecutionSupported)
-      : selected.missingRuntimeError?.() ?? new Error(`${selected.providerId} is unavailable.`);
+    throw selected.missingRuntimeError?.() ?? new Error(`${selected.providerId} is unavailable.`);
   }
   assertAvailable(selected, args.pluginRunner);
 }
