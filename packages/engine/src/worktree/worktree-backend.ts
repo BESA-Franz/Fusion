@@ -30,6 +30,11 @@ const NATIVE_TIMEOUT_MS = 120_000;
 const REMOVE_TIMEOUT_MS = 60_000;
 const MAX_BUFFER = 10 * 1024 * 1024;
 
+export type NativeGitExec = (
+  command: string,
+  options: { cwd: string; encoding: "utf-8"; timeout: number; maxBuffer: number },
+) => Promise<{ stdout: string; stderr: string }>;
+
 
 export type WorktreeRemoveOutcome =
   | { removed: true; classification: "removed" }
@@ -341,6 +346,7 @@ export class NativeWorktreeBackend implements WorktreeBackend {
       logger?: { log: (m: string) => void; warn: (m: string) => void };
       settings?: Partial<Pick<Settings, "worktreesDir" | "commitMsgHookEnabled" | "taskPrefix" | "taskAttributionTrailerNames" | "commitAuthorEnabled" | "commitAuthorName" | "commitAuthorEmail">>;
       audit?: Pick<RunAuditor, "git">;
+      exec?: NativeGitExec;
     } = {},
   ) {}
 
@@ -653,7 +659,7 @@ export class NativeWorktreeBackend implements WorktreeBackend {
 
   async remove(input: WorktreeRemoveInput): Promise<void> {
     try {
-      await execAsync(`git worktree remove --force ${quoteShellArg(input.worktreePath)}`, {
+      await (this.deps.exec ?? execAsync)(`git worktree remove --force ${quoteShellArg(input.worktreePath)}`, {
         cwd: input.rootDir,
         encoding: "utf-8",
         timeout: REMOVE_TIMEOUT_MS,
@@ -1069,6 +1075,7 @@ export async function removeWorktree(input: {
   liveOwnerProbe?: LiveBindingProbe;
   processActiveProbe?: ProcessActiveProbe;
   reconcileMinIdleMs?: number;
+  exec?: NativeGitExec;
 }): Promise<WorktreeRemoveOutcome> {
   const logger = {
     log: (_message: string): void => {},
@@ -1123,7 +1130,7 @@ export async function removeWorktree(input: {
     });
   }
 
-  const backend = resolveWorktreeBackend(input.settings, { logger, audit: input.audit });
+  const backend = resolveWorktreeBackend(input.settings, { logger, audit: input.audit, exec: input.exec });
   const removeInput: WorktreeRemoveInput = {
     rootDir: input.rootDir,
     worktreePath: input.worktreePath,
@@ -1183,6 +1190,7 @@ export function resolveWorktreeBackend(
     logger?: { log: (m: string) => void; warn: (m: string) => void };
     binaryPathResolver?: () => Promise<string | null>;
     audit?: Pick<RunAuditor, "git">;
+    exec?: NativeGitExec;
   } = {},
 ): WorktreeBackend {
   if (settings.worktrunk?.enabled === true) {
@@ -1196,5 +1204,5 @@ export function resolveWorktreeBackend(
     });
   }
 
-  return new NativeWorktreeBackend({ logger: deps.logger, settings, audit: deps.audit });
+  return new NativeWorktreeBackend({ logger: deps.logger, settings, audit: deps.audit, exec: deps.exec });
 }

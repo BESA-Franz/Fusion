@@ -1,9 +1,9 @@
-import { access, chmod, mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { NativeWorktreeBackend, RemovalReason, removeWorktree } from "../../worktree/worktree-backend.js";
+import { NativeWorktreeBackend, RemovalReason, removeWorktree, type NativeGitExec } from "../../worktree/worktree-backend.js";
 import { git, hasGit } from "./_helpers.js";
 
 async function pathExists(path: string): Promise<boolean> {
@@ -17,20 +17,8 @@ async function pathExists(path: string): Promise<boolean> {
 
 describe.skipIf(!hasGit)("reliability interactions: worktree remove non-empty recovery", () => {
   const roots: string[] = [];
-  let originalPath: string | undefined;
-  let originalFailPath: string | undefined;
 
   afterEach(async () => {
-    if (originalPath === undefined) {
-      delete process.env.PATH;
-    } else {
-      process.env.PATH = originalPath;
-    }
-    if (originalFailPath === undefined) {
-      delete process.env.FUSION_FAIL_GIT_WORKTREE_REMOVE_PATH;
-    } else {
-      process.env.FUSION_FAIL_GIT_WORKTREE_REMOVE_PATH = originalFailPath;
-    }
     await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
     roots.length = 0;
   });
@@ -53,24 +41,12 @@ describe.skipIf(!hasGit)("reliability interactions: worktree remove non-empty re
     return worktreePath;
   }
 
-  async function installGitRemoveFailureShim(
-    targetPath: string,
-    stderr = "error: failed to delete '$4': Directory not empty",
-  ): Promise<void> {
-    const realGit = git(process.cwd(), "command -v git");
-    const shimDir = await mkdtemp(join(tmpdir(), "fusion-fake-git-"));
-    roots.push(shimDir);
-    const shimPath = join(shimDir, "git");
-    await writeFile(
-      shimPath,
-      `#!/bin/sh\nif [ "$1" = "worktree" ] && [ "$2" = "remove" ] && [ "$3" = "--force" ] && [ "$4" = "$FUSION_FAIL_GIT_WORKTREE_REMOVE_PATH" ]; then\n  echo ${JSON.stringify(stderr)} >&2\n  exit 1\nfi\nexec ${JSON.stringify(realGit)} "$@"\n`,
-      "utf-8",
-    );
-    await chmod(shimPath, 0o755);
-    originalPath = process.env.PATH;
-    originalFailPath = process.env.FUSION_FAIL_GIT_WORKTREE_REMOVE_PATH;
-    process.env.PATH = `${shimDir}${process.env.PATH ? `:${process.env.PATH}` : ""}`;
-    process.env.FUSION_FAIL_GIT_WORKTREE_REMOVE_PATH = targetPath;
+  function failingGitExec(stderr: string): NativeGitExec {
+    return async () => {
+      const error = new Error(stderr) as Error & { stderr: string };
+      error.stderr = stderr;
+      throw error;
+    };
   }
 
   async function expectWorktreeRemoved(root: string, worktreePath: string): Promise<void> {
@@ -86,7 +62,7 @@ describe.skipIf(!hasGit)("reliability interactions: worktree remove non-empty re
     const resolvedWorktreePath = await realpath(worktreePath);
     await mkdir(join(worktreePath, "dist"), { recursive: true });
     await writeFile(join(worktreePath, "dist", "artifact.txt"), "artifact\n", "utf-8");
-    await installGitRemoveFailureShim(worktreePath);
+    const failingExec = failingGitExec("error: failed to delete: Directory not empty");
     const events: string[] = [];
 
     await removeWorktree({
@@ -96,6 +72,7 @@ describe.skipIf(!hasGit)("reliability interactions: worktree remove non-empty re
       reason: RemovalReason.ExecutorDispose,
       force: true,
       audit: { git: async (event) => void events.push(event.type) },
+      exec: failingExec,
     });
 
     await expectWorktreeRemoved(root, resolvedWorktreePath);
@@ -112,9 +89,9 @@ describe.skipIf(!hasGit)("reliability interactions: worktree remove non-empty re
     await mkdir(nestedRepo, { recursive: true });
     git(nestedRepo, "git init -b main");
     await writeFile(join(nestedRepo, "package.json"), "{}\n", "utf-8");
-    await installGitRemoveFailureShim(worktreePath);
+    const failingExec = failingGitExec("error: failed to delete: Directory not empty");
 
-    await new NativeWorktreeBackend().remove({ rootDir: root, worktreePath });
+    await new NativeWorktreeBackend({ exec: failingExec }).remove({ rootDir: root, worktreePath });
 
     await expectWorktreeRemoved(root, resolvedWorktreePath);
   });
@@ -123,9 +100,9 @@ describe.skipIf(!hasGit)("reliability interactions: worktree remove non-empty re
     const root = await setupRepo();
     const worktreePath = await createWorktree(root, "fn-missing", "fusion/fn-missing");
     await rm(worktreePath, { recursive: true, force: true });
-    await installGitRemoveFailureShim(worktreePath, "fatal: validation failed, cannot remove working tree");
+    const failingExec = failingGitExec("fatal: validation failed, cannot remove working tree");
 
-    await expect(new NativeWorktreeBackend().remove({ rootDir: root, worktreePath })).rejects.toThrow(/validation failed/i);
+    await expect(new NativeWorktreeBackend({ exec: failingExec }).remove({ rootDir: root, worktreePath })).rejects.toThrow(/validation failed/i);
   });
 
   it("still rethrows non-recoverable native removal failures", async () => {
