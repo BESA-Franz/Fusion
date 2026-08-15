@@ -6183,49 +6183,6 @@ export function TaskDetailContent({
           ) : (
           <>
           {/* FNXC:TaskDetailSummaryTab 2026-07-29-00:00: FN-8197 keeps Definition focused on plan, retry, and source metadata; completed merge metadata renders exclusively in the done-only Summary tab. */}
-          {specLock && (
-            <section className="detail-section spec-lock-report" data-testid="spec-lock-report" aria-label="Spec lock alignment">
-              <div className="detail-source-header">
-                <div className="detail-source-summary">
-                  <span className="detail-source-label">Spec alignment</span>
-                  <span className="badge">{specLock.report?.alignment ?? "unavailable"}</span>
-                </div>
-              </div>
-              <dl className="detail-source-grid">
-                <div><dt>Latest lock</dt><dd>v{specLock.latestLock?.version ?? "—"}</dd></div>
-                <div><dt>Current plan</dt><dd>v{specLock.currentPlan?.version ?? "—"}</dd></div>
-                <div><dt>Lock state</dt><dd>{specLock.activeLock ? "active" : "inactive"}</dd></div>
-                <div><dt>Findings</dt><dd>{specLock.report?.findings.length ?? 0}</dd></div>
-              </dl>
-              {specLock.latestLock && (
-                <p className="spec-lock-provenance">
-                  Accepted {specLock.latestLock.acceptedAt} · plan hash {specLock.latestLock.currentPlanHash} · approval {specLock.latestLock.approvalFingerprint}
-                </p>
-              )}
-              {specLock.currentPlan && (
-                <p className="spec-lock-provenance">
-                  Captured {specLock.currentPlan.capturedAt} · source revision {specLock.currentPlan.sourceRevision} · source hash {specLock.currentPlan.sourceHash}
-                </p>
-              )}
-              {specLock.latestLock?.diff?.changedSections.length ? (
-                <p className="spec-lock-provenance">Re-lock changed: {specLock.latestLock.diff.changedSections.join(", ")}</p>
-              ) : null}
-              {(specLock.history?.locks.length ?? 0) > 1 || (specLock.history?.currentPlans.length ?? 0) > 1 || (specLock.history?.reports.length ?? 0) > 1 ? (
-                <p className="spec-lock-provenance">
-                  Retained history: {specLock.history.locks.map((lock) => `lock v${lock.version}`).join(", ") || "no locks"}; {specLock.history.currentPlans.map((plan) => `plan v${plan.version}`).join(", ") || "no plan evidence"}; {specLock.history.reports.length} reports
-                </p>
-              ) : null}
-              {specLock.report?.findings.length ? (
-                <ul className="spec-lock-findings">
-                  {specLock.report.findings.map((finding, index) => (
-                    <li key={`${finding.kind}:${finding.category}:${finding.path ?? index}`}>
-                      {finding.kind}: {finding.category}{finding.path ? ` (${finding.path})` : ""}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </section>
-          )}
           {(retrySummary?.total ?? 0) > 0 && (
             <div className="detail-section detail-retries-section">
               <div className="detail-source-header">
@@ -7001,6 +6958,50 @@ export function TaskDetailContent({
               </div>
             );
           })()}
+          {/* FNXC:SpecLockTaskDetail 2026-08-15-12:54: Spec alignment is low-frequency lock/hash provenance, so it renders LAST in the Definition (Plan) tab — operators opening Plan must see plan content first, not the alignment report. Keep this block at the tail of the Definition fragment. */}
+          {specLock && (
+            <section className="detail-section spec-lock-report" data-testid="spec-lock-report" aria-label="Spec lock alignment">
+              <div className="detail-source-header">
+                <div className="detail-source-summary">
+                  <span className="detail-source-label">Spec alignment</span>
+                  <span className="badge">{specLock.report?.alignment ?? "unavailable"}</span>
+                </div>
+              </div>
+              <dl className="detail-source-grid">
+                <div><dt>Latest lock</dt><dd>v{specLock.latestLock?.version ?? "—"}</dd></div>
+                <div><dt>Current plan</dt><dd>v{specLock.currentPlan?.version ?? "—"}</dd></div>
+                <div><dt>Lock state</dt><dd>{specLock.activeLock ? "active" : "inactive"}</dd></div>
+                <div><dt>Findings</dt><dd>{specLock.report?.findings.length ?? 0}</dd></div>
+              </dl>
+              {specLock.latestLock && (
+                <p className="spec-lock-provenance">
+                  Accepted {specLock.latestLock.acceptedAt} · plan hash {specLock.latestLock.currentPlanHash} · approval {specLock.latestLock.approvalFingerprint}
+                </p>
+              )}
+              {specLock.currentPlan && (
+                <p className="spec-lock-provenance">
+                  Captured {specLock.currentPlan.capturedAt} · source revision {specLock.currentPlan.sourceRevision} · source hash {specLock.currentPlan.sourceHash}
+                </p>
+              )}
+              {specLock.latestLock?.diff?.changedSections.length ? (
+                <p className="spec-lock-provenance">Re-lock changed: {specLock.latestLock.diff.changedSections.join(", ")}</p>
+              ) : null}
+              {(specLock.history?.locks.length ?? 0) > 1 || (specLock.history?.currentPlans.length ?? 0) > 1 || (specLock.history?.reports.length ?? 0) > 1 ? (
+                <p className="spec-lock-provenance">
+                  Retained history: {specLock.history.locks.map((lock) => `lock v${lock.version}`).join(", ") || "no locks"}; {specLock.history.currentPlans.map((plan) => `plan v${plan.version}`).join(", ") || "no plan evidence"}; {specLock.history.reports.length} reports
+                </p>
+              ) : null}
+              {specLock.report?.findings.length ? (
+                <ul className="spec-lock-findings">
+                  {specLock.report.findings.map((finding, index) => (
+                    <li key={`${finding.kind}:${finding.category}:${finding.path ?? index}`}>
+                      {finding.kind}: {finding.category}{finding.path ? ` (${finding.path})` : ""}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </section>
+          )}
           </>
           )}
           </>
