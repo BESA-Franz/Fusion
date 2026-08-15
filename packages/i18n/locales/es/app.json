@@ -9291,7 +9291,9 @@
   },
   "worktree": {
     "unassigned": "Sin asignar",
-    "upNext": "Siguiente"
+    "upNext": "Siguiente",
+    "workspaceRepos_one": "{{label}} · {{count}} repositorio",
+    "workspaceRepos_other": "{{label}} · {{count}} repositorios"
   },
   "worktrunk": {
     "assetUrl": "URL del activo",

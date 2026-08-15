@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { invalidateGitBinaryCache, isSpawnGitEnoent, resolveGitBinary } from "../cli/git-binary.js";
 
@@ -249,7 +250,7 @@ async function isWorkspaceModeExplicitlyDisabled(projectPath: string): Promise<b
  * reflects that workspace mode is active after auto-detection. Reads-merges-writes
  * to avoid clobbering existing config settings.
  */
-async function setWorkspaceModeInConfig(projectPath: string, value: boolean): Promise<void> {
+export async function setWorkspaceModeInConfig(projectPath: string, value: boolean): Promise<void> {
   const { readFile, writeFile, mkdir } = await import("node:fs/promises");
   const { join } = await import("node:path");
   const configPath = join(projectPath, ".fusion", "config.json");
@@ -326,4 +327,148 @@ export async function saveWorkspaceConfig(rootDir: string, config: WorkspaceConf
     JSON.stringify(config, null, 2),
     "utf-8",
   );
+}
+
+/** Removes the workspace authority file and reports whether it existed. */
+export async function removeWorkspaceConfig(rootDir: string): Promise<boolean> {
+  const { unlink } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  try {
+    await unlink(join(rootDir, ".fusion", WORKSPACE_CONFIG_FILENAME));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+/*
+FNXC:Workspace 2026-08-15-05:28:
+The PostgreSQL setting alone cannot control workspace execution: the executor reads workspace.json,
+while registration suppression reads config.json. Toggle both in the documented ordering and reconcile
+from workspace.json, the runtime authority. Existing non-empty workspace configs are preserved because
+registration and CLI flows may have saved a curated repo subset before publishing their settings update.
+
+The helper receives filesystem operations because sibling calls in this module cannot be intercepted by
+module mocks. Its per-root in-process lock keeps the multi-step disk mutation and its observed result from
+braiding with another toggle; it does not fence another OS process, whose residual divergence is settled by
+the next publish's re-read and reconciliation.
+*/
+export interface WorkspaceModeToggleOps {
+  loadWorkspaceConfig: typeof loadWorkspaceConfig;
+  saveWorkspaceConfig: typeof saveWorkspaceConfig;
+  setWorkspaceModeInConfig: (rootDir: string, enabled: boolean) => Promise<void>;
+  detectWorkspaceRepos: typeof detectWorkspaceRepos;
+  removeWorkspaceConfig: (rootDir: string) => Promise<boolean>;
+}
+
+export type WorkspaceModeToggleResult = {
+  enabled: boolean | undefined;
+  repos: string[];
+  workspaceConfigWritten: boolean;
+  workspaceConfigRemoved: boolean;
+  failureReason?: string;
+  mirrorDivergent?: boolean;
+};
+
+const workspaceModeLockTails = new Map<string, Promise<void>>();
+
+/** Serializes one complete workspace-mode critical section for a project root. */
+export async function withWorkspaceModeLock<T>(rootDir: string, fn: () => Promise<T>): Promise<T> {
+  const key = resolve(rootDir);
+  const previous = workspaceModeLockTails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const tail = new Promise<void>((done) => { release = done; });
+  const chained = previous.then(() => tail);
+  workspaceModeLockTails.set(key, chained);
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (workspaceModeLockTails.get(key) === chained) workspaceModeLockTails.delete(key);
+  }
+}
+
+function workspaceToggleFailure(prefix: string, error: unknown): string {
+  const code = error && typeof error === "object" && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : error instanceof Error ? error.name : "unknown";
+  return `${prefix}: ${code}`;
+}
+
+export async function applyWorkspaceModeToggle(
+  rootDir: string,
+  enabled: boolean,
+  options: { ops?: Partial<WorkspaceModeToggleOps>; lockHeld?: boolean } = {},
+): Promise<WorkspaceModeToggleResult> {
+  const ops: WorkspaceModeToggleOps = {
+    loadWorkspaceConfig,
+    saveWorkspaceConfig,
+    setWorkspaceModeInConfig,
+    detectWorkspaceRepos,
+    removeWorkspaceConfig,
+    ...options.ops,
+  };
+  const run = async (): Promise<WorkspaceModeToggleResult> => {
+    let failureReason: string | undefined;
+    let mirrorValue: boolean | undefined;
+    let workspaceConfigWritten = false;
+    let workspaceConfigRemoved = false;
+    let repos: string[] = [];
+
+    try {
+      if (enabled) {
+        const existing = await ops.loadWorkspaceConfig(rootDir);
+        if (existing?.repos.length) {
+          repos = existing.repos;
+          await ops.setWorkspaceModeInConfig(rootDir, true);
+          mirrorValue = true;
+        } else {
+          repos = await ops.detectWorkspaceRepos(rootDir);
+          if (repos.length === 0) {
+            failureReason = "no-sub-repositories";
+          } else {
+            // Mirror first: a failed mirror must not leave workspace.json enabling execution.
+            await ops.setWorkspaceModeInConfig(rootDir, true);
+            mirrorValue = true;
+            await ops.saveWorkspaceConfig(rootDir, { repos });
+            workspaceConfigWritten = true;
+          }
+        }
+      } else {
+        // Disable mirror first so a partial delete cannot be auto-detected back to enabled.
+        await ops.setWorkspaceModeInConfig(rootDir, false);
+        mirrorValue = false;
+        workspaceConfigRemoved = await ops.removeWorkspaceConfig(rootDir);
+      }
+    } catch (error) {
+      failureReason ??= workspaceToggleFailure(enabled ? "workspace-config-write-failed" : "workspace-config-remove-failed", error);
+    }
+
+    let achieved: boolean | undefined;
+    try {
+      const observed = await ops.loadWorkspaceConfig(rootDir);
+      repos = observed?.repos ?? [];
+      achieved = repos.length > 0;
+    } catch (_error) {
+      return { enabled: undefined, repos, workspaceConfigWritten, workspaceConfigRemoved, failureReason: "achieved-state-unknown" };
+    }
+
+    let mirrorDivergent = false;
+    if (mirrorValue !== undefined && mirrorValue !== achieved) {
+      try {
+        await ops.setWorkspaceModeInConfig(rootDir, achieved);
+      } catch (error) {
+        mirrorDivergent = true;
+        failureReason ??= workspaceToggleFailure("workspace-config-mirror-compensation-failed", error);
+      }
+    }
+    return { enabled: achieved, repos, workspaceConfigWritten, workspaceConfigRemoved, failureReason, mirrorDivergent: mirrorDivergent || undefined };
+  };
+  try {
+    return options.lockHeld ? await run() : await withWorkspaceModeLock(rootDir, run);
+  } catch (error) {
+    return { enabled: undefined, repos: [], workspaceConfigWritten: false, workspaceConfigRemoved: false, failureReason: workspaceToggleFailure("workspace-toggle-failed", error) };
+  }
 }

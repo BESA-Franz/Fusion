@@ -335,16 +335,16 @@ export function GeneralSection({ form, setForm, projectId, addToast, prefixError
       />
       {/*
         FNXC:Workspace 2026-06-24-16:00:
-        Workspace mode toggle: when enabled, the project root is treated as a workspace parent
-        containing multiple git sub-repos instead of a single git repo. The executor runs tasks
-        per-sub-repo, and git init is skipped at the root. Toggling on triggers detectWorkspaceRepos
-        and persists .fusion/workspace.json; toggling off removes it.
+        Workspace mode is a live disk-backed switch: enabling detects sub-repositories and requires
+        at least one before it writes .fusion/workspace.json and mirrors config.json; disabling removes
+        workspace.json. The executor invalidates its memoized mode after a real transition. Non-UI writers
+        reconcile failures to disk state, while same-root transitions are serialized.
       */}
       <SettingsToggleRow
         descriptor={{
           key: "workspaceMode",
           label: t("settings.general.workspaceMode", " Workspace mode (multi-repo) "),
-          help: t("settings.general.workspaceModeHint", "When enabled, the project root is treated as a workspace containing multiple git sub-repos. Tasks run per-sub-repo and no git repo is created at the root. Disable for single-repo projects. No default \u2014 unset (disabled)."),
+          help: t("settings.general.workspaceModeHint", "Enabling detects git sub-repositories and requires at least one; it creates .fusion/workspace.json. Disabling removes .fusion/workspace.json and returns to single-repo mode. No default — unset (disabled)."),
           scope: "project",
         }}
         value={form.workspaceMode === true}

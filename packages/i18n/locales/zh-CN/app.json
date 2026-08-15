@@ -9291,7 +9291,9 @@
   },
   "worktree": {
     "unassigned": "未分配",
-    "upNext": "下一个"
+    "upNext": "下一个",
+    "workspaceRepos_one": "{{label}} · {{count}} 个仓库",
+    "workspaceRepos_other": "{{label}} · {{count}} 个仓库"
   },
   "worktrunk": {
     "assetUrl": "资产 URL",

@@ -24,6 +24,7 @@ import { StepSessionExecutor } from "../execution/step-session-executor.js";
 import type { PausedAbortProvenance } from "./paused-abort-provenance.js";
 import type { ActiveExecutorSessionState, TaskExecutorOptions } from "./task-executor-options.js";
 import type { WorkflowAgentCapacity } from "../agents/workflow-agent-capacity.js";
+import { invalidateWorkspaceConfigCache } from "./workspace-config-resolver.js";
 
 export abstract class TaskExecutorState {
   /**
@@ -102,6 +103,11 @@ export abstract class TaskExecutorState {
   protected workflowRerunWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
   protected pendingEphemeralDeletions = new Set<string>();
   protected workspaceConfig: WorkspaceConfig | null | undefined = undefined;
+  /** Workspace mode is memoized per executor host; a real settings transition must refresh it live. */
+  public invalidateWorkspaceConfig(): void {
+    this.workspaceConfig = undefined;
+    invalidateWorkspaceConfigCache(this);
+  }
   protected childSessions = new Map<string, AgentSession>();
   protected totalSpawnedCount = 0;
   protected tokenCapDetector = new TokenCapDetector();

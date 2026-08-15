@@ -2415,12 +2415,11 @@ export interface ProjectSettings {
   chatRoomSummaryMaxChars?: number;
   /**
    * FNXC:Workspace 2026-06-24-16:00:
-   * When true, the project root is treated as a workspace-mode parent directory containing
-   * multiple git sub-repos (recorded in .fusion/workspace.json), not a single git repo.
-   * ensureGitRepositoryForProjectPath skips `git init` for workspace roots, and the executor
-   * runs tasks per-sub-repo instead of at the root. Auto-detected at registration time when
-   * sub-repos are found, with an interactive confirmation prompt. Can be toggled per-project
-   * via the dashboard Settings modal or PUT /settings.
+   * Operator-facing project switch for a multi-repo parent directory. The universal publish seam
+   * serializes its workspace.json/config.json side effect per root and reconciles every writer to
+   * the disk-observed result with a field-scoped compare-and-set (unachievable enable becomes false,
+   * failed disable remains true, and superseded writes yield). The executor still keys runtime mode
+   * from workspace.json, not this persisted intent.
    */
   workspaceMode?: boolean;
 }

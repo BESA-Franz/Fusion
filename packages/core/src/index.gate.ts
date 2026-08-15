@@ -319,6 +319,10 @@ export {
   detectWorkspaceRepos,
   loadWorkspaceConfig,
   saveWorkspaceConfig,
+  removeWorkspaceConfig,
+  setWorkspaceModeInConfig,
+  applyWorkspaceModeToggle,
+  withWorkspaceModeLock,
 } from "./git/git-repository.js";
 export type {
   GitRepositoryCommandResult,
@@ -326,6 +330,8 @@ export type {
   GitRepositoryEnsureOutcome,
   EnsureGitRepositoryOptions,
   WorkspaceConfig,
+  WorkspaceModeToggleOps,
+  WorkspaceModeToggleResult,
 } from "./git/git-repository.js";
 
 // ── Trait model (U2) ─────────────────────────────────────────────────

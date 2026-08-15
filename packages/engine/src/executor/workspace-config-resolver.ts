@@ -7,6 +7,17 @@ import { loadWorkspaceConfig, type WorkspaceConfig } from "@fusion/core";
  * cannot share configuration, and a config with no usable repositories is single-repo mode.
  */
 const inFlightWorkspaceConfigLoads = new WeakMap<object, Promise<WorkspaceConfig | null>>();
+const workspaceConfigEpochs = new WeakMap<object, number>();
+
+/**
+ * FNXC:Workspace 2026-08-15-05:28:
+ * A settings toggle can change workspace.json while a prior disk read is pending. Bump an owner
+ * epoch as well as deleting its promise so that stale completion cannot repopulate the old mode.
+ */
+export function invalidateWorkspaceConfigCache(owner: object): void {
+  inFlightWorkspaceConfigLoads.delete(owner);
+  workspaceConfigEpochs.set(owner, (workspaceConfigEpochs.get(owner) ?? 0) + 1);
+}
 
 export type WorkspaceConfigResolverDeps = {
   rootDir: string;
@@ -24,9 +35,12 @@ export async function resolveWorkspaceConfigOnce(
   const existing = inFlightWorkspaceConfigLoads.get(deps.workspaceConfigOwner);
   if (existing) return existing;
 
+  const epoch = workspaceConfigEpochs.get(deps.workspaceConfigOwner) ?? 0;
   const promise = loadWorkspaceConfig(deps.rootDir).then((config) => {
     const normalized = config && config.repos.length > 0 ? config : null;
-    deps.setWorkspaceConfig(normalized);
+    if ((workspaceConfigEpochs.get(deps.workspaceConfigOwner) ?? 0) === epoch) {
+      deps.setWorkspaceConfig(normalized);
+    }
     return normalized;
   });
   inFlightWorkspaceConfigLoads.set(deps.workspaceConfigOwner, promise);

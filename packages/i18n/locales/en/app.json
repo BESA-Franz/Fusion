@@ -6032,7 +6032,7 @@
       "whenEnabledDefaultFusionSpawnsShortLived": " When enabled (default), Fusion spawns short-lived ",
       "whenEnabledFusionChecksOpenAndClosedIssues": " When enabled, Fusion checks open and closed issues in the target repo for likely duplicates (using File Scope paths and key symptoms) before creating a new tracking issue. Uncheck to always create a new issue. Default: enabled. ",
       "workflowsOrChangelogModeWhenContributorsShouldUpdate": " workflows, or changelog mode when contributors should update an existing changelog file. Default: off. ",
-      "workspaceModeHint": "When enabled, the project root is treated as a workspace containing multiple git sub-repos. Tasks run per-sub-repo and no git repo is created at the root. Disable for single-repo projects. No default — unset (disabled).",
+      "workspaceModeHint": "Enabling detects git sub-repositories and requires at least one; it creates .fusion/workspace.json. Disabling removes .fusion/workspace.json and returns to single-repo mode. No default — unset (disabled).",
       "allowAbsoluteFileBrowserPathsHint": "When enabled, slash-prefixed paths such as /tmp can be opened in the workspace file browser. Windows drive-letter paths remain blocked, and other path validators are unchanged. Default: disabled.",
       "quickChatLauncherHint": "Choose whether Quick Chat opens from the draggable floating button, a footer button beside Terminal, or stays hidden. Default: off (hidden).",
       "showTaskChatsInCommonFeedHint": "When enabled, populated task-detail Chat conversations appear in the common Direct feed. Empty task chats stay hidden. Default: disabled.",

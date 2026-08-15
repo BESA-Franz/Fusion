@@ -20,6 +20,7 @@ import {canonicalizeSettings, isPlainObject, deepMergeWithNullDelete} from "../t
 import {readProjectConfig as readProjectConfigAsync, writeProjectConfig as writeProjectConfigAsync} from "../task-store/async/async-settings.js";
 import {appendConfigurationRevision, createConfigurationRevision} from "../async-stores/async-configuration-revision-store.js";
 import {isValidProviderInstanceId} from "../provider-instance.js";
+import {applyWorkspaceModeToggle, withWorkspaceModeLock, type WorkspaceModeToggleOps} from "../git/git-repository.js";
 
 /*
  * FNXC:CredentialInstanceSelection 2026-08-01-05:38:
@@ -38,6 +39,19 @@ function assertValidRecommendationSettingsPatch(patch: Record<string, unknown>):
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 20) {
     throw new Error("maxRecommendationsPerTask must be an integer between 0 and 20");
   }
+}
+
+/*
+FNXC:Workspace 2026-08-15-06:20:
+Tests need the route's real TaskStore commit and publish path while deterministically forcing one
+filesystem failure. Keep this test-only ops seam at the universal publish boundary rather than
+mocking applyWorkspaceModeToggle, which would bypass mirror, removal, re-read, and compensation.
+*/
+let workspaceModeOpsForTesting: Partial<WorkspaceModeToggleOps> | undefined;
+
+/** @internal Test-only workspace filesystem override for production-shaped settings writers. */
+export function __setWorkspaceModeOpsForTesting(ops: Partial<WorkspaceModeToggleOps> | undefined): void {
+  workspaceModeOpsForTesting = ops;
 }
 
 function assertValidCredentialInstanceSettingsPatch(patch: Record<string, unknown>): void {
@@ -62,8 +76,76 @@ function assertValidCredentialInstanceSettingsPatch(patch: Record<string, unknow
   }
 }
 
-/** Publish committed setting snapshots and run the normal post-commit effects. */
-export async function publishSettingsUpdated(store: TaskStore, previous: Settings, settings: Settings): Promise<void> {
+/*
+FNXC:Workspace 2026-08-15-05:28:
+publishSettingsUpdated is the universal post-commit seam for dashboard, CLI, MCP/import, registration,
+and rollback writers. Workspace disk reconciliation therefore precedes emit: listeners only see the
+disk-observed achieved setting. The per-root lock spans disk work and field-scoped correction, but
+never emit. The lock is in-process only; a later publish settles cross-process races.
+*/
+export async function publishSettingsUpdated(
+  store: TaskStore,
+  previous: Settings,
+  settings: Settings,
+  options: { workspaceModeOps?: Partial<WorkspaceModeToggleOps> } = {},
+): Promise<void> {
+  const requested = settings.workspaceMode === true;
+  const prior = previous.workspaceMode === true;
+  if (requested !== prior && store.asyncLayer) {
+    try {
+      await withWorkspaceModeLock(store.rootDir, async () => {
+        const layer = store.asyncLayer!;
+        const committed = await readProjectConfigAsync(layer);
+        const committedMode = (committed.settings?.workspaceMode === true);
+        if (committedMode !== requested) {
+          settings.workspaceMode = committedMode;
+          storeLog.warn("Workspace mode transition superseded before disk mutation", {
+            phase: "updateSettings:workspace-toggle", rootDir: store.rootDir, requested,
+            achieved: committedMode, transitionSuperseded: true,
+          });
+          return;
+        }
+        const result = await applyWorkspaceModeToggle(store.rootDir, requested, {
+          ops: options.workspaceModeOps ?? workspaceModeOpsForTesting,
+          lockHeld: true,
+        });
+        if (result.enabled === undefined) {
+          storeLog.warn("Workspace mode achieved state is unknown", {
+            phase: "updateSettings:workspace-toggle", rootDir: store.rootDir, requested,
+            achieved: result.enabled, failureReason: result.failureReason, reconciliationSkipped: true,
+          });
+          return;
+        }
+        if (result.enabled !== requested) {
+          const fresh = await readProjectConfigAsync(layer);
+          if ((fresh.settings?.workspaceMode === true) !== requested) {
+            settings.workspaceMode = fresh.settings?.workspaceMode === true;
+            storeLog.warn("Workspace mode correction yielded to newer settings writer", {
+              phase: "updateSettings:workspace-toggle", rootDir: store.rootDir, requested,
+              achieved: result.enabled, failureReason: result.failureReason, mirrorDivergent: result.mirrorDivergent,
+              correctionSkipped: "stale",
+            });
+            return;
+          }
+          // Write from a fresh row, not the published snapshot: unrelated concurrent fields survive.
+          await writeProjectConfigAsync(layer, { ...(fresh.settings ?? {}), workspaceMode: result.enabled });
+          settings.workspaceMode = result.enabled;
+        }
+        if (result.enabled !== requested || result.failureReason || result.mirrorDivergent) {
+          storeLog.warn("Workspace mode transition reconciled to disk", {
+            phase: "updateSettings:workspace-toggle", rootDir: store.rootDir, requested,
+            achieved: result.enabled, failureReason: result.failureReason, mirrorDivergent: result.mirrorDivergent,
+          });
+        }
+      });
+    } catch (error) {
+      // Settings commits remain durable even when best-effort follow-up cannot run.
+      storeLog.warn("Workspace mode post-commit reconciliation failed", {
+        phase: "updateSettings:workspace-toggle", rootDir: store.rootDir, requested,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   /* FNXC:ConfigVersioning 2026-07-18-14:20: rollback is an observable settings replacement, so it must use the same post-commit notification/effects seam as a forward mutation. */
   store.emit("settings:updated", { settings, previous });
   if (settings.memoryEnabled !== false && previous.memoryEnabled === false) {

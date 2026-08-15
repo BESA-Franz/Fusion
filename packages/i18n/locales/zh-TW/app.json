@@ -9291,7 +9291,9 @@
   },
   "worktree": {
     "unassigned": "未指派",
-    "upNext": "接下來"
+    "upNext": "接下來",
+    "workspaceRepos_one": "{{label}} · {{count}} 個儲存庫",
+    "workspaceRepos_other": "{{label}} · {{count}} 個儲存庫"
   },
   "worktrunk": {
     "assetUrl": "資產 URL",

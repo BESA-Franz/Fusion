@@ -49,6 +49,8 @@ import {
   writeMemory,
   writeProjectMemoryFile,
   updatePiExtensionDisabledIds,
+  detectWorkspaceRepos,
+  loadWorkspaceConfig,
 } from "@fusion/core";
 import {
   buildSessionSkillContextSync,
@@ -711,6 +713,22 @@ export function registerSettingsMemoryRoutes(ctx: ApiRoutesContext, deps: Settin
           : currentForWorktreeCheck.worktreeNaming;
         if (isRecycleWorktreeNamingConflict({ recycleWorktrees: nextRecycle, worktreeNaming: nextNaming })) {
           throw badRequest(RECYCLE_WORKTREE_NAMING_CONFLICT_MESSAGE);
+        }
+      }
+
+      /*
+      FNXC:Workspace 2026-08-15-05:28:
+      This dashboard-only preflight explains an unachievable enable. The universal publish seam
+      remains authoritative for CLI/MCP/import/rollback writers and unpredictable disk failures.
+      */
+      if (clientSettings.workspaceMode === true) {
+        const currentSettings = await scopedStore.getSettings();
+        const existing = await loadWorkspaceConfig(scopedStore.rootDir);
+        if (currentSettings.workspaceMode !== true && !existing?.repos.length) {
+          const repos = await detectWorkspaceRepos(scopedStore.rootDir);
+          if (repos.length === 0) {
+            throw badRequest(`Workspace mode requires at least one git sub-repository under project root ${scopedStore.rootDir}`);
+          }
         }
       }
 

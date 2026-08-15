@@ -2904,6 +2904,18 @@ export class InProcessRuntime
    * for task:created, task:moved, task:updated, and task:deleted.
    */
   private setupEventForwarding(): void {
+    /*
+    FNXC:Workspace 2026-08-15-05:28:
+    publishSettingsUpdated reconciles workspace.json before this event, so only a payload with a
+    real boolean transition may invalidate the executor's per-host cache. Failed/corrected toggles
+    deliberately retain their valid cache rather than resolving a mode the store disowned.
+    */
+    this.taskStore.on("settings:updated", ({ settings, previous }: { settings: { workspaceMode?: boolean }; previous: { workspaceMode?: boolean } }) => {
+      if ((settings.workspaceMode === true) !== (previous.workspaceMode === true)) {
+        this.executor?.invalidateWorkspaceConfig();
+      }
+    });
+
     // Forward task:created events
     this.taskStore.on("task:created", (task: Task) => {
       this.recordActivity();
