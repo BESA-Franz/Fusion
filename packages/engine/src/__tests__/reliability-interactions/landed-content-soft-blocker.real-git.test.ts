@@ -2,13 +2,13 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { SelfHealingManager } from "../../self-healing.js";
 
-function git(dir: string, cmd: string): string {
-  return execSync(cmd, { cwd: dir, stdio: "pipe" }).toString().trim();
+function git(dir: string, args: string[]): string {
+  return execFileSync("git", args, { cwd: dir, stdio: "pipe" }).toString().trim();
 }
 
 function makeStore(task: Task, events: unknown[] = []): TaskStore & EventEmitter {
@@ -35,18 +35,18 @@ describe("landed-content soft-blocker reliability interactions (real git)", () =
   it("auto-finalizes paused+failed in-review tasks once landed content is proven", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fn-4648-ri-"));
     try {
-      git(dir, "git init -b main");
-      git(dir, 'git config user.email "test@example.com"');
-      git(dir, 'git config user.name "Test"');
-      git(dir, "git commit --allow-empty -m init");
+      git(dir, ["init", "-b", "main"]);
+      git(dir, ["config", "user.email", "test@example.com"]);
+      git(dir, ["config", "user.name", "Test"]);
+      git(dir, ["commit", "--allow-empty", "-m", "init"]);
 
-      git(dir, "git checkout -b fusion/fn-4648");
+      git(dir, ["checkout", "-b", "fusion/fn-4648"]);
       writeFileSync(join(dir, "file.txt"), "task content\n");
-      git(dir, "git add file.txt");
-      git(dir, "git commit -m 'feat(FN-4648): task change' -m 'Fusion-Task-Id: FN-4648'");
-      const taskCommit = git(dir, "git rev-parse HEAD");
-      git(dir, "git checkout main");
-      git(dir, `git cherry-pick ${taskCommit}`);
+      git(dir, ["add", "file.txt"]);
+      git(dir, ["commit", "-m", "feat(FN-4648): task change", "-m", "Fusion-Task-Id: FN-4648"]);
+      const taskCommit = git(dir, ["rev-parse", "HEAD"]);
+      git(dir, ["checkout", "main"]);
+      git(dir, ["cherry-pick", taskCommit]);
 
       const task = {
         id: "FN-4648",
@@ -90,18 +90,18 @@ describe("landed-content soft-blocker reliability interactions (real git)", () =
   it("keeps task in-review when landed content exists but hard blockers remain", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fn-4648-ri-hard-"));
     try {
-      git(dir, "git init -b main");
-      git(dir, 'git config user.email "test@example.com"');
-      git(dir, 'git config user.name "Test"');
-      git(dir, "git commit --allow-empty -m init");
+      git(dir, ["init", "-b", "main"]);
+      git(dir, ["config", "user.email", "test@example.com"]);
+      git(dir, ["config", "user.name", "Test"]);
+      git(dir, ["commit", "--allow-empty", "-m", "init"]);
 
-      git(dir, "git checkout -b fusion/fn-4648-hard");
+      git(dir, ["checkout", "-b", "fusion/fn-4648-hard"]);
       writeFileSync(join(dir, "hard.txt"), "task content\n");
-      git(dir, "git add hard.txt");
-      git(dir, "git commit -m 'feat(FN-4648): hard blocker case' -m 'Fusion-Task-Id: FN-4648-HARD'");
-      const taskCommit = git(dir, "git rev-parse HEAD");
-      git(dir, "git checkout main");
-      git(dir, `git cherry-pick ${taskCommit}`);
+      git(dir, ["add", "hard.txt"]);
+      git(dir, ["commit", "-m", "feat(FN-4648): hard blocker case", "-m", "Fusion-Task-Id: FN-4648-HARD"]);
+      const taskCommit = git(dir, ["rev-parse", "HEAD"]);
+      git(dir, ["checkout", "main"]);
+      git(dir, ["cherry-pick", taskCommit]);
 
       const task = {
         id: "FN-4648-HARD",
