@@ -61,22 +61,31 @@ function buildReport(checkedAt: string, anomalies: TaskIdIntegrityAnomaly[]): Ta
  * table — soft-deleted IDs must remain visible to integrity checks (FN-5105).
  *
  * @param db The runtime Drizzle instance.
+ * @param projectId Optional project partition. Production health probes pass
+ *   the engine's bound project so equal task IDs in another project cannot be
+ *   reported as collisions or sequence drift. Omitting it preserves the
+ *   legacy project-agnostic report for global diagnostics.
  * @returns The integrity report with the same shape as the SQLite version.
  */
-export async function detectTaskIdIntegrityAnomaliesAsync(db: DrizzleDb): Promise<TaskIdIntegrityReport> {
+export async function detectTaskIdIntegrityAnomaliesAsync(
+  db: DrizzleDb,
+  projectId?: string,
+): Promise<TaskIdIntegrityReport> {
   const checkedAt = new Date().toISOString();
 
   try {
     const anomalies: TaskIdIntegrityAnomaly[] = [];
+    const normalizedProjectId = projectId?.trim() || undefined;
+    const projectFilter = normalizedProjectId ? sql` WHERE project_id = ${normalizedProjectId}` : sql``;
 
     // Read all active and archived task IDs. We intentionally do not filter
     // deletedAt on tasks (FN-5105). Use raw SQL for direct column access
     // without needing full Drizzle row-type mapping.
     const activeRows = (await db.execute(
-      sql.raw(`SELECT id FROM ${PROJECT_SCHEMA}.tasks`),
+      sql`SELECT id FROM ${sql.raw(`${PROJECT_SCHEMA}.tasks`)}${projectFilter}`,
     )) as unknown as Array<{ id: string }>;
     const archivedRows = (await db.execute(
-      sql.raw(`SELECT id FROM ${PROJECT_SCHEMA}.archived_tasks`),
+      sql`SELECT id FROM ${sql.raw(`${PROJECT_SCHEMA}.archived_tasks`)}${projectFilter}`,
     )) as unknown as Array<{ id: string }>;
 
     const activeIds = activeRows.map((r) => String(r.id ?? ""));
@@ -136,7 +145,7 @@ export async function detectTaskIdIntegrityAnomaliesAsync(db: DrizzleDb): Promis
 
     // Read allocator state rows.
     const stateRows = (await db.execute(
-      sql.raw(`SELECT prefix, next_sequence FROM ${PROJECT_SCHEMA}.distributed_task_id_state`),
+      sql`SELECT prefix, next_sequence FROM ${sql.raw(`${PROJECT_SCHEMA}.distributed_task_id_state`)}${projectFilter}`,
     )) as unknown as Array<{ prefix: string; next_sequence: string | number }>;
 
     // 4. Sequence drift: next_sequence at or below a used suffix.

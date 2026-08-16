@@ -260,6 +260,31 @@ pgDescribe("Task-ID integrity detector (U8) — VAL-HEALTH-003", () => {
       }),
     );
   });
+
+  it("scopes task-ID integrity checks to the bound project", async () => {
+    ctx = await setupCtx();
+    const db = ctx.layer.db;
+    const now = new Date().toISOString();
+
+    // The same task prefix is valid in both projects. A high sequence in a
+    // different project must not make project-a's allocator look stale.
+    await db.execute(sql.raw(
+      `INSERT INTO ${PROJECT_SCHEMA}.tasks (project_id, id, description, "column", created_at, updated_at) VALUES ('project-a', 'FN-2', 'project a', 'todo', '${now}', '${now}')`,
+    ));
+    await db.execute(sql.raw(
+      `INSERT INTO ${PROJECT_SCHEMA}.tasks (project_id, id, description, "column", created_at, updated_at) VALUES ('project-b', 'FN-99', 'project b', 'todo', '${now}', '${now}')`,
+    ));
+    await db.execute(sql.raw(
+      `INSERT INTO ${PROJECT_SCHEMA}.distributed_task_id_state (project_id, prefix, next_sequence, committed_cluster_task_count, last_committed_task_id, updated_at) VALUES ('project-a', 'FN', 3, 0, NULL, '${now}')`,
+    ));
+    await db.execute(sql.raw(
+      `INSERT INTO ${PROJECT_SCHEMA}.distributed_task_id_state (project_id, prefix, next_sequence, committed_cluster_task_count, last_committed_task_id, updated_at) VALUES ('project-b', 'FN', 100, 0, NULL, '${now}')`,
+    ));
+
+    const report = await detectTaskIdIntegrityAnomaliesAsync(ctx.layer.db, "project-a");
+    expect(report.status).toBe("ok");
+    expect(report.anomalies).toEqual([]);
+  });
 });
 
 pgDescribe("Schema drift detection and self-heal (U8) — VAL-HEALTH-004", () => {

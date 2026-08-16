@@ -100,7 +100,7 @@ export async function evaluateDashboardPostgresHealth(
   let taskIdIntegrity: DashboardTaskIdIntegrityHealth;
   try {
     taskIdIntegrity = await withDeadline(
-      () => detectTaskIdIntegrityAnomaliesAsync(layer.healthDb ?? layer.db),
+      () => detectTaskIdIntegrityAnomaliesAsync(layer.healthDb ?? layer.db, context?.projectId),
       remaining(),
       "PostgreSQL task-ID integrity probe",
     );

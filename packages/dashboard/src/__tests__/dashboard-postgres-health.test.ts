@@ -43,7 +43,7 @@ describe("evaluateDashboardPostgresHealth", () => {
     const result = await evaluateDashboardPostgresHealth(store);
 
     expect(healthMocks.checkPostgresHealth).toHaveBeenCalledWith(layer);
-    expect(healthMocks.detectTaskIdIntegrityAnomaliesAsync).toHaveBeenCalledWith(layer.db);
+    expect(healthMocks.detectTaskIdIntegrityAnomaliesAsync).toHaveBeenCalledWith(layer.db, undefined);
     expect(result.database.healthy).toBe(true);
     expect(result.taskIdIntegrity.status).toBe("ok");
   });
@@ -55,7 +55,7 @@ describe("evaluateDashboardPostgresHealth", () => {
 
     await evaluateDashboardPostgresHealth(store);
 
-    expect(healthMocks.detectTaskIdIntegrityAnomaliesAsync).toHaveBeenCalledWith(healthDb);
+    expect(healthMocks.detectTaskIdIntegrityAnomaliesAsync).toHaveBeenCalledWith(healthDb, undefined);
   });
 
   it("surfaces durable failed and running cutovers without an age threshold", async () => {
@@ -89,6 +89,7 @@ describe("evaluateDashboardPostgresHealth", () => {
     });
 
     expect(healthMocks.getSqliteMigrationState).toHaveBeenCalledWith(layer.db, "project:daemon-project");
+    expect(healthMocks.detectTaskIdIntegrityAnomaliesAsync).toHaveBeenCalledWith(layer.db, "daemon-project");
     expect(result.migration).toMatchObject({ migrationKey: "project:daemon-project", durableStatus: "failed" });
   });
 
