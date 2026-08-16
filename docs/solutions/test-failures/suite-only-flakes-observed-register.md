@@ -170,3 +170,20 @@ FN-9116 adds deterministic ordering coverage for desktop and mobile rows across 
 | `pnpm lint`, `pnpm verify:fast`, `pnpm build` | **passed** |
 
 The flake is structurally removed rather than stabilized: every hydration/recovery writer now has an ownership boundary before it can overwrite a newer turn. This is a published behavior fix, so FN-9116 includes a patch changeset.
+
+## 9. Create Room picker loaded-lane state ordering
+
+- **File:** `packages/dashboard/app/components/__tests__/CreateRoomModal.test.tsx`
+- **Exact test:** `CreateRoomModal > shows loading, empty, no-match, populated, and selected-member picker states`
+- **Observed tree/SHA:** `7527d2651f` (FN-9120 baseline).
+- **Observed frequency:** 2/2 loaded `dashboard-app-quality-backfill` shard-2 runs failed; a targeted rerun had passed before this investigation.
+
+| run | result |
+|---|---|
+| loaded backfill shard 2 | **failed** — 1 failed / 2,134 passed; full output retained |
+| loaded backfill shard 2 with picker instrumentation | **failed** — same assertion; fetch calls were exactly 1/2/3 and the member list still rendered Alpha/Beta after typing `zzz` |
+| new ordering tests against unfixed component | **failed** — stale project result overwrote current roster; rejected load rendered no-agents copy |
+
+**Resolved 2026-08-16 (FN-9120): both a timing-sensitive test assertion and a product race.** The original third phase synchronously asserted after `userEvent.type` while the loaded lane still rendered populated rows, even though its once queue had not shifted. Independently, the production effect had no cleanup or request identity, so a close/reopen, project change, or unmount could let a stale fetch write roster/loading/error state; initial `loadingAgents=false` also exposed terminal empty copy before the first effect.
+
+The component now owns an explicit idle/loading/loaded/failed phase and fences each request with an epoch plus cleanup. A current successful reload removes selected IDs absent from its roster. The test uses controlled deferred promises in a single persistently-mounted modal, proves close/reopen/project ordering, failure and unmount fencing, duplicate-name/selection reconciliation, and desktop/mobile empty-state copy invariants without retries, sleeps, waits around the old assertion, or mock re-pinning.
