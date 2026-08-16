@@ -1563,6 +1563,10 @@ function DashboardTab({
                 {agentSkills.map((skillId) => {
                   const isSelected = selectedSkillId === skillId;
                   const classification = classifyAgentSkill(skillId, discoveredSkillsLoading || discoveredSkillsError ? null : discoveredSkills, { forced: true });
+                  /*
+                   * FNXC:AgentSkills 2026-08-16-06:34:
+                   * Preserve the exact persisted agent.metadata.skills ID in the tooltip so operators can diagnose stale or undiscovered entries. Only the visible badge label is humanized by formatAgentSkillBadgeLabel.
+                   */
                   return (
                     <button
                       key={skillId}
