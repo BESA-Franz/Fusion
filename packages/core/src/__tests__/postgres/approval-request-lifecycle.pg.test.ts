@@ -1,4 +1,5 @@
-import { it, expect, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
+import { it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
+import { ApprovalRequestStore } from "../../agents/approval-request-store.js";
 import type { AsyncDataLayer } from "../../postgres/data-layer.js";
 import {
   pgDescribe,
@@ -64,6 +65,56 @@ pgDescribe("approval request lifecycle security (PostgreSQL)", () => {
     });
     return store;
   }
+
+  it("orders audit history by lifecycle within timestamp ties across store surfaces", async () => {
+    const store = await import("../../async-stores/async-approval-request-store.js");
+    const publicStore = new ApprovalRequestStore(null, { asyncLayer: ctx.layer });
+    const targetAction = { category: "shell", action: "exec", summary: "run cmd", resourceType: "host", resourceId: "local", context: { cmd: "ls" } };
+    const assertHistory = async (id: string, expectedTypes: string[]) => {
+      const moduleHistory = await store.getApprovalAuditHistory(ctx.layer.db, id);
+      const delegatedHistory = await publicStore.getAuditHistory(id);
+      expect(moduleHistory.map((event) => event.eventType)).toEqual(expectedTypes);
+      expect(delegatedHistory.map((event) => event.eventType)).toEqual(expectedTypes);
+    };
+    const create = (id: string) => store.createApprovalRequest(ctx.layer, { id, requester: REQUESTER, targetAction });
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const tiedAt = new Date("2026-08-16T22:26:00.000Z");
+      vi.setSystemTime(tiedAt);
+      await create("apr-tied-approved");
+      await store.decideApprovalRequest(ctx.layer, "apr-tied-approved", "approved", { actor: DECIDER });
+      const tiedApproved = await store.getApprovalAuditHistory(ctx.layer.db, "apr-tied-approved");
+      expect(tiedApproved.map((event) => event.createdAt)).toEqual([tiedAt.toISOString(), tiedAt.toISOString()]);
+      await assertHistory("apr-tied-approved", ["created", "approved"]);
+
+      await create("apr-tied-denied");
+      await store.decideApprovalRequest(ctx.layer, "apr-tied-denied", "denied", { actor: DECIDER });
+      await assertHistory("apr-tied-denied", ["created", "denied"]);
+
+      await create("apr-tied-completed");
+      await store.decideApprovalRequest(ctx.layer, "apr-tied-completed", "approved", { actor: DECIDER });
+      await store.markApprovalRequestCompleted(ctx.layer, "apr-tied-completed", { actor: DECIDER });
+      await assertHistory("apr-tied-completed", ["created", "approved", "completed"]);
+
+      vi.setSystemTime(new Date("2026-08-16T22:27:00.000Z"));
+      await create("apr-distinct");
+      vi.setSystemTime(new Date("2026-08-16T22:28:00.000Z"));
+      await store.decideApprovalRequest(ctx.layer, "apr-distinct", "approved", { actor: DECIDER });
+      vi.setSystemTime(new Date("2026-08-16T22:29:00.000Z"));
+      await store.markApprovalRequestCompleted(ctx.layer, "apr-distinct", { actor: DECIDER });
+      await assertHistory("apr-distinct", ["created", "approved", "completed"]);
+
+      vi.setSystemTime(new Date("2026-08-16T22:30:00.000Z"));
+      await create("apr-mixed");
+      await store.decideApprovalRequest(ctx.layer, "apr-mixed", "approved", { actor: DECIDER });
+      vi.setSystemTime(new Date("2026-08-16T22:31:00.000Z"));
+      await store.markApprovalRequestCompleted(ctx.layer, "apr-mixed", { actor: DECIDER });
+      await assertHistory("apr-mixed", ["created", "approved", "completed"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("a same-verdict replay is rejected as an invalid transition", async () => {
     const store = await seed("apr-replay");

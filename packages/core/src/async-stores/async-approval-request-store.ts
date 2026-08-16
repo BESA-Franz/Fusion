@@ -24,6 +24,7 @@ import { projectScopeFor, type AsyncDataLayer, type DbTransaction } from "../pos
 // FNXC:ApprovalLifecycleSecurity 2026-07-26-12:25:
 import { isApprovalRequestExpired } from "../types/agents/agents.js";
 import {
+  APPROVAL_REQUEST_AUDIT_EVENT_TYPES,
   isValidApprovalRequestTransition,
   normalizeApprovalRequestActionCategory,
   type ApprovalRequest,
@@ -357,7 +358,12 @@ export async function markApprovalRequestCompleted(
 }
 
 /**
- * Get the audit history for a request, ordered by createdAt ASC.
+ * Get the audit history for a request ordered by timestamp, then lifecycle rank, then ID.
+ *
+ * FNXC:ApprovalAuditOrdering 2026-08-16-22:26:
+ * Deterministic audit IDs embed the event type. Sorting same-millisecond records by ID
+ * therefore put `approved` before `created`, narrating an approval before its request.
+ * Derive the tiebreak rank from the declared lifecycle order; never infer lifecycle from IDs.
  *
  * FNXC:ApprovalAuditProjectIsolation 2026-08-12-15:37:
  * Owner and superuser connections can enable `fusion.project_bypass`, so RLS cannot backstop this bare request-id lookup. Scope in SQL from the public ApprovalRequestStore layer binding; projectScopeFor intentionally treats blank and whitespace-only bindings as unbound even though fusion_assign_project_id preserves whitespace writes literally.
@@ -367,12 +373,15 @@ export async function getApprovalAuditHistory(
   requestId: string,
   projectId?: string,
 ): Promise<ApprovalRequestAuditEvent[]> {
+  const eventType = schema.project.approvalRequestAuditEvents.eventType;
+  const lifecycleRank = sql`CASE ${eventType} ${sql.join(
+    APPROVAL_REQUEST_AUDIT_EVENT_TYPES.map((type, rank) => sql`WHEN ${type} THEN ${rank}`),
+    sql` `,
+  )} ELSE ${APPROVAL_REQUEST_AUDIT_EVENT_TYPES.length} END`;
   const rows = await handle
     .select()
     .from(schema.project.approvalRequestAuditEvents)
     .where(and(eq(schema.project.approvalRequestAuditEvents.requestId, requestId), projectScopeFor(schema.project.approvalRequestAuditEvents.projectId, projectId)))
-    .orderBy(
-      sql`${schema.project.approvalRequestAuditEvents.createdAt} ASC, ${schema.project.approvalRequestAuditEvents.id} ASC`,
-    );
+    .orderBy(sql`${schema.project.approvalRequestAuditEvents.createdAt} ASC, ${lifecycleRank} ASC, ${schema.project.approvalRequestAuditEvents.id} ASC`);
   return rows.map((row) => rowToAuditEvent(row as ApprovalRequestAuditEventRow));
 }
