@@ -131,14 +131,21 @@ function buildHealthPayload(args: {
   taskIdIntegrityReport: DashboardTaskIdIntegrityHealth;
   migration?: import("./dashboard-postgres-health.js").DashboardMigrationHealth;
   cliPackageVersion: string;
+  buildVersion?: string;
+  projectId?: string;
   engineAvailable: boolean;
 }) {
-  const { database, cliPackageVersion, engineAvailable, migration } = args;
+  const { database, cliPackageVersion, buildVersion, projectId, engineAvailable, migration } = args;
   const taskIdIntegrity = buildTaskIdIntegrityHealth(args.taskIdIntegrityReport);
   return {
     // Durable running/failed migration markers must never be hidden behind ok health.
     status: migration || !database.healthy || database.corruptionDetected || taskIdIntegrity.status !== "ok" ? "degraded" : "ok",
     version: cliPackageVersion,
+    // Keep runtime identity visible to local supervisors without exposing any
+    // credentials. The wrapper supplies the commit-bound build identifier.
+    ...(buildVersion ? { buildVersion } : {}),
+    ...(projectId ? { projectId } : {}),
+    holding: false,
     uptime: Math.floor(process.uptime()),
     /*
      * FNXC:DashboardHealth 2026-06-20-22:11:
@@ -1820,6 +1827,8 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
       taskIdIntegrityReport: health.taskIdIntegrity,
       migration: health.migration,
       cliPackageVersion,
+      buildVersion: process.env.FUSION_BUILD_VERSION,
+      projectId: options?.engine?.getProjectId?.(),
       engineAvailable: hasDashboardEngine(options),
     }));
   });
