@@ -42,6 +42,13 @@ This register preserves first-sighting evidence under the narrow exception in [A
 | full core ×3, 6 workers | subject passed; unrelated settings-revision-attribution failure |
 | PostgreSQL directory, 12 workers | subject passed; unrelated satellite-store ordering failure |
 
+**Second sighting — reproduced 2026-08-16 (FN-9126):** A credential-free, sterile-environment PostgreSQL-directory pass at 27 workers reproduced the registered assertion as a timeout at `packages/core/src/__tests__/postgres/project-identity.test.ts:41:3` on `3c235ce275b626a73da4fe508ac76fd6f5fbd686`. The typed, executor-authored per-run evidence is durable in task FN-9126, document key `evidence`; it records the 100-connection server ceiling and all run counters without retaining runner output. This is an escalation, not a resolution: core-config quarantine remains policy-forbidden by the gate-policy assertion, so FN-9131 owns root-cause diagnosis and a structural fix.
+
+| run | result |
+|---|---|
+| PostgreSQL directory, 27 workers (run 1) | subject passed; 173 files; 1335 passed / 31 failed / 4 skipped |
+| PostgreSQL directory, 27 workers (run 2) | **subject timeout reproduced**; 173 files; 942 passed / 46 failed / 382 skipped |
+
 ## 2. Schema applier retains registered dependents
 
 - **Owner:** FN-9128
