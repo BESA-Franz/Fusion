@@ -8,9 +8,14 @@
  */
 
 import type { AgentRuntimeOptions } from "./agent-runtime.js";
-import type { SkillSelectionContext } from "../cli-runtime/skill-resolver.js";
+import {
+  createSkillsOverrideFromSelection,
+  resolveProjectRoot,
+  resolveSessionSkills,
+  type SkillSelectionContext,
+} from "../cli-runtime/skill-resolver.js";
 import type { PluginRunner } from "../plugins/plugin-runner.js";
-import type { AgentSession, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, loadSkills, type AgentSession, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   GROK_CLI_PROVIDER_ID,
   isGrokApiKeyFusionVisible,
@@ -143,6 +148,55 @@ function extractSkillNamesFromSelection(skillSelection: SkillSelectionContext | 
   return skillSelection.requestedSkillNames
     .map((name) => (typeof name === "string" ? name.trim() : ""))
     .filter((name) => name.length > 0);
+}
+
+type SkillSummary = NonNullable<AgentRuntimeOptions["onSkillSummary"]> extends (summary: infer Summary) => unknown ? Summary : never;
+
+function appendForcedSkillInstruction(systemPrompt: string, forcedSkillNames: string[]): string {
+  if (forcedSkillNames.length === 0) return systemPrompt;
+  return `${systemPrompt}\n\nBefore starting work, you are REQUIRED to read these available skills: ${forcedSkillNames.join(", ")}. All other available skills may be consulted on demand when relevant.`;
+}
+
+/*
+FNXC:SkillResolution 2026-08-16-03:52:
+Non-PI runtimes bypass pi.ts's DefaultResourceLoader, so this common runtime seam
+resolves the same final skill set before their adapters start. Only settings-approved,
+discovered forced skills are placed in the read-first instruction; unavailable intent is
+reported through the summary rather than becoming an unfulfillable prompt order.
+*/
+function resolveNonPiSkillDelivery(options: AgentRuntimeOptions): {
+  skills: string[];
+  summary: SkillSummary;
+} | undefined {
+  if (!options.skillSelection) return undefined;
+
+  const projectRootDir = resolveProjectRoot(options.skillSelection.projectRootDir);
+  const discovered = loadSkills({
+    cwd: projectRootDir,
+    agentDir: getAgentDir(),
+    skillPaths: options.additionalSkillPaths ?? [],
+    includeDefaults: true,
+  });
+  const selection = resolveSessionSkills(options.skillSelection);
+  const override = createSkillsOverrideFromSelection(selection, {
+    requestedSkillNames: options.skillSelection.requestedSkillNames,
+    forcedSkillNames: options.skillSelection.forcedSkillNames,
+    sessionPurpose: options.skillSelection.sessionPurpose,
+  });
+  const resolved = override(discovered);
+  return {
+    // FNXC:SkillResolution 2026-08-16-03:52: Ensure-present role fallback/plugin
+    // requests remain adapter-visible even if this process cannot discover their private body.
+    skills: Array.from(new Set([
+      ...resolved.skills.map((skill) => skill.name),
+      ...(options.skillSelection.requestedSkillNames ?? []),
+    ])),
+    summary: {
+      availableCount: resolved.skills.length,
+      forcedSkillNames: resolved.resolvedForcedSkills.map((skill) => skill.skillName),
+      unresolvedForcedSkills: resolved.unresolvedForcedSkills,
+    },
+  };
 }
 
 /**
@@ -890,15 +944,39 @@ export async function createResolvedAgentSession(
   FNXC:MergeQueue 2026-07-15-11:08:
   Always forward sessionPurpose into runtime.createSession so pi host-extension policy can suppress dual-store fn_* tools on merger sessions (FN-7956 hang: wedged fn_task_show).
   */
+  const nonPiSkillDelivery = resolved.runtimeId === "pi"
+    ? undefined
+    : resolveNonPiSkillDelivery(effectiveRuntimeOptionsWithModel);
+  const baseSessionCreateOptions: AgentRuntimeOptions = nonPiSkillDelivery
+    ? {
+        ...effectiveRuntimeOptionsWithModel,
+        // Non-PI adapters receive the final availability set, never raw forced intent.
+        skills: nonPiSkillDelivery.skills,
+        systemPrompt: appendForcedSkillInstruction(
+          effectiveRuntimeOptionsWithModel.systemPrompt,
+          nonPiSkillDelivery.summary.forcedSkillNames,
+        ),
+        ...(effectiveRuntimeOptionsWithModel.systemPromptLayers ? {
+          systemPromptLayers: {
+            ...effectiveRuntimeOptionsWithModel.systemPromptLayers,
+            dynamic: appendForcedSkillInstruction(
+              effectiveRuntimeOptionsWithModel.systemPromptLayers.dynamic,
+              nonPiSkillDelivery.summary.forcedSkillNames,
+            ),
+          },
+        } : {}),
+      }
+    : effectiveRuntimeOptionsWithModel;
+  if (nonPiSkillDelivery) await baseSessionCreateOptions.onSkillSummary?.(nonPiSkillDelivery.summary);
   const sessionCreateOptions: AgentRuntimeOptions =
     shouldWrapCustomToolsForRuntime(resolved.runtimeId)
       ? {
-          ...effectiveRuntimeOptionsWithModel,
+          ...baseSessionCreateOptions,
           sessionPurpose,
-          ...wrapPluginRuntimeToolOptions(effectiveRuntimeOptionsWithModel, { runtimeId: resolved.runtimeId, sessionPurpose }),
+          ...wrapPluginRuntimeToolOptions(baseSessionCreateOptions, { runtimeId: resolved.runtimeId, sessionPurpose }),
         }
       : {
-          ...effectiveRuntimeOptionsWithModel,
+          ...baseSessionCreateOptions,
           sessionPurpose,
         };
   const result = await resolved.runtime.createSession(sessionCreateOptions);

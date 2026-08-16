@@ -1100,6 +1100,8 @@ export interface AgentOptions {
    *  (and `skillSelection` is not), auto-constructs a SkillSelectionContext
    *  from the cwd and these names. Ignored when `skillSelection` is set. */
   skills?: string[];
+  /** Reports the one resolved session-skill summary to task-bound callers. */
+  onSkillSummary?: (summary: { availableCount: number; forcedSkillNames: string[]; unresolvedForcedSkills: Array<{ requestedName: string; reason: string }> }) => void | Promise<void>;
   /** Extra directories to scan for skills (each holding `<id>/SKILL.md`), in
    *  addition to the default cwd/agent-dir roots. Forwarded to the resource
    *  loader so callers (e.g. plugins that install skills to a private dir) can
@@ -2481,8 +2483,10 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
     };
   }
 
-  // Resolve skill selection if provided
+  // Resolve skill selection if provided. The override is also the only point
+  // that knows which forced requests survived discovery and project exclusions.
   let skillsOverrideFn: ReturnType<typeof createSkillsOverrideFromSelection> | undefined;
+  let skillSummary: { availableCount: number; forcedSkillNames: string[]; unresolvedForcedSkills: Array<{ requestedName: string; reason: string }> } | undefined;
   if (effectiveSkillSelection) {
     const selectionResult = resolveSessionSkills(effectiveSkillSelection);
     if (selectionResult.diagnostics.length > 0) {
@@ -2505,8 +2509,19 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
     }
     skillsOverrideFn = createSkillsOverrideFromSelection(selectionResult, {
       requestedSkillNames: effectiveSkillSelection.requestedSkillNames,
+      forcedSkillNames: effectiveSkillSelection.forcedSkillNames,
       sessionPurpose: effectiveSkillSelection.sessionPurpose,
     });
+    const rawOverride = skillsOverrideFn;
+    skillsOverrideFn = (base) => {
+      const result = rawOverride(base);
+      skillSummary = {
+        availableCount: result.skills.length,
+        forcedSkillNames: result.resolvedForcedSkills.map((entry) => entry.skillName),
+        unresolvedForcedSkills: result.unresolvedForcedSkills,
+      };
+      return result;
+    };
   }
 
   /*
@@ -2548,10 +2563,12 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
     agentDir: getFusionAgentDir(),
     settingsManager,
     systemPromptOverride: () => options.systemPromptLayers?.stable ?? options.systemPrompt,
-    appendSystemPromptOverride: () =>
-      options.systemPromptLayers?.dynamic
-        ? [options.systemPromptLayers.dynamic]
-        : [],
+    appendSystemPromptOverride: () => {
+      const dynamic = options.systemPromptLayers?.dynamic ? [options.systemPromptLayers.dynamic] : [];
+      const forced = skillSummary?.forcedSkillNames ?? [];
+      if (forced.length === 0) return dynamic;
+      return [...dynamic, `Before starting work, you are REQUIRED to read these available skills: ${forced.join(", ")}. All other available skills may be consulted on demand when relevant.`];
+    },
     ...(effectiveExtensionPaths.length > 0 ? { additionalExtensionPaths: [...effectiveExtensionPaths] } : {}),
     ...(normalizedAdditionalSkillPaths.length > 0
       ? { additionalSkillPaths: normalizedAdditionalSkillPaths }
@@ -2559,6 +2576,7 @@ export async function createFnAgent(options: AgentOptions): Promise<AgentResult>
     ...(skillsOverrideFn ? { skillsOverride: skillsOverrideFn } : {}),
   });
   await resourceLoader.reload();
+  if (skillSummary) await options.onSkillSummary?.(skillSummary);
 
   const sessionManager = options.sessionManager ?? SessionManager.inMemory();
   normalizeSessionHistoryEntries(sessionManager as unknown as SessionManagerLike);

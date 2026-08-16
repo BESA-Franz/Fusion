@@ -1126,7 +1126,7 @@ Short-lived token bounds are enforced server-side:
 - Minimum TTL: `60_000` ms (60s)
 - Maximum TTL: `86_400_000` ms (24h)
 
-> **Note:** Agent `metadata.skills` is not a top-level project setting, but it is the primary mechanism for controlling execution-time skill selection. The engine's `buildSessionSkillContext` function reads this metadata from the assigned agent and uses it to resolve which skills are available in the agent session. If `metadata.skills` is absent or empty, the engine falls back to the built-in `fusion` skill.
+> **Note:** Agent `metadata.skills` is not a top-level project setting. Project `skills` and package-scoped `packages[].skills` `+`/`-` patterns control which discovered skills are available to every agent session, including default agents. `metadata.skills` is additive forced-reading intent only: a resolved enabled skill is required reading before work, while a missing or `-`-disabled request is reported and never re-enabled. Role lanes ensure the built-in `fusion` skill when it is available; heartbeat has no role fallback.
 
 ---
 
