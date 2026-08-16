@@ -93,6 +93,7 @@ import {
   isNonFastForwardPushError,
   isRebaseInProgress,
   parsePushRemoteTarget,
+  pushWithTransientRetries,
   pushToRemoteAfterMerge,
   runMergeAdvanceAutoSync,
   syncGroupPrOnLanding,
@@ -2719,9 +2720,23 @@ export async function pushAfterMergeToRemote(input: {
   throwIfAborted(signal, taskId);
   let fastPathError: string;
   try {
-    await git(["push", remote, `${localRef}:refs/heads/${targetBranch}`], projectRootDir, { timeout: 120_000 });
+    // FNXC:MergePush 2026-08-16-02:55: Retry transient fast-path transport failures with
+    // bounded, cancellation-aware backoff; merge aborts must escape to the aborted-push audit path.
+    await pushWithTransientRetries(
+      () => git(["push", remote, `${localRef}:refs/heads/${targetBranch}`], projectRootDir, { timeout: 120_000 }),
+      {
+        taskId,
+        signal,
+        onRetry: async ({ attempt, maxRetries, delayMs, error }) => {
+          const message = `Push after merge: temporary Git transport failure; retrying in ${delayMs}ms (${attempt}/${maxRetries}): ${error}`;
+          aiMergeLog.warn(`${taskId}: ${message}`);
+          await log(message);
+        },
+      },
+    );
     return { pushed: true, remote, targetBranch };
   } catch (err: unknown) {
+    if (isMergeAbortedError(err)) throw err;
     fastPathError = getErrorMessage(err);
   }
   if (!isNonFastForwardPushError(fastPathError)) {
