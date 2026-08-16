@@ -643,6 +643,8 @@ Optional workflow steps declared by the active workflow are available from the q
 FNXC:PriorityColorCoding 2026-07-11-00:00: Priority glyphs share urgency colors across Quick Add, the New Task inline row, and task-card badges: low=info/blue, normal=muted, high=warning/amber, urgent=error/red. -->
 Quick Add and Inline Create model selection include Plan, Executor, Reviewer, and Merger lanes. Each lane can inherit its default or select a task-specific model; Plan, Reviewer, and Merger also provide independent thinking-level overrides.
 
+Quick Add saves with Enter by default. Operators who prefer multi-line descriptions can disable **Settings → Global → General → Press Enter to save a task in Quick Add**; plain Enter then inserts a newline, while Cmd/Ctrl+Enter saves.
+
 <!-- FNXC:QuickAddStart 2026-07-22-17:45: Coding (Ideas) Start is an atomic Todo create, while ordinary Save and Enter remain create-only in Ideas.
 FNXC:QuickAddStart 2026-07-24-11:20: Start is now a visible action-row button for eligible workflows instead of a hidden long-press/right-click menu on Save; eligibility, snapshotting, and fail-closed routing are unchanged. -->
 

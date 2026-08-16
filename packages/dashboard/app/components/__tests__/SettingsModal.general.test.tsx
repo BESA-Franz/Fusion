@@ -1194,6 +1194,24 @@ describe("SettingsModal", () => {
       }
     });
 
+    it("saves quickAddSubmitOnEnter only via global settings payload", async () => {
+      renderModal({ initialSection: "global-general" });
+      await waitForSettingsModalReady();
+
+      vi.useFakeTimers();
+      fireEvent.click(screen.getByRole("checkbox", { name: "Press Enter to save a task in Quick Add" }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(mockUpdateGlobalSettings).toHaveBeenCalled();
+      vi.useRealTimers();
+
+      const globalPayload = mockUpdateGlobalSettings.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(globalPayload.quickAddSubmitOnEnter).toBe(false);
+      if (mockUpdateSettings.mock.calls.length > 0) {
+        const projectPayload = mockUpdateSettings.mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(projectPayload.quickAddSubmitOnEnter).toBeUndefined();
+      }
+    });
+
     it("saves persistAgentToolOutput only via global settings payload", async () => {
       renderModal({ initialSection: "global-general" });
       await waitForSettingsModalReady();
