@@ -812,7 +812,7 @@ Quick Chat is an optional fast, project-scoped assistant surface for conversatio
 
 ## Mailbox View
 
-Mailbox view shows inbox/outbox communication threads and unread state. When an ephemeral worker is configured for follow-up validation, its task proposals include a **Create task** action; created proposals link directly to the resulting task.
+Mailbox view shows inbox/outbox communication threads and unread state. When an ephemeral worker is configured for follow-up validation, its task proposals include a **Create task** action; created proposals link directly to the resulting task. Completed-task recommendation notices also show an inline **Create task** button for every live recommendation, so operators can file optional follow-ups without leaving the message. Already-created recommendations instead provide **View task FN-NNNN**; unavailable parents remain informational and failed creates offer a retry. The controls are available in both desktop and mobile message detail and conversation views, with mobile actions using the message width.
 
 - Mail composers can attach a native mission, milestone, goal, persisted insight, eval result, or roadmap item by dragging it from its owning view, or through the keyboard/mobile **Attach structure** picker. Roadmap feature-row drag is available on fine pointers; touch and keyboard use the picker. The shared `nativeStructureDrag` payload is copied into the same first-class mail embed metadata as picker attachments, while a dropped payload from another project is rejected.
 - **Draft with AI** opens a compact compose-chat scratch session that uses attached structures as context. **Use draft** replaces an empty message body; replacing typed text requires confirmation, and attached embeds remain in place.
