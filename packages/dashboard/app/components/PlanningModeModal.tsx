@@ -2047,6 +2047,15 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
   const loadSession = useCallback(
     async (sessionId: string) => {
       const loadEpoch = ++planningSessionLoadEpochRef.current;
+      /*
+      FNXC:PlanningMode 2026-08-16-08:54:
+      An idle-session SSE refresh rehydrates the same server session while its question remains
+      actionable. Do not transiently clear that workspace: unmounting QuestionForm discards a
+      typed or selected local answer before its enabled Next action can submit it. A different
+      session still takes the neutral loader so its prior turn never remains visible.
+      */
+      const preservesActiveWorkspace = currentSessionIdRef.current === sessionId
+        && (viewRef.current.type === "question" || viewRef.current.type === "plan_review");
       streamConnectionRef.current?.close();
       streamConnectionRef.current = null;
       currentSessionIdRef.current = sessionId;
@@ -2060,23 +2069,25 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
       review with a working View task button. Clear it at load start; the complete branch
       restores it for the session actually being loaded.
       */
-      setLinkedTaskId(null);
-      setLinkedTask(null);
-      setStreamingOutput("");
-      setResponseHistory([]);
-      setConversationHistory([]);
-      setEditedSummary(null);
-      setRunningSummary(null);
-      setWorkspaceQuestion(null);
-      setLoadedSessionTitle(null);
-      setIsRetrying(false);
-      setIsRefiningSummary(false);
-      refineSummaryInFlightRef.current = false;
-      setGenerationStartTime(null);
-      // FNXC:PlanningMode 2026-07-23-00:00: hydrate-from-DB shows the neutral session loader,
-      // not the generation pane — only a fetched status of "generating" enters `loading` below.
-      viewRef.current = { type: "session_loading" };
-      setView({ type: "session_loading" });
+      if (!preservesActiveWorkspace) {
+        setLinkedTaskId(null);
+        setLinkedTask(null);
+        setStreamingOutput("");
+        setResponseHistory([]);
+        setConversationHistory([]);
+        setEditedSummary(null);
+        setRunningSummary(null);
+        setWorkspaceQuestion(null);
+        setLoadedSessionTitle(null);
+        setIsRetrying(false);
+        setIsRefiningSummary(false);
+        refineSummaryInFlightRef.current = false;
+        setGenerationStartTime(null);
+        // FNXC:PlanningMode 2026-07-23-00:00: hydrate-from-DB shows the neutral session loader,
+        // not the generation pane — only a fetched status of "generating" enters `loading` below.
+        viewRef.current = { type: "session_loading" };
+        setView({ type: "session_loading" });
+      }
 
       try {
         const session = await fetchAiSession(sessionId);
@@ -2827,44 +2838,20 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
 
   const handleSubmitResponse = useCallback(
     async (responses: QuestionResponse) => {
-      if (view.type !== "question") return;
-
-      const { session } = view;
-      const sessionId = session.sessionId;
-      const activeQuestion = session.currentQuestion;
-      if (!activeQuestion) {
-        /*
-        FNXC:PlanningQuestionRegeneration 2026-07-23-21:40:
-        Submitting with no active question is no longer a dead-end "No active question in
-        session" error. The server regenerates a fresh interview question from the accumulated
-        context, so forward the input and enter the loading state; the SSE question event (or
-        the HTTP payload for restored sessions without a live stream) restores the view. No
-        optimistic history entry is recorded because there is no question to pair it with.
-        */
-        setError(null);
-        resetPlanningAutoRetryBudget();
-        setGenerationActivity("question");
-        setGenerationStartTime(Date.now());
-        setView({ type: "loading" });
-        setStreamingOutput("");
-        currentSessionIdRef.current = sessionId;
-        if (!streamConnectionRef.current?.isConnected()) {
-          connectToPlanningStream(sessionId);
-        }
-        try {
-          const response = await respondToPlanning(sessionId, responses, projectId);
-          const responseQuestion = "type" in response ? response.data : response.currentQuestion;
-          if (responseQuestion) {
-            const nextQuestion = normalizeQuestionOptions(responseQuestion);
-            setWorkspaceQuestion(nextQuestion);
-            setView({ type: "question", session: { sessionId, currentQuestion: nextQuestion, summary: runningSummaryRef.current } });
-          }
-        } catch (err) {
-          setError(getErrorMessage(err) || t("planning.failedSubmitResponse", "Failed to submit response"));
-          setView({ type: "question", session: { sessionId, currentQuestion: null, summary: runningSummaryRef.current } });
-        }
+      const sessionId = currentSessionIdRef.current;
+      const activeQuestion = workspaceQuestion;
+      if (!sessionId || !activeQuestion) {
+        setError(t("planning.noActiveQuestion", "No active question is available. Wait for the interview to resume."));
         return;
       }
+      /*
+      FNXC:PlanningMode 2026-08-16-06:28:
+      The form is rendered from workspaceQuestion and remains visible beneath the loading overlay.
+      Submit must use that live question and session ref, not a render-time view snapshot: a late
+      hydration may change view between an enabled Next render and its user event, and must never
+      silently discard that answer.
+      */
+      const session = { sessionId, currentQuestion: activeQuestion, summary: runningSummaryRef.current };
 
       setError(null);
       const responseTurnEpoch = ++planningTurnEpochRef.current;
@@ -3000,7 +2987,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
         setView({ type: "question", session: { ...session, summary: runningSummaryRef.current } });
       }
     },
-    [connectToPlanningStream, conversationHistory, editingQuestionId, projectId, resetPlanningAutoRetryBudget, t, view]
+    [connectToPlanningStream, conversationHistory, editingQuestionId, projectId, resetPlanningAutoRetryBudget, t, workspaceQuestion]
   );
 
   const handleStopGeneration = useCallback(async () => {
@@ -4433,6 +4420,11 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
   const [commentValue, setCommentValue] = useState("");
   const [otherValue, setOtherValue] = useState("");
   const [isOtherSelected, setIsOtherSelected] = useState(false);
+  const dirtyResponseRef = useRef(false);
+  const restoredQuestionIdRef = useRef<string | null>(null);
+  const markResponseDirty = useCallback(() => {
+    dirtyResponseRef.current = true;
+  }, []);
   const { ref: textAnswerAutosizeRef } = useAutosizeTextarea({
     value: textValue,
     minHeight: 120,
@@ -4507,9 +4499,18 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
 
   // Restore a selected history answer so editing is a direct, non-destructive operation.
   useEffect(() => {
+    if (restoredQuestionIdRef.current === question.id && dirtyResponseRef.current) return;
     const prior = initialResponse ?? {};
     const other = typeof prior[PLANNING_OTHER_RESPONSE_KEY] === "string" ? prior[PLANNING_OTHER_RESPONSE_KEY] : "";
     const text = prior[question.id];
+    /*
+    FNXC:PlanningMode 2026-08-16-06:28:
+    Hydration can replace the parent response object after a user starts answering the same
+    question. Restore durable data only until that local turn is dirty; object identity churn
+    must not erase an enabled form's unsubmitted answer or disable Next question.
+    */
+    dirtyResponseRef.current = false;
+    restoredQuestionIdRef.current = question.id;
     setResponse(prior);
     setTextValue(typeof text === "string" ? text : "");
     setCommentValue(typeof prior._comment === "string" ? prior._comment : "");
@@ -4571,7 +4572,10 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
                     className="planning-textarea"
                     placeholder={t("planning.typeAnswerPlaceholder", "Type your answer here...")}
                     value={textValue}
-                    onChange={(e) => setTextValue(e.target.value)}
+                    onChange={(e) => {
+                      markResponseDirty();
+                      setTextValue(e.target.value);
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && !e.shiftKey && textValue.trim()) {
                         e.preventDefault();
@@ -4593,6 +4597,7 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
                         value={option.id}
                         checked={response[question.id] === option.id && !isOtherSelected}
                         onChange={() => {
+                          markResponseDirty();
                           setIsOtherSelected(false);
                           setOtherValue("");
                           setResponse({ [question.id]: option.id });
@@ -4614,6 +4619,7 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
                       value={PLANNING_OTHER_OPTION_ID}
                       checked={isOtherSelected}
                       onChange={() => {
+                        markResponseDirty();
                         setIsOtherSelected(true);
                         setResponse({});
                       }}
@@ -4630,7 +4636,10 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
                         data-testid="planning-other-input"
                         placeholder={t("planning.otherOptionPlaceholder", "Write your own answer...")}
                         value={otherValue}
-                        onChange={(e) => setOtherValue(e.target.value)}
+                        onChange={(e) => {
+                          markResponseDirty();
+                          setOtherValue(e.target.value);
+                        }}
                       />
                     </div>
                   )}
@@ -4648,6 +4657,7 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
                           value={option.id}
                           checked={selected.includes(option.id)}
                           onChange={(e) => {
+                            markResponseDirty();
                             const newSelected = e.target.checked
                               ? [...selected, option.id]
                               : selected.filter((id) => id !== option.id);
@@ -4670,6 +4680,7 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
                       value={PLANNING_OTHER_OPTION_ID}
                       checked={isOtherSelected}
                       onChange={(e) => {
+                        markResponseDirty();
                         setIsOtherSelected(e.target.checked);
                         if (!e.target.checked) {
                           setOtherValue("");
@@ -4688,7 +4699,10 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
                         data-testid="planning-other-input"
                         placeholder={t("planning.otherOptionPlaceholder", "Write your own answer...")}
                         value={otherValue}
-                        onChange={(e) => setOtherValue(e.target.value)}
+                        onChange={(e) => {
+                          markResponseDirty();
+                          setOtherValue(e.target.value);
+                        }}
                       />
                     </div>
                   )}
@@ -4701,6 +4715,7 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
                     <button
                       className={`planning-confirm-btn ${response[question.id] === true && !isOtherSelected ? "selected" : ""}`}
                       onClick={() => {
+                        markResponseDirty();
                         setIsOtherSelected(false);
                         setOtherValue("");
                         setResponse({ [question.id]: true });
@@ -4712,6 +4727,7 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
                     <button
                       className={`planning-confirm-btn ${response[question.id] === false && !isOtherSelected ? "selected" : ""}`}
                       onClick={() => {
+                        markResponseDirty();
                         setIsOtherSelected(false);
                         setOtherValue("");
                         setResponse({ [question.id]: false });
@@ -4724,6 +4740,7 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
                       className={`planning-confirm-btn ${isOtherSelected ? "selected" : ""}`}
                       data-testid="planning-option-other"
                       onClick={() => {
+                        markResponseDirty();
                         setIsOtherSelected(true);
                         setResponse({});
                       }}
@@ -4740,7 +4757,10 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
                         data-testid="planning-other-input"
                         placeholder={t("planning.otherOptionPlaceholder", "Write your own answer...")}
                         value={otherValue}
-                        onChange={(e) => setOtherValue(e.target.value)}
+                        onChange={(e) => {
+                          markResponseDirty();
+                          setOtherValue(e.target.value);
+                        }}
                       />
                     </div>
                   )}
@@ -4759,7 +4779,10 @@ export function QuestionForm({ question: rawQuestion, initialResponse, onSubmit,
                   className="planning-textarea"
                   placeholder={t("planning.additionalCommentsPlaceholder", "Add any extra context or direction...")}
                   value={commentValue}
-                  onChange={(e) => setCommentValue(e.target.value)}
+                  onChange={(e) => {
+                    markResponseDirty();
+                    setCommentValue(e.target.value);
+                  }}
                 />
               </div>
             )}
