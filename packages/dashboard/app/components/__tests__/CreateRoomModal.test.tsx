@@ -197,6 +197,32 @@ describe("CreateRoomModal", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Room launcher" })).toHaveFocus());
   });
 
+  it("does not let deferred autofocus steal member-search keystrokes", async () => {
+    let capturedFrameCallback: FrameRequestCallback | undefined;
+    const requestAnimationFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      capturedFrameCallback = callback;
+      return 1;
+    });
+
+    try {
+      render(<CreateRoomModal isOpen onClose={vi.fn()} onCreate={vi.fn()} />);
+      await screen.findByRole("button", { name: /Alpha/i });
+
+      await userEvent.click(screen.getByLabelText("Members"));
+      const searchInput = screen.getByLabelText("Members");
+      expect(searchInput).toHaveFocus();
+      expect(capturedFrameCallback).toBeDefined();
+      act(() => { capturedFrameCallback?.(0); });
+      await userEvent.keyboard("zzz");
+
+      expect(searchInput).toHaveValue("zzz");
+      expect(screen.getByLabelText("Room name")).toHaveValue("");
+      expect(screen.getByText("No agents match your search.")).toBeInTheDocument();
+    } finally {
+      requestAnimationFrame.mockRestore();
+    }
+  });
+
   it.each(["desktop", "mobile"])("shows loading, empty, no-match, populated, and selected-member picker states on %s", async (viewport) => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: viewport === "mobile" ? 375 : 1280 });
     const loading = createDeferred<any[]>();
@@ -225,10 +251,11 @@ describe("CreateRoomModal", () => {
     await waitFor(() => expect(mockFetchAgents).toHaveBeenCalledTimes(3));
     await act(async () => { populated.resolve(agents); });
     expect(await screen.findByRole("button", { name: /Alpha/i })).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Members"), { target: { value: "zzz" } });
+    const memberSearch = screen.getByLabelText("Members");
+    await userEvent.type(memberSearch, "zzz");
     expect(screen.getByText("No agents match your search.")).toBeInTheDocument();
     expect(screen.queryByText("No agents in this project yet.")).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Members"), { target: { value: "" } });
+    await userEvent.clear(memberSearch);
     await userEvent.click(screen.getByRole("button", { name: /Alpha/i }));
     expect(screen.getByTestId("create-room-selected-chips")).toHaveTextContent("Alpha");
     expect(mockFetchAgents).toHaveBeenCalledTimes(3);
@@ -289,7 +316,7 @@ describe("CreateRoomModal", () => {
     render(<CreateRoomModal isOpen onClose={vi.fn()} onCreate={vi.fn()} />);
 
     await screen.findByRole("button", { name: /Alpha/i });
-    fireEvent.change(screen.getByLabelText("Members"), { target: { value: "zzz" } });
+    await userEvent.type(screen.getByLabelText("Members"), "zzz");
 
     expect(screen.getByText("No agents match your search.")).toBeInTheDocument();
   });

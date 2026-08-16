@@ -49,6 +49,7 @@ export function CreateRoomModal({ isOpen, onClose, onCreate, projectId, existing
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const agentLoadEpochRef = useRef(0);
   /*
@@ -104,7 +105,16 @@ export function CreateRoomModal({ isOpen, onClose, onCreate, projectId, existing
       setIsSubmitting(false);
       return;
     }
-    const frame = window.requestAnimationFrame(() => nameInputRef.current?.focus());
+    /*
+    FNXC:CreateRoomModal 2026-08-16-09:20:
+    A late open-time animation frame must not yank focus from a field the user already selected
+    inside this dialog. Otherwise member-search keystrokes can be swallowed by the room-name field.
+    */
+    const frame = window.requestAnimationFrame(() => {
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement && modalRef.current?.contains(activeElement)) return;
+      nameInputRef.current?.focus();
+    });
     return () => window.cancelAnimationFrame(frame);
   }, [isOpen]);
 
@@ -198,7 +208,7 @@ export function CreateRoomModal({ isOpen, onClose, onCreate, projectId, existing
       closeOnOutsidePointerDown
       layer="utility"
     >
-      <div className="modal create-room-modal">
+      <div ref={modalRef} className="modal create-room-modal">
         <div className="modal-header">
           <h3>{t("createRoom.title", "Create room")}</h3>
           <button type="button" className="modal-close" aria-label={t("actions.close", "Close")} onClick={onClose}>×</button>
