@@ -1285,6 +1285,13 @@ export class ProjectEngine {
     if (this.deferredStartupAborted(generation)) return;
     const t0 = Date.now();
 
+    // Let ProjectEngine.start() settle and the daemon finish constructing its
+    // HTTP layer before the cleanup begins. This is an event-loop handoff, not
+    // a readiness timeout, and avoids racing the first request-driven settings
+    // read after the engine becomes available.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (this.deferredStartupAborted(generation)) return;
+
     const statusClearT0 = Date.now();
     try {
       await this.clearStaleMergingStatuses(store);

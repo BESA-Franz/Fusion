@@ -164,6 +164,10 @@ describe("merge is single-flight per project — fixed at 1, not configurable", 
     };
 
     await engine.start();
+    // Deferred startup performs the stale-status sweep after the engine handle
+    // is returned. Let that lifecycle work settle before arming the gate used
+    // by this single-flight test.
+    await new Promise((resolve) => setImmediate(resolve));
     store.state.armed = true;
     store.getSettings.mockClear();
     privateEngine.mergeQueue = ["FN-1", "FN-2"];
@@ -210,6 +214,7 @@ describe("merge is single-flight per project — fixed at 1, not configurable", 
     };
 
     await engine.start();
+    await new Promise((resolve) => setImmediate(resolve));
     store.state.armed = true;
     store.state.throwAfterGate = true;
     store.getSettings.mockClear();
