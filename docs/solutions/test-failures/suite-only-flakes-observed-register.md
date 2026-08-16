@@ -140,7 +140,9 @@ The timeout occurred after all test assertions and is unrelated to FN-8979's can
 ## 8. Planning Mode duplicate-response generation reconciliation
 
 - **File:** `packages/dashboard/app/components/__tests__/PlanningModeModal.planning-flow.test.tsx`
-- **Exact test:** `PlanningModeModal sequential flow > silently reconciles duplicate-response generation conflicts on 'mobile' with 'a durable next question'` (the `'desktop'` row of the same parametrized case failed once earlier the same day under a contaminated run).
+- **Exact test:** `PlanningModeModal sequential flow > silently reconciles duplicate-response generation conflicts on $viewport with $label`
+
+<!-- FNXC:TestFlakeRegister 2026-08-16-10:52: Parametrized `it.each` cases are registered by their source-template title because the register validator checks raw test-file hierarchy segments. The concrete failing `'mobile'` row (`a durable next question`) and earlier contaminated `'desktop'` row remain recorded below as evidence. -->
 - **Observed tree/SHA:** `main` at `8ee2ace2c1` (dashboard bare-run repair batch).
 - **Observed frequency:** one clean sighting — solo standard-lane run (`node scripts/run-quality-tests.mjs`, lane `app:backfill-3`) on a quiet machine; the earlier `'desktop'`-row failure ran concurrently with a full bare vitest run and live peer-session edits to planning API files, so it is recorded as context, not as an independent clean sighting.
 

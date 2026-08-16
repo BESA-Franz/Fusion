@@ -61,6 +61,12 @@ const PRETEST_CHECKS = [
      stale. Kept in production order, since the assertion is a deepEqual and order is part of it. */
   "scripts/check-capacity-pool-id.mjs",
   /*
+  FNXC:TestInfrastructure 2026-08-16-10:52:
+  FN-8991, FN-8994, and FN-9096 added runtime-skill-loader-drift,
+  workspace-package-graph, and cli-runtime-routing validators to the
+  authoritative production chains. Keep this pretest mirror in that order;
+  it must report divergence without inventing validators from the gate-only list.
+
   FNXC:MergeGatePerformance 2026-08-16-10:29:
   FN-9122 repaired the W33 gate inventory ledger after three validators had
   entered canonical pretest/gate compositions without their test mirrors.
