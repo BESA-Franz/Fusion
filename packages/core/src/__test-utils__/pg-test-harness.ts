@@ -44,7 +44,13 @@ import { Worker } from "node:worker_threads";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
-import { describe as vitestDescribe } from "vitest";
+import {
+  createPgTeardownDiagnostics,
+  getPgTeardownDiagnosticsProbeTimeoutMs,
+  getPgTeardownDiagnosticsStatementTimeoutMs,
+  type PgTeardownActivityRow,
+} from "./pg-teardown-diagnostics.js";
+import { describe as vitestDescribe, expect as vitestExpect } from "vitest";
 import postgres, { type Sql } from "postgres";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { sql } from "drizzle-orm";
@@ -258,6 +264,42 @@ function uniqueDbName(prefix = "fusion_test"): string {
  * timeout can SET statement_timeout (server cancel) and force-close the
  * socket before the caller returns.
  */
+/**
+ * FNXC:PgTestHarnessTeardownDiagnostics 2026-08-16-19:12:
+ * A watchdog must inspect a separate maintenance connection: adminSql and the
+ * runtime layer can be the close phase currently stuck. Abort force-closes this
+ * dedicated socket so a failed diagnostic cannot outlive the teardown it observes.
+ */
+function createPgStatActivityProbe(
+  probeTimeoutMs = getPgTeardownDiagnosticsProbeTimeoutMs(),
+): (signal: AbortSignal) => Promise<readonly PgTeardownActivityRow[]> {
+  return async (signal) => {
+    const maintUrl = new URL(PG_TEST_URL_BASE);
+    maintUrl.pathname = "/postgres";
+    const client = postgres(maintUrl.toString(), {
+      max: 1,
+      prepare: false,
+      connect_timeout: 1,
+      onnotice: () => {},
+    });
+    const abort = () => { void client.end({ timeout: 0 }).catch(() => {}); };
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      await client.unsafe(`SET statement_timeout = ${getPgTeardownDiagnosticsStatementTimeoutMs(probeTimeoutMs)}`);
+      return await client.unsafe<PgTeardownActivityRow[]>(`
+        SELECT pid, datname, usename, state, wait_event_type, wait_event, backend_type,
+          now() - query_start AS query_age, left(query, 200) AS query,
+          count(*) OVER ()::int AS total_backends
+        FROM pg_stat_activity
+        ORDER BY datname NULLS LAST, pid
+      `);
+    } finally {
+      signal.removeEventListener("abort", abort);
+      await client.end({ timeout: 5 }).catch(() => {});
+    }
+  };
+}
+
 async function adminExecAsync(statement: string, timeoutMs = 15_000): Promise<void> {
   let timedOut = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -864,36 +906,54 @@ export async function createTaskStoreForTest(options?: {
   const teardown = async (): Promise<void> => {
     if (tornDown) return;
     tornDown = true;
+    /*
+    FNXC:PgTestHarnessTeardownDiagnostics 2026-08-16-19:40:
+    Loaded-core JSONL evidence must identify the Vitest file that owns a shared
+    harness teardown; database-name prefixes cannot reliably distinguish files.
+    Read Vitest's active caller state only at teardown entry, after the harness
+    has been created from beforeAll, so no global per-test state is retained.
+    */
+    const testFile = vitestExpect.getState().testPath;
+    const diagnostics = createPgTeardownDiagnostics({
+      probe: createPgStatActivityProbe(),
+      ...(testFile ? { testFile } : {}),
+    });
+    diagnostics.beginTeardown();
     try {
-      store.stopWatching();
-    } catch {
-      // best-effort
-    }
-    try {
-      await store.close();
-    } catch {
-      // best-effort
-    }
-    try {
-      await layer.close();
-    } catch {
-      // best-effort
-    }
-    try {
-      await adminSql.end({ timeout: 5 });
-    } catch {
-      // best-effort
-    }
-    try {
-      // FNXC:PgTestHarness 2026-07-18-17:27: FORCE so open pool sockets cannot block drop after close races.
-      await adminExecAsync(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
-    } catch {
-      // best-effort
-    }
-    try {
-      await rm(rootDir, { recursive: true, force: true });
-    } catch {
-      // best-effort
+      try {
+        store.stopWatching();
+      } catch {
+        // best-effort
+      }
+      try {
+        await diagnostics.runPhase("store.close", () => store.close());
+      } catch {
+        // best-effort
+      }
+      try {
+        await diagnostics.runPhase("layer.close", () => layer.close());
+      } catch {
+        // best-effort
+      }
+      try {
+        await diagnostics.runPhase("adminSql.end", () => adminSql.end({ timeout: 5 }));
+      } catch {
+        // best-effort
+      }
+      try {
+        // FNXC:PgTestHarness 2026-07-18-17:27: FORCE so open pool sockets cannot block drop after close races.
+        await diagnostics.runPhase("dropDatabase", () => adminExecAsync(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`));
+      } catch {
+        // best-effort
+      }
+      try {
+        await diagnostics.runPhase("rmRootDir", () => rm(rootDir, { recursive: true, force: true }));
+      } catch {
+        // best-effort
+      }
+    } finally {
+      diagnostics.completeTeardown();
+      diagnostics.dispose();
     }
   };
 

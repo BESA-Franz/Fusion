@@ -468,6 +468,25 @@ Legitimate legacy exceptions must be recorded in `scripts/lib/test-timeout-appea
 
 **2026-08-16 PostgreSQL first-sighting diagnosis (FN-9125):** First classify each file by its real dependency path, not nearby failure timing. Retain complete `tee` output for repeated package lanes and record fan-out, server capacity, and target identities. If a current run cannot link a PostgreSQL test assertion to golden-template, DDL, pool, or teardown evidence, do not add timeouts/retries or infer a harness change: obtain CI/host activity and phase timings. A core PostgreSQL file is escalated rather than quarantined because `quarantinedCoreTests` remains policy-pinned empty; a non-PG engine file follows normal ledger-plus-exclude lockstep.
 
+<!-- FNXC:PgTestHarnessTeardownDiagnostics 2026-08-16-19:32: FN-9127 requires a 15s PostgreSQL afterAll abort to preserve evidence before a hook can be killed. Diagnostics therefore observe pending teardown work with unref'd watchdogs, synchronously flush evidence, and cap a separate short-lived activity probe rather than extending or perturbing the teardown. -->
+
+### PostgreSQL teardown diagnostics
+
+Set `FUSION_PG_TEST_TEARDOWN_DIAGNOSTICS=1` only while investigating an integration-test teardown. The default is off: no timer, probe connection, query, or sink file is created. When enabled, the shared PG harness records `store.close`, `layer.close`, `adminSql.end`, `dropDatabase`, and `rmRootDir` timings. `FUSION_PG_TEST_TEARDOWN_DIAGNOSTICS_THRESHOLD_MS` (default `2000`) arms each phase watchdog; `FUSION_PG_TEST_TEARDOWN_DIAGNOSTICS_HOOK_WATCHDOG_MS` (default `12000`) covers the whole teardown, safely below the inherited 15s hook budget. These are diagnostic observation bounds, never timeout extensions: a watchdog fires while work is still pending, so an aborted/hung teardown has evidence rather than only a post-hoc silence.
+
+On a watchdog breach, the harness lazily opens one dedicated maintenance connection and queries `pg_stat_activity` across all databases. `FUSION_PG_TEST_TEARDOWN_DIAGNOSTICS_PROBE_TIMEOUT_MS` (default `1500`) bounds connect/query/close; `FUSION_PG_TEST_TEARDOWN_DIAGNOSTICS_MAX_PROBES` (default `3`) caps probes per process. Probes are single-flight, use no runtime or admin pool, are force-closed on abort, and are never awaited by teardown work. Timers are unref'd and every diagnostics failure is fenced, so the observer cannot keep a worker alive or change the outcome it measures.
+
+Set `FUSION_PG_TEST_TEARDOWN_DIAGNOSTICS_LOG=/path/to/teardown.jsonl` to synchronously append one JSON object per record. The schema includes timestamp, pid/worker, `trigger` (`phase-complete`, `phase-watchdog`, `teardown-watchdog`, or `snapshot`), phase-duration map, thresholds, `phaseIncomplete`/`elapsedAtSnapshotMs`, probe outcome/suppression, and snapshot rows (`datname`, state, wait event, backend type, query age, and backend count). Sink errors only fall back to `[pg-teardown-diagnostics]` stderr output. For the next loaded sighting, preserve full output and structured evidence with:
+
+```bash
+FUSION_PG_TEST_TEARDOWN_DIAGNOSTICS=1 \
+FUSION_PG_TEST_TEARDOWN_DIAGNOSTICS_LOG=/tmp/fn-9127-diag-core.jsonl \
+VITEST_MAX_WORKERS=12 \
+pnpm --filter @fusion/core test 2>&1 | tee /tmp/fn-9127-core.log
+```
+
+Checkpoint parsed JSONL and run metadata in a durable task document after every run; `/tmp` is scratch storage, not the evidence system of record.
+
 <!-- FNXC:EngineTestReliability 2026-06-27-10:05: FN-7119 rescued the 2026-06-26 engine scheduler/reliability quarantine burst by completing local TaskStore fakes for the scheduler heartbeat `updateSettings({ engineLastActiveAt })` write before adjusting any call-count assertions. When a scheduler batch reports zero mock calls or missing audit events after a heartbeat-era scheduler change, first mirror the production store surface in shared fakes and re-run the exact files together under `engine-default` / `engine-reliability`; do not weaken call-count invariants or quarantine ledger/config rows after the fake drift is fixed. -->
 
 <!-- FNXC:TestQuarantine 2026-06-19-14:15: FN-6740 audited the same-day quarantine ledger as a coordinated deletion-ratchet batch. The ledger had 14 entries (3 dashboard, 6 core, 5 CLI) and every entry was mirrored in its package Vitest exclude; keep follow-up rescue/delete work scoped by subsystem so ledger/config edits remain lockstep and do not collide. -->

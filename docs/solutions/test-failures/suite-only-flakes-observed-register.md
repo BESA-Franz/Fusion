@@ -174,6 +174,18 @@ The timeout occurred after all test assertions and is unrelated to FN-8979's can
 | targeted dot reporter ×3 | 61 tests passed; afterAll passed |
 | full core ×3, 6 workers | subject passed; unrelated settings-revision-attribution failure |
 
+**Instrumented outcome 2026-08-16 (FN-9127): entry 7 remains unreproduced and is now self-diagnosing.** The default-off teardown recorder was measured on `beb8ae67dba1ed122cab94a4641e875ccebd21f1` against PostgreSQL 15.15 (`max_connections=100`, 97 ordinary slots). It writes synchronous JSONL records and its in-flight phase/teardown watchdogs fire before the inherited 15s hook is aborted, so a phase that never settles still leaves timing plus `pg_stat_activity` evidence. The durable campaign tables and full snapshot rows are retained in task document `FN-9127/evidence`; `/tmp/fn-9127-*.log` and `/tmp/fn-9127-diag-*.jsonl` are scratch copies only.
+
+| instrumented shape | result | measured worst phase | watchdog / snapshot |
+|---|---|---:|---|
+| subject dot ×3 | all passed | `dropDatabase` 154ms | no / none |
+| full core, 4 workers | unrelated settings attribution failure | 1,439ms globally | no / none |
+| full core, 6 workers | unrelated settings attribution failure | 1,576ms globally | no / none |
+| full core, 8 workers | unrelated settings attribution failure | 1,905ms globally | no / none |
+| full core, 12 workers | unrelated settings attribution + schema-applier timeout | `dropDatabase` 3,582ms globally | 30 / 30 |
+
+The 12-worker snapshots show 21 backends and concurrent template `CREATE DATABASE`/`DROP DATABASE WITH (FORCE)` work, including `IPC/CheckpointDone` and `IPC/ProcSignalBarrier`; they do not implicate this mission-store suite. That separately-scoped loaded-DDL finding is tracked by FN-9130. No teardown behavior was changed: there is no evidence-backed cause for this entry's historical 15s afterAll abort. Re-run a loaded lane with `FUSION_PG_TEST_TEARDOWN_DIAGNOSTICS=1 FUSION_PG_TEST_TEARDOWN_DIAGNOSTICS_LOG=/tmp/fn-9127-diag-core.jsonl VITEST_MAX_WORKERS=12 pnpm --filter @fusion/core test 2>&1 | tee /tmp/fn-9127-core.log`; retain full output and checkpoint parsed JSONL to a durable task document immediately. This first-sighting record remains retained; a second sighting follows the normal escalation. Core PostgreSQL files cannot be quarantined inline because the gate-policy assertion requires `quarantinedCoreTests` to remain empty; that is an owner-escalated decision.
+
 ## 8. Planning Mode duplicate-response generation reconciliation
 
 - **File:** `packages/dashboard/app/components/__tests__/PlanningModeModal.planning-flow.test.tsx`
