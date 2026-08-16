@@ -226,8 +226,13 @@ export async function getApprovalRequest(
 }
 
 /**
- * FNXC:ApprovalRequestStore 2026-06-24-07:40:
- * List approval requests with optional filters. Ordered by createdAt DESC.
+ * FNXC:ApprovalRequestOrdering 2026-08-16-23:07:
+ * Lists are newest-first by createdAt. id DESC makes same-millisecond ties a
+ * deterministic total order for stable limit/offset pagination only: random request
+ * IDs carry no lifecycle or recency meaning, so consumers must not call either tied
+ * row "most recent." This differs from audit history, whose deterministic event IDs
+ * encode lifecycle and are ordered by FN-9132's lifecycle rank. The executable
+ * contract is approval-request-list-ordering.pg.test.ts.
  */
 export async function listApprovalRequests(
   handle: QueryHandle,
