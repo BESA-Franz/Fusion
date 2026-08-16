@@ -74,7 +74,7 @@ import { MicButton } from "./MicButton";
 const WARNING_ICON = "⚠️";
 
 /*
-FNXC:Planning 2026-06-23-02:00:
+FNXC:Planning 2026-08-16-14:48:
 The embedded Planning sidebar is resizable exactly like Missions (MissionManager's MISSION_SIDEBAR_* constants). Default 300px matches Missions' default (calc(--space-lg 16px * 18.75)); min/max/storage mirror Missions so the two views resize identically and persist independently.
 */
 const PLANNING_SIDEBAR_DEFAULT_WIDTH = 300;
@@ -957,7 +957,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
   }, [isRefineMenuOpen]);
 
   /*
-  FNXC:Planning 2026-06-23-02:00:
+  FNXC:Planning 2026-08-16-14:48:
   Resizable Planning sidebar — pointer-drag + arrow-key resize with localStorage persistence, mirroring MissionManager.handleSidebarResizeStart/handleSidebarResizeKeyDown. Width is clamped to PLANNING_SIDEBAR_MIN/MAX and applied as an inline width on the sidebar <aside>. Disabled on mobile where the sidebar stacks full-width.
   */
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
@@ -5556,8 +5556,8 @@ function PlanningSessionList({
       style={sidebarWidth === undefined ? undefined : { width: `${sidebarWidth}px` }}
     >
       {/*
-      FNXC:Planning 2026-06-23-01:15:
-      The embedded Planning view reads as a real two-pane layout matching Missions: the left sidebar is a full-height flex column whose session list scrolls and whose primary action ("New session") is pinned to a bottom footer (parity with MissionManager's mission-manager__sidebar-footer + sidebar-cta). The header that previously held the New session button is removed so the list owns the top of the sidebar like the Missions list.
+      FNXC:Planning 2026-08-16-14:48:
+      Planning intentionally keeps its primary "New session" action pinned to a bottom footer while its session list scrolls. Missions now anchors its slightly taller CTA at the top of its sidebar, so the two surfaces do not require footer-placement parity.
       */}
       <div className="planning-sidebar-list">
         {/*
@@ -5679,8 +5679,8 @@ function PlanningSessionList({
       </div>
       <div className="planning-sidebar-footer">
         {/*
-        FNXC:Planning 2026-06-23-01:15:
-        The New session CTA mirrors Missions' primary sidebar action: it reuses the shared "btn btn-primary" look (same base button class MissionManager pairs with mission-manager__sidebar-cta) so size and color match the Missions create button exactly, full-width and bottom-anchored. The "active" state (no session selected) keeps a subtle accent so the user can tell they're on the new-session view.
+        FNXC:Planning 2026-08-16-14:48:
+        Planning keeps its bottom-anchored New session CTA at its current metrics. It shares the "btn btn-primary" treatment with Missions, whose slightly taller CTA now lives at the top of the mission sidebar; exact placement and height parity are intentionally not required.
         */}
         <button
           className={`btn btn-primary planning-sidebar-new ${selectedSessionId === null ? "active" : ""}`}
