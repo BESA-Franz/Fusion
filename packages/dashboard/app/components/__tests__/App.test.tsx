@@ -824,7 +824,20 @@ beforeEach(() => {
   /*
    * FNXC:DashboardTests 2026-06-22-03:47:
    * App.test.tsx runs beside other dashboard specs in the same Vitest process, so reset API mock implementations as well as call counts to prevent cross-file implementation leakage.
+   *
+   * FNXC:DashboardTests 2026-08-16-05:22:
+   * vi.clearAllMocks() clears calls but NEVER drops unconsumed mockResolvedValueOnce queue
+   * entries, and a plain mockResolvedValue default does not purge them either — the once-queue
+   * always wins first. A test that queued a Once response and bailed before consuming it (auth
+   * status, settings, health, plugin views) therefore poisoned the NEXT test's first fetch,
+   * which is why "closes board-opened main-panel task detail on one browser back" flaked: a
+   * leaked auth/settings Once value made App render an auto-opened modal surface instead of the
+   * board. mockReset each once-queue-prone API mock here, then re-apply its default below.
    */
+  for (const onceProneApiMock of [fetchSettings, updateSettings, fetchGlobalSettings, fetchDashboardHealth, fetchAuthStatus, fetchModels, fetchScripts, runScript, fetchBoardWorkflows, fetchPluginDashboardViews]) {
+    vi.mocked(onceProneApiMock).mockReset();
+  }
+  vi.mocked(fetchPluginDashboardViews).mockResolvedValue([]);
   vi.mocked(fetchSettings).mockResolvedValue({ ...defaultSettings });
   vi.mocked(updateSettings).mockResolvedValue({ ...defaultSettings });
   vi.mocked(fetchGlobalSettings).mockResolvedValue({ modelOnboardingComplete: true });
