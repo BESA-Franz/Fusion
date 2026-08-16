@@ -1237,14 +1237,14 @@ export class ProjectEngine {
     this.wireAutostashOrphanRecovery(store);
 
     /*
-    FNXC:FasterStartup 2026-07-15-00:20:
-    Clear crash-leftover merging/merging-pr statuses on the critical path so
-    manual merge is not blocked while deferred work finishes. Auto-merge enqueue
-    stays deferred (pause-aware) after the engine handle is returnable.
+    FNXC:FasterStartup 2026-07-15-00:20 / 2026-08-16-20:30:
+    Clear crash-leftover merging/merging-pr statuses after the engine handle is
+    returnable. The lane-resolution read can be slow or wait on a busy external
+    PostgreSQL pool; keeping it on the critical path leaves the daemon's holding
+    server up indefinitely and prevents the real HTTP listener from binding.
+    Manual merge remains unblocked because the cleanup still runs immediately in
+    the deferred startup chain, before its auto-merge enqueue step.
     */
-    const statusClearT0 = Date.now();
-    await this.clearStaleMergingStatuses(store);
-    runtimeLog.log(`ProjectEngine stale merging status clear: ${Date.now() - statusClearT0}ms`);
 
     // 7–9. Deferred: notifiers/OAuth (ordered), automation syncs, merge enqueue
     const deferredGeneration = this.startupGeneration;
@@ -1284,6 +1284,17 @@ export class ProjectEngine {
   ): Promise<void> {
     if (this.deferredStartupAborted(generation)) return;
     const t0 = Date.now();
+
+    const statusClearT0 = Date.now();
+    try {
+      await this.clearStaleMergingStatuses(store);
+      runtimeLog.log(`ProjectEngine stale merging status clear: ${Date.now() - statusClearT0}ms`);
+    } catch (err: unknown) {
+      runtimeLog.warn(
+        `Startup stale merging status cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (this.deferredStartupAborted(generation)) return;
 
     /*
     FNXC:FasterStartup 2026-07-15-00:40:

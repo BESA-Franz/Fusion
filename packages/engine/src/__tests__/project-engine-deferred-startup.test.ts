@@ -2,7 +2,8 @@
  * FNXC:FasterStartup 2026-07-14-23:55 / 2026-07-15-00:20:
  * ProjectEngine.start returns before notifiers/OAuth/merge enqueue finish, but
  * OAuth refresh must still start before the expiry monitor when deferred work runs.
- * Stale merging/merging-pr statuses clear on the critical path.
+ * Stale merging/merging-pr statuses clear in deferred startup work so a slow
+ * lane-resolution read cannot block the daemon's HTTP listener.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -172,7 +173,7 @@ describe("ProjectEngine deferred startup", () => {
     );
   });
 
-  it("clears stale merging statuses during start critical path", async () => {
+  it("clears stale merging statuses during deferred startup", async () => {
     listTasks.mockResolvedValue([
       { id: "FN-1", column: "in-review", status: "merging" },
       { id: "FN-2", column: "in-review", status: "merging-pr" },
@@ -182,9 +183,31 @@ describe("ProjectEngine deferred startup", () => {
     const engine = makeEngine("proj_stale", true);
     await engine.start();
 
-    expect(updateTask).toHaveBeenCalledWith("FN-1", { status: null });
-    expect(updateTask).toHaveBeenCalledWith("FN-2", { status: null });
-    expect(updateTask).not.toHaveBeenCalledWith("FN-3", expect.anything());
+    await vi.waitFor(() => {
+      expect(updateTask).toHaveBeenCalledWith("FN-1", { status: null });
+      expect(updateTask).toHaveBeenCalledWith("FN-2", { status: null });
+      expect(updateTask).not.toHaveBeenCalledWith("FN-3", expect.anything());
+    });
+  });
+
+  it("returns from start before a slow stale-status sweep completes", async () => {
+    let resolveSweep!: (tasks: Array<{ id: string; column: string; status: string | null }>) => void;
+    const sweepGate = new Promise<Array<{ id: string; column: string; status: string | null }>>((resolve) => {
+      resolveSweep = resolve;
+    });
+    // ProjectEngine.start performs one synchronous spec-drift census before
+    // deferred startup begins the lane-resolution sweep.
+    listTasks.mockImplementationOnce(async () => []);
+    listTasks.mockImplementationOnce(() => sweepGate);
+
+    const engine = makeEngine("proj_slow_status_sweep", true);
+    await expect(engine.start()).resolves.toBeUndefined();
+    expect(updateTask).not.toHaveBeenCalled();
+
+    resolveSweep([]);
+    await vi.waitFor(() => {
+      expect(listTasks).toHaveBeenCalled();
+    });
   });
 
   it("returns from start before OAuth refresh completes, then runs refresh before expiry monitor", async () => {
