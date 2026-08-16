@@ -139,6 +139,13 @@ export interface AsyncDataLayer {
   /** Schema-typed runtime Drizzle instance for non-transactional queries. */
   readonly db: DrizzleDb;
   /**
+   * Dedicated read-only health handle. Runtime probes must not compete with
+   * scheduler work for a slot in the small runtime pool. The connection
+   * factory binds this to its single-session maintenance connection; test and
+   * integration layers may omit it and fall back to `db`.
+   */
+  readonly healthDb?: DrizzleDb;
+  /**
    * FNXC:MultiProjectIsolation 2026-07-10:
    * The central-registry project ID this data layer is bound to, or undefined
    * for a project-agnostic layer (single-project / global / analytics reads).
@@ -234,9 +241,18 @@ export function createAsyncDataLayer(
   // any caller). We cast to the schema-typed view so callers get
   // compile-time table references via `layer.db`.
   const db = connections.runtime as unknown as DrizzleDb;
+  /*
+   * FNXC:PostgresHealthPoolIsolation 2026-08-16-23:20:
+   * The runtime pool is intentionally small and can be saturated by scheduler
+   * transactions. Reuse the already-open single-session maintenance handle for
+   * read-only health/integrity probes so `/api/health` remains responsive
+   * without increasing the production pool quota.
+   */
+  const healthDb = connections.migration as unknown as DrizzleDb;
 
   return {
     db,
+    healthDb,
     projectId: options?.projectId,
     backend: connections.backend,
     async transaction<T>(fn: (tx: DbTransaction) => Promise<T>, options?: TransactionOptions): Promise<T> {

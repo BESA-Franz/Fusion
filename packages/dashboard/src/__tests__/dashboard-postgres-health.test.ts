@@ -48,6 +48,16 @@ describe("evaluateDashboardPostgresHealth", () => {
     expect(result.taskIdIntegrity.status).toBe("ok");
   });
 
+  it("uses the dedicated health database for task-ID integrity probes when available", async () => {
+    const healthDb = { dedicated: true };
+    const isolatedLayer = { db: { dedicated: false }, healthDb } as AsyncDataLayer;
+    const store = { getAsyncLayer: () => isolatedLayer } as TaskStore;
+
+    await evaluateDashboardPostgresHealth(store);
+
+    expect(healthMocks.detectTaskIdIntegrityAnomaliesAsync).toHaveBeenCalledWith(healthDb);
+  });
+
   it("surfaces durable failed and running cutovers without an age threshold", async () => {
     const store = { getAsyncLayer: () => layer, getRootDir: () => "/repo" } as TaskStore;
     for (const status of ["failed", "running"] as const) {
