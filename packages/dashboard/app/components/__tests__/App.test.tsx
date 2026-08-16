@@ -2065,7 +2065,14 @@ describe("App deep link handling", () => {
 
     render(<App />);
     await waitForAppShell();
-    fireEvent.click(screen.getByText("Back nav task"));
+    /*
+    FNXC:DashboardTests 2026-08-16-05:55:
+    The board is a lazy-loaded chunk behind <Suspense fallback={null}> and waitForAppShell only
+    proves the header. Under sharded-lane load the chunk sometimes resolves after this line, so
+    the first board lookup must be the async finder; a sync getByText here rendered this test
+    load-flaky (header-only DOM at failure).
+    */
+    fireEvent.click(await screen.findByText("Back nav task"));
     expect(await screen.findByTestId("main-panel-task-detail")).toBeTruthy();
 
     act(() => {
@@ -2105,7 +2112,8 @@ describe("App deep link handling", () => {
     render(<App />);
     await waitForAppShell();
 
-    fireEvent.click(screen.getByText("Back nav task"));
+    // Same lazy-board race as the sibling test above: first board lookup must be async.
+    fireEvent.click(await screen.findByText("Back nav task"));
     expect(await screen.findByText("Open nested task")).toBeTruthy();
     fireEvent.click(screen.getByText("Open nested task"));
     expect(await screen.findByText("Nested task")).toBeTruthy();
