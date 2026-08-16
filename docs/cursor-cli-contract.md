@@ -6,6 +6,14 @@ tool-name prefix, MCP approval semantics, and negotiated protocol. Fusion stages
 for that verified session contract; it never assumes a fallback CLI flag or config location.
 -->
 
+## Cross-runtime fallback
+
+When a non-Cursor primary model has a configured `cursor-cli` fallback, Fusion withholds that pair from the primary runtime and arms it only when the Cursor runtime plugin is registered. The first retryable model-selection failure creates one Cursor session, re-issues the failed prompt there, and routes all later prompts through that replacement; non-retryable failures and swap-time failures preserve the original primary error. Disposing the primary session also disposes the replacement.
+
+Cursor has no cross-runtime resume token. On the first swapped prompt only, Fusion can prepend a clearly labeled, non-authoritative text-only transcript from the primary session: at most the last 10 turns, 2,000 characters per turn, and 12,000 characters total. Tool and thinking blocks are excluded; missing or malformed session state transfers nothing and leaves the prompt unchanged. If the Cursor runtime plugin is unavailable or cannot be looked up, Fusion keeps the primary runtime and drops the fallback with a warning instead of crashing.
+
+A successful handoff emits `session:cross-runtime-fallback-engaged`. Its metadata is ids/outcomes-only (`sessionPurpose`, primary/fallback provider and model ids, trigger point, failure category, and whether context transferred); it never records error prose or transcript text.
+
 ## MCP staging and cleanup
 
 Fusion creates a unique `fusion-custom-tools-<uuid>` server key per Cursor session. The `.cursor/.fusion-mcp-state.json` manifest retains the complete `{ command, args, env }` entry for every lease, allowing one process to recompose a peer process's live entry. Operator content is taken from current bytes; Fusion content is taken from that manifest.
