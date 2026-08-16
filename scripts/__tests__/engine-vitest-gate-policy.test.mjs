@@ -145,6 +145,7 @@ test("root and package gate scripts still propagate real Vitest failures", () =>
   const core = readJson("packages/core/package.json");
   const staticChecks = root.scripts?.["test:gate:static"] ?? "";
   const gate = root.scripts?.["test:gate"] ?? "";
+  const gateRunner = read("scripts/run-gate-lanes.mjs");
 
   assert.equal(
     engine.scripts?.["test:core"],
@@ -170,12 +171,17 @@ test("root and package gate scripts still propagate real Vitest failures", () =>
     staticCheck("runtime-skill-loader-drift"),
   ], "every static policy validator must remain once in the blocking composition");
   assert.equal(new Set(gateValidators).size, gateValidators.length, "the static validator composition must be duplicate-free");
-  assert.match(gate, /pnpm --filter @fusion\/engine test:core/);
-  assert.match(gate, /pnpm --filter @fusion\/core test:pg-gate/);
-  assert.match(gate, /pnpm --filter @fusion\/core test:unit-gate/);
-  assert.match(gate, /wait \$engine_pid \|\| status=1/);
-  assert.match(gate, /wait \$pg_pid \|\| status=1/);
-  assert.match(gate, /wait \$unit_pid \|\| status=1/);
+  assert.equal(
+    gate,
+    "node scripts/run-static-gate-checks.mjs && node scripts/run-gate-lanes.mjs && pnpm --filter @runfusion/fusion test:ci-shape",
+  );
+  assert.doesNotMatch(gate, /(?:^|\s)sh\s+-c\b/);
+  assert.match(gateRunner, /"@fusion\/engine", "test:core"/);
+  assert.match(gateRunner, /"@fusion\/core", "test:pg-gate"/);
+  assert.match(gateRunner, /"@fusion\/core", "test:unit-gate"/);
+  assert.match(gateRunner, /Promise\.all\(/);
+  assert.match(gateRunner, /shell:\s*platform === "win32"/);
+  assert.match(gateRunner, /failures\.length > 0/);
   assert.match(gate, /&& pnpm --filter @runfusion\/fusion test:ci-shape$/);
   assert.equal(
     core.scripts?.["test:unit-gate"],

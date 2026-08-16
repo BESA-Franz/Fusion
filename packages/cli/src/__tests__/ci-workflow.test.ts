@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { parse } from "yaml";
 
 const workspaceRoot = join(import.meta.dirname!, "..", "..", "..", "..");
+const gateRunnerContent = readFileSync(join(workspaceRoot, "scripts", "run-gate-lanes.mjs"), "utf-8");
 
 function loadYamlFile(...pathParts: string[]): any {
   const path = join(workspaceRoot, ...pathParts);
@@ -246,9 +247,10 @@ describe("Merge gate (.github/workflows/pr-checks.yml)", () => {
     expect(staticGateScript).toContain("node scripts/check-no-kill-" + "40" + "40" + ".mjs"); // port-4040-allowlist: asserts the gate wires the checker; not a real port bind
     expect(staticGateScript).toContain("node scripts/check-no-test-timeout-appeasement.mjs");
     expect(staticGateScript).toContain("node scripts/check-changeset-format.mjs");
-    expect(testGateScript).toContain("pnpm --filter @fusion/engine test:core");
-    expect(testGateScript).toContain("pnpm --filter @fusion/core test:pg-gate");
-    expect(testGateScript).toContain("pnpm --filter @fusion/core test:unit-gate");
+    expect(testGateScript).toContain("node scripts/run-gate-lanes.mjs");
+    expect(gateRunnerContent).toContain('"@fusion/engine", "test:core"');
+    expect(gateRunnerContent).toContain('"@fusion/core", "test:pg-gate"');
+    expect(gateRunnerContent).toContain('"@fusion/core", "test:unit-gate"');
     expect(testGateScript).toContain("pnpm --filter @runfusion/fusion test:ci-shape");
   });
 
