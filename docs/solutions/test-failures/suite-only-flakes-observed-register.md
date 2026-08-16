@@ -136,3 +136,18 @@ FN-8928 evicted the file from the blocking gate under the AGENTS.md gate rule; d
 | targeted file with dot reporter | **afterAll hook timed out** at 15s; 61 tests passed |
 
 The timeout occurred after all test assertions and is unrelated to FN-8979's canonical mission-blocker contract. This file retains substantial coverage, so this first observation is recorded rather than quarantined. A second sighting requires the normal file-level quarantine decision.
+
+## 8. Planning Mode duplicate-response generation reconciliation
+
+- **File:** `packages/dashboard/app/components/__tests__/PlanningModeModal.planning-flow.test.tsx`
+- **Exact test:** `PlanningModeModal sequential flow > silently reconciles duplicate-response generation conflicts on 'mobile' with 'a durable next question'` (the `'desktop'` row of the same parametrized case failed once earlier the same day under a contaminated run).
+- **Observed tree/SHA:** `main` at `8ee2ace2c1` (dashboard bare-run repair batch).
+- **Observed frequency:** one clean sighting — solo standard-lane run (`node scripts/run-quality-tests.mjs`, lane `app:backfill-3`) on a quiet machine; the earlier `'desktop'`-row failure ran concurrently with a full bare vitest run and live peer-session edits to planning API files, so it is recorded as context, not as an independent clean sighting.
+
+| run | result |
+|---|---|
+| solo standard lane (quiet machine) | **1 failed** (`'mobile'` row) / rest of lane passed |
+| targeted file run immediately after | 58/58 passed |
+| earlier busy-machine standard lane | **1 failed** (`'desktop'` row); targeted rerun 58/58 passed |
+
+This file now carries THREE distinct register/ledger histories (entries 4 and 5 above plus this one) and one prior FN-8936 stabilization. Under the AGENTS.md repeated-quarantine rule this is a subsystem product-race smell: the duplicate-response generation reconciliation path (FN-8756 banner suppression / duplicate-generation dedup) should be investigated as a product race rather than stabilized a fourth time. Filed as a Fusion task; a second clean sighting of this exact test is an ordinary on-sight quarantine.
