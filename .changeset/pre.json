@@ -98,8 +98,13 @@
     "fn-9112-memory-keeper-heartbeat-default-off",
     "fn-9114-forced-skills",
     "fn-9115-skills-ui",
+    "fn-9116-planning-reconciliation",
+    "fn-9117-planning-turn-ownership",
+    "fn-9120-create-room-picker",
+    "fn-9124-mission-cta-top",
     "insights-newest-first",
     "kb-title-redirect-and-workflow-partition-fixes",
+    "mission-interview-cli-runtime-routing",
     "remove-diff-volume-gate",
     "task-create-github-tracking-flags"
   ]

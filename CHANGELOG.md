@@ -2,6 +2,24 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
+## 0.77.0-beta.1
+
+### Highlights
+
+- CLI-runtime models like Cursor CLI now work in every AI lane, not just chat
+- Mission and milestone interviews no longer fail with "not found in the pi model registry"
+- Planning Mode stays on the current session and keeps your typed answers through a refresh
+- Create Room member picker shows accurate loading, empty, and failed states
+- Plan New Mission sits at the top of the mission list and is easier to hit
+
+### Fixed
+
+- Every AI lane now routes through runtime resolution, so a CLI-runtime model selection (for example Cursor CLI) works anywhere chat does. Mission planning and milestone/slice interviews previously errored out with a model-registry lookup failure.
+- Planning Mode stays on the current session after a stale response refresh, instead of jumping away when a duplicate response, accepted stream error, or loading poll arrives late.
+- Planning Mode preserves answers you have already typed while a session hydrates late, binding the visible question to the live planning turn.
+- The Create Room member picker no longer shows stale or misleading member state while agent data loads; loading, empty, and failed states are now distinct.
+- Plan New Mission moved from the footer to the top of the mission list and is slightly taller; the duplicate empty-state button is gone.
+
 ## 0.77.0-beta.0
 
 ### Highlights

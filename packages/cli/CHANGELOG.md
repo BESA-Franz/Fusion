@@ -1,5 +1,25 @@
 # @runfusion/fusion
 
+## 0.77.0-beta.1
+
+### Patch Changes
+
+- 7527d26: summary: Keep Planning Mode on the current session after a stale response refresh.
+  category: fix
+  dev: Fence duplicate-response, accepted stream-error, and loading-poll recovery by session, load, and turn ownership.
+- 111c6c9: summary: Preserve typed Planning Mode answers during late session hydration.
+  category: fix
+  dev: Binds visible question submission to the live planning turn and preserves dirty answers during same-session refresh.
+- 3272aff: summary: Keep Create Room member picker states accurate while agent data loads.
+  category: fix
+  dev: Fence superseded agent roster requests and distinguish loading, empty, and failed picker states.
+- 385059f: summary: Plan New Mission now sits at the top of the mission list and is slightly taller.
+  category: fix
+  dev: Replaced footer CTA wrappers with top mission-manager**sidebar-cta-bar and mission-list**header-actions containers using calc(var(--space-lg) \* 2 + var(--space-sm)); removed the duplicate empty-state CTA.
+- 821e036: summary: Route every AI lane through runtime resolution so CLI-runtime models (e.g. Cursor CLI) work everywhere chat does.
+  category: fix
+  dev: `createFnAgent` now delegates to `createResolvedAgentSession` (CLI runtime hint derivation, mock forcing, runtime-resolved visibility) with a host-registered default PluginRunner per project root; `DefaultPiRuntime` re-enters via a `__rawPiSession` marker into `createPiAgentSessionRaw`. Mission and milestone/slice interviews also pass their request-scoped pluginRunner and prompt via the engine `promptWithFallback` dispatcher, fixing "cursor-cli/auto ... not found in the pi model registry" in mission planning.
+
 ## 0.77.0-beta.0
 
 ### Minor Changes
@@ -147,7 +167,7 @@
   dev: Adds workspace-main-checkout-guard, main_checkout_edit precedence, retry-stable anchoring, warn-vs-block evidence handling, bounded HEAD commit scanning, and audit telemetry.
 - 9fa8b38: summary: Prevent multi-node workspace operations from overlapping or double-landing shared repositories.
   category: fix
-  dev: Adds migration 0060 lease and land-intent tables, FUSION_NODE_ID plus process incarnation ownership, resource fence tokens and one-publish-per-tenancy refs under refs/fusion/workspace-lease/_ and refs/fusion/merge-dispatch/_. Merge-dispatch tenancy pins publish on every target sub-repository remote before any workspace land begins; merge and land commit points use fence-validated target/fence CAS operations. `isMergePending` consults durable dispatch leases after local state, while startup and periodic sweeps conservatively retire only expired leases. Pending land intents recover project-wide from remote reachability through holder or no-live-lease recovery authority.
+  dev: Adds migration 0060 lease and land-intent tables, FUSION*NODE_ID plus process incarnation ownership, resource fence tokens and one-publish-per-tenancy refs under refs/fusion/workspace-lease/* and refs/fusion/merge-dispatch/\_. Merge-dispatch tenancy pins publish on every target sub-repository remote before any workspace land begins; merge and land commit points use fence-validated target/fence CAS operations. `isMergePending` consults durable dispatch leases after local state, while startup and periodic sweeps conservatively retire only expired leases. Pending land intents recover project-wide from remote reachability through holder or no-live-lease recovery authority.
 - ebd345d: summary: Workspace tasks with no acquired sub-repo now complete or fail review consistently.
   category: fix
   dev: Uses classifyWorkspaceZeroAcquire and the retryable review seam flag to avoid deterministic retry exhaustion.
