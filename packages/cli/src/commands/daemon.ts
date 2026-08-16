@@ -84,8 +84,10 @@ import { ensureBundledDependencyGraphPluginInstalled, ensureBundledGrokRuntimePl
 import { handleOpencodeGoApiKeySaved, syncStartupModels } from "./startup-model-sync.js";
 import { registerCustomProviders, reregisterCustomProviders } from "./custom-provider-registry.js";
 import { ensureCwdProjectRegistered } from "./ensure-project-registered.js";
+import { completeStartupPhaseWithinBudget } from "../startup-phase.js";
 
 const DIAGNOSTIC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const TASK_STORE_WATCH_STARTUP_BUDGET_MS = 30_000;
 let daemonStartTime = 0;
 let daemonDbHealthCheck: (() => boolean) | null = null;
 
@@ -520,7 +522,23 @@ export async function runDaemon(opts: DaemonOptions = {}) {
     }).catch(() => undefined);
   });
 
-  await store.watch();
+  /*
+   * FNXC:DaemonListenerReadiness 2026-08-16-23:55:
+   * PostgreSQL task-cache warming and the durable deletion observer are safe
+   * to finish after the HTTP listener is reachable.  On a busy shared pool,
+   * awaiting the full `listTasks` hydration here can leave only the temporary
+   * holding server visible long enough for supervisors to declare startup
+   * failed.  Keep the work alive and observed, but fail-open only for this
+   * non-critical readiness phase; database migrations and engine startup still
+   * remain fail-closed before this point.
+   */
+  await completeStartupPhaseWithinBudget(
+    "store.watch",
+    () => store.watch(),
+    TASK_STORE_WATCH_STARTUP_BUDGET_MS,
+    (message, scope) => console.log(`[daemon] ${message}${scope ? ` [${scope}]` : ""}`),
+    "daemon",
+  );
 
   // Set up database health check for diagnostics
   daemonDbHealthCheck = () => store.healthCheck();

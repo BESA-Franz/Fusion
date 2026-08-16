@@ -11,6 +11,51 @@
 export type StartupPhaseLogger = (message: string, scope?: string) => void;
 
 /**
+ * Let a non-critical startup phase finish before the readiness budget when
+ * possible, but do not let cache warming or an observer bootstrap prevent the
+ * HTTP listener from becoming reachable.  The phase is deliberately kept
+ * alive after deferral; its rejection is observed and logged instead of
+ * becoming an unhandled promise.  This is used only for work that is safe to
+ * complete after the listener is serving (for example task-cache warming).
+ */
+export async function completeStartupPhaseWithinBudget(
+  label: string,
+  fn: () => Promise<void> | void,
+  budgetMs: number,
+  log: StartupPhaseLogger,
+  scope = "startup",
+): Promise<boolean> {
+  if (!Number.isFinite(budgetMs) || budgetMs <= 0) {
+    throw new RangeError(`startup phase budget must be a positive finite number (received ${budgetMs})`);
+  }
+
+  const phase = phaseTime(label, fn, log, scope);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"deferred">((resolve) => {
+    timer = setTimeout(() => resolve("deferred"), budgetMs);
+  });
+
+  try {
+    const outcome = await Promise.race([
+      phase.then(() => "completed" as const),
+      timeout,
+    ]);
+    if (outcome === "completed") return true;
+
+    log(`startup phase ${label}: deferred after ${budgetMs}ms; listener startup continues`, scope);
+    // The phase is still authoritative for cache/observer readiness. Observe
+    // late failures so a deferred startup never creates an unhandled rejection.
+    void phase.catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      log(`startup phase ${label}: deferred completion failed: ${message}`, scope);
+    });
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Time an async or sync startup phase and log `startup phase <label>: Nms`.
  * Always logs in `finally` so failures still surface their duration.
  */
