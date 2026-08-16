@@ -35,6 +35,13 @@ This register preserves first-sighting evidence under the narrow exception in [A
 | full core suite (3rd) | 4825 passed |
 | file alone ×2 | 6 passed, 6 passed |
 
+**Evidence gathering pending 2026-08-16 (FN-9125):** Current-sha diagnosis did not reproduce this historical first sighting: three six-worker full-core lanes and a twelve-worker PostgreSQL-directory run retained full output without this subject failing. The harness uses a shared golden template plus per-module copies, but no direct evidence tied this identity's null read to shared state. This is not superseded or resolved: the required complete loaded failure capture is absent. Core PostgreSQL quarantine is policy-forbidden, so FN-9126 owns CI/host-specific activity instrumentation, full failure capture, and the escalation decision.
+
+| verification | result |
+|---|---|
+| full core ×3, 6 workers | subject passed; unrelated settings-revision-attribution failure |
+| PostgreSQL directory, 12 workers | subject passed; unrelated satellite-store ordering failure |
+
 ## 2. Schema applier retains registered dependents
 
 - **File:** `packages/core/src/__tests__/postgres/schema-applier.test.ts`
@@ -46,6 +53,13 @@ This register preserves first-sighting evidence under the narrow exception in [A
 | full core suite on #2828 merged-with-main | **failed** |
 | file alone ×2 on the same tree | 75 passed, 75 passed |
 | file alone on `origin/main` | passed |
+
+**Evidence gathering pending 2026-08-16 (FN-9125):** Current-sha loaded reproduction did not fail this assertion. This file still owns an inline unique `CREATE DATABASE` plus full baseline path rather than the shared template harness, but that is a distinct cost profile, not evidence that it caused the historical dependent-registration failure. This is not superseded or resolved: the required complete loaded failure capture is absent. FN-9128 exclusively owns entry 2's CI allocation/profile investigation and full failure capture; core PostgreSQL quarantine is policy-forbidden.
+
+| verification | result |
+|---|---|
+| full core ×3, 6 workers | subject passed; unrelated settings-revision-attribution failure |
+| PostgreSQL directory, 12 workers | subject passed; unrelated satellite-store ordering failure |
 
 ## 3. Plugin runner complete-lane lifecycle hook
 
@@ -61,6 +75,13 @@ This register preserves first-sighting evidence under the narrow exception in [A
 | full engine suite on `origin/main` ×2 | clean |
 
 Seven tests failed in `plugin-runner.test.ts`, but only this one identity survived capture: `--reporter=dot | tail -3` truncated the `FAIL` lines and retained only the summary.
+
+**Quarantined 2026-08-16 (FN-9125):** Source inspection proved this unit file uses a local mocked TaskStore and has no PostgreSQL or harness import, so it does not belong to the database cluster. Three current full-engine lanes did not reproduce it, but the historical loaded failure lacks enough identities for a structural repair. The deletion-ratchet ledger and engine-default exclude were added together; assertions and timeouts are unchanged.
+
+| verification | result |
+|---|---|
+| full engine ×3, 6 threads | subject passed; 35–36 unrelated baseline-red files remained |
+| targeted plugin-runner | covered by subsequent quarantine-ledger verification |
 
 ## 4. Planning Mode direct task handoff
 
@@ -93,9 +114,9 @@ The failure exercises the pre-existing mobile tab transition, while the task-cre
 
 **Suite re-admitted 2026-08-10 (FN-8936):** This first-sighting mobile observation did not receive a second failure. The shared file-level quarantine was removed only after the direct-handoff root cause was structurally fixed and the unexcluded loaded suite, including this mobile coverage, passed.
 
-## Common shape and unverified suspicion
+## Common shape and investigated result
 
-Entries 1–3 are PostgreSQL-backed or PostgreSQL-suite-adjacent, pass in isolation, and appeared only under full-suite parallelism. This points at shared database state between those test files rather than any one test. It is **unverified and uninvestigated**, not a diagnosis; do not infer a root-cause fix from this record. Entry 6 instead records a merge-gate eviction after a loaded-lane setup-hook timeout; `FNXC:PgTestTemplateDb 2026-07-19-17:20` and `FNXC:PgTestWorkerCap 2026-07-18-18:00` are already-landed mitigations for that mode, not new diagnoses to re-open. The Planning Mode entries are separate frontend timing observations.
+FN-9125 established that entry 3 is not PostgreSQL-suite-adjacent: `plugin-runner.test.ts` uses an in-memory mocked TaskStore and has no PostgreSQL/harness import. Its historical loaded-engine failure is quarantined under the normal deletion ratchet. Entries 1, 2, and 7 remain evidence-gathering-pending PostgreSQL observations: current full-output runs at six workers plus a twelve-worker PostgreSQL-directory run did not reproduce any subject identity, so FN-9125 cannot claim them superseded or resolved. The golden-template/advisory-lock lifecycle and schema-applier's inline baseline path are concrete architecture facts, not a demonstrated cause of these assertions. Core policy forbids inline PG quarantine: FN-9126 owns entry 1, FN-9128 exclusively owns entry 2, and FN-9127 owns entry 7 for CI/host-specific `pg_stat_activity`, lifecycle timing, and a complete loaded failure capture before any source or fan-out change. Entry 6 instead records a merge-gate eviction after a loaded-lane setup-hook timeout; `FNXC:PgTestTemplateDb 2026-07-19-17:20` and `FNXC:PgTestWorkerCap 2026-07-18-18:00` are already-landed mitigations for that mode, not new diagnoses to re-open. The Planning Mode entries are separate frontend timing observations.
 
 ## Policy and escalation
 
@@ -136,6 +157,13 @@ FN-8928 evicted the file from the blocking gate under the AGENTS.md gate rule; d
 | targeted file with dot reporter | **afterAll hook timed out** at 15s; 61 tests passed |
 
 The timeout occurred after all test assertions and is unrelated to FN-8979's canonical mission-blocker contract. This file retains substantial coverage, so this first observation is recorded rather than quarantined. A second sighting requires the normal file-level quarantine decision.
+
+**Evidence gathering pending 2026-08-16 (FN-9125):** The shared-harness teardown is serial (store, layer, admin client, `DROP DATABASE WITH (FORCE)`, temporary directory), so a loaded close/drop block remains a plausible historical mechanism. Three targeted dot-reporter runs and loaded core reproduction did not produce a timeout or a measurable slow phase. This is not superseded or resolved: the required complete loaded failure capture is absent. FN-9127 owns CI/host-specific phase instrumentation, full failure capture, and the escalation decision; core PostgreSQL quarantine is policy-forbidden.
+
+| verification | result |
+|---|---|
+| targeted dot reporter ×3 | 61 tests passed; afterAll passed |
+| full core ×3, 6 workers | subject passed; unrelated settings-revision-attribution failure |
 
 ## 8. Planning Mode duplicate-response generation reconciliation
 
