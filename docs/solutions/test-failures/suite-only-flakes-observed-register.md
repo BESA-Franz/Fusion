@@ -222,6 +222,32 @@ FN-9116 adds deterministic ordering coverage for desktop and mobile rows across 
 
 The flake is structurally removed rather than stabilized: every hydration/recovery writer now has an ownership boundary before it can overwrite a newer turn. This is a published behavior fix, so FN-9116 includes a patch changeset.
 
+## 11. Settings revision attribution reset-ordering assertion
+
+- **File:** `packages/core/src/__tests__/settings-revision-attribution.test.ts`
+- **Exact test:** `settings revision attribution > round-trips every explicit provenance variant through committed JSONB revisions`
+- **Owner:** FN-9129
+- **Observed tree/SHA:** retained FN-9128 logs; remediation started at `5e5422de6e57ead4f0c4a253b47b59063c1f9fe3`.
+- **Observed frequency:** 5/5 retained loaded full-core runs (default, 4, 8, 12, and sampled 12 workers), not 4/5.
+
+| run | result |
+|---|---|
+| FN-9128 loaded campaign | **failed 5/5**; retained `/tmp/fn-9128-core-*.log` |
+| FN-9129 isolated pre-fix | **failed**; `/tmp/fn-9129-solo-1.log` |
+| FN-9129 full core, 4 workers ×3 | subject passed after repair; first run had unrelated satellite-store failure, remaining two runs clean |
+| FN-9129 full core, 12 workers ×1 | passed after repair; co-observed command-center cases passed |
+
+Verbatim observed failure:
+
+```
+FAIL  src/__tests__/settings-revision-attribution.test.ts > settings revision attribution > round-trips every explicit provenance variant through committed JSONB revisions
+AssertionError: expected [ { id: 'fusion-system', …(1) }, …(4) ] to deeply equal [ { kind: 'human', …(1) }, …(4) ]
+```
+
+**Resolved 2026-08-16 (FN-9129):** This was not configuration-provenance loss. A direct table dump retained in the FN-9129 `evidence` task document and `/tmp/fn-9129-instrumented.log` showed all five explicit actors physically persisted among 19 rows. The shared harness intentionally restarts identities between tests; consequently `ORDER BY sequence ASC` has duplicate values across reset boundaries, and the test's `.slice(before.length)` count window selected previous system rows. The assertion now identifies each explicit write by its test-owned `taskPrefix`, retains its immutable revision UUID, and re-reads only those IDs; regression coverage adds a post-snapshot background system write to prove it cannot enter the provenance assertion. This preserves the provenance invariant without retries, waits, quarantines, timeout changes, or a broad harness mutation.
+
+The two command-center durable-agent activity cases observed once at 12 workers are classified as co-observed identity-reuse risk, not this subject's cause: the repaired 12-worker campaign passed them. Core PostgreSQL quarantine remains forbidden and `quarantinedCoreTests` remains empty.
+
 ## 9. Create Room picker loaded-lane state ordering
 
 - **File:** `packages/dashboard/app/components/__tests__/CreateRoomModal.test.tsx`
