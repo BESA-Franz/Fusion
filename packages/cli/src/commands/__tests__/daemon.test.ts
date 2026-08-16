@@ -1126,6 +1126,9 @@ describe("runDaemon", () => {
   it("enables HybridExecutor with env override and shuts down before engine stop", async () => {
     process.env.FUSION_HYBRID_EXECUTOR = "1";
     mockShouldUseHybridExecutor.mockResolvedValue({ enabled: true, reason: "env-override" });
+    mockHybridExecutorInitialize.mockImplementationOnce(async () => {
+      expect(mocks.listenCalls).toHaveLength(1);
+    });
 
     await runDaemon({});
     expect(mockHybridExecutorCtor).toHaveBeenCalledTimes(1);

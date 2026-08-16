@@ -385,12 +385,6 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   await engineManager.startAll();
 
   let hybridExecutor: HybridExecutor | null = null;
-  const hybridGate = await shouldUseHybridExecutor(sharedCentralCore);
-  console.log(`[daemon] hybrid executor gate: enabled=${hybridGate.enabled} reason=${hybridGate.reason}`);
-  if (hybridGate.enabled) {
-    hybridExecutor = new HybridExecutor(sharedCentralCore);
-    await hybridExecutor.initialize();
-  }
 
   engineManager.startReconciliation();
 
@@ -953,6 +947,28 @@ export async function runDaemon(opts: DaemonOptions = {}) {
   });
 
   const actualPort = (server.address() as AddressInfo).port;
+
+  /*
+  FNXC:HybridBootReadiness 2026-08-16-19:00:
+  The explicit-port daemon owns a temporary migration holding server until the
+  real HTTP app is listening. HybridExecutor.initialize() performs an initial
+  metrics fetch against remote project nodes, including this node. Running it
+  before the real listener therefore self-deadlocks on the intentional 503
+  holding response and leaves Fusion stuck in `status=starting`. The real
+  listener must be established first; hybrid setup is optional background
+  wiring and may not prevent the local engine from becoming ready.
+  */
+  const hybridGate = await shouldUseHybridExecutor(sharedCentralCore);
+  console.log(`[daemon] hybrid executor gate: enabled=${hybridGate.enabled} reason=${hybridGate.reason}`);
+  if (hybridGate.enabled) {
+    hybridExecutor = new HybridExecutor(sharedCentralCore);
+    try {
+      await hybridExecutor.initialize();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[daemon] HybridExecutor initialization failed after HTTP readiness: ${message}`);
+    }
+  }
 
   /*
   FNXC:CustomProviders 2026-06-30-00:00:
