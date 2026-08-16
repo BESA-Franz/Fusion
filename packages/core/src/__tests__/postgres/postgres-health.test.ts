@@ -18,7 +18,6 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import { execSync } from "node:child_process";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { sql } from "drizzle-orm";
@@ -26,6 +25,10 @@ import { createAsyncDataLayer, type AsyncDataLayer } from "../../postgres/data-l
 import { createConnectionSetFromUrl } from "../../postgres/connection.js";
 import type { ResolvedBackend } from "../../postgres/backend-resolver.js";
 import { applySchemaBaseline } from "../../postgres/schema-applier.js";
+import {
+  PG_AVAILABLE,
+  PG_TEST_URL_BASE,
+} from "../../__test-utils__/pg-test-harness.js";
 import {
   checkPostgresHealth,
   detectSchemaDrift,
@@ -37,11 +40,6 @@ import {
 import { detectTaskIdIntegrityAnomaliesAsync } from "../../postgres/async-task-id-integrity.js";
 import { PROJECT_SCHEMA } from "../../postgres/schema/_shared.js";
 
-const PG_TEST_URL_BASE =
-  process.env.FUSION_PG_TEST_URL_BASE ?? "postgresql://localhost:5432";
-const PG_AVAILABLE =
-  process.env.FUSION_PG_TEST_SKIP !== "1" && Boolean(PG_TEST_URL_BASE);
-
 const pgDescribe = PG_AVAILABLE ? describe : describe.skip;
 
 function uniqueDbName(): string {
@@ -50,13 +48,25 @@ function uniqueDbName(): string {
 
 /*
 FNXC:PgTestAuthFix 2026-07-14-00:00:
-The inline adminExec used process.env.USER for the psql -U flag, which is 'runner' on GitHub Actions (not 'postgres'). Use the PG_TEST_URL_BASE connection string instead so credentials are always correct.
+The old inline adminExec shell-out required a platform-specific `psql` binary.
+Use the same postgres.js maintenance connection as the shared PG harness so
+the health gate is executable on Windows and CI images without the CLI while
+still using the credentials from PG_TEST_URL_BASE.
 */
-function adminExec(statement: string): void {
-  execSync(
-    `psql "${PG_TEST_URL_BASE}/postgres" -v ON_ERROR_STOP=1 -c "${statement.replace(/"/g, '\\"')}"`,
-    { stdio: "pipe", env: process.env },
-  );
+async function adminExec(statement: string): Promise<void> {
+  const adminUrl = new URL(PG_TEST_URL_BASE);
+  adminUrl.pathname = "/postgres";
+  const client = postgres(adminUrl.toString(), {
+    max: 1,
+    prepare: false,
+    connect_timeout: 5,
+    onnotice: () => {},
+  });
+  try {
+    await client.unsafe(statement);
+  } finally {
+    await client.end({ timeout: 5 }).catch(() => {});
+  }
 }
 
 interface TestCtx {
@@ -69,11 +79,11 @@ interface TestCtx {
 async function setupCtx(): Promise<TestCtx> {
   const dbName = uniqueDbName();
   try {
-    adminExec(`DROP DATABASE IF EXISTS "${dbName}"`);
+    await adminExec(`DROP DATABASE IF EXISTS "${dbName}"`);
   } catch {
     // may not exist
   }
-  adminExec(`CREATE DATABASE "${dbName}"`);
+  await adminExec(`CREATE DATABASE "${dbName}"`);
   const testUrl = `${PG_TEST_URL_BASE}/${dbName}`;
 
   const schemaBackend: ResolvedBackend = {
@@ -112,7 +122,7 @@ async function teardownCtx(ctx: TestCtx | null): Promise<void> {
     // best-effort
   }
   try {
-    adminExec(`DROP DATABASE IF EXISTS "${ctx.dbName}"`);
+    await adminExec(`DROP DATABASE IF EXISTS "${ctx.dbName}"`);
   } catch {
     // best-effort
   }
