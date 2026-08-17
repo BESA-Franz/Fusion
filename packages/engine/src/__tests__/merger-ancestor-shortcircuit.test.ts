@@ -2,12 +2,16 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { commitOrAmendMergeWithFixes } from "../merger.js";
 import { DEFAULT_SETTINGS } from "@fusion/core";
 
 function git(dir: string, cmd: string): string {
   return execSync(cmd, { cwd: dir, stdio: "pipe" }).toString().trim();
+}
+
+function gitCommit(dir: string, message: string): void {
+  execFileSync("git", ["commit", "-m", message], { cwd: dir, stdio: "pipe" });
 }
 
 function initRepo(dir: string): void {
@@ -70,7 +74,7 @@ describe("commitOrAmendMergeWithFixes ancestor/equivalent-content short-circuit"
     git(dir, "git checkout -b task");
     writeFileSync(join(dir, "foo.txt"), "from task\n");
     git(dir, "git add foo.txt");
-    git(dir, 'git commit -m "feat: task commit\n\nFusion-Task-Id: FN-TEST"');
+    gitCommit(dir, "feat: task commit\n\nFusion-Task-Id: FN-TEST");
     const taskTip = git(dir, "git rev-parse HEAD");
 
     git(dir, "git checkout main");
@@ -86,7 +90,7 @@ describe("commitOrAmendMergeWithFixes ancestor/equivalent-content short-circuit"
     git(dir, "git checkout -b task");
     writeFileSync(join(dir, "foo.txt"), "from task\n");
     git(dir, "git add foo.txt");
-    git(dir, 'git commit -m "feat: task commit\n\nFusion-Task-Id: FN-TEST"');
+    gitCommit(dir, "feat: task commit\n\nFusion-Task-Id: FN-TEST");
     const taskTip = git(dir, "git rev-parse HEAD");
 
     git(dir, "git checkout main");
@@ -105,7 +109,7 @@ describe("commitOrAmendMergeWithFixes ancestor/equivalent-content short-circuit"
     git(dir, "git checkout -b task");
     writeFileSync(join(dir, "foo.txt"), "same-content\n");
     git(dir, "git add foo.txt");
-    git(dir, 'git commit -m "feat: task commit\n\nFusion-Task-Id: FN-3846"');
+    gitCommit(dir, "feat: task commit\n\nFusion-Task-Id: FN-3846");
 
     git(dir, "git checkout main");
     writeFileSync(join(dir, "foo.txt"), "same-content\n");
@@ -121,7 +125,7 @@ describe("commitOrAmendMergeWithFixes ancestor/equivalent-content short-circuit"
   it("still refuses real phantom finalize when no current-task branch content exists", async () => {
     writeFileSync(join(dir, "other.txt"), "other\n");
     git(dir, "git add other.txt");
-    git(dir, 'git commit -m "feat: unrelated\n\nFusion-Task-Id: FN-OTHER"');
+    gitCommit(dir, "feat: unrelated\n\nFusion-Task-Id: FN-OTHER");
     const preAttemptHeadSha = git(dir, "git rev-parse HEAD");
 
     const result = await runFinalize(dir, "FN-TEST", "task", preAttemptHeadSha);
