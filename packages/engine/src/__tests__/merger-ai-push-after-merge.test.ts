@@ -72,7 +72,7 @@ function initRepoWithRemote(opts: { branch: string } = { branch: "fusion/fn-1" }
   git(dir, `checkout -q -b ${opts.branch}`);
   writeFileSync(join(dir, "feature.txt"), "feature work\n");
   git(dir, "add -A");
-  git(dir, "commit -q -m 'feat: work'");
+  git(dir, `commit -q -m ${JSON.stringify("feat: work")}`);
   git(dir, "checkout -q main");
   return { dir, originDir };
 }
@@ -86,7 +86,7 @@ function advanceOrigin(originDir: string, fileName: string): void {
   git(clone, "config user.name o");
   writeFileSync(join(clone, fileName), "remote side\n");
   git(clone, "add -A");
-  git(clone, `commit -q -m 'remote: ${fileName}'`);
+  git(clone, `commit -q -m ${JSON.stringify(`remote: ${fileName}`)}`);
   git(clone, "push -q origin main");
 }
 
