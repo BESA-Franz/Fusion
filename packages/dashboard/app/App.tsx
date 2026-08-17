@@ -850,7 +850,6 @@ function AppInner() {
     showWorktreeGrouping,
     globalPaused,
     isTestMode,
-    taskStuckTimeoutMs,
     staleHighFanoutBlockerAgeThresholdMs,
     capacityRiskBannerEnabled,
     capacityRiskTodoThreshold,
@@ -1765,7 +1764,6 @@ function AppInner() {
     handleOpenDetailWithTab,
     handleToggleFavorite,
     handleToggleModelFavorite,
-    taskStuckTimeoutMs,
     staleHighFanoutBlockerAgeThresholdMs,
     lastFetchTimeMs,
     openCreateWorkflowWithNav,
@@ -2032,7 +2030,6 @@ function AppInner() {
           tasks={footerTasks}
           projectId={currentProject.id}
           columnFlagsByTaskId={footerColumnFlagsByTaskId}
-          taskStuckTimeoutMs={taskStuckTimeoutMs}
           staleHighFanoutBlockerAgeThresholdMs={staleHighFanoutBlockerAgeThresholdMs}
           lastFetchTimeMs={lastFetchTimeMs}
           currentProjectPath={currentProject.path}

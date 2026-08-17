@@ -197,7 +197,6 @@ function mainContentProps(overrides: Partial<MainContentProps> = {}): MainConten
     handleOpenDetailWithTab: vi.fn(),
     handleToggleFavorite: vi.fn(),
     handleToggleModelFavorite: vi.fn(),
-    taskStuckTimeoutMs: undefined,
     staleHighFanoutBlockerAgeThresholdMs: 0,
     lastFetchTimeMs: undefined,
     openCreateWorkflowWithNav: vi.fn(),

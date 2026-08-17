@@ -1127,7 +1127,6 @@ describe("ExecutorStats type", () => {
     const stats: ExecutorStats = {
       runningTaskCount: 3,
       blockedTaskCount: 2,
-      stuckTaskCount: 1,
       queuedTaskCount: 10,
       inReviewCount: 4,
       executorState: "running",
@@ -1137,7 +1136,6 @@ describe("ExecutorStats type", () => {
 
     expect(stats.runningTaskCount).toBe(3);
     expect(stats.blockedTaskCount).toBe(2);
-    expect(stats.stuckTaskCount).toBe(1);
     expect(stats.queuedTaskCount).toBe(10);
     expect(stats.inReviewCount).toBe(4);
     expect(stats.executorState).toBe("running");
@@ -1149,7 +1147,6 @@ describe("ExecutorStats type", () => {
     const idleStats: ExecutorStats = {
       runningTaskCount: 0,
       blockedTaskCount: 0,
-      stuckTaskCount: 0,
       queuedTaskCount: 5,
       inReviewCount: 0,
       executorState: "idle",
@@ -1159,7 +1156,6 @@ describe("ExecutorStats type", () => {
     const runningStats: ExecutorStats = {
       runningTaskCount: 2,
       blockedTaskCount: 1,
-      stuckTaskCount: 0,
       queuedTaskCount: 3,
       inReviewCount: 1,
       executorState: "running",
@@ -1169,7 +1165,6 @@ describe("ExecutorStats type", () => {
     const pausedStats: ExecutorStats = {
       runningTaskCount: 1,
       blockedTaskCount: 0,
-      stuckTaskCount: 0,
       queuedTaskCount: 8,
       inReviewCount: 2,
       executorState: "paused",
@@ -1185,7 +1180,6 @@ describe("ExecutorStats type", () => {
     const stats: ExecutorStats = {
       runningTaskCount: 0,
       blockedTaskCount: 0,
-      stuckTaskCount: 0,
       queuedTaskCount: 0,
       inReviewCount: 0,
       executorState: "idle",
