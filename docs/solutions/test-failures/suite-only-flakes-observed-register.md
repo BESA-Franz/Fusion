@@ -99,6 +99,17 @@ Seven tests failed in `plugin-runner.test.ts`, but only this one identity surviv
 | full engine ×3, 6 threads | subject passed; 35–36 unrelated baseline-red files remained |
 | targeted plugin-runner | covered by subsequent quarantine-ledger verification |
 
+**Retained after investigation 2026-08-17 (FN-9135):** FN-9135 temporarily lifted the paired default-lane exclusion and captured full verbose output for two runs each at 2, 6, and 8 workers. The subject passed every run and the 82-test isolated control; the loaded lane's unrelated baseline-red files did not identify a product or harness cause. The fixed microtask flush, duplicate helper, registry singleton, and hook timeout were investigated, but no root-cause defect or qualifying rescue was demonstrated. The test file, ledger row, and default-lane exclusion therefore remain together until the 2026-08-30 ratchet deadline, preserving plugin loading/contribution/runtime/hot-reload coverage and the remaining `onTaskCompleted` lifecycle-dispatch coverage.
+
+| FN-9135 loaded reproduction | subject result | whole-lane result |
+|---|---|---|
+| 6 workers, run 1 (247.08s) | pass | 40 failed / 794 passed files; unrelated baseline-red |
+| 8 workers, run 1 (197.47s) | pass | 40 failed / 794 passed files; unrelated baseline-red |
+| 2 workers, run 1 (577.55s) | pass | 39 failed / 795 passed files; unrelated baseline-red |
+| 6 workers, run 2 (230.06s) | pass | 39 failed / 795 passed files; unrelated baseline-red |
+| 8 workers, run 2 (188.61s) | pass | 39 failed / 795 passed files; unrelated baseline-red |
+| 2 workers, run 2 (590.97s) | pass | 39 failed / 795 passed files; unrelated baseline-red |
+
 ## 4. Planning Mode direct task handoff
 
 - **File:** `packages/dashboard/app/components/__tests__/PlanningModeModal.planning-flow.test.tsx`
@@ -132,7 +143,7 @@ The failure exercises the pre-existing mobile tab transition, while the task-cre
 
 ## Common shape and investigated result
 
-FN-9125 established that entry 3 is not PostgreSQL-suite-adjacent: `plugin-runner.test.ts` uses an in-memory mocked TaskStore and has no PostgreSQL/harness import. Its historical loaded-engine failure is quarantined under the normal deletion ratchet. Entries 1, 2, and 7 remain evidence-gathering-pending PostgreSQL observations: current full-output runs at six workers plus a twelve-worker PostgreSQL-directory run did not reproduce any subject identity, so FN-9125 cannot claim them superseded or resolved. The golden-template/advisory-lock lifecycle and schema-applier's inline baseline path are concrete architecture facts, not a demonstrated cause of these assertions. Core policy forbids inline PG quarantine: FN-9126 owns entry 1, FN-9128 exclusively owns entry 2, and FN-9127 owns entry 7 for CI/host-specific `pg_stat_activity`, lifecycle timing, and a complete loaded failure capture before any source or fan-out change. Entry 6 instead records a merge-gate eviction after a loaded-lane setup-hook timeout; `FNXC:PgTestTemplateDb 2026-07-19-17:20` and `FNXC:PgTestWorkerCap 2026-07-18-18:00` are already-landed mitigations for that mode, not new diagnoses to re-open. The Planning Mode entries are separate frontend timing observations.
+FN-9125 established that entry 3 is not PostgreSQL-suite-adjacent: `plugin-runner.test.ts` uses an in-memory mocked TaskStore and has no PostgreSQL/harness import. FN-9135's bounded reproduction campaign did not identify the root cause needed to rescue it, so the suite remains quarantined with its coverage intact until the ratchet deadline. Entries 1, 2, and 7 remain evidence-gathering-pending PostgreSQL observations: current full-output runs at six workers plus a twelve-worker PostgreSQL-directory run did not reproduce any subject identity, so FN-9125 cannot claim them superseded or resolved. The golden-template/advisory-lock lifecycle and schema-applier's inline baseline path are concrete architecture facts, not a demonstrated cause of these assertions. Core policy forbids inline PG quarantine: FN-9126 owns entry 1, FN-9128 exclusively owns entry 2, and FN-9127 owns entry 7 for CI/host-specific `pg_stat_activity`, lifecycle timing, and a complete loaded failure capture before any source or fan-out change. Entry 6 instead records a merge-gate eviction after a loaded-lane setup-hook timeout; `FNXC:PgTestTemplateDb 2026-07-19-17:20` and `FNXC:PgTestWorkerCap 2026-07-18-18:00` are already-landed mitigations for that mode, not new diagnoses to re-open. The Planning Mode entries are separate frontend timing observations.
 
 ## Policy and escalation
 
