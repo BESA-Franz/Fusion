@@ -54,6 +54,9 @@ if (args.includes('--frozen-lockfile')) {
 process.exit(0);
 `,
   );
+  if (process.platform === "win32") {
+    writeFileSync(join(binDir, "pnpm.cmd"), '@echo off\r\nnode "%~dp0pnpm" %*\r\n');
+  }
   chmodSync(script, 0o755);
   const previousPath = process.env.PATH ?? "";
   process.env.PATH = `${binDir}${delimiter}${previousPath}`;
@@ -174,6 +177,9 @@ for (let v of vars) env[v] = process.env[v];
 fs.writeFileSync(${JSON.stringify(logPath)}, JSON.stringify(env));
 `,
     );
+    if (process.platform === "win32") {
+      writeFileSync(join(binDir, "pnpm.cmd"), '@echo off\r\nnode "%~dp0pnpm" %*\r\n');
+    }
     chmodSync(script, 0o755);
     const previousPath = process.env.PATH ?? "";
     process.env.PATH = `${binDir}${delimiter}${previousPath}`;
