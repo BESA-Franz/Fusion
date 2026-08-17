@@ -58,6 +58,7 @@
     "packages/engine/src/execution/streaming-delta.ts",
     "packages/engine/src/execution/task-completion.ts",
     "packages/engine/src/execution/verification-utils.ts",
+    "packages/engine/src/executor/lifecycle-columns.ts",
     "packages/engine/src/external-integrations/manifest.ts",
     "packages/engine/src/goals/goal-anchoring-audit.ts",
     "packages/engine/src/goals/goal-context-injector.ts",
@@ -1044,6 +1045,11 @@
       "reason": "reviewed public TaskStore operation; not a durable writer reached by this merge frontier"
     },
     {
+      "method": "findTaskByProposalClaimId",
+      "kind": "non-writer",
+      "reason": "reviewed public TaskStore operation; not a durable writer reached by this merge frontier"
+    },
+    {
       "method": "finishTaskVerificationRequest",
       "kind": "writer",
       "reason": "persists or mutates TaskStore state"
@@ -1799,12 +1805,22 @@
       "reason": "reviewed public TaskStore operation; not a durable writer reached by this merge frontier"
     },
     {
+      "method": "listTaskRecommendations",
+      "kind": "non-writer",
+      "reason": "reviewed public TaskStore operation; not a durable writer reached by this merge frontier"
+    },
+    {
       "method": "listTasks",
       "kind": "non-writer",
       "reason": "reviewed public TaskStore operation; not a durable writer reached by this merge frontier"
     },
     {
       "method": "listTasksByBranchGroup",
+      "kind": "non-writer",
+      "reason": "reviewed public TaskStore operation; not a durable writer reached by this merge frontier"
+    },
+    {
+      "method": "listTasksBySourceLineage",
       "kind": "non-writer",
       "reason": "reviewed public TaskStore operation; not a durable writer reached by this merge frontier"
     },
@@ -8589,12 +8605,30 @@
     },
     {
       "callSiteId": "packages/engine/src/plan-review-continuation.ts::seedPreReleasePlanReviewContinuation::store.seedStrandedPlanReviewContinuation::#1",
-      "callSiteFingerprint": "store.seedStrandedPlanReviewContinuation(input)",
+      "callSiteFingerprint": "store.seedStrandedPlanReviewContinuation(input,{retirePredecessorId})",
       "file": "packages/engine/src/plan-review-continuation.ts",
       "enclosingSymbolPath": "seedPreReleasePlanReviewContinuation",
       "writer": "store.seedStrandedPlanReviewContinuation",
       "ordinal": 1,
-      "lineHint": 94,
+      "lineHint": 128,
+      "owningEntryPoint": "none:out-of-frontier",
+      "reachableDataStates": [],
+      "axis1": "out-of-frontier",
+      "axis1Evidence": "No call edge from runAiMerge, landWorkspaceTask, or landOneRepo; this scanned closure call belongs to another engine caller.",
+      "axis2Provisional": "out-of-frontier",
+      "axis2Final": "out-of-frontier",
+      "observedInSuite": "out-of-frontier",
+      "executionProof": "none:out-of-frontier",
+      "followUpTaskId": "none:out-of-frontier"
+    },
+    {
+      "callSiteId": "packages/engine/src/plan-review-continuation.ts::seedPreReleasePlanReviewContinuation::store.seedStrandedPlanReviewContinuation::#2",
+      "callSiteFingerprint": "store.seedStrandedPlanReviewContinuation(input)",
+      "file": "packages/engine/src/plan-review-continuation.ts",
+      "enclosingSymbolPath": "seedPreReleasePlanReviewContinuation",
+      "writer": "store.seedStrandedPlanReviewContinuation",
+      "ordinal": 2,
+      "lineHint": 130,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -8612,7 +8646,7 @@
       "enclosingSymbolPath": "seedPreReleasePlanReviewContinuation>item",
       "writer": "store.replaceActiveTaskWorkflowContinuation",
       "ordinal": 1,
-      "lineHint": 95,
+      "lineHint": 131,
       "owningEntryPoint": "none:out-of-frontier",
       "reachableDataStates": [],
       "axis1": "out-of-frontier",
@@ -8630,7 +8664,7 @@
       "enclosingSymbolPath": "recoverApprovedStrandedAiMergeCommit>finalized",
       "writer": "finalizeProvenAutoMergeTask",
       "ordinal": 1,
-      "lineHint": 11973,
+      "lineHint": 11997,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8650,7 +8684,7 @@
       "enclosingSymbolPath": "recoverMergedReviewTasks>finalization",
       "writer": "finalizeProvenAutoMergeTask",
       "ordinal": 1,
-      "lineHint": 10845,
+      "lineHint": 10869,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8890,7 +8924,7 @@
       "enclosingSymbolPath": "refreshReusedWorktreeBase",
       "writer": "store.updateTask",
       "ordinal": 1,
-      "lineHint": 148,
+      "lineHint": 144,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
@@ -8910,7 +8944,7 @@
       "enclosingSymbolPath": "refreshReusedWorktreeBase",
       "writer": "store.updateTask",
       "ordinal": 2,
-      "lineHint": 217,
+      "lineHint": 213,
       "owningEntryPoint": "other",
       "reachableDataStates": [
         "unobservable:closure-wide production fixture pending"
