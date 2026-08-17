@@ -40,8 +40,8 @@ function makeRepo(): string {
   execSync("git init -b main", { cwd: dir, stdio: "ignore" });
   execSync("git config user.name test", { cwd: dir });
   execSync("git config user.email test@example.com", { cwd: dir });
-  execSync("echo hi > a.txt", { cwd: dir, shell: "/bin/bash" });
-  execSync("git add . && git commit -m init", { cwd: dir, stdio: "ignore", shell: "/bin/bash" });
+  writeFileSync(join(dir, "a.txt"), "hi\n");
+  git(dir, "git add . && git commit -m init");
   return dir;
 }
 
@@ -355,8 +355,8 @@ describe("promoteBranchGroup", () => {
   it("merges group branch once and finalizes group when complete and eligible", async () => {
     const rootDir = makeRepo();
     execSync("git checkout -b fusion/groups/planning-x", { cwd: rootDir });
-    execSync("echo promoted > group.txt", { cwd: rootDir, shell: "/bin/bash" });
-    execSync("git add group.txt && git commit -m group", { cwd: rootDir, shell: "/bin/bash" });
+    writeFileSync(join(rootDir, "group.txt"), "promoted\n");
+    git(rootDir, "git add group.txt && git commit -m group");
     execSync("git checkout main", { cwd: rootDir });
 
     let group = makeGroup();
@@ -470,8 +470,8 @@ pgDescribe("promoteBranchGroup with a real TaskStore (FN-7534 archived-member re
       autoMerge: true,
     });
     execSync(`git checkout -b ${group.branchName}`, { cwd: rootDir });
-    execSync("echo promoted > group.txt", { cwd: rootDir, shell: "/bin/bash" });
-    execSync("git add group.txt && git commit -m group", { cwd: rootDir, shell: "/bin/bash" });
+    writeFileSync(join(rootDir, "group.txt"), "promoted\n");
+    git(rootDir, "git add group.txt && git commit -m group");
     execSync("git checkout main", { cwd: rootDir });
 
     const task = await store.createTask({ description: "landed then archived" });
@@ -541,8 +541,8 @@ describe("promoteBranchGroup PR creation (U5)", () => {
   function makePrRepo(): string {
     const rootDir = makeRepo();
     execSync("git checkout -b fusion/groups/planning-x", { cwd: rootDir });
-    execSync("echo promoted > group.txt", { cwd: rootDir, shell: "/bin/bash" });
-    execSync("git add group.txt && git commit -m group", { cwd: rootDir, shell: "/bin/bash" });
+    writeFileSync(join(rootDir, "group.txt"), "promoted\n");
+    git(rootDir, "git add group.txt && git commit -m group");
     execSync("git checkout main", { cwd: rootDir });
     return rootDir;
   }
@@ -840,8 +840,8 @@ describe("ProjectEngine.promoteBranchGroup (U4 bridge method)", () => {
   it("resolves settings via the store and delegates to the coordinator (promotes a complete group)", async () => {
     const rootDir = makeRepo();
     execSync("git checkout -b fusion/groups/planning-x", { cwd: rootDir });
-    execSync("echo promoted > group.txt", { cwd: rootDir, shell: "/bin/bash" });
-    execSync("git add group.txt && git commit -m group", { cwd: rootDir, shell: "/bin/bash" });
+    writeFileSync(join(rootDir, "group.txt"), "promoted\n");
+    git(rootDir, "git add group.txt && git commit -m group");
     execSync("git checkout main", { cwd: rootDir });
 
     let group = makeGroup();
@@ -912,8 +912,8 @@ describe("promoteBranchGroup concurrency lock (Fix #10)", () => {
   function makePrRepo(): string {
     const rootDir = makeRepo();
     execSync("git checkout -b fusion/groups/planning-x", { cwd: rootDir });
-    execSync("echo promoted > group.txt", { cwd: rootDir, shell: "/bin/bash" });
-    execSync("git add group.txt && git commit -m group", { cwd: rootDir, shell: "/bin/bash" });
+    writeFileSync(join(rootDir, "group.txt"), "promoted\n");
+    git(rootDir, "git add group.txt && git commit -m group");
     execSync("git checkout main", { cwd: rootDir });
     return rootDir;
   }
@@ -1019,8 +1019,8 @@ describe("promoteBranchGroup finalized-but-PR-less repair (Fix #4 part 2)", () =
   function makePrRepo(): string {
     const rootDir = makeRepo();
     execSync("git checkout -b fusion/groups/planning-x", { cwd: rootDir });
-    execSync("echo promoted > group.txt", { cwd: rootDir, shell: "/bin/bash" });
-    execSync("git add group.txt && git commit -m group", { cwd: rootDir, shell: "/bin/bash" });
+    writeFileSync(join(rootDir, "group.txt"), "promoted\n");
+    git(rootDir, "git add group.txt && git commit -m group");
     execSync("git checkout main", { cwd: rootDir });
     return rootDir;
   }
@@ -1428,7 +1428,7 @@ describe("resolveBranchGroupMergeRouting", () => {
     safeEngine.onMerge = vi.fn(() => runAiMerge(safeStore, repo, "FN-3324", { manual: true }, {
       mergeAgent: async (cwd: string) => {
         git(cwd, "git merge --squash fusion/fn-3324");
-        git(cwd, "git add -A && git commit -q -m 'squash dedicated member'");
+        git(cwd, "git add -A && git commit -q -m \"squash dedicated member\"");
       },
       reviewAgent: async () => "REVIEW_VERDICT: approve",
     }));
@@ -1506,7 +1506,7 @@ describe("resolveBranchGroupMergeRouting", () => {
           }
           mergeAttempts += 1;
           git(options.cwd, "git merge --squash fusion/fn-3324");
-          git(options.cwd, "git add -A && git commit -q -m 'squash user-held member'");
+          git(options.cwd, "git add -A && git commit -q -m \"squash user-held member\"");
         },
         dispose: vi.fn(),
         getSessionStats: vi.fn(() => ({ tokens: { input: 1, output: 1 } })),
