@@ -1,3 +1,4 @@
+---
 "@runfusion/fusion": patch
 ---
 summary: Keep static-gate test mirrors aligned and portable on Windows.
