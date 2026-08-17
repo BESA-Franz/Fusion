@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterAll } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 
 import { runAiMerge } from "../merge/merger-ai.js";
 import { computeLockfileHash, INSTALL_MARKER_RELPATH } from "../merge/merge-dependency-sync.js";
@@ -15,24 +15,24 @@ afterAll(() => {
   }
 });
 
-function git(cwd: string, args: string): string {
-  return execSync(`git ${args}`, { cwd, encoding: "utf-8" }).trim();
+function git(cwd: string, args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
 }
 
 function initRepoWithBranch(): { dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "fusion-ai-merge-deps-test-"));
   tracked.add(dir);
-  git(dir, "init -q -b main");
-  git(dir, "config user.email t@t.t");
-  git(dir, "config user.name t");
+  git(dir, ["init", "-q", "-b", "main"]);
+  git(dir, ["config", "user.email", "t@t.t"]);
+  git(dir, ["config", "user.name", "t"]);
   writeFileSync(join(dir, "base.txt"), "base\n");
-  git(dir, "add -A");
-  git(dir, "commit -q -m base");
-  git(dir, "checkout -q -b fusion/fn-1");
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-q", "-m", "base"]);
+  git(dir, ["checkout", "-q", "-b", "fusion/fn-1"]);
   writeFileSync(join(dir, "feature.txt"), "feature work\n");
-  git(dir, "add -A");
-  git(dir, "commit -q -m 'feat: work'");
-  git(dir, "checkout -q main");
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-q", "-m", "feat: work"]);
+  git(dir, ["checkout", "-q", "main"]);
   return { dir };
 }
 
@@ -61,9 +61,9 @@ function makeStore(settingsOverrides: Record<string, unknown> = {}) {
 
 function realMergeAgent(branch = "fusion/fn-1") {
   return vi.fn(async (cwd: string) => {
-    execSync(`git merge --squash ${branch}`, { cwd, stdio: "pipe" });
-    execSync("git add -A", { cwd, stdio: "pipe" });
-    execSync('git commit -q -m "squash: feature"', { cwd, stdio: "pipe" });
+    execFileSync("git", ["merge", "--squash", branch], { cwd, stdio: "pipe" });
+    execFileSync("git", ["add", "-A"], { cwd, stdio: "pipe" });
+    execFileSync("git", ["commit", "-q", "-m", "squash: feature"], { cwd, stdio: "pipe" });
   });
 }
 
@@ -89,6 +89,9 @@ function installFakePackageManagerBins(_dir: string): string {
   for (const bin of ["pnpm", "npm", "yarn", "bun"]) {
     const script = join(binDir, bin);
     writeFileSync(script, `#!/usr/bin/env node\nconst fs = require('fs');\nfs.appendFileSync(process.env.FN_INSTALL_LOG, JSON.stringify({ bin: ${JSON.stringify(bin)}, args: process.argv.slice(2), cwd: process.cwd() }) + '\\n');\nprocess.exit(Number(process.env.FN_INSTALL_EXIT || 0));\n`);
+    if (process.platform === "win32") {
+      writeFileSync(join(binDir, `${bin}.cmd`), `@echo off\r\nnode "%~dp0${bin}" %*\r\n`);
+    }
     chmodSync(script, 0o755);
   }
   const previousPath = process.env.PATH ?? "";
@@ -101,8 +104,8 @@ function commitWarmInstallMarker(dir: string): void {
   if (!hash) throw new Error("expected lockfile hash");
   mkdirSync(join(dir, "node_modules"), { recursive: true });
   writeFileSync(join(dir, INSTALL_MARKER_RELPATH), hash);
-  execSync(`git add -f ${INSTALL_MARKER_RELPATH}`, { cwd: dir, stdio: "pipe" });
-  git(dir, "commit -q -m 'record install marker'");
+  execFileSync("git", ["add", "-f", INSTALL_MARKER_RELPATH], { cwd: dir, stdio: "pipe" });
+  git(dir, ["commit", "-q", "-m", "record install marker"]);
 }
 
 describe("runAiMerge dependency install", () => {
@@ -139,8 +142,8 @@ describe("runAiMerge dependency install", () => {
     ]) {
       const { dir } = initRepoWithBranch();
       writeFileSync(join(dir, testCase.lockfile), "lock\n");
-      git(dir, `add ${testCase.lockfile}`);
-      git(dir, `commit -q -m 'add ${testCase.lockfile}'`);
+      git(dir, ["add", testCase.lockfile]);
+      git(dir, ["commit", "-q", "-m", `add ${testCase.lockfile}`]);
       const installLog = makeInstallLog();
       const previousPath = installFakePackageManagerBins(dir);
       process.env.FN_INSTALL_LOG = installLog;
@@ -174,7 +177,7 @@ describe("runAiMerge dependency install", () => {
     expect(store.appendAgentLog).toHaveBeenCalledWith(
       "FN-1",
       expect.stringContaining("(no command)"),
-      "text",
+      "status",
       undefined,
       "merger",
     );
@@ -183,8 +186,8 @@ describe("runAiMerge dependency install", () => {
   it("skips inferred installs on a matching marker but never skips configured init commands", async () => {
     const { dir } = initRepoWithBranch();
     writeFileSync(join(dir, "pnpm-lock.yaml"), "lock\n");
-    git(dir, "add pnpm-lock.yaml");
-    git(dir, "commit -q -m 'add pnpm lock'");
+    git(dir, ["add", "pnpm-lock.yaml"]);
+    git(dir, ["commit", "-q", "-m", "add pnpm lock"]);
     commitWarmInstallMarker(dir);
     const installLog = makeInstallLog();
     const previousPath = installFakePackageManagerBins(dir);
@@ -202,8 +205,8 @@ describe("runAiMerge dependency install", () => {
 
     const { dir: configuredDir } = initRepoWithBranch();
     writeFileSync(join(configuredDir, "pnpm-lock.yaml"), "lock\n");
-    git(configuredDir, "add pnpm-lock.yaml");
-    git(configuredDir, "commit -q -m 'add pnpm lock'");
+    git(configuredDir, ["add", "pnpm-lock.yaml"]);
+    git(configuredDir, ["commit", "-q", "-m", "add pnpm lock"]);
     commitWarmInstallMarker(configuredDir);
     const configuredLog = makeInstallLog();
     process.env.FN_INSTALL_LOG = configuredLog;
@@ -253,8 +256,8 @@ describe("runAiMerge dependency install", () => {
       attempts++;
       if (attempts === 1) {
         writeFileSync(join(dir, "race.txt"), "race\n");
-        git(dir, "add race.txt");
-        git(dir, "commit -q -m 'main advanced concurrently'");
+        git(dir, ["add", "race.txt"]);
+        git(dir, ["commit", "-q", "-m", "main advanced concurrently"]);
       }
     });
 

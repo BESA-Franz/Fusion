@@ -70,7 +70,12 @@ export function computeLockfileHash(rootDir: string): string | null {
     const p = join(rootDir, name);
     if (existsSync(p)) {
       try {
-        return createHash("sha256").update(readFileSync(p)).digest("hex");
+        const content = readFileSync(p);
+        // Git may materialize text lockfiles with CRLF in a Windows worktree even
+        // when the source checkout used LF. Hash the logical text so an install
+        // marker survives a clean-room checkout; keep binary bun.lockb byte-exact.
+        const hashInput = name === "bun.lockb" ? content : content.toString("utf8").replace(/\r\n/g, "\n");
+        return createHash("sha256").update(hashInput).digest("hex");
       } catch {
         return null;
       }
