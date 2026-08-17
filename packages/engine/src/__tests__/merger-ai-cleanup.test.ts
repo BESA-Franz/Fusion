@@ -86,7 +86,8 @@ function initRepoWithBranch(taskId = "FN-1"): { dir: string } {
   git(dir, `checkout -q -b ${branch}`);
   writeFileSync(join(dir, "feature.txt"), "feature work\n");
   git(dir, "add -A");
-  git(dir, "commit -q -m 'feat: work'");
+  // Keep the fixture command argv-safe on Windows, where single quotes are literal characters.
+  git(dir, "commit -q -m feat-work");
   git(dir, "checkout -q main");
   return { dir };
 }
