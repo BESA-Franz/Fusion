@@ -127,20 +127,17 @@ describe("TaskExecutor primary-checkout worktree invariant", () => {
     /*
     FNXC:CodeOrganization 2026-08-03-15:45:
     sourceRegion is exclusive of the end marker — end after the facade body so
-    `createWorktreeImpl` remains in the scanned slice (not used as the end itself).
+    `createWorktreeWithoutReservation` remains in the scanned slice so the backend
+    creation call is covered (not used as the end marker itself).
     */
-    const executorFacade = sourceRegion(
-      executorSource,
-      "private async createWorktree(",
-      "private async removeOwnWorktreeWithReconcile(",
-    );
+    const executorFacade = executorSource;
     // Full peeled modules: createWorktree is not first in worktree-create-outer.ts.
     const outerImpl = createOuterSource;
     const conflictImpl = createConflictSource;
-    const acquisition = sourceRegion(acquisitionSource, "const createWorktreeImpl = createWorktree", "const logConfiguredCopyFileResults");
+    const acquisition = sourceRegion(acquisitionSource, "const createWorktreeWithoutReservation = async (", "const logConfiguredCopyFileResults");
     const mergerReacquire = sourceRegion(mergerSource, "const reacquireReuseIntegrationWorktree = async", "// 3b. Ensure rootDir is based on the resolved integration target before merging.");
 
-    expect(executorFacade).toContain("createWorktreeImpl");
+    expect(executorFacade).not.toContain("createWorktreeImpl");
     expect(outerImpl).toContain("export async function createWorktree");
     expect(conflictImpl).toContain("git worktree add");
     expect(acquisition).toContain("backend.create(");
@@ -151,7 +148,7 @@ describe("TaskExecutor primary-checkout worktree invariant", () => {
       ["TaskExecutor.createWorktree facade", executorFacade],
       ["worktree-create-outer createWorktree", outerImpl],
       ["worktree-create-conflict tryCreateWorktree", conflictImpl],
-      ["acquireTaskWorktree createWorktreeImpl", acquisition],
+      ["acquireTaskWorktree createWorktreeWithoutReservation", acquisition],
       ["merger reacquire callback", mergerReacquire],
     ] as const) {
       expect(source, `${surface} must not select a task branch in the primary checkout`).not.toMatch(rootCheckoutSwitch);
