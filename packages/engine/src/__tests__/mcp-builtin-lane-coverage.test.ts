@@ -28,16 +28,17 @@ type LedgerRow = { file: string; line: number; bucket: Bucket; expression: strin
  */
 const LEDGER: LedgerRow[] = [
   ["packages/engine/src/executor/resolve-mcp-servers.ts",32,"A","deps.store","TaskStore","executor TaskStore"],
-  ["packages/engine/src/execution/reviewer.ts",543,"A","options.store","TaskStore","reviewer TaskStore"],
-  ["packages/engine/src/merger.ts",362,"A","store","TaskStore","merger TaskStore"],
-  ["packages/engine/src/merge/merger-ai.ts",469,"A","store","TaskStore","merger AI TaskStore"],
-  ["packages/engine/src/merge/merger-ai.ts",542,"A","store","TaskStore","merger AI TaskStore"],
+  ["packages/engine/src/execution/reviewer.ts",552,"A","options.store","TaskStore","reviewer TaskStore"],
+  ["packages/engine/src/merger.ts",363,"A","store","TaskStore","merger TaskStore"],
+  ["packages/engine/src/merge/merger-ai.ts",483,"A","store","TaskStore","merger AI TaskStore"],
+  ["packages/engine/src/merge/merger-ai.ts",556,"A","store","TaskStore","merger AI TaskStore"],
   ["packages/engine/src/merge/pr-response-run-ops.ts",112,"A","store","TaskStore","PR response TaskStore"],
-  ["packages/engine/src/agent-heartbeat.ts",177,"A","taskStore","nullable-root","heartbeat accepts a nullable root"],
-  ["packages/engine/src/triage.ts",3136,"A","this.store","TaskStore","triage TaskStore"],
+  ["packages/engine/src/agent-heartbeat.ts",194,"A","taskStore","nullable-root","heartbeat accepts a nullable root"],
+  ["packages/engine/src/triage.ts",3142,"A","this.store","TaskStore","triage TaskStore"],
   ["packages/engine/src/scheduling/cron-runner.ts",1073,"A","store","TaskStore","cron TaskStore"],
-  ["packages/engine/src/missions/mission-execution-loop.ts",965,"A","this.taskStore","TaskStore","mission TaskStore"],
-  ["packages/engine/src/agents/agent-reflection.ts",157,"A","this.taskStore","TaskStore","reflection TaskStore"],
+  ["packages/engine/src/missions/mission-execution-loop.ts",963,"A","this.taskStore","TaskStore","mission TaskStore"],
+  ["packages/engine/src/agents/agent-reflection.ts",161,"A","this.taskStore","TaskStore","reflection TaskStore"],
+  ["packages/engine/src/memory/memory-semantics.ts",57,"A","input.taskStore","TaskStore","memory semantics TaskStore"],
   ["packages/engine/src/eval/evaluator.ts",170,"A","this.deps.store","TaskStore","evaluator TaskStore"],
   ["packages/dashboard/src/chat.ts",2871,"A","this.taskStore","TaskStore","chat scoped TaskStore"],
   ["packages/dashboard/src/planning.ts",128,"A","store","TaskStore","planning TaskStore"],
@@ -54,7 +55,7 @@ const LEDGER: LedgerRow[] = [
   ["packages/dashboard/src/agent-onboarding.ts",358,"B","store ?? {}",undefined,"pre-existing no-store degrade"],
   ["packages/dashboard/src/pr-metadata-generator.ts",302,"B","store ?? {}",undefined,"pre-existing no-store degrade"],
   ["packages/dashboard/src/insights-routes.ts",187,"B","params.taskStore ?? {}",undefined,"pre-existing no-store degrade"],
-  ["packages/engine/src/agent-heartbeat.ts",177,"C","taskStore","nullable-root","undefined or empty root omits only built-in"],
+  ["packages/engine/src/agent-heartbeat.ts",194,"C","taskStore","nullable-root","undefined or empty root omits only built-in"],
   ["packages/cli/src/commands/mcp.ts",136,"D","builtIns",undefined,"CLI list direct resolver",true],
   ["packages/cli/src/commands/mcp.ts",140,"D","builtIns",undefined,"CLI export direct resolver",true],
   ["packages/cli/src/commands/mcp.ts",144,"D","builtIns",undefined,"CLI validate direct resolver",true],
@@ -88,7 +89,7 @@ function sourceCalls(): Array<{ file: string; line: number }> {
       const full = resolve(directory, entry.name);
       if (entry.isDirectory()) { if (entry.name !== "__tests__" && entry.name !== "mocks") walk(full); continue; }
       if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".tsx")) continue;
-      for (const [index, line] of readFileSync(full, "utf8").split("\n").entries()) if (needles.some((needle) => line.includes(needle))) found.push({ file: full.slice(repoRoot.length + 1), line: index + 1 });
+      for (const [index, line] of readFileSync(full, "utf8").split("\n").entries()) if (needles.some((needle) => line.includes(needle))) found.push({ file: full.slice(repoRoot.length + 1).replaceAll("\\", "/"), line: index + 1 });
     }
   };
   for (const root of roots) walk(resolve(repoRoot, root));
