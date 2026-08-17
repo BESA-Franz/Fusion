@@ -11,6 +11,10 @@ function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
+function gitPath(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
 function createRepositoryFixture(): { rootDir: string; sourcePath: string; targetPath: string } {
   const fixtureRoot = mkdtempSync(join(tmpdir(), "fn-8400-reclaim-placement-"));
   cleanupPaths.push(fixtureRoot);
@@ -53,7 +57,7 @@ describe("reclaimable worktree placement", () => {
     expect(existsSync(sourcePath)).toBe(false);
     expect(existsSync(targetPath)).toBe(true);
     expect(readFileSync(join(targetPath, "preserved.txt"), "utf8")).toBe("uncommitted task work\n");
-    expect(git(rootDir, ["worktree", "list", "--porcelain"])).toContain(`worktree ${realpathSync(targetPath)}`);
+    expect(git(rootDir, ["worktree", "list", "--porcelain"])).toContain(`worktree ${gitPath(realpathSync(targetPath))}`);
     expect(git(targetPath, ["branch", "--show-current"])).toBe("fusion/fn-8400");
     expect(git(targetPath, ["status", "--porcelain"])).toContain("?? preserved.txt");
   });
@@ -73,7 +77,7 @@ describe("reclaimable worktree placement", () => {
     expect(result).toEqual({ kind: "deferred-live", path: sourcePath });
     expect(existsSync(sourcePath)).toBe(true);
     expect(existsSync(targetPath)).toBe(false);
-    expect(git(rootDir, ["worktree", "list", "--porcelain"])).toContain(`worktree ${realpathSync(sourcePath)}`);
+    expect(git(rootDir, ["worktree", "list", "--porcelain"])).toContain(`worktree ${gitPath(realpathSync(sourcePath))}`);
   });
 
   it("preserves the backend-assigned path when Worktrunk owns the layout", async () => {
@@ -91,7 +95,7 @@ describe("reclaimable worktree placement", () => {
     expect(result).toEqual({ kind: "ready", path: sourcePath, relocated: false });
     expect(existsSync(sourcePath)).toBe(true);
     expect(existsSync(targetPath)).toBe(false);
-    expect(git(rootDir, ["worktree", "list", "--porcelain"])).toContain(`worktree ${realpathSync(sourcePath)}`);
+    expect(git(rootDir, ["worktree", "list", "--porcelain"])).toContain(`worktree ${gitPath(realpathSync(sourcePath))}`);
   });
 
   it("chooses a task-scoped target when the legacy basename is occupied", async () => {
@@ -112,7 +116,7 @@ describe("reclaimable worktree placement", () => {
     expect(result).toEqual({ kind: "ready", path: disambiguatedPath, relocated: true });
     expect(readFileSync(join(targetPath, "owner.txt"), "utf8")).toBe("unrelated path\n");
     expect(readFileSync(join(disambiguatedPath, "preserved.txt"), "utf8")).toBe("uncommitted task work\n");
-    expect(git(rootDir, ["worktree", "list", "--porcelain"])).toContain(`worktree ${realpathSync(disambiguatedPath)}`);
+    expect(git(rootDir, ["worktree", "list", "--porcelain"])).toContain(`worktree ${gitPath(realpathSync(disambiguatedPath))}`);
   });
 
   it("rejects a relocation target outside the configured root before touching the source", async () => {
