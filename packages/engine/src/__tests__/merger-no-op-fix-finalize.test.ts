@@ -66,7 +66,8 @@ describe("commitOrAmendMergeWithFixes no-op finalize", () => {
     const preAttemptSha = stageSquashThenClear(dir, "feat/noop", "feature-a.ts", "export const a = 1;\n");
     expect(git(dir, "git diff --cached --name-only")).toBe("");
     expect(git(dir, "git rev-parse HEAD")).toBe(preAttemptSha);
-    expect(readFileSync(join(dir, "feature-a.ts"), "utf-8")).toBe("export const a = 1;\n");
+    const featureContent = readFileSync(join(dir, "feature-a.ts"), "utf-8").replace(/\r\n/g, "\n");
+    expect(featureContent).toBe("export const a = 1;\n");
 
     const result = await commitOrAmendMergeWithFixes(
       dir,
