@@ -104,6 +104,17 @@ export function createChildEnv(baseEnv, isolatedHome) {
   };
 }
 
+/*
+FNXC:BootSmoke 2026-08-17-10:17:
+The help preflight imports the same CLI runtime as `fn init` and must use the
+same isolated HOME/project and scrubbed database/port environment. Inheriting
+the operator environment let `fn --help` touch a real external backend and
+hang before the deterministic boot smoke could start.
+*/
+export function createCliPreflightOptions({ cwd, env, timeout }) {
+  return { cwd, env, timeout };
+}
+
 /** Return the deterministic init assertion failure, or null when its liveness proof holds. */
 export function classifyInitFailure(init, projectMarkerExists) {
   const output = `${init.stdout ?? ""}${init.stderr ?? ""}`;
@@ -296,13 +307,17 @@ async function bootAndVerify(attempt, registerCleanup) {
     createBootSmokePhasePlan({ attempt }),
     (phase) => {
       if (phase.name === "help") {
-        return timer.measure(phase.name, () => runCli("fn --help", ["--help"], { timeout: 30_000 }));
+        return timer.measure(phase.name, () => runCli("fn --help", ["--help"], createCliPreflightOptions({
+          cwd: isolatedProject,
+          env: childEnv,
+          timeout: 30_000,
+        })));
       }
-      return timer.measure(phase.name, () => runCli("fn init", ["init", "--name", "boot-smoke", "--path", isolatedProject], {
+      return timer.measure(phase.name, () => runCli("fn init", ["init", "--name", "boot-smoke", "--path", isolatedProject], createCliPreflightOptions({
         cwd: isolatedProject,
         env: childEnv,
         timeout: HEALTH_TIMEOUT_MS,
-      }));
+      })));
     },
   );
   const { help, init } = preflightRuns;

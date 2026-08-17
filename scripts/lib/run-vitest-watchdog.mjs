@@ -181,6 +181,7 @@ export function captureHangDiagnostics({ label, command, args, budgetMs, started
  * @param {object} opts.spawn      injected spawn (node:child_process spawn); required for testability
  * @param {string} [opts.cwd]       working directory for the spawned child (preserves callers that
  *   ran the test command from a fixed root, e.g. test-changed.mjs's rootDir)
+ * @param {boolean} [opts.shell]    platform shell requirement for command shims such as pnpm.cmd
  * @param {() => number} [opts.now] injected clock (defaults to Date.now)
  * @param {(signal: string) => void} [opts.killGroup] injected group-signaller
  *   (defaults to a process-group `process.kill(-pid)` with child.kill fallback);
@@ -191,6 +192,7 @@ export function runWithWatchdog({
   args,
   env = process.env,
   cwd = null,
+  shell,
   budgetMs,
   graceMs = DEFAULT_GRACE_MS,
   heartbeatMs = DEFAULT_HEARTBEAT_MS,
@@ -219,6 +221,7 @@ export function runWithWatchdog({
       stdio: "inherit",
       env,
       ...(cwd ? { cwd } : {}),
+      ...(shell !== undefined ? { shell } : {}),
     });
 
     const heartbeat = setInterval(() => {

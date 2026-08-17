@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   buildTypecheckStep,
+  getPnpmInvocation,
   buildBuildStep,
   buildBootSmokeStep,
   buildArtifactBootstrapStep,
@@ -80,6 +81,11 @@ function stepByKind(plan, kind) {
 // ---------------------------------------------------------------------------
 // buildTypecheckStep
 // ---------------------------------------------------------------------------
+
+test("getPnpmInvocation: uses a shell only for Windows command shims", () => {
+  assert.deepEqual(getPnpmInvocation("win32"), { command: "pnpm", shell: true });
+  assert.deepEqual(getPnpmInvocation("linux"), { command: "pnpm", shell: false });
+});
 
 test("buildTypecheckStep: uses the package's typecheck script when present", () => {
   const step = buildTypecheckStep("@fusion/engine", { hasTypecheck: true });

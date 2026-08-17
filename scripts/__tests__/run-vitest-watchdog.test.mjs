@@ -250,3 +250,24 @@ test("runWithWatchdog: passes cwd through to spawn when provided", async () => {
   await p;
   assert.equal(capturedOpts.cwd, "/tmp/repo-root");
 });
+
+test("runWithWatchdog: passes an explicit shell requirement to spawn", async () => {
+  let capturedOpts = null;
+  const child = makeFakeChild();
+  const p = runWithWatchdog({
+    command: "pnpm",
+    args: ["--filter", "@fusion/core", "typecheck"],
+    shell: true,
+    budgetMs: 10_000,
+    label: "windows-pnpm-shim",
+    log: () => {},
+    spawn: (_cmd, _args, opts) => {
+      capturedOpts = opts;
+      return child;
+    },
+    killGroup: () => {},
+  });
+  child.emit("close", 0, null);
+  await p;
+  assert.equal(capturedOpts.shell, true);
+});

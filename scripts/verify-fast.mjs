@@ -94,6 +94,17 @@ export const VERIFY_EXCLUDED_PACKAGES = new Set(["@fusion/desktop", "@fusion/mob
 export const BOOT_SMOKE_REQUIRED_BUILD_PACKAGES = ["@runfusion/fusion"];
 
 /*
+FNXC:TestInfrastructure 2026-08-17-10:10:
+Node cannot launch the Windows `pnpm` command shim without a shell, while the
+same command is directly executable on POSIX hosts. Keep the command/argument
+contract identical and carry the platform-specific shell requirement with the
+planned step so the watchdog can preserve it.
+*/
+export function getPnpmInvocation(platform = process.platform) {
+  return { command: "pnpm", shell: platform === "win32" };
+}
+
+/*
 FNXC:TestInfrastructure 2026-08-11-09:38:
 verify:fast ran every step strictly serially, so its wall clock was the SUM of steps
 that have no ordering relationship. Two groups are independent and now run
@@ -131,6 +142,7 @@ export const TYPECHECK_PARALLEL_LIMIT = Math.max(1, Math.min(4, Math.floor(cpuCo
  * @returns {{ id: string, kind: string, pkg: string, label: string, command: string, args: string[], klass: string }}
  */
 export function buildTypecheckStep(pkg, meta = {}) {
+  const pnpm = getPnpmInvocation();
   const args = meta.hasTypecheck
     ? ["--filter", pkg, "typecheck"]
     : ["--filter", pkg, "exec", "tsc", "--noEmit", "-p", "."];
@@ -138,7 +150,7 @@ export function buildTypecheckStep(pkg, meta = {}) {
      script writing only its own tsbuildinfo), so sibling packages cannot collide.
      They are the dominant cost of a multi-package run — grouping them lets the wall
      clock be the slowest package rather than their sum. */
-  return { id: `typecheck:${pkg}`, kind: "typecheck", pkg, label: `typecheck ${pkg}`, command: "pnpm", args, klass: "changed", parallelGroup: "typecheck", parallelLimit: TYPECHECK_PARALLEL_LIMIT };
+  return { id: `typecheck:${pkg}`, kind: "typecheck", pkg, label: `typecheck ${pkg}`, command: pnpm.command, shell: pnpm.shell, args, klass: "changed", parallelGroup: "typecheck", parallelLimit: TYPECHECK_PARALLEL_LIMIT };
 }
 
 /**
@@ -148,7 +160,8 @@ export function buildTypecheckStep(pkg, meta = {}) {
  * @returns {{ id: string, kind: string, pkg: string, label: string, command: string, args: string[], klass: string }}
  */
 export function buildBuildStep(pkg) {
-  return { id: `build:${pkg}`, kind: "build", pkg, label: `build ${pkg}`, command: "pnpm", args: ["--filter", pkg, "build"], klass: "changed" };
+  const pnpm = getPnpmInvocation();
+  return { id: `build:${pkg}`, kind: "build", pkg, label: `build ${pkg}`, command: pnpm.command, shell: pnpm.shell, args: ["--filter", pkg, "build"], klass: "changed" };
 }
 
 /**
@@ -355,6 +368,7 @@ export async function runStep(step, { spawnFn = spawn, log = console.log, errLog
     args: step.args,
     env: process.env,
     cwd,
+    ...(step.shell !== undefined ? { shell: step.shell } : {}),
     budgetMs,
     label: step.label,
     log: errLog,

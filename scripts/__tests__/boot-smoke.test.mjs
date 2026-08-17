@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   classifyInitFailure,
   createBootSmokePhasePlan,
+  createCliPreflightOptions,
   createChildEnv,
   runPreflightPhasePlan,
   removeTempDir,
@@ -129,6 +130,14 @@ test("isolated child env strips inherited database and port controls", () => {
   assert.equal(env.FUSION_NO_EMBEDDED_PG, undefined);
   assert.equal(env.PORT, undefined);
   assert.equal(env.KEEP, "yes");
+});
+
+test("CLI preflight options use the isolated project and child environment", () => {
+  const env = createChildEnv({ DATABASE_URL: "postgres://ambient", PORT: "4040" }, "/tmp/fusion-home");
+  const options = createCliPreflightOptions({ cwd: "/tmp/fusion-project", env, timeout: 30_000 });
+  assert.equal(options.cwd, "/tmp/fusion-project");
+  assert.equal(options.env, env);
+  assert.equal(options.timeout, 30_000);
 });
 
 test("importing boot-smoke.mjs does not boot a server (main() guard holds)", async () => {
