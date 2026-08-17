@@ -24,7 +24,7 @@
  * - `reclaimStaleActiveBranches`: remains native (branch-level)
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { setImmediate as setImmediateCb } from "node:timers";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -4717,7 +4717,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         }
       }
 
-      const branchesRaw = String(execSync("git branch --list 'fusion/*'", {
+      const branchesRaw = String(execFileSync("git", ["branch", "--list", "fusion/*"], {
         cwd: this.options.rootDir,
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
