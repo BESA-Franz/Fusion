@@ -550,6 +550,74 @@ describe("ModelOnboardingModal", () => {
     });
   });
 
+  /*
+  FNXC:Onboarding 2026-08-17-23:47:
+  The "Connect remote Fusion server" card belongs to the NATIVE SHELL hand-off, so it must appear on
+  exactly one host class. The old gate keyed only on `desktopMode !== "local"`, and `desktopMode` is
+  undefined in a browser, so every web first-run led Set Up AI with a remote-server form and copy
+  about a "native shell" the visitor does not have (operator report). Enumerated surfaces: plain web
+  (never), desktop shell in local mode (never — a local runtime is already the backend), desktop
+  shell without a profile (shown), mobile shell without a profile (shown), and any host that already
+  has an active profile (never).
+  */
+  describe("AI Setup step — remote Fusion server card host gating", () => {
+    const remoteCardText = /Connect remote Fusion server/;
+
+    function renderWithShellState(state: Record<string, unknown>) {
+      mockUseShellConnection.mockReturnValue({
+        shellApi: { saveProfile: vi.fn() },
+        ready: true,
+        openConnectionManagerSignal: 0,
+        state: { profiles: [], activeProfileId: null, ...state },
+        saveProfile: vi.fn(),
+        removeProfile: vi.fn(),
+        setActiveProfile: vi.fn(),
+      });
+      return render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+    }
+
+    it("never offers a remote server in a plain browser", async () => {
+      renderWithShellState({ host: "web" });
+
+      await waitFor(() => {
+        expect(screen.getByText("Anthropic")).toBeTruthy();
+      });
+      expect(screen.queryByText(remoteCardText)).toBeNull();
+    });
+
+    it("never offers a remote server to a local-mode desktop shell", async () => {
+      renderWithShellState({ host: "desktop-shell", desktopMode: "local" });
+
+      await waitFor(() => {
+        expect(screen.getByText("Anthropic")).toBeTruthy();
+      });
+      expect(screen.queryByText(remoteCardText)).toBeNull();
+    });
+
+    it("offers a remote server to an unconfigured native shell", async () => {
+      const { unmount } = renderWithShellState({ host: "desktop-shell", desktopMode: "remote" });
+
+      await waitFor(() => {
+        expect(screen.getByText(remoteCardText)).toBeTruthy();
+      });
+      unmount();
+
+      renderWithShellState({ host: "mobile-shell" });
+      await waitFor(() => {
+        expect(screen.getByText(remoteCardText)).toBeTruthy();
+      });
+    });
+
+    it("stops offering a remote server once a profile is active", async () => {
+      renderWithShellState({ host: "desktop-shell", desktopMode: "remote", activeProfileId: "profile_1" });
+
+      await waitFor(() => {
+        expect(screen.getByText("Anthropic")).toBeTruthy();
+      });
+      expect(screen.queryByText(remoteCardText)).toBeNull();
+    });
+  });
+
   describe("AI Setup step", () => {
     it("shows OAuth providers with Login button", async () => {
       render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);

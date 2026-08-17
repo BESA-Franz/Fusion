@@ -121,19 +121,21 @@ describe("GitHubImportModal", () => {
   const onImport = vi.fn();
 
   /*
-  FNXC:GitHubImport 2026-08-02-02:47:
-  This stylesheet guard complements the emitted-CSS Chromium geometry regression: only the
-  standalone importer clears the shared gutter under FloatingWindow's canonical sheet predicate.
+  FNXC:GitHubImport 2026-08-17-23:47:
+  FN-8722 gave the standalone importer sheet a local `margin-inline-end: 0` to undo the shared
+  FloatingWindow body gutter that otherwise shifted every shell region left. That shared gutter is
+  deleted outright, so the override is gone with it and this guard inverts: the importer must NOT
+  carry any body-gutter rule of its own, and the detail panel now owns a symmetric inset directly
+  instead of borrowing the gutter for its right side (it previously set `padding-inline-end: 0`).
   */
-  it("clears the standalone sheet gutter without changing embedded or detail presentations", () => {
-    const sheetStart = floatingWindowCss.indexOf("@media (max-width: 767.98px), (max-height: 480px)");
-    const sheetEnd = floatingWindowCss.indexOf("@media (max-width: 767.98px) {", sheetStart + 1);
-    const sheetStyles = floatingWindowCss.slice(sheetStart, sheetEnd);
+  it("carries no body gutter override and owns a symmetric detail-panel inset", () => {
+    expect(floatingWindowCss).not.toContain(".floating-window--github-import .floating-window__body");
 
-    expect(sheetStyles).toContain(".floating-window--github-import .floating-window__body {");
-    expect(sheetStyles).toContain("margin-inline-end: 0;");
-    expect(sheetStyles).not.toContain(".floating-window--github-import-detail .floating-window__body");
-    expect(sheetStyles).not.toContain(".github-import-embedded");
+    const importCss = readFileSync(resolve(__dirname, "../GitHubImportModal.css"), "utf8");
+    const detailPanel = importCss.match(/\.github-import-detail-panel\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(detailPanel).toContain("padding: var(--space-lg);");
+    expect(detailPanel).not.toMatch(/padding-inline-end\s*:/);
+    expect(importCss).not.toContain(".floating-window--tablet-viewport .github-import-detail-panel");
   });
 
   it("uses color-mix tokens for focus and selection surfaces", () => {
@@ -3168,7 +3170,15 @@ describe("GitHubImportModal", () => {
   */
   it("scopes the import detail FloatingWindow as the shared mobile full-screen sheet", () => {
     const source = readFileSync(resolve(__dirname, "../FloatingWindow.css"), "utf8");
-    const phoneSheetMedia = source.match(/@media \(max-width: 767\.98px\), \(max-height: 480px\) \{([\s\S]*?)\n\}\n\n@media/)?.[1];
+    /*
+     * FNXC:GitHubImport 2026-08-17-23:47:
+     * Terminate on the media block's OWN closing brace (a `}` at column 0 — every rule inside is
+     * indented) rather than on a following `@media`. The old pattern assumed another at-rule came
+     * next, so deleting the phone-only block that followed it (it held nothing but a
+     * `margin-inline-end: 0` undo of the retired shared gutter) made this match fail and the whole
+     * sheet-geometry contract silently unverifiable.
+     */
+    const phoneSheetMedia = source.match(/@media \(max-width: 767\.98px\), \(max-height: 480px\) \{([\s\S]*?)\n\}\n/)?.[1];
     expect(phoneSheetMedia, "phone-sheet media query must exist").toBeTruthy();
     const declarationList = (ruleBody: string) => ruleBody.split(";").map((declaration) => declaration.trim()).filter(Boolean);
     const ruleDeclarations = (css: string, selector: RegExp, name: string) => {

@@ -11,10 +11,11 @@ FN-6811 recurrence #6 tightened ownership of this scoped symbols face: every ter
 FNXC:TerminalLayout 2026-08-01-04:23:
 SHELL NAMING MAP — the terminal renders through FIVE shells and only some live in this file:
 docked/below panels and the mobile sheet are plain `.modal`/host elements styled here, but the
-FLOATING pop-out wraps `terminalContent` in FloatingWindow (FloatingWindow.css), whose shared
-body element owns the FN-8015 inline-end gutter and the tablet-viewport zeroing. An
+FLOATING pop-out wraps `terminalContent` in FloatingWindow (FloatingWindow.css). An
 inset/padding bug reported "on the terminal
 modal" in tablet view is almost certainly the FloatingWindow shell, not a rule in this file.
+The shared body no longer reserves FN-8015's inline-end gutter (deleted 2026-08-17 for every
+caller), so the pop-out's insets now come only from `terminalContent` itself.
 */
 @font-face {
   font-family: "Fusion Terminal Nerd Font Symbols";

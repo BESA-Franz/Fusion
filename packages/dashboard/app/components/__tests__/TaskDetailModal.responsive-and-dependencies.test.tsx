@@ -906,7 +906,6 @@ describe("TaskDetailModal", () => {
     it("keeps the floating task header symmetric without sacrificing its resize targets", () => {
       const floatingCss = readFileSync(resolve(__dirname, "../FloatingWindow.css"), "utf8");
       const desktopTaskSelector = ".floating-window--task-detail:not(.floating-window--tablet-viewport)";
-      const taskPopupBody = getExactCssRuleBlock(floatingCss, `${desktopTaskSelector} .floating-window__body`);
       const sharedBody = getExactCssRuleBlock(floatingCss, ".floating-window__body");
       const header = getExactCssRuleBlock(readDashboardStylesSource(), ".modal-header");
       const eastResize = getExactCssRuleBlock(floatingCss, `${desktopTaskSelector} .floating-window__resize-handle--e`);
@@ -915,12 +914,13 @@ describe("TaskDetailModal", () => {
       const onRequestClose = vi.fn();
 
       /*
-      FNXC:TaskDetailLayout 2026-08-03-19:36:
-      The shared body reserves desktop scrollbar clearance. Task Detail moves only its resize
-      hit areas outboard, so the embedded header retains matching tokenized edges.
+      FNXC:TaskDetailLayout 2026-08-17-23:47:
+      The shared body reserves NOTHING on its inline end any more — FN-8015's gutter is deleted for
+      every caller, so this popup's symmetric edge no longer depends on a local zeroing that undoes
+      it. Task Detail keeps its outboard resize hit areas (below), which is what lets the embedded
+      header keep matching tokenized edges while the scrollbar stays grabbable.
       */
-      expect(sharedBody).toContain("margin-inline-end: var(--space-lg);");
-      expect(taskPopupBody).toContain("margin-inline-end: 0;");
+      expect(sharedBody).not.toMatch(/margin-inline-end\s*:/);
       expect(header).toContain("padding: var(--modal-padding);");
       expect(eastResize).toContain("right: calc(var(--space-sm) * -1);");
       expect(northEastResize).toContain("right: calc(var(--space-lg) * -1);");

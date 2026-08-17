@@ -2029,14 +2029,20 @@ export function ModelOnboardingModal({
 
   const aiProviders = authProviders.filter((provider) => provider.id !== "github");
   /*
-   * FNXC:Onboarding 2026-07-03-07:20:
-   * Show the "Connect remote Fusion server" card ONLY when not already connected to a remote server
-   * (no active remote profile) — on any host, web included. Never show it in LOCAL desktop mode: a
-   * local runtime is already the connected backend, so prompting for a remote server URL just confuses
-   * first-run setup (the original report).
+   * FNXC:Onboarding 2026-08-17-23:47:
+   * Show the "Connect remote Fusion server" card ONLY inside a NATIVE SHELL (desktop or mobile app)
+   * that has no active remote profile yet. Two hosts must never see it:
+   *   - LOCAL desktop mode: a local runtime is already the connected backend, so asking for a remote
+   *     server URL just confuses first-run setup (the original 2026-07-03 report).
+   *   - A PLAIN BROWSER (`host === "web"`): there is no native shell to connect at all. The browser
+   *     IS already talking to the server it loaded from, and the card's own copy ("Your native shell
+   *     needs an active remote profile before dashboard handoff can complete") describes machinery
+   *     the visitor does not have. The previous rule keyed only on `desktopMode !== "local"`, and
+   *     `desktopMode` is undefined on web, so every browser first-run opened Set Up AI with a remote
+   *     server form above the AI providers it was supposed to lead with (operator report).
    */
   const showShellConnectionSetup =
-    !shellState.activeProfileId && shellState.desktopMode !== "local";
+    !shellState.activeProfileId && shellState.host !== "web" && shellState.desktopMode !== "local";
   const orderedAiProviders = [...aiProviders].sort(compareOnboardingProviders);
   const hasOauthProviders = orderedAiProviders.some((provider) => !provider.type || provider.type === "oauth");
   const providerSupportsApiKey = (provider: AuthProvider) => provider.type === "api_key";
