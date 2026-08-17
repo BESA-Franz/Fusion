@@ -20,7 +20,7 @@ Surfaces (FN-5893):
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { SelfHealingManager } from "../self-healing.js";
@@ -627,7 +627,7 @@ describeIfGit("workspace-aware self-healing (Phase D U1)", () => {
     const wtA = path.join(fx.repoPath("repo-a"), ".wt-task");
     fx.git("repo-a", `git worktree add -b ${BRANCH} ${wtA} HEAD`);
     const wtB = path.join(fx.repoPath("repo-b"), ".not-a-worktree");
-    execSync(`mkdir -p ${wtB}`, { stdio: "pipe" });
+    mkdirSync(wtB, { recursive: true });
     writeFileSync(path.join(wtB, "stray.txt"), "x", "utf-8");
     expect(existsSync(wtA)).toBe(true);
     expect(existsSync(wtB)).toBe(true);
