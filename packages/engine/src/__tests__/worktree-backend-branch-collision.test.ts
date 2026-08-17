@@ -12,7 +12,8 @@ function git(repo: string, command: string): string {
 
 function assertRegisteredWorktree(repo: string, worktreePath: string, branch: string): void {
   const porcelain = git(repo, "git worktree list --porcelain");
-  expect(porcelain).toContain(`worktree ${realpathSync(worktreePath)}`);
+  const gitWorktreePath = realpathSync(worktreePath).replaceAll("\\", "/");
+  expect(porcelain).toContain(`worktree ${gitWorktreePath}`);
   expect(porcelain).toContain(`branch refs/heads/${branch}`);
 }
 
