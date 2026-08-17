@@ -19,6 +19,7 @@ function createStore(overrides: Partial<Record<string, unknown>> = {}): TaskStor
     updateTask: vi.fn().mockResolvedValue(undefined),
     logEntry: vi.fn().mockResolvedValue(undefined),
     getSettings: vi.fn().mockResolvedValue({ autoMerge: false }),
+    getTask: vi.fn().mockResolvedValue(undefined),
     on: emitter.on.bind(emitter),
     ...overrides,
   }) as unknown as TaskStore & EventEmitter;
