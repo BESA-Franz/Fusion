@@ -101,10 +101,17 @@ export async function evaluateTaskDoneScopeLeak(
     for (const repoRel of repoKeys) {
       const repo = workspaceWorktrees[repoRel];
       try {
-        const [repoUncommitted, repoCommitted] = await Promise.all([
+        // Await both reads even when one fails. A short-circuiting Promise.all would leave the
+        // sibling git process running while the caller handles the fail-closed result; on Windows
+        // that orphaned process can keep the worktree open and make cleanup fail with EPERM.
+        const [repoUncommittedResult, repoCommittedResult] = await Promise.allSettled([
           deps.captureUncommittedModifiedFiles(repo.worktreePath),
           deps.captureModifiedFiles(repo.worktreePath, repo.baseCommitSha ?? undefined, task.id, audit, "scope-leak-guard"),
         ]);
+        if (repoUncommittedResult.status === "rejected") throw repoUncommittedResult.reason;
+        if (repoCommittedResult.status === "rejected") throw repoCommittedResult.reason;
+        const repoUncommitted = repoUncommittedResult.value;
+        const repoCommitted = repoCommittedResult.value;
         // Repo-LOCAL touched files (no `${repoRel}/` prefix) so the always-allowed `.changeset/`
         // carve-out and the scope match operate as the reviewer/cwd=repo sees them (F5).
         const repoTouched = [...new Set([...repoUncommitted, ...repoCommitted])];
