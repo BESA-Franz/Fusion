@@ -48,7 +48,7 @@ describeIfGit("classifyOwnedLandedEvidence", () => {
 
       git(repo, "git checkout -b fusion/fn-owned");
       writeFileSync(join(repo, "owned.txt"), "owned\n", "utf-8");
-      git(repo, "git add owned.txt && git commit -m 'feat(FN-OWNED): landed' -m 'Fusion-Task-Id: FN-OWNED'");
+      git(repo, `git add owned.txt && git commit -m ${JSON.stringify("feat(FN-OWNED): landed")} -m ${JSON.stringify("Fusion-Task-Id: FN-OWNED")}`);
       const ownedSha = git(repo, "git rev-parse HEAD");
       git(repo, "git checkout main");
       git(repo, `git cherry-pick ${ownedSha}`);
@@ -126,7 +126,7 @@ describeIfGit("classifyOwnedLandedEvidence", () => {
       git(repo, "git checkout -b fusion/fn-a");
       writeFileSync(join(repo, "foreign.txt"), "from fn-a\n", "utf-8");
       git(repo, "git add foreign.txt");
-      git(repo, "git commit -m 'feat(FN-A): foreign start point' -m 'Fusion-Task-Id: FN-A'");
+      git(repo, `git commit -m ${JSON.stringify("feat(FN-A): foreign start point")} -m ${JSON.stringify("Fusion-Task-Id: FN-A")}`);
       const foreignBaseSha = git(repo, "git rev-parse HEAD");
 
       git(repo, "git checkout main");
