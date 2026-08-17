@@ -80,7 +80,7 @@ function setupForeignOnlyRepo(dir: string, taskId: string): void {
   git(dir, `git checkout -b fusion/${taskId.toLowerCase()}`);
   writeFileSync(join(dir, "foreign.txt"), "from foreign\n");
   git(dir, "git add foreign.txt");
-  git(dir, "git commit -m 'feat(FN-OTHER): foreign' -m 'Fusion-Task-Id: FN-OTHER'");
+  git(dir, 'git commit -m "feat(FN-OTHER): foreign" -m "Fusion-Task-Id: FN-OTHER"');
   git(dir, "git checkout main");
 }
 
