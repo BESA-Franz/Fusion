@@ -3509,7 +3509,7 @@ async function buildDeterministicMergeMessage(params: {
   aiSummary?: string | null;
   aiBody?: string | null;
   aiSubject?: string | null;
-}): Promise<{ subjectArg: string; bodyArg: string }> {
+}): Promise<{ subject: string; body: string; subjectArg: string; bodyArg: string }> {
   const { taskId, branch, commitLog, diffStat, includeTaskId, aiSummary, aiBody, aiSubject } = params;
   const prefix = includeTaskId ? `feat(${taskId})` : "feat";
   const trimmedAiSubject = aiSubject?.trim() ?? "";
@@ -3533,6 +3533,8 @@ async function buildDeterministicMergeMessage(params: {
   // double quotes, dollar signs, and backticks.
   const escape = (s: string) => s.replace(/(["\\$`])/g, "\\$1");
   return {
+    subject,
+    body,
     subjectArg: `-m "${escape(subject)}"`,
     bodyArg: `-m "${escape(body)}"`,
   };
@@ -3541,6 +3543,34 @@ async function buildDeterministicMergeMessage(params: {
 export { buildDeterministicMergeMessage as __testOnlyBuildDeterministicMergeMessage };
 export { resolveSafeCommitBody as __testOnlyResolveSafeCommitBody };
 export { resolveComplexRebaseConflictsWithAi as __testOnlyResolveComplexRebaseConflictsWithAi };
+
+/**
+ * Decode the internally-generated `-m "..."` fragments into argv entries.
+ * Commit messages must cross the child-process boundary as arguments: passing
+ * multiline bodies through a shell command lets Windows cmd.exe terminate the
+ * quoted value at the first newline and silently drops the remaining body.
+ */
+function appendGeneratedMessageArgs(args: string[], fragment: string): void {
+  const messagePattern = /-m "((?:\\.|[^"])*)"/g;
+  for (const match of fragment.matchAll(messagePattern)) {
+    const encoded = match[1] ?? "";
+    args.push("-m", encoded.replace(/\\(["\\$`])/g, "$1"));
+  }
+}
+
+function buildDeterministicCommitArgs(params: {
+  amend: boolean;
+  subject: string;
+  body: string;
+  trailerArg: string;
+  authorArg: string;
+}): string[] {
+  const args = params.amend ? ["commit", "--amend"] : ["commit"];
+  args.push("-m", params.subject, "-m", params.body);
+  appendGeneratedMessageArgs(args, params.trailerArg);
+  appendGeneratedMessageArgs(args, params.authorArg);
+  return args;
+}
 
 /**
  * Stage current changes and either:
@@ -4060,7 +4090,7 @@ export async function commitOrAmendMergeWithFixes(
     const messageCommitLog = actualContext.commitLog || commitLog;
     const messageDiffStat = actualContext.diffStat || diffStat;
 
-    const { subjectArg, bodyArg } = await buildDeterministicMergeMessage({
+    const { subject, body } = await buildDeterministicMergeMessage({
       taskId,
       branch,
       commitLog: messageCommitLog,
@@ -4100,8 +4130,15 @@ export async function commitOrAmendMergeWithFixes(
         settings,
         store,
       });
-      await execAsync(
-        `git commit ${subjectArg} ${bodyArg}${trailerArg}${authorArg}`,
+      await execFileAsync(
+        "git",
+        buildDeterministicCommitArgs({
+          amend: false,
+          subject,
+          body,
+          trailerArg,
+          authorArg,
+        }),
         { cwd: rootDir, env: mergerCommitEnv() },
       );
       if (store && lineageId) {
@@ -4132,8 +4169,15 @@ export async function commitOrAmendMergeWithFixes(
       settings,
       store,
     });
-    await execAsync(
-      `git commit --amend ${subjectArg} ${bodyArg}${trailerArg}${authorArg}`,
+    await execFileAsync(
+      "git",
+      buildDeterministicCommitArgs({
+        amend: true,
+        subject,
+        body,
+        trailerArg,
+        authorArg,
+      }),
       { cwd: rootDir, env: mergerCommitEnv() },
     );
     if (store && lineageId) {
