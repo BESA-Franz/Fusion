@@ -496,6 +496,30 @@ pnpm --filter @fusion/core test 2>&1 | tee /tmp/fn-9127-core.log
 
 Checkpoint parsed JSONL and run metadata in a durable task document after every run; `/tmp` is scratch storage, not the evidence system of record.
 
+<!-- FNXC:PgDdlLaneMetric 2026-08-17-00:59: FN-9134 requires a pre-registered end-to-end band because teardown watchdogs become structurally meaningless when cleanup leaves the hook. The parser is intentionally report-only and the alternating samples are campaign observations, never Vitest retries. -->
+
+### PostgreSQL DDL loaded-lane acceptance metric
+
+Use `scripts/pg-ddl-lane-metric.mjs` before judging a PostgreSQL DDL structural candidate. Run at least seven **interleaved** control/candidate pairs at `VITEST_MAX_WORKERS=12`; preserve one diagnostics JSONL sink and complete runner log per invocation. The exact lane is:
+
+```bash
+FUSION_PG_TEST_TEARDOWN_DIAGNOSTICS=1 \
+FUSION_PG_TEST_TEARDOWN_DIAGNOSTICS_LOG=/tmp/fn-9134-control-01.jsonl \
+VITEST_MAX_WORKERS=12 \
+pnpm --filter @fusion/core exec vitest run src/__tests__/postgres --reporter=dot 2>&1 \
+| tee /tmp/fn-9134-control-01.log
+```
+
+Alternate the default control and enabled candidate; do not repeat an unfavorable completed run. The primary metric is median complete lane wall-clock time. Every run must be green and report zero surviving `fusion_test_%` databases. Completed `dropDatabase` p95/max, watchdog counts, and teardown-watchdog counts are descriptive only: moving cleanup out of the hook can zero them by construction.
+
+The pre-registered verdict is `improved` only when each lane has at least seven valid samples, the candidate median is below the control's 25th percentile, and the candidate worst wall time does not exceed the control median. Any red run, missing wall time, or non-zero leak count is `no-improvement`; fewer than seven samples in either lane is `insufficient-data`. Generate a report without contacting the cluster:
+
+```bash
+node scripts/pg-ddl-lane-metric.mjs \
+  --run control:/tmp/fn-9134-control-01.jsonl:/tmp/fn-9134-control-01.log:0 \
+  --run candidate:/tmp/fn-9134-candidate-01.jsonl:/tmp/fn-9134-candidate-01.log:0
+```
+
 <!-- FNXC:EngineTestReliability 2026-06-27-10:05: FN-7119 rescued the 2026-06-26 engine scheduler/reliability quarantine burst by completing local TaskStore fakes for the scheduler heartbeat `updateSettings({ engineLastActiveAt })` write before adjusting any call-count assertions. When a scheduler batch reports zero mock calls or missing audit events after a heartbeat-era scheduler change, first mirror the production store surface in shared fakes and re-run the exact files together under `engine-default` / `engine-reliability`; do not weaken call-count invariants or quarantine ledger/config rows after the fake drift is fixed. -->
 
 <!-- FNXC:TestQuarantine 2026-06-19-14:15: FN-6740 audited the same-day quarantine ledger as a coordinated deletion-ratchet batch. The ledger had 14 entries (3 dashboard, 6 core, 5 CLI) and every entry was mirrored in its package Vitest exclude; keep follow-up rescue/delete work scoped by subsystem so ledger/config edits remain lockstep and do not collide. -->
