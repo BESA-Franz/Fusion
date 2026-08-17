@@ -32,7 +32,7 @@ describeIfGit("auditSquashMerge", () => {
     git(repo, 'git config user.email "test@example.com"');
     git(repo, 'git config user.name "Test User"');
     write(repo, "README.md", "init\n");
-    git(repo, "git add README.md && git commit -m 'init'");
+    git(repo, 'git add README.md && git commit -m "init"');
     return repo;
   }
 
@@ -47,11 +47,11 @@ describeIfGit("auditSquashMerge", () => {
 
     git(repo, "git checkout -b feature/clean");
     write(repo, "feature.txt", "branch-only\n");
-    git(repo, "git add feature.txt && git commit -m 'feat: branch clean change'");
+    git(repo, 'git add feature.txt && git commit -m "feat: branch clean change"');
 
     git(repo, "git checkout main");
     write(repo, "main-only.txt", "recent main\n");
-    git(repo, "git add main-only.txt && git commit -m 'chore: recent main touch'");
+    git(repo, 'git add main-only.txt && git commit -m "chore: recent main touch"');
 
     git(repo, "git merge --squash feature/clean");
     const squashSha = createSquashCommit(repo, ["feat: branch clean change"]);
@@ -69,11 +69,11 @@ describeIfGit("auditSquashMerge", () => {
 
     git(repo, "git checkout -b feature/dupe");
     write(repo, "branch.txt", "feature\n");
-    git(repo, "git add branch.txt && git commit -m 'feat: duplicate subject'");
+    git(repo, 'git add branch.txt && git commit -m "feat: duplicate subject"');
 
     git(repo, "git checkout main");
     write(repo, "main.txt", "main\n");
-    git(repo, "git add main.txt && git commit -m 'feat: duplicate subject'");
+    git(repo, 'git add main.txt && git commit -m "feat: duplicate subject"');
 
     git(repo, "git merge --squash feature/dupe");
     const squashSha = createSquashCommit(repo, ["feat: duplicate subject"]);
@@ -91,15 +91,15 @@ describeIfGit("auditSquashMerge", () => {
     const repo = setupRepo();
 
     write(repo, "shared.txt", "alpha\nbeta\ngamma\n");
-    git(repo, "git add shared.txt && git commit -m 'chore: add shared file'");
+    git(repo, 'git add shared.txt && git commit -m "chore: add shared file"');
 
     git(repo, "git checkout -b feature/overlap");
     write(repo, "shared.txt", "alpha-branch\nbeta\ngamma\n");
-    git(repo, "git add shared.txt && git commit -m 'feat: branch edits shared file'");
+    git(repo, 'git add shared.txt && git commit -m "feat: branch edits shared file"');
 
     git(repo, "git checkout main");
     write(repo, "shared.txt", "alpha\nbeta\ngamma-main\n");
-    git(repo, "git add shared.txt && git commit -m 'fix: main edits shared file'");
+    git(repo, 'git add shared.txt && git commit -m "fix: main edits shared file"');
 
     git(repo, "git merge --squash feature/overlap");
     const squashSha = createSquashCommit(repo, ["feat: branch edits shared file"]);
@@ -128,15 +128,15 @@ describeIfGit("auditSquashMerge", () => {
     const repo = setupRepo();
 
     write(repo, "shared.txt", "alpha\nbeta\ngamma\n");
-    git(repo, "git add shared.txt && git commit -m 'chore: add shared file'");
+    git(repo, 'git add shared.txt && git commit -m "chore: add shared file"');
 
     git(repo, "git checkout -b feature/combined");
     write(repo, "shared.txt", "alpha-branch\nbeta\ngamma\n");
-    git(repo, "git add shared.txt && git commit -m 'feat: duplicate and overlap'");
+    git(repo, 'git add shared.txt && git commit -m "feat: duplicate and overlap"');
 
     git(repo, "git checkout main");
     write(repo, "shared.txt", "alpha\nbeta\ngamma-main\n");
-    git(repo, "git add shared.txt && git commit -m 'feat: duplicate and overlap'");
+    git(repo, 'git add shared.txt && git commit -m "feat: duplicate and overlap"');
 
     git(repo, "git merge --squash feature/combined");
     const squashSha = createSquashCommit(repo, ["feat: duplicate and overlap"]);
@@ -160,20 +160,20 @@ describeIfGit("auditSquashMerge", () => {
 
     write(repo, "shared-a.txt", "a0\n");
     write(repo, "shared-b.txt", "b0\n");
-    git(repo, "git add shared-a.txt shared-b.txt && git commit -m 'chore: seed shared files'");
+    git(repo, 'git add shared-a.txt shared-b.txt && git commit -m "chore: seed shared files"');
 
     git(repo, "git checkout -b feature/multi-range");
     write(repo, "shared-a.txt", "a0\nfeature-a\n");
-    git(repo, "git add shared-a.txt && git commit -m 'feat: branch overlap a'");
+    git(repo, 'git add shared-a.txt && git commit -m "feat: branch overlap a"');
     write(repo, "shared-b.txt", "b0\nfeature-b\n");
-    git(repo, "git add shared-b.txt && git commit -m 'feat: branch overlap b'");
+    git(repo, 'git add shared-b.txt && git commit -m "feat: branch overlap b"');
     const rangeHeadSha = git(repo, "git rev-parse HEAD");
 
     git(repo, "git checkout main");
     write(repo, "shared-a.txt", "a0\nmain-a\n");
-    git(repo, "git add shared-a.txt && git commit -m 'feat: branch overlap a'");
+    git(repo, 'git add shared-a.txt && git commit -m "feat: branch overlap a"');
     write(repo, "shared-b.txt", "b0\nmain-b\n");
-    git(repo, "git add shared-b.txt && git commit -m 'feat: branch overlap b'");
+    git(repo, 'git add shared-b.txt && git commit -m "feat: branch overlap b"');
 
     const rangeBaseSha = git(repo, "git merge-base feature/multi-range main");
     const findings = await auditSquashMerge({
@@ -196,22 +196,22 @@ describeIfGit("auditSquashMerge", () => {
 
     write(repo, "shared-a.txt", "a0\n");
     write(repo, "shared-b.txt", "b0\n");
-    git(repo, "git add shared-a.txt shared-b.txt && git commit -m 'chore: seed shared files'");
+    git(repo, 'git add shared-a.txt shared-b.txt && git commit -m "chore: seed shared files"');
 
     git(repo, "git checkout -b feature/multi-fallback");
     write(repo, "shared-a.txt", "a0\nfeature-a\n");
-    git(repo, "git add shared-a.txt && git commit -m 'feat: branch overlap a'");
+    git(repo, 'git add shared-a.txt && git commit -m "feat: branch overlap a"');
     write(repo, "shared-b.txt", "b0\nfeature-b\n");
-    git(repo, "git add shared-b.txt && git commit -m 'feat: branch overlap b'");
+    git(repo, 'git add shared-b.txt && git commit -m "feat: branch overlap b"');
 
     git(repo, "git checkout main");
     write(repo, "shared-a.txt", "a0\nmain-a\n");
-    git(repo, "git add shared-a.txt && git commit -m 'feat: branch overlap a'");
+    git(repo, 'git add shared-a.txt && git commit -m "feat: branch overlap a"');
     write(repo, "shared-b.txt", "b0\nmain-b\n");
-    git(repo, "git add shared-b.txt && git commit -m 'feat: branch overlap b'");
+    git(repo, 'git add shared-b.txt && git commit -m "feat: branch overlap b"');
 
     write(repo, "shared-b.txt", "b0\nmain-b\nfinal\n");
-    git(repo, "git add shared-b.txt && git commit -m 'feat: squash merge' -m '- feat: branch overlap b'");
+    git(repo, 'git add shared-b.txt && git commit -m "feat: squash merge" -m "- feat: branch overlap b"');
     const squashSha = git(repo, "git rev-parse HEAD");
 
     const findings = await auditSquashMerge({ rootDir: repo, strategy: "squash", squashSha, lookback: 20 });
