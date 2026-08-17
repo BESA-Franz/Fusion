@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Task, TaskStore } from "@fusion/core";
 
-vi.mock("../merge-dependency-sync.js", async (importOriginal) => {
+vi.mock("../merge/merge-dependency-sync.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../merge/merge-dependency-sync.js")>();
   return { ...actual, installWorktreeDependencies: vi.fn() };
 });
@@ -59,17 +59,17 @@ function createRepoFixture(withChanges: boolean): RepoFixture {
   execSync("git init -b main", { cwd: rootDir, stdio: "pipe" });
   configureIdentity(rootDir);
   writeFileSync(path.join(rootDir, "README.md"), "# Test\n", "utf-8");
-  execSync("git add README.md && git commit -m 'init'", { cwd: rootDir, stdio: "pipe" });
+  execSync('git add README.md && git commit -m "init"', { cwd: rootDir, stdio: "pipe" });
 
   // Create the task branch
   execSync(`git checkout -b ${BRANCH}`, { cwd: rootDir, stdio: "pipe" });
   if (withChanges) {
     writeFileSync(path.join(rootDir, "feature.txt"), "feature work\n", "utf-8");
-    execSync("git add feature.txt && git commit -m 'feat: add feature'", { cwd: rootDir, stdio: "pipe" });
+    execSync('git add feature.txt && git commit -m "feat: add feature"', { cwd: rootDir, stdio: "pipe" });
   } else {
     // Commit that adds no code (e.g. a readme-only doc change), so the branch is ahead
     writeFileSync(path.join(rootDir, "README.md"), "# Test\n\nUpdated\n", "utf-8");
-    execSync("git add README.md && git commit -m 'docs: update readme'", { cwd: rootDir, stdio: "pipe" });
+    execSync('git add README.md && git commit -m "docs: update readme"', { cwd: rootDir, stdio: "pipe" });
   }
   const mainSha = execSync("git rev-parse main", { cwd: rootDir, encoding: "utf-8" }).trim();
   execSync("git checkout main", { cwd: rootDir, stdio: "pipe" });
@@ -281,7 +281,7 @@ describeIfGit("landOneRepo no-commits dep-sync skip", () => {
        `main...branch` diff cannot see it and the case passes for the wrong reason. */
     execSync(`git checkout ${BRANCH}`, { cwd: fx.rootDir, stdio: "pipe" });
     writeFileSync(path.join(fx.rootDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf-8");
-    execSync("git add pnpm-lock.yaml && git commit -m 'chore: bump lockfile'", { cwd: fx.rootDir, stdio: "pipe" });
+    execSync('git add pnpm-lock.yaml && git commit -m "chore: bump lockfile"', { cwd: fx.rootDir, stdio: "pipe" });
     execSync("git checkout main", { cwd: fx.rootDir, stdio: "pipe" });
     store = createStore();
     audit = createRunAuditor(store, {
