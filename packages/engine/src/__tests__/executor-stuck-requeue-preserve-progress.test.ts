@@ -11,6 +11,7 @@ import {
   mockedDescribeRegisteredWorktrees,
   mockedExecSync,
   resetExecutorMocks,
+  createWorkflowRoutingAgentStore,
 } from "./executor-test-helpers.js";
 
 const mockedRemoveWorktree = vi.mocked(removeWorktree);
@@ -171,7 +172,8 @@ async function runSingleSessionStuckRequeue(
     releasePrompt = resolve;
   });
   const { startedPromise } = installSingleSession(() => promptRelease);
-  const executor = new TaskExecutor(store as any, "/tmp/test", {});
+  const { agentStore } = createWorkflowRoutingAgentStore(store);
+  const executor = new TaskExecutor(store as any, "/tmp/test", { agentStore });
 
   const executePromise = executor.execute(task);
   await startedPromise;
@@ -192,7 +194,8 @@ async function runStepSessionStuckRequeue(task: Task, settings: Record<string, u
   mockExecuteAll.mockReturnValue(new Promise<void>((resolve) => {
     release = resolve;
   }));
-  const executor = new TaskExecutor(store as any, "/tmp/test", {});
+  const { agentStore } = createWorkflowRoutingAgentStore(store);
+  const executor = new TaskExecutor(store as any, "/tmp/test", { agentStore });
 
   const executePromise = executor.execute(task);
   await vi.waitFor(() => expect((executor as any).activeStepExecutors.has(task.id)).toBe(true));
@@ -338,7 +341,8 @@ describe("TaskExecutor stuck requeue preserve-progress reconciliation", () => {
       releasePrompt = resolve;
     });
     const { startedPromise } = installSingleSession(() => promptRelease);
-    const executor = new TaskExecutor(store as any, "/tmp/test", {});
+    const { agentStore } = createWorkflowRoutingAgentStore(store);
+    const executor = new TaskExecutor(store as any, "/tmp/test", { agentStore });
 
     const executePromise = executor.execute(task);
     await startedPromise;
