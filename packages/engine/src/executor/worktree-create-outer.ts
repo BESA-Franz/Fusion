@@ -3,7 +3,7 @@
  * Outer createWorktree loop + squash-import + post-create remote rebase peeled from
  * TaskExecutor (U4 Slice B). Inject deps; keep thin class facades for spy/assignment surfaces.
  */
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
@@ -16,6 +16,7 @@ import { quoteShellArg } from "./shell-quote.js";
 import { NonRetryableWorktreeError } from "./worktree-registry-helpers.js";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export type WorktreeOuterStore = {
   updateTask: (taskId: string, patch: Record<string, unknown>) => Promise<unknown>;
@@ -113,10 +114,7 @@ export async function squashImportDepIntoWorktree(
 ): Promise<void> {
   // No-op when dep is already represented in the worktree's history.
   try {
-    await execAsync(
-      `git merge-base --is-ancestor ${quoteShellArg(depTip)} HEAD`,
-      { cwd: worktreePath },
-    );
+    await execFileAsync("git", ["merge-base", "--is-ancestor", depTip, "HEAD"], { cwd: worktreePath });
     return;
   } catch {
     // Not an ancestor — proceed.
@@ -125,14 +123,11 @@ export async function squashImportDepIntoWorktree(
   // Try a squash-merge. `--no-commit` is implied by `--squash`; the merge
   // either stages the dep's diff or fails (conflicts / unrelated histories).
   try {
-    await execAsync(
-      `git merge --squash --allow-unrelated-histories ${quoteShellArg(depTip)}`,
-      { cwd: worktreePath },
-    );
+    await execFileAsync("git", ["merge", "--squash", "--allow-unrelated-histories", depTip], { cwd: worktreePath });
   } catch (err) {
     // Reset any partial state so the worktree stays usable, then rethrow
     // so the caller can decide whether to log/fall-through.
-    await execAsync("git reset --hard HEAD", { cwd: worktreePath }).catch(
+    await execFileAsync("git", ["reset", "--hard", "HEAD"], { cwd: worktreePath }).catch(
       () => undefined,
     );
     throw err;
@@ -141,7 +136,7 @@ export async function squashImportDepIntoWorktree(
   // If no diff was staged the dep is content-equivalent to main; nothing
   // to commit.
   try {
-    await execAsync("git diff --cached --quiet", { cwd: worktreePath });
+    await execFileAsync("git", ["diff", "--cached", "--quiet"], { cwd: worktreePath });
     return; // exit 0 → no staged changes, nothing to commit
   } catch {
     // exit non-zero → staged changes exist, proceed to commit.
@@ -159,12 +154,9 @@ export async function squashImportDepIntoWorktree(
     `If the dep is later squash-merged to main, this commit's patch-id should ` +
     `match the merge and rebase cleanly.`;
   try {
-    await execAsync(
-      `git commit -m ${quoteShellArg(subject)} -m ${quoteShellArg(body)}`,
-      { cwd: worktreePath },
-    );
+    await execFileAsync("git", ["commit", "-m", subject, "-m", body], { cwd: worktreePath });
   } catch (commitErr) {
-    await execAsync("git reset --hard HEAD", { cwd: worktreePath }).catch(
+    await execFileAsync("git", ["reset", "--hard", "HEAD"], { cwd: worktreePath }).catch(
       () => undefined,
     );
     throw commitErr;
