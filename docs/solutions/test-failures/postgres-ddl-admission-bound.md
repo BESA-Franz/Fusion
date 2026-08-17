@@ -33,6 +33,21 @@ FN-9130 then implemented bounded deferred draining (R=2, Q=8), per-file flush, a
 
 Candidate C, per-fork database reuse with `TRUNCATE`, remains unexplored and is filed as FN-9136. Lowering workers, widening timeouts, drop retries, and core-test quarantine were not remedies and were not used.
 
+## FN-9139 setup-boundary pre-admission result — rejected
+
+<!-- FNXC:PgTestPreAdmission 2026-08-17-03:20: A shared Vitest setup boundary may only carry PostgreSQL work after a deterministic survey proves its timeout ownership. FN-9139 rejects uncertainty rather than attaching another acquisition to a hook budget. -->
+
+FN-9139 recorded a reachable local cluster (`max_connections=100`, `superuser_reserved_connections=3`, 28 CPUs) and a 27-worker control run. Its report-only boundary fixture ran twice: global setup appeared once per invocation and setup-file top-level evaluation once per worker, but the controlled short-deadline run yielded `unknown-failure` timeout classification rather than a stable off-budget proof. The required candidate probe was therefore deleted/not retained before a loaded candidate campaign could be started. This is an `insufficient-data` **BOUNDARY REJECTED** result, not a repaired timeout and not a reason to change retries, timeouts, harness wiring, or worker caps.
+
+| Arm / run | Wall time | Failed files | `project-identity.test.ts:41:3` | Peak `pg_stat_activity` backends | Probe degradation |
+| --- | ---: | ---: | --- | --- | --- |
+| Control / Step 0 | 218.8s | 16 | unavailable — the Step-0 summary did not retain case-level output | unavailable — the campaign sampler had not yet been implemented | n/a (probe off) |
+| Candidate | not run — boundary proof rejected before probe retention | n/a | n/a | n/a | n/a |
+
+The unavailable Step-0 fields are deliberately not backfilled or inferred: no sampler JSONL or captured Vitest log survives from that pre-driver control run. The campaign protocol requires five valid interleaved samples per arm with candidate diagnostics, so this single control observation cannot be promoted into affordability evidence.
+
+The retained `pg-setup-participation.ts` signal is connectionless and explicit (`FUSION_PG_TEST_SETUP_PARTICIPANT=1`, overridden by `FUSION_PG_TEST_SKIP=1`), preserving non-PG setup inertness. `scripts/pg-setup-boundary-probe.mjs` and `scripts/pg-preadmission-campaign.mjs` remain as repeatable measurement tooling. Any successor must first prove ordering and off-budget ownership, keep the probe default-off and non-consumable by the harness, use interleaved one-shell measurements, and treat incomplete data as rejection.
+
 <!-- FNXC:PgDdlLaneMetric 2026-08-17-00:59: FN-9134 must establish a green, drift-resistant control band before another structural DDL candidate is allowed to claim improvement. An invalid control is terminal insufficient data, not a reason to tune timeouts or rerun unfavorable samples. -->
 
 <!-- FNXC:PgDdlLaneMetric 2026-08-17-02:55: The required seven-pair interleaved campaign must remain the terminal evidence. Zeroed inline watchdogs only reflect off-hook execution, while green lanes and zero survivors decide whether a candidate can ship. -->
