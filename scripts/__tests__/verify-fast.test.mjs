@@ -62,6 +62,7 @@ const PRETEST_CHECKS = [
   "scripts/check-capacity-pool-id.mjs",
   "scripts/check-no-node-only-core-imports-in-dashboard.mjs",
   "scripts/check-pi-versions-pinned.mjs",
+  "scripts/check-workspace-package-graph.mjs",
   "scripts/check-no-test-timeout-appeasement.mjs",
   "scripts/check-changeset-format.mjs",
   "scripts/check-routes-modular.mjs",
@@ -124,7 +125,7 @@ test("buildArtifactBootstrapStep: runs the artifact bootstrap script via node", 
 test("buildStaticCheckStep: invokes a canonical validator directly through Node", () => {
   const step = buildStaticCheckStep("scripts/check-changeset-format.mjs", "/repo", NODE);
   assert.equal(step.command, NODE);
-  assert.deepEqual(step.args, ["/repo/scripts/check-changeset-format.mjs"]);
+  assert.deepEqual(step.args, [join("/repo", "scripts/check-changeset-format.mjs")]);
   assert.equal(step.kind, "static-check");
   assert.equal(step.id, "static-check:check-changeset-format");
 });
@@ -145,7 +146,7 @@ test("buildVerifyPlan: defaults to every canonical pretest validator before esta
 
   for (const step of stepByKind(plan, "static-check")) {
     assert.equal(step.command, NODE);
-    assert.match(step.args[0], /^\/repo\/scripts\/check-[\w-]+\.mjs$/);
+    assert.match(step.args[0].replaceAll("\\", "/"), /^\/repo\/scripts\/check-[\w-]+\.mjs$/);
     assert.equal(step.args.length, 1); // A validator path only: no test lane or mutation flag.
   }
 });

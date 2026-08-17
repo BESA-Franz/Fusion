@@ -20,6 +20,7 @@ const EXPECTED_GATE_CHECKS = [
   check("capacity-pool-id"),
   check("no-node-only-core-imports-in-dashboard"),
   check("pi-versions-pinned"),
+  check("workspace-package-graph"),
   check("no-test-timeout-appeasement"),
   check("changeset-format"),
   check("mock-completeness"),
