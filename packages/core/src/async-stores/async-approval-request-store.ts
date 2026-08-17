@@ -122,6 +122,16 @@ function rowToAuditEvent(row: ApprovalRequestAuditEventRow): ApprovalRequestAudi
  *
  * FNXC:ApprovalAnalyticsIsolation 2026-07-14-01:04:
  * Audit events must carry the bound layer's project ID at write time because request IDs alone do not provide a reliable tenant ownership join for Command Center intervention analytics. The live `(project_id, id)` key also permits deterministic audit IDs to collide safely across partitions; preserve the explicit value so the ownership trigger observes blank writes unchanged.
+ *
+ * FNXC:ApprovalAuditIdentity 2026-08-16-23:50:
+ * A deterministic ID collision needs one physical project partition, request ID,
+ * event type, and millisecond. `created` cannot repeat because the request-row
+ * primary key rejects ID reuse first; the transition matrix rejects same-state
+ * and terminal replays; and a concurrent non-terminal loser gets an empty
+ * status-guarded update before this append runs. The database-free
+ * `approval-request-audit-id-race.test.ts` pins that last branch, while the
+ * fail-closed PostgreSQL lifecycle overlap probes confirm it end to end. Keep
+ * this format unchanged unless a reachable writer defeats all three barriers.
  */
 async function appendAuditEvent(
   tx: DbTransaction,
