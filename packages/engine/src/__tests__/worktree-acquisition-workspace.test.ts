@@ -81,7 +81,7 @@ describeIfGit("acquireWorkspaceRepoWorktree (U2 per-repo hardening)", { timeout:
     git(repoA, "git push -u origin main");
 
     // Local main advances by an unpushed predecessor commit (FN-5937 shape).
-    git(repoA, "git commit --allow-empty -m 'FN-9000: unpushed predecessor'");
+    git(repoA, 'git commit --allow-empty -m "FN-9000: unpushed predecessor"');
     const localTip = git(repoA, "git rev-parse HEAD");
     const originTip = git(repoA, "git rev-parse origin/main");
     expect(localTip).not.toBe(originTip);
@@ -140,7 +140,7 @@ describeIfGit("acquireWorkspaceRepoWorktree (U2 per-repo hardening)", { timeout:
     // Leave ambient HEAD on unrelated work to prove fresh acquisition uses the
     // sub-repo integration branch, not whichever branch the root currently has checked out.
     git(repoA, "git checkout -qb ambient-work");
-    git(repoA, "git commit --allow-empty -m 'chore: ambient work'");
+    git(repoA, 'git commit --allow-empty -m "chore: ambient work"');
     git(repoA, "git branch fusion/fn-7 main");
 
     const { store, current } = makeFakeStore(makeTask("FN-7"));
@@ -178,7 +178,7 @@ describeIfGit("acquireWorkspaceRepoWorktree (U2 per-repo hardening)", { timeout:
     git(wt, "git checkout fusion/fn-3");
     writeFileSync(join(wt, "own.txt"), "own work\n", "utf-8");
     git(wt, "git add own.txt");
-    git(wt, "git commit -m 'FN-3: ok on own branch'");
+    git(wt, 'git commit -m "FN-3: ok on own branch"');
 
     // Switch to a foreign branch; the pre-commit identity guard must refuse.
     git(wt, "git checkout -B rogue-branch");
