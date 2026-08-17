@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -137,7 +137,7 @@ describe("autostash orphan surface", { timeout: 30_000 }, () => {
 
     const applyOk = await applyAutostashBySha(dir, sha);
     expect(applyOk).toEqual({ ok: true });
-    expect(git(dir, "cat file.txt")).toContain("from-stash");
+    expect(readFileSync(join(dir, "file.txt"), "utf-8")).toContain("from-stash");
 
     git(dir, "git checkout -- file.txt");
     writeFileSync(join(dir, "file.txt"), "other-change\n");
