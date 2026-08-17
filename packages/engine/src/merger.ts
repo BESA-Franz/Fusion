@@ -759,6 +759,27 @@ function execSyncText(command: string, options: Parameters<typeof execSync>[1]):
   return (output as Buffer).toString("utf-8").trim();
 }
 
+/**
+ * Return the staged-diff exit code without relying on a POSIX shell compound
+ * command. `git diff --cached --quiet` uses exit code 1 for a non-empty index;
+ * every other failure remains an exception so merge gates stay fail-closed.
+ */
+function stagedDiffExitCode(rootDir: string): "0" | "1" {
+  try {
+    const output = execSync("git diff --cached --quiet", {
+      cwd: rootDir,
+      encoding: "utf-8",
+    });
+    const text = output == null ? "" : typeof output === "string" ? output.trim() : (output as Buffer).toString("utf-8").trim();
+    return text === "1" ? "1" : "0";
+  } catch (error: unknown) {
+    if (typeof error === "object" && error !== null && "status" in error && (error as { status?: unknown }).status === 1) {
+      return "1";
+    }
+    throw error;
+  }
+}
+
 /** Extra environment variables injected into verification child processes to boost concurrency. */
 const VERIFICATION_EXTRA_ENV: NodeJS.ProcessEnv = Object.fromEntries(
   (
@@ -10350,10 +10371,7 @@ export async function executeMergeAttempt(
         // If only auto-resolvable conflicts (or all were resolved), commit directly
         if (complex.length === 0) {
           // All conflicts auto-resolved, commit with fallback message
-          const staged = execSyncText("git diff --cached --quiet 2>&1; echo $?", {
-            cwd: rootDir,
-            encoding: "utf-8",
-          }).trim();
+          const staged = stagedDiffExitCode(rootDir);
 
           if (staged !== "0") {
             throwIfAborted(options.signal, taskId);
@@ -10429,10 +10447,7 @@ export async function executeMergeAttempt(
         hasConflicts = true;
       } else {
         // No conflicts - check if squash is empty
-        const squashIsEmpty = execSync(
-          "git diff --cached --quiet 2>&1; echo $?",
-          { cwd: rootDir, encoding: "utf-8" },
-        ).trim() === "0";
+        const squashIsEmpty = stagedDiffExitCode(rootDir) === "0";
 
         if (squashIsEmpty) {
           mergerLog.debug(`${taskId}: squash merge staged nothing — already merged`);
@@ -10463,10 +10478,7 @@ export async function executeMergeAttempt(
       throwIfAborted(options.signal, taskId);
 
       // Check if squash is empty
-      const squashIsEmpty = execSync(
-        "git diff --cached --quiet 2>&1; echo $?",
-        { cwd: rootDir, encoding: "utf-8" },
-      ).trim() === "0";
+      const squashIsEmpty = stagedDiffExitCode(rootDir) === "0";
 
       if (squashIsEmpty) {
         mergerLog.debug(`${taskId}: squash merge staged nothing — already merged`);
@@ -10783,10 +10795,7 @@ async function finalizeSideStrategyAttempt(
 ): Promise<boolean> {
   const { rootDir, branch, commitLog, diffStat, aiSummary, aiBody, aiSubject, includeTaskId, sourceIssueRef, taskId, store, settings, testCommand, buildCommand, testSource, buildSource } = params;
 
-  const staged = execSyncText("git diff --cached --quiet 2>&1; echo $?", {
-    cwd: rootDir,
-    encoding: "utf-8",
-  }).trim();
+  const staged = stagedDiffExitCode(rootDir);
 
   if (staged === "0") {
     if (aiTracker) aiTracker.mergeWasEmpty = true;
@@ -11232,10 +11241,7 @@ async function runAiAgentForCommit(params: AiAgentParams): Promise<{ success: bo
     }
 
     // Verify commit happened
-    const staged = execSyncText("git diff --cached --quiet 2>&1; echo $?", {
-      cwd: rootDir,
-      encoding: "utf-8",
-    }).trim();
+    const staged = stagedDiffExitCode(rootDir);
 
     if (staged !== "0") {
       // Only use fallback commit if no build command was configured
