@@ -3,14 +3,26 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath, URL } from "node:url";
 
 import {
   extractLeadingStaticGateChecks,
+  isDirectInvocation,
   readStaticGateChecks,
   runStaticGateChecks,
 } from "../run-static-gate-checks.mjs";
 
 const check = (name) => `scripts/check-${name}.mjs`;
+
+test("isDirectInvocation normalizes file URLs and native host paths", () => {
+  const scriptPath = fileURLToPath(new URL("../run-static-gate-checks.mjs", import.meta.url));
+  const scriptUrl = new URL("../run-static-gate-checks.mjs", import.meta.url).href;
+
+  assert.equal(isDirectInvocation(scriptUrl, scriptPath), true);
+  assert.equal(isDirectInvocation(scriptUrl, `${scriptPath}.other`), false);
+  assert.equal(isDirectInvocation(scriptUrl, undefined), false);
+});
+
 const EXPECTED_GATE_CHECKS = [
   check(["no-", ["no", "hup"].join("")].join("")),
   check("no-cwd-relative-dashboard-test-reads"),

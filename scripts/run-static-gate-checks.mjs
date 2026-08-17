@@ -101,6 +101,24 @@ export async function runStaticGateChecks(checkScripts, options = {}) {
   return results;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+/**
+ * Detect direct CLI execution across POSIX and Windows hosts. Node exposes
+ * import.meta.url as a file URL while process.argv[1] is a native filesystem
+ * path on Windows, so comparing the raw strings silently skipped this gate.
+ *
+ * @param {string} [metaUrl]
+ * @param {string} [argv1]
+ * @returns {boolean}
+ */
+export function isDirectInvocation(metaUrl = import.meta.url, argv1 = process.argv[1]) {
+  if (!argv1) return false;
+  try {
+    return resolve(fileURLToPath(metaUrl)) === resolve(argv1);
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectInvocation()) {
   await runStaticGateChecks(readStaticGateChecks());
 }

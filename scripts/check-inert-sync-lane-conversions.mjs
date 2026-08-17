@@ -381,7 +381,7 @@ for (const file of files) {
   const locals = syncLaneLocals(sf, sources);
   const hits = countInertGuards(sf, locals, sources);
   if (hits.length === 0) continue;
-  const rel = relative(REPO, file);
+  const rel = relative(REPO, file).replaceAll("\\", "/");
   byFile[rel] = hits.length;
   detail[rel] = hits;
 }
