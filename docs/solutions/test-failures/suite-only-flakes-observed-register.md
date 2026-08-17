@@ -80,7 +80,7 @@ DDL microbenchmarks of the pre-fix pristine shape measured `CREATE DATABASE` 44.
 ## 3. Plugin runner complete-lane lifecycle hook
 
 - **File:** `packages/engine/src/__tests__/plugin-runner.test.ts`
-- **Exact test:** `PluginRunner > task lifecycle hooks > should invoke onTaskCompleted when the complete lane is RENAMED`
+- **Historical exact test:** `PluginRunner > task lifecycle hooks > should invoke onTaskCompleted when the complete lane is RENAMED`
 - **Observed tree/SHA:** PR [#2799](https://github.com/Runfusion/Fusion/pull/2799) merged-with-main.
 
 | run | result |
@@ -109,6 +109,16 @@ Seven tests failed in `plugin-runner.test.ts`, but only this one identity surviv
 | 6 workers, run 2 (230.06s) | pass | 39 failed / 795 passed files; unrelated baseline-red |
 | 8 workers, run 2 (188.61s) | pass | 39 failed / 795 passed files; unrelated baseline-red |
 | 2 workers, run 2 (590.97s) | pass | 39 failed / 795 passed files; unrelated baseline-red |
+
+**Rescued 2026-08-17 (FN-9141):** FN-9141 completed the terminal new-strategy campaign with shuffled files/tests, worker reuse without per-file isolation, and a temporary byte-for-byte repeated subject. The completed two-worker lane reproduced a named test-fixture defect: a neighbouring worker-reused file can call `vi.clearAllMocks()` after `PluginRunner` has initialized, erasing `createLogger.mock.results` before the hot-reload warning assertion reads it. The assertion already catches the real `stopPlugin` rejection/warning contract; the repair keeps its logger instance in a hoisted stable reference and explicitly proves cleanup cannot erase that reference. The ledger row and default-lane exclusion remain removed together. No timeout, retry, assertion weakening, skip, polling, or permanent worker-policy change was used.
+
+| FN-9141 new-strategy reproduction | seed | workers | isolation | duration | subject result | whole-lane result |
+|---|---:|---:|---:|---:|---|---|
+| shuffled, worker-reuse loaded engine-default | 914141 | 2 | disabled / worker reuse | 900.1s (campaign bound) | 82 passed | terminated before summary; unrelated `project-engine` timeouts after subject completed |
+| shuffled, repeated-subject loaded engine-default | 914142 | 8 | enabled; temporary byte-for-byte subject repeat | 222.66s | original 82 passed; repeat 82 passed | complete: 48 failed / 787 passed / 1 skipped files; 117 failed / 11230 passed / 14 skipped / 1 todo tests; no subject failure |
+| shuffled, worker-reuse, repeated-subject loaded engine-default | 914143 | 2 | disabled / worker reuse; temporary byte-for-byte subject repeat | 1548.60s | reproduced one hot-reload warning fixture failure; repeat passed | complete: 224 failed / 611 passed / 1 skipped files; 1801 failed / 9534 passed / 26 skipped / 1 todo tests; unrelated loaded failures also present |
+
+The rescue retains plugin loading, contribution accessor, runtime compatibility, hot-reload, and lifecycle-hook assertions, including the renamed-complete-lane `onTaskCompleted` dispatch that would have been uniquely lost under deletion. The direct regression now covers the worker-reused cleanup sequence that caused the reproduced warning assertion failure.
 
 ## 4. Planning Mode direct task handoff
 
@@ -143,7 +153,7 @@ The failure exercises the pre-existing mobile tab transition, while the task-cre
 
 ## Common shape and investigated result
 
-FN-9125 established that entry 3 is not PostgreSQL-suite-adjacent: `plugin-runner.test.ts` uses an in-memory mocked TaskStore and has no PostgreSQL/harness import. FN-9135's bounded reproduction campaign did not identify the root cause needed to rescue it, so the suite remains quarantined with its coverage intact until the ratchet deadline. Entries 1, 2, and 7 remain evidence-gathering-pending PostgreSQL observations: current full-output runs at six workers plus a twelve-worker PostgreSQL-directory run did not reproduce any subject identity, so FN-9125 cannot claim them superseded or resolved. The golden-template/advisory-lock lifecycle and schema-applier's inline baseline path are concrete architecture facts, not a demonstrated cause of these assertions. Core policy forbids inline PG quarantine: FN-9126 owns entry 1, FN-9128 exclusively owns entry 2, and FN-9127 owns entry 7 for CI/host-specific `pg_stat_activity`, lifecycle timing, and a complete loaded failure capture before any source or fan-out change. Entry 6 instead records a merge-gate eviction after a loaded-lane setup-hook timeout; `FNXC:PgTestTemplateDb 2026-07-19-17:20` and `FNXC:PgTestWorkerCap 2026-07-18-18:00` are already-landed mitigations for that mode, not new diagnoses to re-open. The Planning Mode entries are separate frontend timing observations.
+FN-9125 established that former entry 3 was not PostgreSQL-suite-adjacent: `plugin-runner.test.ts` used an in-memory mocked TaskStore and had no PostgreSQL/harness import. FN-9135 did not identify a root cause, but FN-9141's completed shuffled worker-reuse campaign reproduced and structurally fixed the logger mock-history fixture defect; the suite and its renamed-complete-lane dispatch coverage remain active. Entries 1, 2, and 7 remain evidence-gathering-pending PostgreSQL observations: current full-output runs at six workers plus a twelve-worker PostgreSQL-directory run did not reproduce any subject identity, so FN-9125 cannot claim them superseded or resolved. The golden-template/advisory-lock lifecycle and schema-applier's inline baseline path are concrete architecture facts, not a demonstrated cause of these assertions. Core policy forbids inline PG quarantine: FN-9126 owns entry 1, FN-9128 exclusively owns entry 2, and FN-9127 owns entry 7 for CI/host-specific `pg_stat_activity`, lifecycle timing, and a complete loaded failure capture before any source or fan-out change. Entry 6 instead records a merge-gate eviction after a loaded-lane setup-hook timeout; `FNXC:PgTestTemplateDb 2026-07-19-17:20` and `FNXC:PgTestWorkerCap 2026-07-18-18:00` are already-landed mitigations for that mode, not new diagnoses to re-open. The Planning Mode entries are separate frontend timing observations.
 
 ## Policy and escalation
 

@@ -414,7 +414,7 @@ The CI job uses `fetch-depth: 0` because these tests run real git operations.
 
 ## Quarantine ledger and the deletion ratchet
 
-Flaky tests are quarantined ON SIGHT and deleted on a 2-week clock. This is written policy with minimal mechanics — deliberately no loader module, no automation (see the AGENTS.md standing rule "Flaky Tests Are Quarantined on Sight").
+Flaky tests are quarantined ON SIGHT and deleted on a 2-week clock. The ledger remains a simple JSON record, while `scripts/check-quarantine-ledger.mjs` mechanically checks every ledger/exclude pair (see the AGENTS.md standing rule "Flaky Tests Are Quarantined on Sight").
 
 Quarantine is the default when a sighting is reproducible enough to justify evicting a file's coverage. The only exception is the narrow first-sighting record authority in AGENTS.md: a high-value file may be recorded in the [observed suite-only flakes register](solutions/test-failures/suite-only-flakes-observed-register.md) instead (`docs/solutions/test-failures/suite-only-flakes-observed-register.md`). A second sighting of a registered flake moves it to the ledger plus matching Vitest `exclude` in one lockstep commit.
 
@@ -430,13 +430,15 @@ Quarantine is the default when a sighting is reproducible enough to justify evic
 
 ### Quarantine deadline visibility check
 
-Run `pnpm check:quarantine-ledger` to print a soonest-deadline-first summary of `scripts/lib/test-quarantine.json`. The command uses the same 14-day deletion clock (`quarantinedAt + 14d`) as the velocity baseline and reports each entry as expired, near-deadline, healthy, or unknown when `quarantinedAt` is missing/invalid. It is a visibility aid only: default mode exits 0 even when entries are near or expired, preserving the deliberately-unwired policy and leaving rescue-or-delete decisions to maintainers.
+Run `pnpm check:quarantine-ledger` to print a soonest-deadline-first summary of `scripts/lib/test-quarantine.json`. The command uses the same 14-day deletion clock (`quarantinedAt + 14d`) as the velocity baseline and reports each entry as expired, near-deadline, healthy, or unknown when `quarantinedAt` is missing/invalid. Default mode remains report-only for deadline status.
+
+The checker also enforces the quarantine lockstep. It reads only comment-stripped `exclude:` array literals in every `packages/*/vitest.config.ts`; include-shard lists and identifier/spread excludes are deliberately out of scope. It reports `missing-file` (a ledger entry names no file), `missing-exclude` (a ledger file lacks its package exclusion), and `dangling-exclude` (an exclusion names no file). `--strict` fails on any of those violations as well as near/expired deadlines.
 
 Flags:
 
 - `--warn-within=<days>` changes the near-deadline window from the default 5 days.
-- `--json` emits the computed rows plus summary counts for machine consumption.
-- `--strict` exits 1 when any entry is expired or near-deadline, for opt-in local or project-specific gates only. Do not wire this into `pretest`, `test:gate`, or other default blocking lanes without an explicit policy change.
+- `--json` emits the computed rows, lockstep violations, and summary counts for machine consumption.
+- `--strict` exits 1 when an entry is expired/near-deadline or a lockstep violation exists; this is enforced by the PR check.
 
 **Rescue** (before the clock runs out) requires both: evidence the test catches real regressions, and a root-cause fix for the flake. Stabilization passes — widened timeouts, retries, loosened assertions — are appeasement, not rescue, and are banned (for agents especially).
 
@@ -450,8 +452,11 @@ Flags:
 <!-- FNXC:TestSubprocessGuard 2026-08-10-09:35: FN-8937 rescues project-engine.test.ts by fixing real-git and virtual-watchdog seam defects, without treating a guard budget as a scheduling interval. -->
 **2026-08-10 project-engine disposition (FN-8937):** Rescued `project-engine.test.ts` before its 2026-08-20 deadline. The suite's un-mocked `exec`-based integration-branch probe spawned real git, while the shared subprocess guard watchdog used fakeable timers; a duplicate-registration path could also orphan a watchdog handle. The resolver is now a deterministic suite seam, and watchdogs use captured real timers with owner-scoped failure draining, preserving sibling-test failure ownership. The ledger claim that runtime schedules 120s was a misread of `FUSION_TEST_SUBPROCESS_TIMEOUT_MS`: production retains its correct 60s ladder at `packages/engine/src/project-engine.ts:4551`, and the test correctly forbids its uncapped 120000ms rung. Thus the request to update the assertion to 120s is a documented deviation; no timeout was widened, retry added, or assertion weakened. The ledger/config exclusions were removed together, while the file remains outside `engine-core` pending separate gate-admission evidence.
 
-<!-- FNXC:PluginRunnerFlake 2026-08-17-00:35: FN-9135 preserves the quarantined plugin-runner suite through its 2026-08-30 ratchet deadline because a bounded full-output reproduction campaign found no root cause that would qualify as a rescue. The opt-in `--strict` check remains excluded from default blocking lanes. -->
-**2026-08-17 plugin-runner disposition (FN-9135):** Retained `packages/engine/src/__tests__/plugin-runner.test.ts`, its ledger row, and its paired default-lane exclusion after the 2/6/8-worker, two-runs-each engine-default campaign reproduced no subject failure and exposed no root cause. Passing reproduction runs do not qualify as the root-cause fix required for rescue, and the ratchet does not authorize deletion before the 2026-08-30 deadline. This preserves all 82 tests, including the remaining `onTaskCompleted` lifecycle-dispatch coverage, without changing timeouts, retries, assertions, skips, polling, or worker settings.
+<!--
+FNXC:PluginRunnerFlake 2026-08-17-12:11:
+FN-9141's completed shuffled worker-reuse/repeated-subject campaign reproduced a fixture defect rather than a product failure: cross-file `vi.clearAllMocks()` erased logger mock-result history between module initialization and the lifecycle warning assertion. Keep a stable hoisted mock logger and directly cover that cleanup sequence; do not replace the structural rescue with waits, retries, or weaker assertions.
+-->
+**2026-08-17 plugin-runner disposition (FN-9141):** Rescued `packages/engine/src/__tests__/plugin-runner.test.ts` before the 2026-08-30 deletion-ratchet deadline. The seed-recorded completed lane combined shuffled order, no-isolation worker reuse, and a temporary byte-for-byte subject repeat. It reproduced one hot-reload warning assertion failure in the original subject because an unrelated worker-reused file cleared `createLogger.mock.results`; the repeat passed. The suite now keeps the initialized mock logger in a stable hoisted reference and explicitly proves cleanup cannot erase it, retaining the strict `stopPlugin` rejection/warning and renamed-complete-lane `onTaskCompleted` dispatch contracts. The ledger row and default-lane exclusion remain removed together. No timeout, retry, assertion weakening, skip, polling, or permanent worker-policy change was used.
 
 ### Validate before excluding and preserve timeout budgets
 
