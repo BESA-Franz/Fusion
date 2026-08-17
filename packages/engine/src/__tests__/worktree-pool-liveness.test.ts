@@ -273,6 +273,7 @@ describeIfGit("worktree liveness gating (FN-4682)", () => {
       }));
       const worktreePath = track(makeWorktree(rootDir, "shape-deregistered"));
       // Break the link the way `git worktree prune` / a manual admin-dir delete would.
+      rmSync(join(worktreePath, ".git"), { recursive: true, force: true });
       writeFileSync(join(worktreePath, ".git"), "gitdir: /nonexistent/.git/worktrees/gone\n", "utf-8");
       // The probe cannot see this without spawning git — callers must tolerate it, and the
       // executor's own session-start assertion is the backstop that rejects the checkout.
