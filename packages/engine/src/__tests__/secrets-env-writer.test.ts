@@ -166,8 +166,9 @@ describe("secrets-env-writer", () => {
     });
     expect(a.reason).toBe("invalid-filename");
 
-    writeFileSync(join(dir, "real.env"), "SAFE=1\n");
-    symlinkSync(join(dir, "real.env"), join(dir, ".env"));
+    const symlinkTarget = join(dir, "real-env-target");
+    mkdirSync(symlinkTarget);
+    symlinkSync(symlinkTarget, join(dir, ".env"), process.platform === "win32" ? "junction" : "dir");
     const b = await writeSecretsEnvFile({
       rootDir: process.cwd(),
       worktreePath: dir,
