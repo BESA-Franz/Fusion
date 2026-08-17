@@ -48,6 +48,8 @@ The unavailable Step-0 fields are deliberately not backfilled or inferred: no sa
 
 The retained `pg-setup-participation.ts` signal is connectionless and explicit (`FUSION_PG_TEST_SETUP_PARTICIPANT=1`, overridden by `FUSION_PG_TEST_SKIP=1`), preserving non-PG setup inertness. `scripts/pg-setup-boundary-probe.mjs` and `scripts/pg-preadmission-campaign.mjs` remain as repeatable measurement tooling. Any successor must first prove ordering and off-budget ownership, keep the probe default-off and non-consumable by the harness, use interleaved one-shell measurements, and treat incomplete data as rejection.
 
+FN-9140 subsequently replaced the rejected stdout survey with calibrated JSONL evidence, but its corrected full run did not complete within the hosted execution boundary and therefore records `insufficient-data`; see [Vitest setup-boundary timeout ownership](vitest-setup-boundary-timeout-ownership.md). The PostgreSQL pre-admission probe and campaign execution remain unauthorized. This successor pointer does not revise FN-9139's original honest insufficient-data result.
+
 <!-- FNXC:PgDdlLaneMetric 2026-08-17-00:59: FN-9134 must establish a green, drift-resistant control band before another structural DDL candidate is allowed to claim improvement. An invalid control is terminal insufficient data, not a reason to tune timeouts or rerun unfavorable samples. -->
 
 <!-- FNXC:PgDdlLaneMetric 2026-08-17-02:55: The required seven-pair interleaved campaign must remain the terminal evidence. Zeroed inline watchdogs only reflect off-hook execution, while green lanes and zero survivors decide whether a candidate can ship. -->
