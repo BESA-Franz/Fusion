@@ -843,6 +843,14 @@ export async function createEmptyPgTestDatabase(prefix = "fusion_test"): Promise
  *   high-core machines. Use it for shared-harness files that create a single
  *   database and do not exercise the per-module template lifecycle hooks.
  */
+/*
+FNXC:PgTestHarnessConnectionBudget 2026-08-17-02:22:
+FN-9131 leaves the experimental PostgreSQL connection budget deliberately
+unwired because loaded-lane trials regressed broadly. This harness neither
+admits a budget window nor clamps caller poolMax; a successor must prove a
+lifecycle boundary that covers only PostgreSQL participants before wiring the
+characterization primitive in pg-connection-budget.ts.
+*/
 export async function createTaskStoreForTest(options?: {
   readonly poolMax?: number;
   readonly prefix?: string;
