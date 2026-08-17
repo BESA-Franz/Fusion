@@ -230,7 +230,7 @@ function scanFor(
   const hits: string[] = [];
   for (const root of roots ?? sourceRoots(base)) {
     for (const file of sourceFiles(root, base)) {
-      const rel = file.slice(base.length + 1);
+      const rel = file.slice(base.length + 1).replaceAll("\\", "/");
       if (NON_TASK_STATUS_MODULES.includes(rel)) continue;
       if (matches(executableSource(file))) hits.push(rel);
     }

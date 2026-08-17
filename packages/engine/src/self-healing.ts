@@ -14935,7 +14935,6 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
       + `${MAX_RECOVERY_RETRIES} retries — last error: ${error.message}`;
     const patch = decision.shouldRetry
       ? {
-          status: "planning" as const,
           error: null,
           recoveryRetryCount: decision.nextState.recoveryRetryCount,
           nextRecoveryAt: decision.nextState.nextRecoveryAt,
