@@ -2139,6 +2139,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           try {
             await this.store.moveTask(taskId, await resolveReboundTargetForTask(this.store, taskId), {
               preserveProgress: true,
+              preserveWorktree: true,
               preserveStatus: true,
               // #1411: backward recovery — skip order-derived adjacency.
               moveSource: "engine",
@@ -4604,6 +4605,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                     moveSource: "engine",
                     // #1411: backward recovery — skip order-derived adjacency.
                     recoveryRehome: true,
+                    // worktree-discard-intended: reclaim proved the branch already merged / has zero unique commits; the checkout holds nothing worth keeping and worktree was explicitly nulled above.
                     preserveProgress: true,
                     preserveResumeState: true,
                   });
@@ -4724,6 +4726,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                       moveSource: "engine",
                       // #1411: backward recovery — skip order-derived adjacency.
                       recoveryRehome: true,
+                      // worktree-discard-intended: reclaim proved the branch already merged / has zero unique commits; the checkout holds nothing worth keeping and worktree was explicitly nulled above.
                       preserveProgress: true,
                       preserveResumeState: true,
                     });
@@ -7667,6 +7670,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               recoveryRehome: true,
               bypassGuards: true,
               preserveProgress: true,
+              preserveWorktree: true,
             });
             rehomed += 1;
             await createRunAuditor(this.store, {
@@ -8457,7 +8461,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             continue;
           }
           // #1411: backward recovery — skip order-derived adjacency.
-          await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, moveSource: "engine", recoveryRehome: true });
+          await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, preserveWorktree: true, moveSource: "engine", recoveryRehome: true });
           continue;
         }
 
@@ -8520,7 +8524,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               lane: "self-healing-finalize-no-op-review",
             });
             // #1411: backward recovery — skip order-derived adjacency.
-            await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, moveSource: "engine", recoveryRehome: true });
+            await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, preserveWorktree: true, moveSource: "engine", recoveryRehome: true });
             recovered++;
             continue;
           }
@@ -8540,7 +8544,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
               baseRef: classification.baseRef,
             });
             // #1411: backward recovery — skip order-derived adjacency.
-            await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, moveSource: "engine", recoveryRehome: true });
+            await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, preserveWorktree: true, moveSource: "engine", recoveryRehome: true });
             recovered++;
             continue;
           }
@@ -9353,7 +9357,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             "Auto-recovered: in-review task still had incomplete steps — moved back to todo for retry",
           );
           // #1411: backward recovery — skip order-derived adjacency.
-          await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, moveSource: "engine", recoveryRehome: true });
+          await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, preserveWorktree: true, moveSource: "engine", recoveryRehome: true });
           log.log(`Recovered stale incomplete review task ${task.id}: moved back to todo`);
           recovered++;
         } catch (err: unknown) { const errorMessage = err instanceof Error ? err.message : String(err);
@@ -9841,7 +9845,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             "Auto-recovered: in-review task idle past stuck-task timeout — kicked back to todo",
           );
           // #1411: backward recovery — skip order-derived adjacency.
-          await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, moveSource: "engine", recoveryRehome: true });
+          await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, preserveWorktree: true, moveSource: "engine", recoveryRehome: true });
           log.log(`Kicked ghost review task ${task.id} back to todo`);
           recovered++;
         } catch (err: unknown) {
@@ -13267,7 +13271,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             nextRecoveryAt: new Date(Date.now() + delayMs).toISOString(),
           },
           targetColumn: await resolveReboundTargetForTask(this.store, task.id),
-          moveOptions: { preserveProgress: true, moveSource: "engine" },
+          moveOptions: { preserveProgress: true, preserveWorktree: true, moveSource: "engine" },
         });
         if (applied.outcome === "applied") {
           await this.store.logEntry(task.id, `Auto-recovered generic terminal failure (attempt ${claim.attempt}/${MAX_TERMINAL_FAILURE_AUTO_RETRIES})`);
@@ -13496,6 +13500,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
           if (route.kind === "node-requeue" && fresh.column !== requeueTarget) {
             await this.store.moveTask(task.id, requeueTarget, {
               preserveProgress: true,
+              preserveWorktree: true,
               moveSource: "engine",
               recoveryRehome: true,
             });
@@ -13831,6 +13836,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
               const leaseRecovered = await this.options.leaseManager.recoverAbandonedLease(
                 task.id,
                 `in-progress limbo: ${describeWorktreeState(task)} + null branch`,
+                // worktree-discard-intended: limbo recovery — the worktree is already missing or its metadata cleared; there is no live checkout to hold.
                 { preserveProgress: true },
               );
               if (!leaseRecovered) {
@@ -13914,6 +13920,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             },
           });
           // #1411: backward recovery — skip order-derived adjacency.
+          // worktree-discard-intended: limbo recovery — the worktree is already missing or its metadata cleared; there is no live checkout to hold.
           await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, moveSource: "engine", recoveryRehome: true });
           recovered++;
         } catch (err: unknown) {
@@ -15351,7 +15358,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
             `Auto-retry ${nextCount}/${MAX_TASK_DONE_RETRIES}: agent finished without fn_task_done — requeuing to todo to resume partial work`,
           );
           // #1411: backward recovery — skip order-derived adjacency.
-          await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, moveSource: "engine", recoveryRehome: true });
+          await this.store.moveTask(task.id, await resolveReboundTargetForTask(this.store, task.id), { preserveProgress: true, preserveWorktree: true, moveSource: "engine", recoveryRehome: true });
           recovered++;
         } catch (err: unknown) {
           const errorMessage = err instanceof Error ? err.message : String(err);
