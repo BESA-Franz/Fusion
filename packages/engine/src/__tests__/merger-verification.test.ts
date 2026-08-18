@@ -2876,7 +2876,7 @@ describe("resolveWorkspacePackageRoots", () => {
       { name: "dashboard", isDirectory: () => true },
       { name: ".cache", isDirectory: () => true },
     ] as any);
-    mockedExistsSync.mockImplementation((p: any) => String(p).includes("dashboard/package.json"));
+    mockedExistsSync.mockImplementation((p: any) => String(p).replace(/\\/g, "/").includes("dashboard/package.json"));
 
     const roots = resolveWorkspacePackageRoots("/repo", ["packages/*"]);
     expect(roots).toEqual(["packages/dashboard"]);
