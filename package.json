@@ -72,6 +72,7 @@
     "test:coverage:dashboard": "pnpm --filter @fusion/dashboard exec vitest run --silent=passed-only --reporter=dot --coverage",
     "test:slow-cli": "pnpm --filter @runfusion/fusion test:slow-cli",
     "typecheck": "pnpm -r --filter=!@fusion/desktop --filter=!@fusion/mobile typecheck",
+    "typecheck:runtime-residual": "pnpm --filter @runfusion/fusion --filter @fusion/droid-cli --filter @fusion/i18n --filter @fusion/pi-claude-cli --filter @fusion/pi-llama-cpp typecheck && pnpm --filter @fusion/dashboard exec tsc --noEmit -p tsconfig.app.json",
     "i18n:extract": "i18next-cli extract",
     "i18n:sync": "i18next-cli sync",
     "i18n:types": "i18next-cli types",

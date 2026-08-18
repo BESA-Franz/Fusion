@@ -27,6 +27,7 @@ jobs:
         id: source
         shell: pwsh
         run: |
+          $overallStarted = [DateTimeOffset]::UtcNow
           $commit = (git rev-parse HEAD).Trim().ToLowerInvariant()
           if ($commit -notmatch '^[0-9a-f]{40}$') {
             throw "Checkout did not resolve to a full commit."
@@ -35,27 +36,66 @@ jobs:
           if ($dirty.Count -ne 0) {
             throw "Checkout is not clean; refusing to authorize a runtime artifact."
           }
+          $sourceEnded = [DateTimeOffset]::UtcNow
           "FUSION_RUNTIME_COMMIT=$commit" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "FUSION_RUNTIME_STARTED_AT=$($overallStarted.ToString('o'))" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "FUSION_RUNTIME_STARTED_MS=$($overallStarted.ToUnixTimeMilliseconds())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "FUSION_RUNTIME_SOURCE_DURATION_MS=$($sourceEnded.ToUnixTimeMilliseconds() - $overallStarted.ToUnixTimeMilliseconds())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "FUSION_RUNTIME_SETUP_STARTED_MS=$($sourceEnded.ToUnixTimeMilliseconds())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup Node and install dependencies
         uses: ./.github/actions/setup-node-pnpm
 
+      - name: Record dependency setup timing
+        shell: pwsh
+        run: |
+          $durationMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [long]$env:FUSION_RUNTIME_SETUP_STARTED_MS
+          "FUSION_RUNTIME_SETUP_DURATION_MS=$durationMs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Verify HybridExecutor error sink
-        run: pnpm --filter @fusion/engine exec vitest run src/__tests__/hybrid-executor.test.ts --silent=passed-only --reporter=dot
+        shell: pwsh
+        run: |
+          $startedMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+          pnpm --filter @fusion/engine exec vitest run src/__tests__/hybrid-executor.test.ts --silent=passed-only --reporter=dot
+          if ($LASTEXITCODE -ne 0) { throw 'HybridExecutor error sink verification failed.' }
+          $durationMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $startedMs
+          "FUSION_RUNTIME_HYBRID_DURATION_MS=$durationMs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Verify PostgreSQL schema 0060
-        run: pnpm --filter @fusion/core exec vitest run src/__tests__/postgres/schema-applier.test.ts --silent=passed-only --reporter=dot
+        shell: pwsh
+        run: |
+          $startedMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+          pnpm --filter @fusion/core exec vitest run src/__tests__/postgres/schema-applier.test.ts --silent=passed-only --reporter=dot
+          if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL schema 0060 verification failed.' }
+          $durationMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $startedMs
+          "FUSION_RUNTIME_SCHEMA_DURATION_MS=$durationMs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Typecheck
-        run: pnpm typecheck
-
+      # FNXC:RuntimeAuthorization 2026-08-18-20:38:
+      # Build every build-bearing runtime package exactly once, then typecheck only the
+      # CLI, browser program, and raw-source packages that the build does not compile.
       - name: Build runtime once
-        run: pnpm build:full
+        shell: pwsh
+        run: |
+          $startedMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+          pnpm build:full
+          if ($LASTEXITCODE -ne 0) { throw 'Full runtime build failed.' }
+          $durationMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $startedMs
+          "FUSION_RUNTIME_BUILD_DURATION_MS=$durationMs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Typecheck residual runtime surfaces
+        shell: pwsh
+        run: |
+          $startedMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+          pnpm typecheck:runtime-residual
+          if ($LASTEXITCODE -ne 0) { throw 'Residual runtime typecheck failed.' }
+          $durationMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $startedMs
+          "FUSION_RUNTIME_RESIDUAL_TYPECHECK_DURATION_MS=$durationMs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Package and authorize runtime
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $packageStartedMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
           $artifactRoot = Join-Path $env:RUNNER_TEMP 'fusion-runtime-artifact'
           $packRoot = Join-Path $env:RUNNER_TEMP 'fusion-runtime-pack'
           $extractRoot = Join-Path $env:RUNNER_TEMP 'fusion-runtime-extract'
@@ -101,6 +141,9 @@ jobs:
 
           $artifactSha = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToUpperInvariant()
           $receiptPath = Join-Path $artifactRoot "fusion-runtime-build-authorization-$build.json"
+          $authorizedAt = [DateTimeOffset]::UtcNow
+          $packageDurationMs = $authorizedAt.ToUnixTimeMilliseconds() - $packageStartedMs
+          $overallDurationMs = $authorizedAt.ToUnixTimeMilliseconds() - [long]$env:FUSION_RUNTIME_STARTED_MS
           $receipt = [ordered]@{
             schemaVersion = 1
             receiptType = 'fusion-runtime-build-authorization'
@@ -110,6 +153,21 @@ jobs:
             build = $build
             packageVersion = $packageVersion
             schemaBaselineVersion = '0060'
+            startedAt = $env:FUSION_RUNTIME_STARTED_AT
+            authorizedAt = $authorizedAt.ToString('o')
+            durationMs = $overallDurationMs
+            stages = [ordered]@{
+              source = [ordered]@{ durationMs = [long]$env:FUSION_RUNTIME_SOURCE_DURATION_MS; status = 'passed' }
+              dependencySetup = [ordered]@{ durationMs = [long]$env:FUSION_RUNTIME_SETUP_DURATION_MS; status = 'passed' }
+              hybridExecutorErrorSink = [ordered]@{ durationMs = [long]$env:FUSION_RUNTIME_HYBRID_DURATION_MS; status = 'passed' }
+              schema0060 = [ordered]@{ durationMs = [long]$env:FUSION_RUNTIME_SCHEMA_DURATION_MS; status = 'passed' }
+              build = [ordered]@{ durationMs = [long]$env:FUSION_RUNTIME_BUILD_DURATION_MS; status = 'passed' }
+              residualTypecheck = [ordered]@{ durationMs = [long]$env:FUSION_RUNTIME_RESIDUAL_TYPECHECK_DURATION_MS; status = 'passed' }
+              package = [ordered]@{ durationMs = $packageDurationMs; status = 'passed' }
+            }
+            cache = [ordered]@{
+              workspaceBuild = [ordered]@{ restored = $false; skippedPackages = 0 }
+            }
             sourceTree = [ordered]@{ clean = $true }
             requiredFixes = [ordered]@{
               hybridExecutorErrorSink = [ordered]@{
@@ -124,7 +182,6 @@ jobs:
               runId = $env:GITHUB_RUN_ID
               runAttempt = $env:GITHUB_RUN_ATTEMPT
             }
-            authorizedAt = [DateTimeOffset]::UtcNow.ToString('o')
             secretsRecorded = $false
           }
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
