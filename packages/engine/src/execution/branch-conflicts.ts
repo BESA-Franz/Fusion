@@ -696,11 +696,7 @@ export async function classifyForeignOnlyContamination(
     const liveMergeBase = mergeBaseRaw.trim();
     if (liveMergeBase && liveMergeBase !== baseSha) {
       // Use live merge-base if it is a descendant of baseSha (newer)
-      const ancestryCheck = await runGit(
-        repoDir,
-        `git merge-base --is-ancestor ${quoteShellArg(baseSha)} ${quoteShellArg(liveMergeBase)} && echo yes || echo no`,
-      ).catch(() => "no");
-      if (ancestryCheck.trim() === "yes") {
+      if (await isAncestor(repoDir, baseSha, liveMergeBase)) {
         effectiveBaseSha = liveMergeBase;
       }
     }

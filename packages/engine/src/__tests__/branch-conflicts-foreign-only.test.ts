@@ -142,4 +142,29 @@ describe("classifyForeignOnlyContamination", () => {
     expect(result.kind).toBe("clean");
     expect(result.foreignCommitCount).toBe(0);
   });
+
+  it("advances a stale persisted base with the direct Git ancestry exit code", async () => {
+    const { repoDir, baseSha } = await setupRepo();
+    await run("git checkout main", repoDir);
+    await makeCommit(repoDir, "landed", "feat(FN-4000): landed before task", "FN-4000");
+    const liveBaseSha = await run("git rev-parse HEAD", repoDir);
+    await run("git checkout feature", repoDir);
+    await run("git merge --ff-only main", repoDir);
+    const taskForeignSha = await makeCommit(repoDir, "task-foreign", "feat(FN-4005): task foreign", "FN-4005");
+
+    const result = await classifyForeignOnlyContamination({
+      repoDir,
+      branchName: "feature",
+      baseSha,
+      taskId: "FN-4887",
+      mainRef: "main",
+    });
+
+    expect(liveBaseSha).not.toBe(baseSha);
+    expect(result.kind).toBe("foreign-only-no-own-work");
+    expect(result.uniqueShas).toEqual([taskForeignSha]);
+    // The diagnostic count intentionally describes the persisted base range,
+    // while uniqueShas is narrowed by the newer live merge-base.
+    expect(result.foreignCommitCount).toBe(2);
+  });
 });
