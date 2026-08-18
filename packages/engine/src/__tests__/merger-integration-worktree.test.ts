@@ -608,6 +608,12 @@ describe("acquireReuseHandoff", () => {
     });
 
     expect(handoff.ok).toBe(true);
+    expect(mockedExecFile.mock.calls.some(([file, args]) =>
+      file === "git"
+      && Array.isArray(args)
+      && args[0] === "checkout"
+      && args[1] === "fusion/fn-5279"
+    )).toBe(true);
     expect(auditEmit).toHaveBeenCalledWith(expect.objectContaining({
       type: "branch:auto-reattach-authoritative",
       metadata: expect.objectContaining({ taskId: "FN-5279", expectedBranch: "fusion/fn-5279" }),

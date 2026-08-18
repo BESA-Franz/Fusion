@@ -511,7 +511,7 @@ export async function acquireReuseHandoff(input: ReuseHandoffInput): Promise<Han
       input.task.id,
     );
     if (authority.ok) {
-      const reattach = await execAsync(`git checkout ${expectedBranch}`, {
+      const reattach = await execFileAsync("git", ["checkout", expectedBranch], {
         cwd: worktreePath,
         encoding: "utf-8",
         timeout: 30_000,
