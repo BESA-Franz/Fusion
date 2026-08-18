@@ -1,7 +1,7 @@
 import { access, chmod, mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { NativeWorktreeBackend, RemovalReason, removeWorktree } from "../../worktree/worktree-backend.js";
 import { git, hasGit } from "./_helpers.js";
@@ -18,18 +18,12 @@ async function pathExists(path: string): Promise<boolean> {
 describe.skipIf(!hasGit)("reliability interactions: worktree remove non-empty recovery", () => {
   const roots: string[] = [];
   let originalPath: string | undefined;
-  let originalFailPath: string | undefined;
 
   afterEach(async () => {
     if (originalPath === undefined) {
       delete process.env.PATH;
     } else {
       process.env.PATH = originalPath;
-    }
-    if (originalFailPath === undefined) {
-      delete process.env.FUSION_FAIL_GIT_WORKTREE_REMOVE_PATH;
-    } else {
-      process.env.FUSION_FAIL_GIT_WORKTREE_REMOVE_PATH = originalFailPath;
     }
     await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
     roots.length = 0;
@@ -54,30 +48,47 @@ describe.skipIf(!hasGit)("reliability interactions: worktree remove non-empty re
   }
 
   async function installGitRemoveFailureShim(
-    targetPath: string,
     stderr = "error: failed to delete '$4': Directory not empty",
   ): Promise<void> {
-    const realGit = git(process.cwd(), "command -v git");
+    const realGit = git(process.cwd(), process.platform === "win32" ? "where git" : "command -v git")
+      .split(/\r?\n/, 1)[0];
     const shimDir = await mkdtemp(join(tmpdir(), "fusion-fake-git-"));
     roots.push(shimDir);
-    const shimPath = join(shimDir, "git");
+    const shimScriptPath = join(shimDir, "git-shim.cjs");
+    await writeFile(
+      shimScriptPath,
+      `const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+if (args[0] === "worktree" && args[1] === "remove" && args[2] === "--force") {
+  process.stderr.write(${JSON.stringify(`${stderr}\n`)});
+  process.exit(1);
+}
+const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit" });
+if (result.error) process.stderr.write(String(result.error.message) + "\\n");
+process.exit(result.status ?? 1);
+`,
+      "utf-8",
+    );
+    const shimPath = join(shimDir, process.platform === "win32" ? "git.cmd" : "git");
     await writeFile(
       shimPath,
-      `#!/bin/sh\nif [ "$1" = "worktree" ] && [ "$2" = "remove" ] && [ "$3" = "--force" ] && [ "$4" = "$FUSION_FAIL_GIT_WORKTREE_REMOVE_PATH" ]; then\n  echo ${JSON.stringify(stderr)} >&2\n  exit 1\nfi\nexec ${JSON.stringify(realGit)} "$@"\n`,
+      process.platform === "win32"
+        ? `@echo off\r\n${JSON.stringify(process.execPath)} "%~dp0git-shim.cjs" %*\r\n`
+        : `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "\${0%/*}/git-shim.cjs" "$@"\n`,
       "utf-8",
     );
     await chmod(shimPath, 0o755);
     originalPath = process.env.PATH;
-    originalFailPath = process.env.FUSION_FAIL_GIT_WORKTREE_REMOVE_PATH;
-    process.env.PATH = `${shimDir}${process.env.PATH ? `:${process.env.PATH}` : ""}`;
-    process.env.FUSION_FAIL_GIT_WORKTREE_REMOVE_PATH = targetPath;
+    const shellDir = process.platform === "win32"
+      ? dirname(process.env.ComSpec ?? process.env.COMSPEC ?? "C:\\Windows\\System32\\cmd.exe")
+      : undefined;
+    process.env.PATH = shellDir ? `${shimDir}${delimiter}${shellDir}` : shimDir;
   }
 
   async function expectWorktreeRemoved(root: string, worktreePath: string): Promise<void> {
     expect(await pathExists(worktreePath)).toBe(false);
-    const porcelain = git(root, "git worktree list --porcelain");
-    expect(porcelain).not.toContain(`worktree ${worktreePath}`);
-    expect(porcelain).not.toContain(`worktree ${await realpath(dirname(worktreePath)).catch(() => dirname(worktreePath))}/${worktreePath.split("/").pop()}`);
+    const porcelain = git(root, "git worktree list --porcelain").replaceAll("\\", "/");
+    expect(porcelain).not.toContain(`worktree ${worktreePath.replaceAll("\\", "/")}`);
   }
 
   it("removes and prunes a worktree with untracked-only content when git remove reports Directory not empty", async () => {
@@ -86,7 +97,7 @@ describe.skipIf(!hasGit)("reliability interactions: worktree remove non-empty re
     const resolvedWorktreePath = await realpath(worktreePath);
     await mkdir(join(worktreePath, "dist"), { recursive: true });
     await writeFile(join(worktreePath, "dist", "artifact.txt"), "artifact\n", "utf-8");
-    await installGitRemoveFailureShim(worktreePath);
+    await installGitRemoveFailureShim();
     const events: string[] = [];
 
     await removeWorktree({
@@ -112,7 +123,7 @@ describe.skipIf(!hasGit)("reliability interactions: worktree remove non-empty re
     await mkdir(nestedRepo, { recursive: true });
     git(nestedRepo, "git init -b main");
     await writeFile(join(nestedRepo, "package.json"), "{}\n", "utf-8");
-    await installGitRemoveFailureShim(worktreePath);
+    await installGitRemoveFailureShim();
 
     await new NativeWorktreeBackend().remove({ rootDir: root, worktreePath });
 
@@ -123,7 +134,7 @@ describe.skipIf(!hasGit)("reliability interactions: worktree remove non-empty re
     const root = await setupRepo();
     const worktreePath = await createWorktree(root, "fn-missing", "fusion/fn-missing");
     await rm(worktreePath, { recursive: true, force: true });
-    await installGitRemoveFailureShim(worktreePath, "fatal: validation failed, cannot remove working tree");
+    await installGitRemoveFailureShim("fatal: validation failed, cannot remove working tree");
 
     await expect(new NativeWorktreeBackend().remove({ rootDir: root, worktreePath })).rejects.toThrow(/validation failed/i);
   });
