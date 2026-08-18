@@ -46,6 +46,14 @@ function liveCounts() {
   }
 }
 
+test("writes repository-portable slash keys into the baseline", () => {
+  const counts = liveCounts();
+  assert.ok(
+    Object.keys(counts.byFile).every((file) => !file.includes("\\")),
+    `baseline keys must not depend on the host path separator: ${Object.keys(counts.byFile).join(", ")}`,
+  );
+});
+
 /**
  * Swaps in a baseline derived from the LIVE counts, runs the gate, restores the real file.
  * Deriving from live counts is what keeps these cases independent of whatever the committed

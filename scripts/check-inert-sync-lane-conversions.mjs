@@ -381,7 +381,9 @@ for (const file of files) {
   const locals = syncLaneLocals(sf, sources);
   const hits = countInertGuards(sf, locals, sources);
   if (hits.length === 0) continue;
-  const rel = relative(REPO, file);
+  // Baselines are committed and shared across Windows and POSIX runners.
+  // Keep their repository-relative keys independent of the host separator.
+  const rel = relative(REPO, file).replaceAll("\\", "/");
   byFile[rel] = hits.length;
   detail[rel] = hits;
 }
