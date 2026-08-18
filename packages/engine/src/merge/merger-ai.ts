@@ -1,3 +1,4 @@
+import { commitIdentityArgs, resolveCommitIdentity } from "../git-identity.js";
 /**
  * Standalone AI merge path (FN-5633).
  *
@@ -388,7 +389,13 @@ async function ensureCommitTaskMetadata(
   const missingTrailers = trailers.filter((t) => !fullMessage.includes(t));
   if (!needsPrefix && missingTrailers.length === 0) return;
 
-  const args = ["-c", "trailer.ifExists=addIfDifferent", "commit", "--amend"];
+  /*
+  FNXC:GitIdentity 2026-08-18-07:55:
+  This amend does not go through merger.ts's mergerCommitEnv, so it needs the identity applied to its
+  own argv — otherwise it is the one Fusion commit that still depends on ambient git config and fails
+  on a host that has none.
+  */
+  const args = [...commitIdentityArgs(resolveCommitIdentity()), "-c", "trailer.ifExists=addIfDifferent", "commit", "--amend"];
   if (needsPrefix) {
     // Rewrite the message with the task-id-prefixed subject (body, which already
     // carries any existing trailers, is preserved verbatim).

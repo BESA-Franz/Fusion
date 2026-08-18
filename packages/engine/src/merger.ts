@@ -23,9 +23,23 @@ const execFileAsync: (file: string, args: string[], opts?: import("node:child_pr
  * checks for the exact value "1" so a leaked/empty var cannot accidentally
  * bypass agent commits.
  */
-function mergerCommitEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, [IDENTITY_GUARD_BYPASS_ENV]: "1" };
+/*
+FNXC:GitIdentity 2026-08-18-07:55:
+Every merge commit runs through this env, which is why the identity is applied here rather than at
+eight separate call sites. Without it these commits inherited whatever git identity the host
+happened to have — and on a host with none (container, CI, fresh machine) git refuses to commit at
+all, so the merge stalled at `status:merging` with no error surfaced. `resolveCommitIdentity`
+returns undefined only when the operator sets `commitAuthorEnabled: false`, which restores the old
+ambient-config behaviour for anyone who wants commits authored as themselves.
+*/
+function mergerCommitEnv(identity?: CommitIdentity): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    [IDENTITY_GUARD_BYPASS_ENV]: "1",
+    ...commitIdentityEnv(identity ?? resolveCommitIdentity()),
+  };
 }
+import { commitIdentityEnv, resolveCommitIdentity, type CommitIdentity } from "./git-identity.js";
 import {
   detectMissingWorkspaceEntry,
   runVerificationCommand as runVerificationCommandShared,
