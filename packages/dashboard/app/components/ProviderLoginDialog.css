@@ -126,17 +126,33 @@ is. It carries the same inset as the body and a top divider to separate it from 
   flex-direction: column;
   gap: var(--space-sm);
   /*
-  `var(--modal-padding)` — the SAME inset as .modal-header, the body, and .modal-actions. Using
-  --space-lg here instead left the paste box and its Submit button hanging closer to the panel edge
-  than every other row, which is what read as them being flush against it.
+  FNXC:ProviderAuth 2026-08-18-06:45:
+  Horizontal inset comes from `--modal-padding` so this region always lines up with .modal-header and
+  .modal-actions under any theme. Vertical is deliberately LARGER than that token: themes set
+  `--modal-padding: var(--space-md) var(--space-lg)` (10px at runtime), which is a header-row density
+  and left this cluster — prompt, textarea, Submit, help text — crowded against its own divider and
+  the action row. Order matters: `padding` sets both axes from the token, then `padding-block`
+  replaces only the vertical half.
   */
   padding: var(--modal-padding);
+  padding-block: var(--space-lg);
   border-top: 1px solid var(--border);
   background: var(--surface);
 }
 
+/*
+FNXC:ProviderAuth 2026-08-18-06:45:
+The shared form is built for row density inside a provider card: ~6px between its prompt, field and
+Submit. As this dialog's primary task it needs breathing room between those three, so open the gaps
+here only — the card usages keep their compact rhythm.
+*/
 .provider-login-dialog__paste .oauth-manual-code {
   margin-top: 0;
+  gap: var(--space-md);
+}
+
+.provider-login-dialog__paste .oauth-manual-code__actions {
+  margin-top: var(--space-xs);
 }
 
 /*

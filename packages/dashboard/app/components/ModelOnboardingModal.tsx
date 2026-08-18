@@ -31,6 +31,7 @@ import { CursorCliProviderCard } from "./CursorCliProviderCard";
 import { LlamaCppProviderCard } from "./LlamaCppProviderCard";
 import { LoginInstructions } from "./LoginInstructions";
 import { ProviderLoginDialog, type ProviderLoginPhase } from "./ProviderLoginDialog";
+import { describeLoginFailure } from "../utils/loginFailure";
 import { OAuthManualCodeForm } from "./OAuthManualCodeForm";
 import { OnboardingDisclosure } from "./OnboardingDisclosure";
 import { CustomProviderForm } from "./CustomProviderForm";
@@ -1552,7 +1553,16 @@ export function ModelOnboardingModal({
               }
               setAuthActionInProgress(null);
               setLoginOutcomes((prev) => ({ ...prev, [providerId]: "failed" }));
-              setLoginErrors((prev) => ({ ...prev, [providerId]: t("setup.loginDidNotComplete", "Login did not complete. Please try again.") }));
+              /*
+              FNXC:ProviderAuth 2026-08-18-07:10:
+              PREFER THE SERVER'S REASON. The status row carries why the flow died (`loginError`), and
+              throwing it away for "Login did not complete. Please try again." is how a real, fixable
+              cause reached the operator as a shrug: an `OAuth state mismatch` — the pasted URL
+              belonging to an OLDER sign-in attempt than the one waiting, i.e. a stale provider tab —
+              is indistinguishable from a network failure under the generic text, and "try again"
+              reproduces it exactly if they paste from the same stale tab.
+              */
+              setLoginErrors((prev) => ({ ...prev, [providerId]: describeLoginFailure(provider?.loginError) }));
               clearAuthLoginUiState();
               addToast(t("setup.loginDidNotComplete", "Login did not complete. Please try again."), "error");
             }

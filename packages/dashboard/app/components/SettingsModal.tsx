@@ -73,6 +73,7 @@ import { FileBrowser } from "./FileBrowser";
 import { useWorkspaceFileBrowser } from "../hooks/useWorkspaceFileBrowser";
 import { FloatingWindow } from "./FloatingWindow";
 import { ProviderLoginDialog, type ProviderLoginPhase } from "./ProviderLoginDialog";
+import { describeLoginFailure } from "../utils/loginFailure";
 import { ProviderIcon } from "./ProviderIcon";
 import { generateUniquePresetId } from "../utils/modelPresets";
 import { copyTextToClipboard } from "../utils/copyToClipboard";
@@ -2572,7 +2573,12 @@ export function SettingsModal({
               delete pollIntervalRef.current[stateKey];
             }
             setAuthActionInProgress((prev) => { const next = { ...prev }; delete next[stateKey]; return next; });
-            setLoginErrors((prev) => ({ ...prev, [stateKey]: t("settings.auth.loginDidNotComplete", "Login did not complete. Please try again.") }));
+            /*
+            FNXC:ProviderAuth 2026-08-18-07:10:
+            Prefer the server's own reason over the generic sentence — an `OAuth state mismatch`
+            (pasted URL from an older attempt) is actionable, and "try again" alone reproduces it.
+            */
+            setLoginErrors((prev) => ({ ...prev, [stateKey]: describeLoginFailure(provider?.loginError) }));
             clearAuthLoginUiState(stateKey);
             addToast(t("settings.auth.loginDidNotComplete", "Login did not complete. Please try again."), "error");
           }

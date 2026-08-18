@@ -218,17 +218,40 @@ class FusionFileAuthStorage implements FusionAuthStorage {
   async getApiKey(provider: string, instance?: ProviderInstanceRef): Promise<string | undefined> {
     return resolveStoredCredentialApiKey(provider, instance ? this.getInstance(instance) : this.get(provider));
   }
+  /*
+  FNXC:ProviderAuth 2026-08-18-04:40:
+  MODIFY MUST BE ABLE TO CREATE. This is the seam pi persists a COMPLETED LOGIN through
+  (`Models.login` -> `credentials.modify(provider.id, ...)` in pi-ai's models.js), not just the seam
+  it refreshes an existing token through.
+
+  It used to resolve its write target with `creating: false` and then bail —
+  `if (!target || !this.credential(target, current)) return { changed: false }` — whenever the
+  provider had no credential row yet. The callback was never invoked, nothing was written, and pi's
+  login resolved as a SUCCESS. So a first-ever login for a provider could not be saved: the browser
+  flow completed, the token exchange succeeded, the lock file was taken and released, `auth.json`
+  stayed `{}`, and the dashboard's poll saw `authenticated: false` and reported the useless "Login
+  did not complete. Please try again."
+
+  It looked provider-specific and environment-specific for the worst possible reason: it only
+  reproduces on a store with NO existing row, so every developer and every long-lived install — where
+  a row already exists and this path is a plain refresh — works flawlessly, while every fresh install
+  (a new container, a new machine, a wiped `~/.fusion`) can never complete its first login.
+
+  Create when absent, update when present. A callback returning undefined still writes nothing, so
+  pi's refresh-bails-out behaviour is unchanged.
+  */
   async modify(provider: string, fn: (current: StoredCredential | undefined) => Promise<StoredCredential | undefined>): Promise<StoredCredential | undefined> {
     this.assertRefFromKey(provider);
     return this.withLock(async current => {
-      const target = this.resolveWriteTarget(provider, current, false);
-      if (!target || !this.credential(target, current)) return { result: undefined, changed: false };
-      const next = await fn(this.credential(target, current));
+      const target = this.resolveWriteTarget(provider, current, true);
+      if (!target) return { result: undefined, changed: false };
+      const existing = this.credential(target, current);
+      const next = await fn(existing);
       if (next !== undefined) {
         current[formatProviderInstanceKey(target)] = next;
         return { result: next, changed: true };
       }
-      return { result: this.credential(target, current), changed: false };
+      return { result: existing, changed: false };
     });
   }
   getOAuthProviders(): Array<{ id: string; name: string }> { return [{ id: "anthropic", name: "Anthropic" }, { id: "openai-codex", name: "OpenAI Codex" }, { id: "github-copilot", name: "GitHub Copilot" }]; }

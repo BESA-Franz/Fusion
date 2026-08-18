@@ -153,6 +153,57 @@ describe("createFusionAuthStorage", () => {
     });
   });
 
+
+  /*
+  FNXC:ProviderAuth 2026-08-18-04:40:
+  REGRESSION: a FIRST-EVER login must persist. pi's `Models.login` saves the credential it just
+  obtained through `credentials.modify(provider.id, ...)`, and this seam used to bail out before
+  invoking the callback whenever the provider had no row yet — so the OAuth completed, nothing was
+  written, pi resolved as success, and the dashboard reported "Login did not complete. Please try
+  again." on a fresh install. It reproduced only with an EMPTY store, which is why every existing
+  install (where this path is a refresh over an existing row) looked fine.
+  */
+  describe("modify() on a store with no existing credential", () => {
+    it("creates the credential a first-time login returns", async () => {
+      const authStorage = createFusionAuthStorage();
+      expect(authStorage.get("openai-codex")).toBeUndefined();
+
+      let sawCurrent: unknown = "callback never ran";
+      const written = await authStorage.modify("openai-codex", async (current) => {
+        sawCurrent = current;
+        return { type: "oauth", access: "access-token", refresh: "refresh-token", expires: 1 } as never;
+      });
+
+      expect(sawCurrent, "callback must run even with nothing stored yet").toBeUndefined();
+      expect(written).toBeDefined();
+      // Persisted, not just returned: the next read (and the next process) must see it.
+      expect(authStorage.get("openai-codex")).toMatchObject({ type: "oauth", access: "access-token" });
+      expect(JSON.parse(readFileSync(getFusionAuthPath(homeDir), "utf-8"))["openai-codex"]).toMatchObject({ access: "access-token" });
+    });
+
+    it("still writes nothing when the callback declines", async () => {
+      const authStorage = createFusionAuthStorage();
+
+      const result = await authStorage.modify("openai-codex", async () => undefined);
+
+      expect(result).toBeUndefined();
+      expect(authStorage.get("openai-codex")).toBeUndefined();
+      expect(JSON.parse(readFileSync(getFusionAuthPath(homeDir), "utf-8"))).toEqual({});
+    });
+
+    it("updates in place when a credential already exists", async () => {
+      const authStorage = createFusionAuthStorage();
+      await authStorage.set("openai-codex", { type: "oauth", access: "old", refresh: "r", expires: 1 } as never);
+
+      await authStorage.modify("openai-codex", async (current) => {
+        expect(current).toMatchObject({ access: "old" });
+        return { ...(current as object), access: "new" } as never;
+      });
+
+      expect(authStorage.get("openai-codex")).toMatchObject({ access: "new" });
+    });
+  });
+
   it("writes to Fusion auth and reads legacy Pi auth as fallback", async () => {
     const legacyAgentDir = join(homeDir, ".pi", "agent");
     mkdirSync(legacyAgentDir, { recursive: true });
