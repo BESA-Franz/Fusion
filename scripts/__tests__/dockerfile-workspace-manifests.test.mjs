@@ -126,4 +126,9 @@ test("runner stage installs ca-certificates alongside git", () => {
     /\bca-certificates\b/,
     "runner stage must install ca-certificates — git cannot verify HTTPS remotes without a system CA bundle",
   );
+  assert.match(
+    aptInstall,
+    /\bripgrep\b/,
+    "runner stage must install ripgrep — the coding agents Fusion drives use `rg` as their primary search tool",
+  );
 });

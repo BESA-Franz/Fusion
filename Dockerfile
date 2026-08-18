@@ -74,8 +74,11 @@ ENV PORT=4040
 # breaks project setup outright (operator report). It hid behind Node, which carries its own bundled
 # CA store: the dashboard, model APIs, and OAuth token exchanges all worked, so the image looked
 # healthy right up until the first clone.
+# FNXC:DockerRun 2026-08-18-06:05: ripgrep ships by default because the coding agents Fusion drives
+# reach for `rg` as their primary search tool; without it they silently degrade to slower/partial
+# fallbacks inside the container while working fine on a developer machine that has it installed.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates \
+  && apt-get install -y --no-install-recommends git ca-certificates ripgrep \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
