@@ -6,7 +6,7 @@ import {
   resolveSupervisorRespawnCommand,
   shouldSuperviseDashboard,
 } from "../dashboard.js";
-import { FUSION_NON_RETRYABLE_EXIT_CODE } from "@fusion/core";
+import { FUSION_NON_RETRYABLE_EXIT_CODE, StaleBinarySchemaError } from "@fusion/core";
 
 /*
 FNXC:SystemPanel 2026-07-12-14:25:
@@ -104,6 +104,13 @@ describe("UI-only heartbeat composition", () => {
 describe("classifyDashboardFatalExit", () => {
   it("stops unique-constraint failures without consuming restart attempts", () => {
     expect(classifyDashboardFatalExit({ cause: { code: "23505" } })).toEqual({
+      exitCode: FUSION_NON_RETRYABLE_EXIT_CODE,
+      nonRetryable: true,
+    });
+  });
+
+  it("stops stale binaries without consuming restart attempts", () => {
+    expect(classifyDashboardFatalExit(new StaleBinarySchemaError("0059", "0048"))).toEqual({
       exitCode: FUSION_NON_RETRYABLE_EXIT_CODE,
       nonRetryable: true,
     });

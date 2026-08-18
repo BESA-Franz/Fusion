@@ -36,6 +36,7 @@ import {
   FUSION_NON_RETRYABLE_EXIT_CODE,
   isPostgresUniqueError,
   ProjectPartitionRekeyError,
+  StaleBinarySchemaError,
   resolveTaskLifecycleColumns,
   type WorkflowIr,
 } from "@fusion/core";
@@ -986,7 +987,7 @@ export async function runDashboard(port: number, opts: { paused?: boolean; dev?:
   } catch (error) {
     const fatal = classifyDashboardFatalExit(error);
     if (fatal.nonRetryable) {
-      console.error(`[dashboard] startup stopped: unique constraint or project partition reconciliation failure: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`[dashboard] startup stopped after a non-retryable database compatibility failure: ${error instanceof Error ? error.message : String(error)}`);
       process.exit(fatal.exitCode);
     }
     throw error;
@@ -3771,7 +3772,11 @@ export function shouldSuperviseDashboard(
  * Port 4040 processes are never killed — the child binds its own port.
  */
 export function classifyDashboardFatalExit(error: unknown): { exitCode: number; nonRetryable: boolean } {
-  if (isPostgresUniqueError(error) || error instanceof ProjectPartitionRekeyError) {
+  if (
+    isPostgresUniqueError(error)
+    || error instanceof ProjectPartitionRekeyError
+    || error instanceof StaleBinarySchemaError
+  ) {
     return { exitCode: FUSION_NON_RETRYABLE_EXIT_CODE, nonRetryable: true };
   }
   return { exitCode: 1, nonRetryable: false };
@@ -3870,7 +3875,7 @@ export async function runDashboardSupervised(
     SUPERVISE_MAX_RESTARTS or incur crash backoff.
     */
     if (exitCode === FUSION_NON_RETRYABLE_EXIT_CODE) {
-      console.error("[dashboard:supervisor] dashboard stopped after a non-retryable unique constraint or project partition identity reconciliation failure; inspect the preceding startup error.");
+      console.error("[dashboard:supervisor] dashboard stopped after a non-retryable database compatibility failure; inspect the preceding startup error.");
       process.exit(exitCode);
     }
 
