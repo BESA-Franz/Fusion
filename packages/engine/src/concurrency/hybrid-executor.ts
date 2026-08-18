@@ -153,6 +153,18 @@ export class HybridExecutor extends EventEmitter<HybridExecutorEvents> {
     // Create internal ProjectManager
     this.projectManager = new ProjectManager(centralCore);
 
+    /*
+    FNXC:HybridExecutorErrorSink 2026-08-18-16:45:
+    Node treats an emitted `error` event without a listener as an uncaught exception.
+    Install the permanent, secret-free sink before ProjectManager forwarding so a
+    runtime error cannot terminate dashboard/daemon startup between construction and
+    an optional caller attaching its own observer. Additional listeners still receive
+    the original typed event.
+    */
+    this.on("error", (data) => {
+      hybridExecutorLog.error(`Project runtime error captured (projectId=${data.projectId})`);
+    });
+
     // Set up event forwarding from ProjectManager
     this.setupEventForwarding();
 

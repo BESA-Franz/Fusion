@@ -162,6 +162,7 @@ describe("HybridExecutor", () => {
     } catch {
       // Ignore cleanup errors
     }
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     mockRuntimes.clear();
     mockProjectIds.length = 0;
@@ -365,6 +366,52 @@ describe("HybridExecutor", () => {
       const handler = vi.fn();
       executor.on("error", handler);
       expect(handler).not.toHaveBeenCalled();
+    });
+
+    it("captures a forwarded runtime error before callers attach an error listener", () => {
+      const manager = mockProjectManagerInstances[0];
+      const forwardingCall = manager?.on.mock.calls.find(([event]) => event === "error");
+      const forwardError = forwardingCall?.[1] as ((data: {
+        projectId: string;
+        projectName: string;
+        error: Error;
+      }) => void) | undefined;
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      expect(forwardError).toBeTypeOf("function");
+      expect(() => forwardError?.({
+        projectId: "proj_error_sink",
+        projectName: "Private project name",
+        error: new Error("secret-shaped runtime detail"),
+      })).not.toThrow();
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("projectId=proj_error_sink"));
+      expect(consoleError.mock.calls.flat().join(" ")).not.toContain("secret-shaped runtime detail");
+      expect(consoleError.mock.calls.flat().join(" ")).not.toContain("Private project name");
+
+      consoleError.mockRestore();
+    });
+
+    it("keeps forwarding runtime errors to explicit observers", () => {
+      const manager = mockProjectManagerInstances[0];
+      const forwardingCall = manager?.on.mock.calls.find(([event]) => event === "error");
+      const forwardError = forwardingCall?.[1] as ((data: {
+        projectId: string;
+        projectName: string;
+        error: Error;
+      }) => void) | undefined;
+      const observer = vi.fn();
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      executor.on("error", observer);
+      const event = {
+        projectId: "proj_observed",
+        projectName: "Observed Project",
+        error: new Error("runtime failed"),
+      };
+
+      forwardError?.(event);
+
+      expect(observer).toHaveBeenCalledWith(event);
+      consoleError.mockRestore();
     });
 
     it("should support health:changed event", () => {
