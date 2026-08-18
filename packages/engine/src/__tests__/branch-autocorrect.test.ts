@@ -85,7 +85,9 @@ describe("attemptBranchAutocorrect", () => {
     const result = await attemptBranchAutocorrect({ worktreePath: "/tmp/wt", observedBranch: "lemon-sage", expectedBranch: "fusion/fn-2", rootDir: "/tmp" });
 
     expect(result).toEqual({ status: "renamed" });
-    expect(mockedExec.mock.calls.map((c: unknown[]) => c[0])).toContain(`git branch -M ${quoted("lemon-sage")} ${quoted("fusion/fn-2")}`);
+    const commands = mockedExec.mock.calls.map((c: unknown[]) => c[0]);
+    expect(commands).toContain(`git for-each-ref --format=${quoted("%(refname:short)")} --contains abc123 refs/heads/`);
+    expect(commands).toContain(`git branch -M ${quoted("lemon-sage")} ${quoted("fusion/fn-2")}`);
   });
 
   it("falls back to plain checkout when branch has upstream and expected ref exists", async () => {

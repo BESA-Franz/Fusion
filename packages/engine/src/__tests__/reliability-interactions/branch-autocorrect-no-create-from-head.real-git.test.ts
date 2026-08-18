@@ -43,6 +43,27 @@ describeIfGit("FN-5456: attemptBranchAutocorrect must never create a branch from
   // fall through to verify-then-checkout, which is what the FN-5456 fix
   // governs.
 
+  it("renames a fresh observed branch to the expected branch", async () => {
+    const repoDir = await initRepo();
+
+    git(repoDir, "git checkout -b fusion/fn-observed");
+    const observedTip = await commitFile(repoDir, "observed.ts", "observed\n", "feat(FN-TARGET): observed work");
+
+    const result = await attemptBranchAutocorrect({
+      worktreePath: repoDir,
+      observedBranch: "fusion/fn-observed",
+      expectedBranch: "fusion/fn-target",
+      rootDir: repoDir,
+    });
+
+    expect(result).toEqual({ status: "renamed" });
+    expect(git(repoDir, "git rev-parse --abbrev-ref HEAD")).toBe("fusion/fn-target");
+    expect(git(repoDir, "git rev-parse HEAD")).toBe(observedTip);
+    expect(spawnSync("git", ["show-ref", "--verify", "--quiet", "refs/heads/fusion/fn-observed"], {
+      cwd: repoDir,
+    }).status).not.toBe(0);
+  });
+
   it("does not create the expected branch when only a foreign-tipped HEAD is available", async () => {
     const repoDir = await initRepo();
 

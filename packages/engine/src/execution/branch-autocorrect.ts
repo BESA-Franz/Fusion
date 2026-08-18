@@ -21,8 +21,8 @@ function quoteShellArg(value: string): string {
   /*
   FNXC:BranchAutocorrectWindows 2026-08-18-16:41:
   cmd.exe treats POSIX single quotes as ref characters, so an existing expected branch appears
-  unavailable and autocorrect fails instead of checking it out. Preserve POSIX quoting on Unix
-  and use the native-backend double-quote form on Windows.
+  unavailable and the for-each-ref format emits quoted branch names, blocking fresh-branch rename.
+  Preserve POSIX quoting on Unix and use the native-backend double-quote form on Windows.
   */
   return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -75,7 +75,10 @@ export async function attemptBranchAutocorrect({
     if (observedShaResult.ok) {
       const observedSha = observedShaResult.stdout.trim();
       if (/^[0-9a-f]{4,64}$/i.test(observedSha)) {
-        const contains = await runGit(`git for-each-ref --format='%(refname:short)' --contains ${observedSha} refs/heads/`, worktreePath);
+        const contains = await runGit(
+          `git for-each-ref --format=${quoteShellArg("%(refname:short)")} --contains ${observedSha} refs/heads/`,
+          worktreePath,
+        );
         if (contains.ok) {
           const refs = contains.stdout
             .split("\n")
