@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveContaminationBaseRef, resolveDiffBaseRef } from "../executor/worktree-git-refs.js";
+import { resolveResumeContaminationBase } from "../worktree/worktree-acquisition.js";
 
 describe("worktree Git-ref fallback with real Git", () => {
   const fixtures: string[] = [];
@@ -28,5 +29,6 @@ describe("worktree Git-ref fallback with real Git", () => {
 
     await expect(resolveContaminationBaseRef(repo)).resolves.toBe(expectedSha);
     await expect(resolveDiffBaseRef(repo)).resolves.toBe(expectedSha);
+    await expect(resolveResumeContaminationBase(repo)).resolves.toBe(expectedSha);
   });
 });

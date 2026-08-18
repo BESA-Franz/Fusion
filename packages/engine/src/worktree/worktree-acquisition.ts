@@ -1182,17 +1182,7 @@ async function verifyResumeBranchNotMisbound(input: {
 }): Promise<void> {
   const { worktreePath, branchName, taskId, rootDir, store, audit, logger, runContext } = input;
 
-  let baseSha = "";
-  try {
-    const { stdout } = await execAsync(
-      "git merge-base HEAD main 2>/dev/null || git merge-base HEAD origin/main",
-      { cwd: worktreePath, encoding: "utf-8" },
-    );
-    baseSha = stdout.trim();
-  } catch {
-    // Can't resolve a base — let executor's primary contamination path handle it.
-    return;
-  }
+  const baseSha = await resolveResumeContaminationBase(worktreePath);
   if (!baseSha) return;
 
   let classification;
@@ -1239,6 +1229,23 @@ async function verifyResumeBranchNotMisbound(input: {
   } catch (err) {
     logger?.warn?.(`${taskId}: resume re-anchor failed (continuing — executor preflight will handle): ${formatError(err)}`);
   }
+}
+
+/** Resolve the resume contamination base without POSIX-only shell chaining. */
+export async function resolveResumeContaminationBase(worktreePath: string): Promise<string | undefined> {
+  for (const ref of ["main", "origin/main"] as const) {
+    try {
+      const { stdout } = await execAsync(`git merge-base HEAD ${ref}`, {
+        cwd: worktreePath,
+        encoding: "utf-8",
+      });
+      const baseSha = stdout.trim();
+      if (baseSha) return baseSha;
+    } catch {
+      // Try the next bounded ref. The caller owns the fail-closed no-base path.
+    }
+  }
+  return undefined;
 }
 
 export interface AcquireWorkspaceRepoWorktreeOptions {

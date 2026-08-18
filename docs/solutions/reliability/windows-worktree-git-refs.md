@@ -10,5 +10,7 @@ The executor resolved contamination and diff bases with a single POSIX shell exp
 
 - contamination base: local `main`, then `origin/main`;
 - diff base: `origin/main`, then local `main`, then the existing `HEAD~1` fallback.
+- resume and branch/worktree auto-recovery: local `main`, then `origin/main`,
+  followed by their existing fail-closed fallback behavior.
 
 The contract tests assert both command order and the absence of POSIX redirection or shell fallback operators.

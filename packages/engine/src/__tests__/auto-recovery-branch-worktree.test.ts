@@ -63,6 +63,30 @@ describe("BranchWorktreeAutoRecoveryHandler", () => {
     vi.clearAllMocks();
   });
 
+  it("resolves contamination refs with separate local-first probes", async () => {
+    const f = createFixtures();
+    const runGit = vi.spyOn(f.handler as any, "runGit")
+      .mockRejectedValueOnce(new Error("no local main"))
+      .mockResolvedValueOnce("origin-main-sha");
+
+    await expect((f.handler as any).resolveContaminationBase("C:/fixture", "stored-base"))
+      .resolves.toBe("origin-main-sha");
+    expect(runGit.mock.calls).toEqual([
+      ["C:/fixture", "git merge-base HEAD main"],
+      ["C:/fixture", "git merge-base HEAD origin/main"],
+    ]);
+    expect(runGit.mock.calls.flat().join(" ")).not.toMatch(/2>\/dev\/null|\|\|/);
+  });
+
+  it("uses the stored fallback only after both contamination refs fail", async () => {
+    const f = createFixtures();
+    const runGit = vi.spyOn(f.handler as any, "runGit").mockRejectedValue(new Error("missing ref"));
+
+    await expect((f.handler as any).resolveContaminationBase("C:/fixture", "stored-base"))
+      .resolves.toBe("stored-base");
+    expect(runGit).toHaveBeenCalledTimes(2);
+  });
+
   it("requeues on fully-subsumed", async () => {
     const f = createFixtures();
     branchConflictMocks.inspectBranchConflict.mockResolvedValue({ kind: "fully-subsumed", livePath: "/tmp/wt", tipSha: "abc" });

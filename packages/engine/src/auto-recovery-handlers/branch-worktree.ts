@@ -99,14 +99,13 @@ export class BranchWorktreeAutoRecoveryHandler {
    * with a non-standard layout).
    */
   private async resolveContaminationBase(worktreePath: string, fallback: string): Promise<string> {
-    try {
-      const out = await this.runGit(
-        worktreePath,
-        "git merge-base HEAD main 2>/dev/null || git merge-base HEAD origin/main",
-      );
-      if (out) return out;
-    } catch {
-      // fall through to fallback
+    for (const ref of ["main", "origin/main"] as const) {
+      try {
+        const out = await this.runGit(worktreePath, `git merge-base HEAD ${ref}`);
+        if (out) return out;
+      } catch {
+        // Try the next bounded ref before using the caller-supplied fallback.
+      }
     }
     return fallback;
   }
