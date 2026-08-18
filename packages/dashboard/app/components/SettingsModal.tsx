@@ -72,6 +72,7 @@ import "./SettingsModal.css";
 import { FileBrowser } from "./FileBrowser";
 import { useWorkspaceFileBrowser } from "../hooks/useWorkspaceFileBrowser";
 import { FloatingWindow } from "./FloatingWindow";
+import { ProviderLoginDialog, type ProviderLoginPhase } from "./ProviderLoginDialog";
 import { ProviderIcon } from "./ProviderIcon";
 import { generateUniquePresetId } from "../utils/modelPresets";
 import { copyTextToClipboard } from "../utils/copyToClipboard";
@@ -1439,6 +1440,18 @@ export function SettingsModal({
   const [deviceCodes, setDeviceCodes] = useState<Record<string, OAuthDeviceCodeInfo>>({});
   const [manualCodeInputs, setManualCodeInputs] = useState<Record<string, string>>({});
   const [manualCodeSubmitInProgress, setManualCodeSubmitInProgress] = useState<string | null>(null);
+  /*
+  FNXC:ProviderAuth 2026-08-18-06:10:
+  Settings shares onboarding's persistent paste-back login dialog (ProviderLoginDialog). Everything
+  here is keyed by `stateKey` (provider + credential instance), not a bare provider id, because
+  Settings can hold several named accounts for one provider and each runs its own flow.
+  `loginDialog` carries the identity the dialog's handlers need; `loginAuthUrls` re-opens a lost
+  sign-in tab; `loginErrors` keeps the terminal reason on screen after the flow dies, since a toast
+  is gone before the operator is back from the browser tab they were signing in on.
+  */
+  const [loginDialog, setLoginDialog] = useState<{ stateKey: string; providerId: string; instanceId?: string; providerName: string } | null>(null);
+  const [loginAuthUrls, setLoginAuthUrls] = useState<Record<string, string>>({});
+  const [loginErrors, setLoginErrors] = useState<Record<string, string>>({});
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({});
   const [apiKeyErrors, setApiKeyErrors] = useState<Record<string, string>>({});
   const [opencodeApiKeyRefreshStatus, setOpencodeApiKeyRefreshStatus] = useState<Record<string, {
@@ -2407,6 +2420,14 @@ export function SettingsModal({
   }, []);
 
   const clearAuthLoginUiState = useCallback((providerId: string) => {
+    setLoginAuthUrls((prev) => {
+      if (!(providerId in prev)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[providerId];
+      return next;
+    });
     if (providerId in lastAutoCopiedDeviceCodesRef.current) {
       const next = { ...lastAutoCopiedDeviceCodesRef.current };
       delete next[providerId];
@@ -2477,6 +2498,21 @@ export function SettingsModal({
       if (!shouldContinue) {
         return;
       }
+      /*
+      FNXC:ProviderAuth 2026-08-18-06:10:
+      Hand straight from the warning into the persistent dialog, so the paste field and the flow's
+      current step are on screen from the moment the browser tab opens instead of appearing inline in
+      a scrolling provider list.
+      */
+      setLoginErrors((prev) => {
+        if (!(stateKey in prev)) {
+          return prev;
+        }
+        const next = { ...prev };
+        delete next[stateKey];
+        return next;
+      });
+      setLoginDialog({ stateKey, providerId, instanceId, providerName: provider.name });
     }
 
     setAuthActionInProgress((prev) => ({ ...prev, [stateKey]: true }));
@@ -2497,6 +2533,7 @@ export function SettingsModal({
       if (deviceCode && providerId === "github-copilot") {
         setDeviceCodes((prev) => ({ ...prev, [stateKey]: deviceCode }));
       }
+      setLoginAuthUrls((prev) => ({ ...prev, [stateKey]: appendTokenQuery(deviceCode?.verificationUri ?? url) }));
       if (providerId !== "github-copilot" || !deviceCode) {
         openExternalUrl(appendTokenQuery(deviceCode?.verificationUri ?? url));
       }
@@ -2513,6 +2550,7 @@ export function SettingsModal({
               delete pollIntervalRef.current[stateKey];
             }
             setAuthActionInProgress((prev) => { const next = { ...prev }; delete next[stateKey]; return next; });
+            setLoginDialog((current) => (current?.stateKey === stateKey ? null : current));
             clearAuthLoginUiState(stateKey);
             /*
             FNXC:SettingsCredentialInstance 2026-08-01-17:49:
@@ -2534,6 +2572,7 @@ export function SettingsModal({
               delete pollIntervalRef.current[stateKey];
             }
             setAuthActionInProgress((prev) => { const next = { ...prev }; delete next[stateKey]; return next; });
+            setLoginErrors((prev) => ({ ...prev, [stateKey]: t("settings.auth.loginDidNotComplete", "Login did not complete. Please try again.") }));
             clearAuthLoginUiState(stateKey);
             addToast(t("settings.auth.loginDidNotComplete", "Login did not complete. Please try again."), "error");
           }
@@ -2549,6 +2588,7 @@ export function SettingsModal({
         await loadAuthStatus();
       } else {
         addToast(message, "error");
+        setLoginErrors((prev) => ({ ...prev, [stateKey]: message }));
       }
       setAuthActionInProgress((prev) => { const next = { ...prev }; delete next[stateKey]; return next; });
       clearAuthLoginUiState(stateKey);
@@ -4404,6 +4444,7 @@ export function SettingsModal({
               manualCodeInputs,
               setManualCodeInputs,
               manualCodeSubmitInProgress,
+              activeLoginDialogKey: loginDialog?.stateKey ?? null,
               loadAuthStatus,
               handleLogin,
               handleLogout,
@@ -4472,7 +4513,64 @@ export function SettingsModal({
     </FloatingWindow>
   );
 
-  return renderModalShell(
+  /*
+  FNXC:ProviderAuth 2026-08-18-06:10:
+  The login dialog is rendered OUTSIDE renderModalShell, deliberately. In its modal presentation the
+  shell is a FloatingWindow, and a portaled dialog inside a window's React subtree lifts that window
+  above itself on first click (a portal moves the DOM node, not the React tree, and the window raises
+  itself on every pointerdown it sees). As a sibling it is unaffected in both presentations.
+  */
+  const loginDialogElement = loginDialog ? (() => {
+    const { stateKey, providerId, instanceId, providerName } = loginDialog;
+    const manualCode = manualCodeConfigs[stateKey];
+    const failure = loginErrors[stateKey];
+    const authenticated = authProviders.some((entry) => entry.id === providerId
+      && (entry.instanceId ?? "default") === (instanceId ?? "default")
+      && entry.authenticated);
+    const phase: ProviderLoginPhase = authenticated
+      ? "succeeded"
+      : failure
+        ? "failed"
+        : manualCodeSubmitInProgress === stateKey
+          ? "submitting"
+          : "waiting";
+    return (
+      <ProviderLoginDialog
+        data-testid={`provider-login-dialog-${stateKey}`}
+        providerName={providerName}
+        authUrl={loginAuthUrls[stateKey]}
+        instructions={loginInstructions[stateKey]}
+        phase={phase}
+        errorMessage={failure}
+        manualCode={{
+          prompt: manualCode?.prompt ?? t("settings.auth.pasteRedirectUrl", "Paste the final redirect URL or authorization code"),
+          placeholder: manualCode?.placeholder,
+          helpText: manualCode?.helpText,
+        }}
+        codeValue={manualCodeInputs[stateKey] ?? ""}
+        onCodeChange={(value) => setManualCodeInputs((prev) => ({ ...prev, [stateKey]: value }))}
+        onSubmitCode={() => void handleSubmitManualCode(providerId, instanceId)}
+        onOpenAuthUrl={() => {
+          const url = loginAuthUrls[stateKey];
+          if (url) {
+            openExternalUrl(url);
+          }
+        }}
+        onCancel={() => {
+          setLoginDialog(null);
+          // A still-running flow must be cancelled server-side, or its slot blocks the retry with a 409.
+          if (authActionInProgress[stateKey]) {
+            void handleCancelLogin(providerId, instanceId);
+          }
+        }}
+      />
+    );
+  })() : null;
+
+  return (
+    <>
+      {loginDialogElement}
+      {renderModalShell(
     <>
       <div
         className={isEmbedded ? "modal modal-lg settings-modal settings-modal--embedded" : "modal modal-lg settings-modal"}
@@ -5214,6 +5312,8 @@ export function SettingsModal({
             </div>
           </div>
         </div>
+      )}
+    </>
       )}
     </>
   );

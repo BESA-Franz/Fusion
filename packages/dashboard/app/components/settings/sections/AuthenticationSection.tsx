@@ -42,6 +42,13 @@ export interface AuthenticationSectionData {
     manualCodeInputs: Record<string, string>;
     setManualCodeInputs: Dispatch<SetStateAction<Record<string, string>>>;
     manualCodeSubmitInProgress: string | null;
+    /*
+    FNXC:ProviderAuth 2026-08-18-06:10:
+    stateKey whose login is showing in the persistent ProviderLoginDialog, or null. That dialog
+    already renders the instructions and paste field, so the row must not render its own copies —
+    two inputs for the same code, one of them behind the dialog.
+    */
+    activeLoginDialogKey?: string | null;
     loadAuthStatus: () => void | Promise<void>;
     handleLogin: (providerId: string, instanceId?: string, label?: string) => void;
     handleLogout: (providerId: string, instanceId?: string) => void;
@@ -87,7 +94,7 @@ const compareAuthProviderDisplayOrder = (a: AuthProvider, b: AuthProvider) => {
 };
 export function AuthenticationSection({ auth, form, setForm }: AuthenticationSectionProps) {
     const { t } = useTranslation("app");
-    const { projectId, addToast, authProviders, authLoading, authActionInProgress, apiKeyInputs, setApiKeyInputs, apiKeyErrors, opencodeApiKeyRefreshStatus, deviceCodes, loginInstructions, manualCodeConfigs, manualCodeInputs, setManualCodeInputs, manualCodeSubmitInProgress, loadAuthStatus, handleLogin, handleLogout, handleCancelLogin, handleSaveApiKey, handleClearApiKey, handleSubmitManualCode, onReopenOnboarding, } = auth;
+    const { projectId, addToast, authProviders, authLoading, authActionInProgress, apiKeyInputs, setApiKeyInputs, apiKeyErrors, opencodeApiKeyRefreshStatus, deviceCodes, loginInstructions, manualCodeConfigs, manualCodeInputs, setManualCodeInputs, manualCodeSubmitInProgress, activeLoginDialogKey, loadAuthStatus, handleLogin, handleLogout, handleCancelLogin, handleSaveApiKey, handleClearApiKey, handleSubmitManualCode, onReopenOnboarding, } = auth;
     const [pendingInstances, setPendingInstances] = useState<Record<string, { instanceId: string; label: string }>>({});
     const isAuthActionActive = (stateKey: string) => typeof authActionInProgress === "string"
         ? authActionInProgress === stateKey
@@ -320,8 +327,8 @@ export function AuthenticationSection({ auth, form, setForm }: AuthenticationSec
             <button className="btn btn-sm" onClick={() => openExternalUrl(appendTokenQuery(deviceCodes[stateKey].verificationUri))}>{t("settings.auth.openGitHub", "Open GitHub")}</button>
           </div>
         </div>}
-        {loginInstructions[stateKey] && isActive && <LoginInstructions instructions={loginInstructions[stateKey]} data-testid={`auth-login-instructions-${stateKey}`}/>}
-        {manualCodeConfigs[stateKey] && isActive && <OAuthManualCodeForm value={manualCodeInputs[stateKey] ?? ""} onChange={(value) => setManualCodeInputs((prev) => ({ ...prev, [stateKey]: value }))} onSubmit={() => void handleSubmitManualCode(provider.id, instanceId)} prompt={manualCodeConfigs[stateKey].prompt} placeholder={manualCodeConfigs[stateKey].placeholder} helpText={manualCodeConfigs[stateKey].helpText} disabled={manualCodeSubmitInProgress === stateKey} submitLabel={manualCodeSubmitInProgress === stateKey ? "Submitting…" : "Submit code"} data-testid={`auth-manual-code-${stateKey}`}/>}
+        {loginInstructions[stateKey] && isActive && activeLoginDialogKey !== stateKey && <LoginInstructions instructions={loginInstructions[stateKey]} data-testid={`auth-login-instructions-${stateKey}`}/>}
+        {manualCodeConfigs[stateKey] && isActive && activeLoginDialogKey !== stateKey && <OAuthManualCodeForm value={manualCodeInputs[stateKey] ?? ""} onChange={(value) => setManualCodeInputs((prev) => ({ ...prev, [stateKey]: value }))} onSubmit={() => void handleSubmitManualCode(provider.id, instanceId)} prompt={manualCodeConfigs[stateKey].prompt} placeholder={manualCodeConfigs[stateKey].placeholder} helpText={manualCodeConfigs[stateKey].helpText} disabled={manualCodeSubmitInProgress === stateKey} submitLabel={manualCodeSubmitInProgress === stateKey ? "Submitting…" : "Submit code"} data-testid={`auth-manual-code-${stateKey}`}/>}
       </div>;
     };
     /*
