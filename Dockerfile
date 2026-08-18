@@ -159,6 +159,22 @@ RUN chown node:node /app \
 
 USER node
 
+# FNXC:DockerRun 2026-08-18-06:55: A DEFAULT GIT IDENTITY, because a container has none and Fusion
+# mostly commits with whatever git finds in ambient config. Only `workspace-fence-ref.ts` passes
+# `-c user.name/-c user.email` explicitly; the merge commits, the `--amend` in merger-ai, and the
+# experiment git-ops all rely on the environment. With no identity every one of them dies on
+# "Author identity unknown ... Please tell me who you are", so an auto-merge reached `status:merging`
+# and stopped there with nothing in the UI to explain why (operator report).
+#
+# The values match the identity Fusion already uses for its own fence commits, so authorship stays
+# consistent; an operator who wants real authorship overrides it with `git config --global` in a
+# mounted home or a derived image. This is a FALLBACK for the container, not a substitute for
+# passing an explicit identity at the commit sites — those should still be fixed upstream so a bare
+# machine with no git config behaves the same way.
+RUN git config --global user.name "Fusion" \
+  && git config --global user.email "fusion@localhost" \
+  && git config --global init.defaultBranch main
+
 WORKDIR /workspace
 
 EXPOSE 4040

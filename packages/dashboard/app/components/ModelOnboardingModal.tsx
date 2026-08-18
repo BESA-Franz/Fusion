@@ -827,6 +827,18 @@ export function ModelOnboardingModal({
   const [loginErrors, setLoginErrors] = useState<Record<string, string>>({});
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
+  /*
+  FNXC:Onboarding 2026-08-18-06:20:
+  Picking a default model is the step operators walked past: the section sits below every provider
+  card, reads "(Optional)", and on a fresh install renders as an empty-state until a provider
+  connects — so the moment it becomes actionable is exactly the moment it is off screen. Once a
+  provider is connected and no model is chosen yet, bring the section into view ONCE and mark it as
+  awaiting a choice. It stays skippable; `nudged` makes sure a later re-render never yanks the
+  operator's scroll position back again.
+  */
+  const modelSectionRef = useRef<HTMLDivElement | null>(null);
+  const modelPromptNudgedRef = useRef(false);
+  const [modelChoicePending, setModelChoicePending] = useState(false);
   const [saving, setSaving] = useState(false);
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({});
   const [apiKeyErrors, setApiKeyErrors] = useState<Record<string, string>>({});
@@ -1378,6 +1390,28 @@ export function ModelOnboardingModal({
   }, [agentDraft, handleNext, projectId, t]);
 
   // OAuth login handler
+  /*
+  FNXC:Onboarding 2026-08-18-06:20:
+  The nudge fires only when the choice is actually possible — a provider connected AND its models
+  loaded AND nothing selected — because before that the section is an empty state and scrolling to
+  it would just show the operator "No models available yet".
+  */
+  useEffect(() => {
+    const connected = authProviders.some((provider) => provider.authenticated && provider.id !== "github");
+    const canChoose = connected && availableModels.length > 0 && !selectedModel;
+    setModelChoicePending(canChoose);
+    if (!canChoose || modelPromptNudgedRef.current) {
+      return;
+    }
+    modelPromptNudgedRef.current = true;
+    // Guarded: scrollIntoView is absent in JSDOM and in any non-DOM host, and a nudge is never
+    // important enough to throw out of an effect and take the modal down with it.
+    const section = modelSectionRef.current;
+    if (typeof section?.scrollIntoView === "function") {
+      section.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [authProviders, availableModels, selectedModel]);
+
   const handleLogin = useCallback(
     async (providerId: string) => {
       const provider = authProviders.find((entry) => entry.id === providerId);
@@ -1536,6 +1570,16 @@ export function ModelOnboardingModal({
               }
               setAuthActionInProgress(null);
               setLoginOutcomes((prev) => ({ ...prev, [providerId]: "success" }));
+              /*
+              FNXC:Onboarding 2026-08-18-06:20:
+              A NEWLY CONNECTED PROVIDER MUST REFRESH THE MODEL CATALOGUE. `availableModels` was
+              loaded once at mount and only ever re-fetched for custom providers, so on a fresh
+              install — where nothing is connected at mount and the list starts empty — the Default
+              Model section stayed stuck on "No models available yet. Connect a provider above to see
+              model options." even after the provider connected. The operator was never offered a
+              default model at all (report), and onboarding completed with none set.
+              */
+              void loadModels();
               setLoginDialogProvider((current) => (current === providerId ? null : current));
               clearAuthLoginUiState();
               if (providerId === "github") {
@@ -1773,6 +1817,8 @@ export function ModelOnboardingModal({
       try {
         await saveApiKey(providerId, key);
         await loadAuthStatus();
+        // Same reason as the OAuth path: a key that just unlocked a provider must populate its models.
+        void loadModels();
         scrollOnboardingContentToTop();
 
         setApiKeyInputs((prev) => {
@@ -1946,10 +1992,19 @@ export function ModelOnboardingModal({
       }
 
       await updateGlobalSettings(updates);
+    } catch {
+      /*
+      FNXC:Onboarding 2026-08-18-07:30:
+      A FAILED SETTINGS WRITE MUST NOT STRAND ONBOARDING AS UNFINISHED. Marking completion used to sit
+      after this await inside the same try, so any failure persisting the default model — a transient
+      request, a restarting backend — skipped it silently, and the dashboard went on advertising
+      "Continue Setup" at the first step to an operator who had finished the whole flow (report:
+      "my dashboard showed I was last on ai setup step but I actually finished it"). Completion is a
+      local fact about what the operator did; it does not depend on the default-model write landing.
+      */
+    } finally {
       // Mark onboarding as completed (preserves state for completion timestamp)
       markOnboardingCompleted();
-    } catch {
-      // Best-effort: continue even if save fails
     }
   }, [selectedModel, availableModels, updateGlobalSettings, markOnboardingCompleted]);
 
@@ -2846,9 +2901,15 @@ export function ModelOnboardingModal({
                   </section>
 
                   {/* Model Selection — placed directly after the provider sections */}
-                  <div className="onboarding-model-section">
+                  <div
+                    ref={modelSectionRef}
+                    className={`onboarding-model-section${modelChoicePending ? " onboarding-model-section--pending" : ""}`}
+                    data-testid="onboarding-model-section"
+                  >
                     <h3 className="onboarding-section-title">
-                      {t("setup.defaultModelOptional", "Default Model (Optional)")}
+                      {modelChoicePending
+                        ? t("setup.defaultModelChooseNow", "Choose your default model")
+                        : t("setup.defaultModelOptional", "Default Model (Optional)")}
                     </h3>
                     <p className="model-onboarding-description">
                       {t("setup.defaultModelDescription", "Pick a default model for AI tasks, or leave this blank to choose later. Models vary in speed, capability, and cost.")}
