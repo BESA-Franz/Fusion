@@ -138,8 +138,9 @@ export async function resolveIntegrationRemote(
   }
 
   try {
-    const { stdout } = await execAsync(
-      `git config --get branch.${input.integrationBranch}.remote`,
+    const { stdout } = await execFileAsync(
+      "git",
+      ["config", "--get", `branch.${input.integrationBranch}.remote`],
       { cwd: input.rootDir, encoding: "utf-8" },
     );
     const branchRemote = stdout.trim();
@@ -151,7 +152,7 @@ export async function resolveIntegrationRemote(
   }
 
   try {
-    const { stdout } = await execAsync("git remote", {
+    const { stdout } = await execFileAsync("git", ["remote"], {
       cwd: input.rootDir,
       encoding: "utf-8",
     });

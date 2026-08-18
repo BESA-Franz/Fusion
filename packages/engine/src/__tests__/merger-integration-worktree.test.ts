@@ -193,9 +193,10 @@ describe("resolveIntegrationRemote", () => {
   });
 
   it("falls back to the configured branch remote and then repo remotes", async () => {
+    const integrationBranch = "release/$value`tick";
     mockedExecSync.mockImplementation((cmd: any) => {
       const command = String(cmd);
-      if (command.includes("git config --get branch.master.remote")) return Buffer.from("fork\n");
+      if (command === `git config --get branch.${integrationBranch}.remote`) return Buffer.from("fork\n");
       throw new Error(`Unexpected command: ${command}`);
     });
 
@@ -203,9 +204,16 @@ describe("resolveIntegrationRemote", () => {
       resolveIntegrationRemote({
         settings: { worktreeRebaseRemote: "" } as any,
         rootDir: "/tmp/project-root",
-        integrationBranch: "master",
+        integrationBranch,
       }),
     ).resolves.toBe("fork");
+    expect(mockedExecFile.mock.calls.some(([file, args]) =>
+      file === "git"
+      && Array.isArray(args)
+      && args[0] === "config"
+      && args[1] === "--get"
+      && args[2] === `branch.${integrationBranch}.remote`
+    )).toBe(true);
   });
 });
 
