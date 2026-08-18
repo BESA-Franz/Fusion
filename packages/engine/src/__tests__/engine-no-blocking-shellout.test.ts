@@ -32,7 +32,7 @@ const BOUNDED_GIT_DIFF = "bounded data-dependent git diff plumbing";
 const allowlist: AllowlistEntry[] = [
   // FNXC:FullSuiteBookkeeping 2026-08-05-00:25: Re-pin after code-organization peels moved git plumbing under merge/, worktree/, execution/ and shifted self-healing/executor line numbers. Identity remains file+primitive+signature; lines are documentation only.
   { file: "src/execution/review-checkout.ts", line: 35, primitive: "execFileSync", signature: "const topLevel = execFileSync(\"git\", [\"rev-parse\", \"--show-toplevel\"], {", reason: SHORT_GIT_PLUMBING },
-  { file: "src/executor.ts", line: 18450, primitive: "execSync", signature: "execSync(`git merge-base --is-ancestor ${task.baseCommitSha} HEAD`, {", reason: SHORT_GIT_PLUMBING },
+  { file: "src/executor/worktree-git-refs.ts", line: 121, primitive: "execSync", signature: "execSync(`git merge-base --is-ancestor ${task.baseCommitSha} HEAD`, {", reason: SHORT_GIT_PLUMBING },
   { file: "src/merge/already-merged-detector.ts", line: 204, primitive: "execSync", signature: "branchTip = execSync(`git rev-parse --verify ${shellQuote(branchName)}`, {", reason: SHORT_GIT_PLUMBING },
   { file: "src/merge/already-merged-detector.ts", line: 223, primitive: "execSync", signature: "execSync(`git merge-base --is-ancestor ${shellQuote(branchTip)} ${shellQuote(baseBranch)}`, {", reason: SHORT_GIT_PLUMBING },
   { file: "src/merge/already-merged-detector.ts", line: 270, primitive: "execSync", signature: "branchTip = execSync(`git rev-parse --verify ${shellQuote(branchName)}`, {", reason: SHORT_GIT_PLUMBING },
@@ -61,7 +61,7 @@ const allowlist: AllowlistEntry[] = [
   { file: "src/merger.ts", line: 10514, primitive: "execSync", signature: "execSync(\"git reset --merge\", { cwd: rootDir, stdio: \"pipe\" });", reason: SHORT_GIT_PLUMBING },
   { file: "src/self-healing.ts", line: 4640, primitive: "execSync", signature: "const tipSha = String(execSync(`git rev-parse --verify ${shellQuote(branch)}`, {", reason: SHORT_GIT_PLUMBING },
   { file: "src/self-healing.ts", line: 4646, primitive: "execSync", signature: "const uniqueCommitCount = Number.parseInt(String(execSync(`git rev-list --count ${shellQuote(branch)} --not ${shellQuote(\"main\")}`, {", reason: SHORT_GIT_PLUMBING },
-  { file: "src/self-healing.ts", line: 4691, primitive: "execSync", signature: "const branchesRaw = String(execSync(\"git branch --list 'fusion/*'\", {", reason: SHORT_GIT_PLUMBING },
+  { file: "src/self-healing.ts", line: 5043, primitive: "execSync", signature: "const branchesRaw = String(execSync(`git branch --list ${quoteNativeShellArg(\"fusion/*\")}`, {", reason: SHORT_GIT_PLUMBING },
   { file: "src/self-healing.ts", line: 15113, primitive: "execSync", signature: "execSync(`git branch -d ${shellQuote(branch)}`, {", reason: SHORT_GIT_PLUMBING },
   { file: "src/worktree/worktree-prune.ts", line: 69, primitive: "execSync", signature: "execSync(\"git worktree prune\", {", reason: SHORT_GIT_PLUMBING },
 ];
@@ -101,7 +101,15 @@ function listProductionSource(dir: string): string[] {
 
 function scanEngineSource(): ShelloutSite[] {
   const root = join(process.cwd(), "src");
-  return listProductionSource(root).flatMap((path) => scanSource(relative(process.cwd(), path), readFileSync(path, "utf-8")));
+  /*
+  FNXC:EngineProcessRulesWindows 2026-08-18-19:30:
+  The audited identities use repository-style paths. Normalize Windows
+  separators before matching so the guard audits call sites instead of
+  rejecting every production file solely because relative() returned `\\`.
+  */
+  return listProductionSource(root).flatMap((path) =>
+    scanSource(relative(process.cwd(), path).replace(/\\/g, "/"), readFileSync(path, "utf-8")),
+  );
 }
 
 /*
