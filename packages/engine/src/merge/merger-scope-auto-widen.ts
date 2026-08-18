@@ -49,7 +49,7 @@ export class ScopeAutoWidenPersistError extends Error {
 }
 
 function quoteArg(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function attributedBySubjectPrefix(subject: string, taskToken: string): boolean {
