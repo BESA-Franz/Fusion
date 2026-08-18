@@ -12,6 +12,26 @@ import { executorLog } from "../logger.js";
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
+async function resolveMergeBaseFromRefs(
+  worktreePath: string,
+  refs: readonly string[],
+): Promise<{ ref?: string; lastError?: unknown }> {
+  let lastError: unknown;
+  for (const ref of refs) {
+    try {
+      const { stdout } = await execAsync(`git merge-base HEAD ${ref}`, {
+        cwd: worktreePath,
+        encoding: "utf-8",
+      });
+      const resolved = stdout.trim();
+      if (resolved) return { ref: resolved };
+    } catch (err: unknown) {
+      lastError = err;
+    }
+  }
+  return { lastError };
+}
+
 /** True when a pre-execution worktree holds commits past its base or any uncommitted change. */
 export async function preExecutionWorktreeHasWork(worktreePath: string): Promise<boolean> {
   try {
@@ -47,18 +67,17 @@ export async function resolveContaminationBaseRef(worktreePath: string): Promise
   // merge-base falls back to the last common ancestor between HEAD and the
   // stale origin/main, and every commit on local main since then looks
   // "foreign"). Local main is the canonical integration target for Fusion.
-  try {
-    const { stdout } = await execAsync(
-      "git merge-base HEAD main 2>/dev/null || git merge-base HEAD origin/main",
-      { cwd: worktreePath, encoding: "utf-8" },
-    );
-    const ref = stdout.trim();
-    return ref || undefined;
-  } catch (err: unknown) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
+  /*
+  FNXC:WorktreeGitRefsWindows 2026-08-18-21:30:
+  Probe refs separately instead of passing POSIX redirection and `||` through
+  cmd.exe. This also keeps the local-first contamination ordering explicit.
+  */
+  const { ref, lastError } = await resolveMergeBaseFromRefs(worktreePath, ["main", "origin/main"]);
+  if (!ref && lastError) {
+    const errorMessage = lastError instanceof Error ? lastError.message : String(lastError);
     executorLog.warn(`Failed merge-base lookup for contamination check in ${worktreePath}: ${errorMessage}`);
-    return undefined;
   }
+  return ref;
 }
 
 /**
@@ -69,15 +88,10 @@ export async function resolveContaminationBaseRef(worktreePath: string): Promise
 export async function resolveDiffBaseRef(worktreePath: string, baseCommitSha?: string): Promise<string | undefined> {
   if (baseCommitSha) return baseCommitSha;
 
-  try {
-    const { stdout } = await execAsync(
-      "git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main",
-      { cwd: worktreePath, encoding: "utf-8" },
-    );
-    const ref = stdout.trim();
-    if (ref) return ref;
-  } catch (mergeBaseErr: unknown) {
-    const mergeBaseMsg = mergeBaseErr instanceof Error ? mergeBaseErr.message : String(mergeBaseErr);
+  const { ref, lastError } = await resolveMergeBaseFromRefs(worktreePath, ["origin/main", "main"]);
+  if (ref) return ref;
+  if (lastError) {
+    const mergeBaseMsg = lastError instanceof Error ? lastError.message : String(lastError);
     executorLog.warn(`Failed merge-base lookup for diff base in ${worktreePath}, trying HEAD~1 fallback: ${mergeBaseMsg}`);
   }
 

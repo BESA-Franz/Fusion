@@ -3,6 +3,7 @@ import "./executor-test-helpers.js";
 import { TaskExecutor } from "../executor.js";
 import { createMockStore, mockedCreateFnAgent, mockedExec, resetExecutorMocks } from "./executor-test-helpers.js";
 import * as branchConflicts from "../execution/branch-conflicts.js";
+import { resolveContaminationBaseRef, resolveDiffBaseRef } from "../executor/worktree-git-refs.js";
 
 /**
  * FN-4417 regression: the contamination check must compute its own fresh
@@ -13,7 +14,7 @@ describe("resolveContaminationBaseRef (FN-4417)", () => {
     resetExecutorMocks();
   });
 
-  it("returns the current merge-base with origin/main, ignoring task.baseCommitSha", async () => {
+  it("returns the local main merge-base first, ignoring task.baseCommitSha", async () => {
     const calls: string[] = [];
     mockedExec.mockImplementation(((cmd: any, _opts: any, cb: any) => {
       calls.push(String(cmd));
@@ -22,17 +23,30 @@ describe("resolveContaminationBaseRef (FN-4417)", () => {
       return {} as any;
     }) as any);
 
-    const executor = new TaskExecutor(createMockStore(), "/tmp/test");
-    const result = await (executor as any).resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
+    const result = await resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
 
     expect(result).toBe("fresh_main_sha");
-    const mergeBaseCall = calls.find((c) => c.includes("merge-base"));
-    expect(mergeBaseCall).toBeDefined();
-    const localMainIdx = mergeBaseCall!.indexOf("merge-base HEAD main");
-    const originMainIdx = mergeBaseCall!.indexOf("merge-base HEAD origin/main");
-    expect(localMainIdx).toBeGreaterThanOrEqual(0);
-    expect(localMainIdx).toBeLessThan(originMainIdx === -1 ? Number.MAX_SAFE_INTEGER : originMainIdx);
+    expect(calls.filter((c) => c.includes("merge-base"))).toEqual(["git merge-base HEAD main"]);
     expect(calls.some((c) => c.includes("HEAD~1"))).toBe(false);
+  });
+
+  it("falls back to origin/main with a separate native-shell-safe probe", async () => {
+    const calls: string[] = [];
+    mockedExec.mockImplementation(((cmd: any, _opts: any, cb: any) => {
+      calls.push(String(cmd));
+      if (String(cmd) === "git merge-base HEAD main") cb(new Error("no local main"), "", "");
+      else cb(null, "origin_main_sha\n", "");
+      return {} as any;
+    }) as any);
+
+    const result = await resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
+
+    expect(result).toBe("origin_main_sha");
+    expect(calls).toEqual([
+      "git merge-base HEAD main",
+      "git merge-base HEAD origin/main",
+    ]);
+    expect(calls.join(" ")).not.toMatch(/2>\/dev\/null|\|\|/);
   });
 
   it("returns undefined when neither origin/main nor main resolves", async () => {
@@ -41,8 +55,7 @@ describe("resolveContaminationBaseRef (FN-4417)", () => {
       return {} as any;
     }) as any);
 
-    const executor = new TaskExecutor(createMockStore(), "/tmp/test");
-    const result = await (executor as any).resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
+    const result = await resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
     expect(result).toBeUndefined();
   });
 
@@ -52,11 +65,28 @@ describe("resolveContaminationBaseRef (FN-4417)", () => {
       return {} as any;
     }) as any);
 
-    const executor = new TaskExecutor(createMockStore(), "/tmp/test");
-    const result = await (executor as any).resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
+    const result = await resolveContaminationBaseRef("/tmp/test/.worktrees/swift-delta");
 
     expect(result).toBe("currentMainSHA");
-    expect((executor as any).resolveContaminationBaseRef.length).toBe(1);
+    expect(resolveContaminationBaseRef.length).toBe(1);
+  });
+
+  it("resolves the diff base origin-first using separate probes", async () => {
+    const calls: string[] = [];
+    mockedExec.mockImplementation(((cmd: any, _opts: any, cb: any) => {
+      calls.push(String(cmd));
+      if (String(cmd) === "git merge-base HEAD origin/main") cb(new Error("no origin"), "", "");
+      else if (String(cmd) === "git merge-base HEAD main") cb(null, "local_main_sha\n", "");
+      else cb(new Error("unexpected command"), "", "");
+      return {} as any;
+    }) as any);
+
+    await expect(resolveDiffBaseRef("/tmp/test/.worktrees/swift-delta")).resolves.toBe("local_main_sha");
+    expect(calls).toEqual([
+      "git merge-base HEAD origin/main",
+      "git merge-base HEAD main",
+    ]);
+    expect(calls.join(" ")).not.toMatch(/2>\/dev\/null|\|\|/);
   });
 });
 
