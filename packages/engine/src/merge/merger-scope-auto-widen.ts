@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import type { Task, TaskStore, WorkflowIr } from "@fusion/core";
 import { resolveWorkflowIrForTask, columnsWithFlag } from "@fusion/core";
 
-import { toTaskToken } from "../merger.js";
+import { toTaskToken } from "./merger-task-token.js";
 
 const execAsync = promisify(exec);
 const GIT_MAX_BUFFER = 10 * 1024 * 1024;

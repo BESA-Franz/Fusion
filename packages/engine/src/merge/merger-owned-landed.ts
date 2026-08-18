@@ -6,6 +6,7 @@ import type { Task } from "@fusion/core";
 import { promisify } from "node:util";
 import * as childProcess from "node:child_process";
 import { parseDiffStat } from "./merger-file-scope.js";
+import { toTaskToken } from "./merger-task-token.js";
 import { resolveTaskWorkingBranch } from "../worktree/worktree-names.js";
 
 const execFileAsync: (file: string, args: string[], opts?: import("node:child_process").ExecFileOptions) => Promise<{ stdout: string; stderr: string }> = (file, args, opts) =>
@@ -111,10 +112,6 @@ async function findOwnedLandedCommitForTask(rootDir: string, task: Task): Promis
   }
 
   return null;
-}
-
-export function toTaskToken(value: string): string {
-  return value.toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
 export async function classifyOwnedLandedEvidence(

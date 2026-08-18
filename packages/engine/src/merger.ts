@@ -219,10 +219,10 @@ import {
 
 export {
   FUSION_TASK_ID_TRAILER_KEY,
-  toTaskToken,
   classifyOwnedLandedEvidence,
 } from "./merge/merger-owned-landed.js";
 export type { OwnedLandedClassification } from "./merge/merger-owned-landed.js";
+export { toTaskToken } from "./merge/merger-task-token.js";
 import {
   FUSION_TASK_ID_TRAILER_KEY,
   classifyOwnedLandedEvidence,
