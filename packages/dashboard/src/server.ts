@@ -20,7 +20,15 @@ import type {
   AgentLogEntry,
   RunAuditEvent,
 } from "@fusion/core";
-import { AgentStore, ChatStore, queryRunAuditEvents, resolveGlobalDir, resolveReboundTargetForTask, setRunningAgentCountSource } from "@fusion/core";
+import {
+  AgentStore,
+  ChatStore,
+  queryRunAuditEvents,
+  resolveGlobalDir,
+  resolveReboundTargetForTask,
+  SCHEMA_BASELINE_VERSION,
+  setRunningAgentCountSource,
+} from "@fusion/core";
 import type { AuthStorageLike, ModelRegistryLike } from "./routes.js";
 import { createApiRoutes } from "./routes.js";
 import { createSSE, disconnectSSEClient, markSSEClientAlive } from "./sse.js";
@@ -96,9 +104,9 @@ import { requireAsyncLayer } from "./require-async-layer.js";
 import {
   evaluateDashboardPostgresHealth,
   resolveDashboardPostgresLayer,
-  type DashboardTaskIdIntegrityHealth,
 } from "./dashboard-postgres-health.js";
 import { ProviderHealthMonitor } from "./provider-health-monitor.js";
+import { buildHealthPayload } from "./health-payload.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -109,48 +117,6 @@ export function buildViewPreloadInjection(chunkMap: Record<string, ViewChunkMani
   The served dashboard may open directly into a persisted lazy view before React's dynamic import runs. Inject both the modulepreload and stylesheet links from Vite's manifest so Command Center and every other co-located-CSS lazy view have their CSS requested on first paint, while in-app navigation remains owned by Vite's __vitePreload runtime.
   */
   return `<script>window.__FUSION_VIEW_CHUNKS__=${serializedChunkMap};(()=>{try{const chunkMap=window.__FUSION_VIEW_CHUNKS__||{};const projectId=localStorage.getItem("kb-dashboard-current-project");const scopedKey=projectId?"kb:"+projectId+":kb-dashboard-task-view":null;let taskView=(scopedKey&&localStorage.getItem(scopedKey))||localStorage.getItem("kb-dashboard-task-view");if(taskView==="devserver")taskView="dev-server";if(taskView==="roadmaps")taskView="board";if(typeof taskView!=="string"||taskView.startsWith("plugin:"))return;const chunkEntry=chunkMap[taskView];if(!chunkEntry)return;const chunkPath=typeof chunkEntry==="string"?chunkEntry:chunkEntry.file;const cssPaths=Array.isArray(chunkEntry.css)?chunkEntry.css:[];for(const cssPath of cssPaths){if(!cssPath)continue;const cssLink=document.createElement("link");cssLink.rel="stylesheet";cssLink.href=cssPath;document.head.appendChild(cssLink);}if(!chunkPath)return;const link=document.createElement("link");link.rel="modulepreload";link.href=chunkPath;link.crossOrigin="";document.head.appendChild(link);}catch{}})();</script>`;
-}
-
-function buildTaskIdIntegrityHealth(report: DashboardTaskIdIntegrityHealth) {
-  return {
-    status: report.status,
-    checkedAt: report.checkedAt,
-    anomalies: report.anomalies,
-    ...(report.status === "error" ? { error: report.error } : {}),
-    recommendedAction:
-      report.status === "anomaly"
-        ? "Pause task delegation, inspect the affected task IDs, and run the allocator audit before creating new tasks."
-        : report.status === "error"
-          ? "Restore PostgreSQL connectivity and rerun the health check before creating new tasks."
-        : null,
-  };
-}
-
-function buildHealthPayload(args: {
-  database: ReturnType<TaskStore["getDatabaseHealth"]>;
-  taskIdIntegrityReport: DashboardTaskIdIntegrityHealth;
-  migration?: import("./dashboard-postgres-health.js").DashboardMigrationHealth;
-  cliPackageVersion: string;
-  engineAvailable: boolean;
-}) {
-  const { database, cliPackageVersion, engineAvailable, migration } = args;
-  const taskIdIntegrity = buildTaskIdIntegrityHealth(args.taskIdIntegrityReport);
-  return {
-    // Durable running/failed migration markers must never be hidden behind ok health.
-    status: migration || !database.healthy || database.corruptionDetected || taskIdIntegrity.status !== "ok" ? "degraded" : "ok",
-    version: cliPackageVersion,
-    uptime: Math.floor(process.uptime()),
-    /*
-     * FNXC:DashboardHealth 2026-06-20-22:11:
-     * The dashboard must distinguish "engine not started" from "engine paused" so UI-only launches can show remediation instructions instead of leaving users to infer why automation cannot run.
-     */
-    engine: {
-      available: engineAvailable,
-    },
-    database,
-    taskIdIntegrity,
-    ...(migration ? { migration } : {}),
-  };
 }
 
 const DEFAULT_AI_SESSION_TTL_MS = SESSION_CLEANUP_DEFAULT_MAX_AGE_MS;
@@ -1833,6 +1799,12 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
       migration: health.migration,
       cliPackageVersion,
       engineAvailable: hasDashboardEngine(options),
+      runtimeIdentity: {
+        build: process.env.FUSION_BUILD_VERSION?.trim() || undefined,
+        nodeId: process.env.FUSION_NODE_ID?.trim() || undefined,
+        projectId: options?.engine?.getProjectId?.(),
+        migrationVersion: SCHEMA_BASELINE_VERSION,
+      },
     }));
   });
 
@@ -2065,6 +2037,12 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
       migration: health.migration,
       cliPackageVersion,
       engineAvailable: hasDashboardEngine(options),
+      runtimeIdentity: {
+        build: process.env.FUSION_BUILD_VERSION?.trim() || undefined,
+        nodeId: process.env.FUSION_NODE_ID?.trim() || undefined,
+        projectId: options?.engine?.getProjectId?.(),
+        migrationVersion: SCHEMA_BASELINE_VERSION,
+      },
     }));
   });
 
