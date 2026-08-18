@@ -154,13 +154,13 @@ test("root and package gate scripts still propagate real Vitest failures", () =>
   */
   assert.equal(gateValidators.length, 15, "the W33 timing baseline requires all 15 static validators");
   assert.equal(new Set(gateValidators).size, gateValidators.length, "the static validator composition must be duplicate-free");
-  assert.match(gate, /pnpm --filter @fusion\/engine test:core/);
-  assert.match(gate, /pnpm --filter @fusion\/core test:pg-gate/);
-  assert.match(gate, /pnpm --filter @fusion\/core test:unit-gate/);
-  assert.match(gate, /wait \$engine_pid \|\| status=1/);
-  assert.match(gate, /wait \$pg_pid \|\| status=1/);
-  assert.match(gate, /wait \$unit_pid \|\| status=1/);
-  assert.match(gate, /&& pnpm --filter @runfusion\/fusion test:ci-shape$/);
+  assert.equal(gate, "node scripts/run-static-gate-checks.mjs && node scripts/run-test-gate.mjs");
+  const gateRunner = read("scripts/run-test-gate.mjs");
+  assert.match(gateRunner, /@fusion\/engine.*test:core/);
+  assert.match(gateRunner, /@fusion\/core.*test:pg-gate/);
+  assert.match(gateRunner, /@fusion\/core.*test:unit-gate/);
+  assert.match(gateRunner, /@runfusion\/fusion.*test:ci-shape/);
+  assert.doesNotMatch(gateRunner, /\bsh\s+-c\b/);
   assert.equal(
     core.scripts?.["test:unit-gate"],
     "vitest run src/__tests__/task-merge.test.ts src/__tests__/legacy-adoption.test.ts src/__tests__/no-hardcoded-lifecycle-columns.test.ts src/__tests__/sync-workflow-ir-callsite-allowlist.test.ts --silent=passed-only --reporter=dot",

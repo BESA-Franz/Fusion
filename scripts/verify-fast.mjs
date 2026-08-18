@@ -55,6 +55,19 @@ const artifactBootstrapScriptPath = path.join(scriptDir, "ensure-test-artifacts.
 const packageManifestPath = path.join(repoRoot, "package.json");
 
 /*
+FNXC:TestInfrastructure 2026-08-18-08:12:
+Windows detached Node child processes cannot launch the `pnpm.cmd` shim directly;
+resolve the project-pinned pnpm through Corepack's JavaScript entrypoint instead.
+Keep the POSIX command unchanged so the same plan works on both hosts without a
+shell command string or argument-injection surface.
+*/
+const corepackEntryPath = path.join(path.dirname(process.execPath), "node_modules", "corepack", "dist", "corepack.js");
+export const PNPM_COMMAND = process.platform === "win32" && existsSync(corepackEntryPath) ? process.execPath : "pnpm";
+export const PNPM_ARGS_PREFIX = Object.freeze(
+  process.platform === "win32" && existsSync(corepackEntryPath) ? [corepackEntryPath, "pnpm"] : [],
+);
+
+/*
 FNXC:TestInfrastructure 2026-07-22-12:00:
 Cheap policy scanners must fail during the test-free verification path, before
 bootstrap or builds can hide a malformed changeset until clean-room merge.
@@ -138,7 +151,7 @@ export function buildTypecheckStep(pkg, meta = {}) {
      script writing only its own tsbuildinfo), so sibling packages cannot collide.
      They are the dominant cost of a multi-package run — grouping them lets the wall
      clock be the slowest package rather than their sum. */
-  return { id: `typecheck:${pkg}`, kind: "typecheck", pkg, label: `typecheck ${pkg}`, command: "pnpm", args, klass: "changed", parallelGroup: "typecheck", parallelLimit: TYPECHECK_PARALLEL_LIMIT };
+  return { id: `typecheck:${pkg}`, kind: "typecheck", pkg, label: `typecheck ${pkg}`, command: PNPM_COMMAND, args: [...PNPM_ARGS_PREFIX, ...args], klass: "changed", parallelGroup: "typecheck", parallelLimit: TYPECHECK_PARALLEL_LIMIT };
 }
 
 /**
@@ -148,7 +161,7 @@ export function buildTypecheckStep(pkg, meta = {}) {
  * @returns {{ id: string, kind: string, pkg: string, label: string, command: string, args: string[], klass: string }}
  */
 export function buildBuildStep(pkg) {
-  return { id: `build:${pkg}`, kind: "build", pkg, label: `build ${pkg}`, command: "pnpm", args: ["--filter", pkg, "build"], klass: "changed" };
+  return { id: `build:${pkg}`, kind: "build", pkg, label: `build ${pkg}`, command: PNPM_COMMAND, args: [...PNPM_ARGS_PREFIX, "--filter", pkg, "build"], klass: "changed" };
 }
 
 /**

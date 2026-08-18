@@ -6,16 +6,22 @@ scripts/lib/capacity-pool-id-check.mjs; the regression suite that pins each form
 this guard must catch lives in
 packages/engine/src/__tests__/capacity-pool-id-check.test.ts.
 
+FNXC:WorkflowCapacity 2026-08-18-08:10:
+The tracked-source census must work on Windows as well as POSIX. Pass Git
+pathspecs as argument-array entries so the Windows command shell cannot treat
+Unix single quotes as literal filename characters and produce a false empty
+census.
+
 Wired into `pretest`, `pretest:full`, and the blocking `test:gate`.
 */
 import { readFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 import { findViolations, RESOLVER } from "./lib/capacity-pool-id-check.mjs";
 
 let files;
 try {
-  files = execSync("git ls-files 'packages/*/src/**/*.ts' 'packages/*/src/*.ts'", {
+  files = execFileSync("git", ["ls-files", "--", "packages/*/src/**/*.ts", "packages/*/src/*.ts"], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   })

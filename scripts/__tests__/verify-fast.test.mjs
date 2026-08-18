@@ -25,6 +25,8 @@ import {
   batchVerifySteps,
   runStep,
   runVerifyPlan,
+  PNPM_COMMAND,
+  PNPM_ARGS_PREFIX,
   PRETEST_STATIC_CHECK_SCRIPTS,
   VERIFY_EXCLUDED_PACKAGES,
   BOOT_SMOKE_REQUIRED_BUILD_PACKAGES,
@@ -36,6 +38,14 @@ const SMOKE = "/repo/scripts/boot-smoke.mjs";
 const BOOTSTRAP = "/repo/scripts/ensure-test-artifacts.mjs";
 const NODE = "/usr/bin/node";
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+
+/*
+FNXC:TestInfrastructure 2026-08-18-08:12:
+The verify planner is exercised on Windows and POSIX. Normalize only the
+synthetic fixture paths in assertions so the test checks the plan contract,
+not the host separator convention.
+*/
+const normalizeFixturePath = (value) => value.replaceAll("\\", "/");
 /*
 FNXC:TestInfrastructure 2026-07-22-12:00:
 Keep policy-scanner trigger phrases on distinct source lines. This fixture pins
@@ -96,19 +106,19 @@ function stepByKind(plan, kind) {
 
 test("buildTypecheckStep: uses the package's typecheck script when present", () => {
   const step = buildTypecheckStep("@fusion/engine", { hasTypecheck: true });
-  assert.equal(step.command, "pnpm");
-  assert.deepEqual(step.args, ["--filter", "@fusion/engine", "typecheck"]);
+  assert.equal(step.command, PNPM_COMMAND);
+  assert.deepEqual(step.args, [...PNPM_ARGS_PREFIX, "--filter", "@fusion/engine", "typecheck"]);
   assert.equal(step.klass, "changed");
 });
 
 test("buildTypecheckStep: falls back to scoped tsc --noEmit when no typecheck script", () => {
   const step = buildTypecheckStep("@fusion/widget", { hasTypecheck: false });
-  assert.deepEqual(step.args, ["--filter", "@fusion/widget", "exec", "tsc", "--noEmit", "-p", "."]);
+  assert.deepEqual(step.args, [...PNPM_ARGS_PREFIX, "--filter", "@fusion/widget", "exec", "tsc", "--noEmit", "-p", "."]);
 });
 
 test("buildTypecheckStep: defaults to the tsc fallback when meta omitted", () => {
   const step = buildTypecheckStep("@fusion/widget");
-  assert.deepEqual(step.args, ["--filter", "@fusion/widget", "exec", "tsc", "--noEmit", "-p", "."]);
+  assert.deepEqual(step.args, [...PNPM_ARGS_PREFIX, "--filter", "@fusion/widget", "exec", "tsc", "--noEmit", "-p", "."]);
 });
 
 // ---------------------------------------------------------------------------
@@ -117,7 +127,8 @@ test("buildTypecheckStep: defaults to the tsc fallback when meta omitted", () =>
 
 test("buildBuildStep: scoped pnpm build for the package", () => {
   const step = buildBuildStep("@fusion/cli");
-  assert.deepEqual(step.args, ["--filter", "@fusion/cli", "build"]);
+  assert.equal(step.command, PNPM_COMMAND);
+  assert.deepEqual(step.args, [...PNPM_ARGS_PREFIX, "--filter", "@fusion/cli", "build"]);
   assert.equal(step.kind, "build");
 });
 
@@ -138,7 +149,7 @@ test("buildArtifactBootstrapStep: runs the artifact bootstrap script via node", 
 test("buildStaticCheckStep: invokes a canonical validator directly through Node", () => {
   const step = buildStaticCheckStep("scripts/check-changeset-format.mjs", "/repo", NODE);
   assert.equal(step.command, NODE);
-  assert.deepEqual(step.args, ["/repo/scripts/check-changeset-format.mjs"]);
+  assert.deepEqual(step.args, [join("/repo", "scripts", "check-changeset-format.mjs")]);
   assert.equal(step.kind, "static-check");
   assert.equal(step.id, "static-check:check-changeset-format");
 });
@@ -159,7 +170,7 @@ test("buildVerifyPlan: defaults to every canonical pretest validator before esta
 
   for (const step of stepByKind(plan, "static-check")) {
     assert.equal(step.command, NODE);
-    assert.match(step.args[0], /^\/repo\/scripts\/check-[\w-]+\.mjs$/);
+    assert.match(normalizeFixturePath(step.args[0]), /^\/repo\/scripts\/check-[\w-]+\.mjs$/);
     assert.equal(step.args.length, 1); // A validator path only: no test lane or mutation flag.
   }
 });
@@ -204,7 +215,7 @@ test("buildVerifyPlan: a package without a build script gets a typecheck step bu
   ]);
   // The test-only package's typecheck uses the tsc fallback (no typecheck script).
   const tc = stepByKind(plan, "typecheck").find((s) => s.pkg === "@fusion/test-only");
-  assert.deepEqual(tc.args, ["--filter", "@fusion/test-only", "exec", "tsc", "--noEmit", "-p", "."]);
+  assert.deepEqual(tc.args, [...PNPM_ARGS_PREFIX, "--filter", "@fusion/test-only", "exec", "tsc", "--noEmit", "-p", "."]);
 });
 
 test("buildVerifyPlan: skips synthetic typecheck for JavaScript alias packages with no tsconfig", () => {

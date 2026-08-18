@@ -113,6 +113,7 @@ describe("Merge gate (.github/workflows/pr-checks.yml)", () => {
   let readmeContent: string;
   let rootPackageJson: any;
   let enginePackageJson: any;
+  let testGateRunnerContent: string;
   let cliPackageJsonContent: string;
   let engineVitestConfigContent: string;
   let extensionSuiteContent: string;
@@ -128,6 +129,7 @@ describe("Merge gate (.github/workflows/pr-checks.yml)", () => {
     readmeContent = readFileSync(join(workspaceRoot, "README.md"), "utf-8");
     rootPackageJson = JSON.parse(readFileSync(join(workspaceRoot, "package.json"), "utf-8"));
     enginePackageJson = JSON.parse(readFileSync(join(workspaceRoot, "packages", "engine", "package.json"), "utf-8"));
+    testGateRunnerContent = readFileSync(join(workspaceRoot, "scripts", "run-test-gate.mjs"), "utf-8");
     cliPackageJsonContent = readFileSync(join(workspaceRoot, "packages", "cli", "package.json"), "utf-8");
     engineVitestConfigContent = readFileSync(join(workspaceRoot, "packages", "engine", "vitest.config.ts"), "utf-8");
     extensionSuiteContent = readFileSync(
@@ -246,10 +248,15 @@ describe("Merge gate (.github/workflows/pr-checks.yml)", () => {
     expect(staticGateScript).toContain("node scripts/check-no-kill-" + "40" + "40" + ".mjs"); // port-4040-allowlist: asserts the gate wires the checker; not a real port bind
     expect(staticGateScript).toContain("node scripts/check-no-test-timeout-appeasement.mjs");
     expect(staticGateScript).toContain("node scripts/check-changeset-format.mjs");
-    expect(testGateScript).toContain("pnpm --filter @fusion/engine test:core");
-    expect(testGateScript).toContain("pnpm --filter @fusion/core test:pg-gate");
-    expect(testGateScript).toContain("pnpm --filter @fusion/core test:unit-gate");
-    expect(testGateScript).toContain("pnpm --filter @runfusion/fusion test:ci-shape");
+    // FNXC:CITestGate 2026-08-18-09:32: the curated lane inventory lives in
+    // the Node runner so Windows and POSIX use the same fail-closed command.
+    expect(testGateRunnerContent).toContain("@fusion/engine");
+    expect(testGateRunnerContent).toContain("test:core");
+    expect(testGateRunnerContent).toContain("@fusion/core");
+    expect(testGateRunnerContent).toContain("test:pg-gate");
+    expect(testGateRunnerContent).toContain("test:unit-gate");
+    expect(testGateRunnerContent).toContain("@runfusion/fusion");
+    expect(testGateRunnerContent).toContain("test:ci-shape");
   });
 
   it("pins engine test:core to the engine-core vitest project", () => {

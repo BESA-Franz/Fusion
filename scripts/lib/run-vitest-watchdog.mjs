@@ -88,6 +88,16 @@ export const DEFAULT_GRACE_MS = 5_000;
 export const DEFAULT_HEARTBEAT_MS = 5_000;
 export const TIMEOUT_EXIT_CODE = 124;
 
+/*
+FNXC:TestInfrastructure 2026-08-18-08:33:
+Windows detached Node children cannot reliably inherit the parent's console
+handles. In particular, Corepack/pnpm children started from the desktop PTY
+exited with code 1 before running their command when `stdio: "inherit"` was
+used. Keep the detached process group, but use pipes on Windows and forward
+the output from the wrapper so diagnostics remain visible.
+*/
+export const WATCHDOG_STDIO = process.platform === "win32" ? ["ignore", "pipe", "pipe"] : "inherit";
+
 /**
  * Derive a wall-clock budget for one invocation.
  *
@@ -216,10 +226,15 @@ export function runWithWatchdog({
     // process group on death/timeout; not a background daemon.
     const child = spawn(command, args, {
       detached: true,
-      stdio: "inherit",
+      stdio: WATCHDOG_STDIO,
       env,
       ...(cwd ? { cwd } : {}),
     });
+
+    if (process.platform === "win32") {
+      child.stdout?.on("data", (chunk) => process.stdout.write(chunk));
+      child.stderr?.on("data", (chunk) => process.stderr.write(chunk));
+    }
 
     const heartbeat = setInterval(() => {
       lastHeartbeatAt = now();

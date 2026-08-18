@@ -9,6 +9,7 @@ import {
   deriveBudgetMs,
   summarizeActiveHandles,
   captureHangDiagnostics,
+  WATCHDOG_STDIO,
   runWithWatchdog,
 } from "../lib/run-vitest-watchdog.mjs";
 
@@ -249,4 +250,24 @@ test("runWithWatchdog: passes cwd through to spawn when provided", async () => {
   child.emit("close", 0, null);
   await p;
   assert.equal(capturedOpts.cwd, "/tmp/repo-root");
+});
+
+test("runWithWatchdog: uses detached-safe stdio channels", async () => {
+  let capturedOpts = null;
+  const child = makeFakeChild();
+  const p = runWithWatchdog({
+    command: "fake",
+    args: [],
+    budgetMs: 10_000,
+    label: "stdio",
+    log: () => {},
+    spawn: (_cmd, _args, opts) => {
+      capturedOpts = opts;
+      return child;
+    },
+    killGroup: () => {},
+  });
+  child.emit("close", 0, null);
+  await p;
+  assert.deepEqual(capturedOpts.stdio, WATCHDOG_STDIO);
 });
