@@ -245,6 +245,10 @@ every done card each pass.
 */
 const DONE_METADATA_REPAIR_CAP = 25;
 const DONE_TASK_INTEGRITY_SWEEP_LIMIT = 50;
+
+function quoteNativeShellArg(value: string): string {
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, "'\\''")}'`;
+}
 /**
  * FNXC:GitWorktreeChurnCadenceCoarsen 2026-08-13-04:05 (RUFU-076):
  * Batch-1 git-churn steps (prune-worktrees, cleanup-orphans, cleanup-stale-temp-merge-worktrees,
@@ -5036,7 +5040,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         }
       }
 
-      const branchesRaw = String(execSync("git branch --list 'fusion/*'", {
+      const branchesRaw = String(execSync(`git branch --list ${quoteNativeShellArg("fusion/*")}`, {
         cwd: this.options.rootDir,
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],

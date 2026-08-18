@@ -46,6 +46,10 @@ export {
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
+function quoteNativeShellArg(value: string): string {
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 // ── Worktrunk binary lazy resolver ─────────────────────────────────────────────
 // Memoizes per (homedir, settings.binaryPath) so the resolution+install flow
 // runs at most once per unique settings combination per process.
@@ -1215,7 +1219,12 @@ export async function reapOrphanWorktrees(
 export async function scanOrphanedBranches(rootDir: string, store: TaskStore): Promise<string[]> {
   let allBranches: string[];
   try {
-    const result = await execAsync("git branch --list 'fusion/*'", {
+    /*
+    FNXC:WindowsFusionBranchInventory 2026-08-18-19:20:
+    cmd.exe preserves POSIX single quotes, so the branch glob included literal
+    quote characters and hid every fusion/* orphan from maintenance.
+    */
+    const result = await execAsync(`git branch --list ${quoteNativeShellArg("fusion/*")}`, {
       cwd: rootDir,
       encoding: "utf-8",
     });

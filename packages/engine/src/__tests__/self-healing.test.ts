@@ -12155,7 +12155,7 @@ describe("SelfHealingManager reclaimStaleActiveBranches (FN-4546)", () => {
     ]);
 
     mockedExecSync.mockImplementation((command: string) => {
-      if (command.includes("git branch --list 'fusion/*'")) return Buffer.from("  fusion/fn-1001\n");
+      if (command.includes("git branch --list")) return Buffer.from("  fusion/fn-1001\n");
       if (command.includes("git rev-parse --verify") && command.includes("fusion/fn-1001")) return Buffer.from("abc123def456\n");
       if (command.includes("git rev-list --count") && command.includes("fusion/fn-1001")) return Buffer.from("0\n");
       return Buffer.from("");
@@ -12200,7 +12200,7 @@ describe("SelfHealingManager reclaimStaleActiveBranches (FN-4546)", () => {
       },
     }]);
     mockedExecSync.mockImplementation((command: string) => {
-      if (command.includes("git branch --list 'fusion/*'")) return Buffer.from("  fusion/fn-1001\n");
+      if (command.includes("git branch --list")) return Buffer.from("  fusion/fn-1001\n");
       if (command.includes("git rev-parse --verify") && command.includes("fusion/fn-1001")) return Buffer.from("abc123\n");
       if (command.includes("git rev-list --count") && command.includes("fusion/fn-1001")) return Buffer.from("0\n");
       return Buffer.from("");
@@ -12219,7 +12219,7 @@ describe("SelfHealingManager reclaimStaleActiveBranches (FN-4546)", () => {
     ]);
 
     mockedExecSync.mockImplementation((command: string) => {
-      if (command.includes("git branch --list 'fusion/*'")) return Buffer.from("  fusion/fn-1001\n");
+      if (command.includes("git branch --list")) return Buffer.from("  fusion/fn-1001\n");
       if (command.includes("git rev-parse --verify") && command.includes("fusion/fn-1001")) return Buffer.from("abc123def456\n");
       if (command.includes("git rev-list --count") && command.includes("fusion/fn-1001")) return Buffer.from("3\n");
       if (command.includes("git log --format=%s")) return Buffer.from("feat: keep me\n");
@@ -12246,7 +12246,7 @@ describe("SelfHealingManager reclaimStaleActiveBranches (FN-4546)", () => {
     ]);
 
     mockedExecSync.mockImplementation((command: string) => {
-      if (command.includes("git branch --list 'fusion/*'")) return Buffer.from("  fusion/fn-1001\n");
+      if (command.includes("git branch --list")) return Buffer.from("  fusion/fn-1001\n");
       if (command.includes("git rev-parse --verify") && command.includes("fusion/fn-1001")) return Buffer.from("abc123def456\n");
       if (command.includes("git rev-list --count") && command.includes("fusion/fn-1001")) return Buffer.from("2\n");
       return Buffer.from("");
@@ -12289,7 +12289,7 @@ describe("SelfHealingManager reclaimStaleActiveBranches (FN-4546)", () => {
       },
     }]);
     mockedExecSync.mockImplementation((command: string) => {
-      if (command.includes("git branch --list 'fusion/*'")) return Buffer.from("  fusion/fn-1001\n");
+      if (command.includes("git branch --list")) return Buffer.from("  fusion/fn-1001\n");
       if (command.includes("git rev-parse --verify") && command.includes("fusion/fn-1001")) return Buffer.from("abc123def456\n");
       if (command.includes("git rev-list --count") && command.includes("fusion/fn-1001")) return Buffer.from("2\n");
       return Buffer.from("");
@@ -12311,7 +12311,7 @@ describe("SelfHealingManager reclaimStaleActiveBranches (FN-4546)", () => {
       { id: "FN-1001", column: "todo", checkedOutBy: null, userPaused: false, worktree: null, branch: null },
     ]);
     mockedExecSync.mockImplementation((command: string) => {
-      if (command.includes("git branch --list 'fusion/*'")) return Buffer.from("  fusion/fn-1001\n");
+      if (command.includes("git branch --list")) return Buffer.from("  fusion/fn-1001\n");
       return Buffer.from("");
     });
 
@@ -12327,7 +12327,7 @@ describe("SelfHealingManager reclaimStaleActiveBranches (FN-4546)", () => {
     ]);
     mockedIsUsableTaskWorktree.mockResolvedValueOnce(true);
     mockedExecSync.mockImplementation((command: string) => {
-      if (command.includes("git branch --list 'fusion/*'")) return Buffer.from("  fusion/fn-1001\n");
+      if (command.includes("git branch --list")) return Buffer.from("  fusion/fn-1001\n");
       return Buffer.from("");
     });
 
@@ -12342,7 +12342,7 @@ describe("SelfHealingManager reclaimStaleActiveBranches (FN-4546)", () => {
       { id: "FN-1001", column: "todo", checkedOutBy: null, userPaused: true, worktree: null, branch: null },
     ]);
     mockedExecSync.mockImplementation((command: string) => {
-      if (command.includes("git branch --list 'fusion/*'")) return Buffer.from("  fusion/fn-1001\n");
+      if (command.includes("git branch --list")) return Buffer.from("  fusion/fn-1001\n");
       return Buffer.from("");
     });
 
