@@ -181,7 +181,13 @@ export function detectMarathonVerification(command: string, scope?: "package" | 
 
 function shellQuote(value: string): string {
   if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  /*
+  FNXC:VerificationNativeShellQuote 2026-08-18-19:27:
+  Normalized test filters can contain spaces. cmd.exe preserves POSIX single
+  quotes, so Vitest receives quote characters as part of the filter. Use the
+  native shell's argument form while retaining escaped POSIX quotes on Unix.
+  */
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function findWorkspacePackageDir(rootDir: string, packageName: string): string | null {

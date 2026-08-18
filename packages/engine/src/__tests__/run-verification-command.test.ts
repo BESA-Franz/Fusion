@@ -105,6 +105,20 @@ describe("runVerificationCommand", { timeout: 30000 }, () => {
         "pnpm --filter @runfusion/fusion exec vitest run src/__tests__/cli.test.ts --silent=passed-only --reporter=dot",
       );
     });
+
+    it("quotes normalized test filters for the native shell", () => {
+      const result = normalizeVerificationCommand(
+        'pnpm --filter @fusion/dashboard test -- --run "packages/dashboard/src/__tests__/route with space.test.ts"',
+        workspaceRoot,
+      );
+      const quotedFilter = process.platform === "win32"
+        ? '"src/__tests__/route with space.test.ts"'
+        : "'src/__tests__/route with space.test.ts'";
+
+      expect(result.command).toBe(
+        `pnpm --filter @fusion/dashboard exec vitest run ${quotedFilter} --silent=passed-only --reporter=dot`,
+      );
+    });
   });
 
   describe("marathon verification detection", () => {
