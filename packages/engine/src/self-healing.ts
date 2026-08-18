@@ -15407,8 +15407,9 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
     }
 
     const branchName = resolveTaskWorkingBranch(task);
+    const branchArg = shellQuote(branchName);
     try {
-      await execAsync(`git rev-parse --verify "${branchName}"`, {
+      await execAsync(`git rev-parse --verify ${branchArg}`, {
         cwd: this.options.rootDir,
         timeout: 30_000,
       });
@@ -15419,7 +15420,7 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
 
     try {
       const { stdout: uniqueCommits } = await execAsync(
-        `git rev-list --count HEAD.."${branchName}"`,
+        `git rev-list --count HEAD..${branchArg}`,
         { cwd: this.options.rootDir, timeout: 30_000 },
       );
       return Number.parseInt(uniqueCommits.trim(), 10) > 0;

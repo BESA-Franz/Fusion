@@ -2380,6 +2380,20 @@ describe("SelfHealingManager", () => {
       expect(await (manager as any).hasRecoverableGitWork(task)).toBe(true);
       mockedExecSync.mockClear();
     });
+
+    it("quotes recoverable branch probes without shell expansion", async () => {
+      const branch = "fusion/fn-$1473`proof";
+      const task = { id: "FN-1473", branch } as Task;
+      mockedExistsSync.mockReturnValue(false);
+      mockedExecSync.mockImplementation((command) => {
+        if (String(command) === `git rev-parse --verify ${shellQuote(branch)}`) return "abc123\n" as any;
+        if (String(command) === `git rev-list --count HEAD..${shellQuote(branch)}`) return "1\n" as any;
+        throw new Error(`unexpected command: ${String(command)}`);
+      });
+
+      expect(await (manager as any).hasRecoverableGitWork(task)).toBe(true);
+      mockedExecSync.mockClear();
+    });
   });
 
   describe("silent catch logging", () => {
