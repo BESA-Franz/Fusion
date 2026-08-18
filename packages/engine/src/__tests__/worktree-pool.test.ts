@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ExecException } from "node:child_process";
+import { join, resolve } from "node:path";
 
 // Route async `exec` (via promisify) through the `execSync` mock so existing
 // test setups that configure `mockedExecSync.mockImplementation` keep working.
@@ -54,6 +55,7 @@ vi.mock("node:fs", () => ({
   readdirSync: vi.fn().mockReturnValue([]),
   readFileSync: vi.fn().mockReturnValue(""),
   rmSync: vi.fn(),
+  rmdirSync: vi.fn(),
 }));
 
 vi.mock("../worktree/worktree-prune.js", () => ({
@@ -75,7 +77,7 @@ import {
 import { BranchConflictError } from "../execution/branch-conflicts.js";
 import * as branchConflictModule from "../execution/branch-conflicts.js";
 import { execSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmdirSync } from "node:fs";
 import type { Task, Column } from "@fusion/core";
 
 const mockedExecSync = vi.mocked(execSync);
@@ -83,7 +85,7 @@ const mockedExistsSync = vi.mocked(existsSync);
 const mockedLstatSync = vi.mocked(lstatSync);
 const mockedReaddirSync = vi.mocked(readdirSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
-const mockedRmSync = vi.mocked(rmSync);
+const mockedRmdirSync = vi.mocked(rmdirSync);
 const mockedPruneWorktreeAdminEntries = vi.mocked(worktreePrune.pruneWorktreeAdminEntries);
 const TEST_TASK_ID = "FN-test";
 
@@ -799,8 +801,8 @@ describe("getRegisteredWorktreeBranchMap", () => {
     });
 
     const map = await getRegisteredWorktreeBranchMap("/root");
-    expect(map.get("main")).toBe("/root");
-    expect(map.get("fusion/fn-4913")).toBe("/root/.worktrees/sleek-stone");
+    expect(map.get("main")).toBe(resolve("/root"));
+    expect(map.get("fusion/fn-4913")).toBe(resolve("/root/.worktrees/sleek-stone"));
     expect(map.has("detached")).toBe(false);
   });
 });
@@ -834,15 +836,16 @@ function makeDirEntry(name: string) {
 }
 
 function mockRegisteredWorktrees(rootDir: string, names: string[]) {
+  const resolvedRoot = resolve(rootDir);
   mockedExecSync.mockImplementation((cmd: any) => {
     if (String(cmd) === "git worktree list --porcelain") {
       return [
-        `worktree ${rootDir}`,
+        `worktree ${resolvedRoot}`,
         "HEAD abc123",
         "branch refs/heads/main",
         "",
         ...names.flatMap((name) => [
-          `worktree ${rootDir}/.worktrees/${name}`,
+          `worktree ${join(resolvedRoot, ".worktrees", name)}`,
           "HEAD def456",
           `branch refs/heads/fusion/${name}`,
           "",
@@ -878,9 +881,9 @@ describe("scanIdleWorktrees", () => {
     const idle = await scanIdleWorktrees("/root", store);
 
     expect(store.listTasks).toHaveBeenCalledWith({ slim: true, includeArchived: false, startupMemo: true });
-    expect(idle).toContain("/root/.worktrees/calm-river");
-    expect(idle).toContain("/root/.worktrees/bold-eagle");
-    expect(idle).not.toContain("/root/.worktrees/swift-falcon");
+    expect(idle).toContain(join("/root", ".worktrees", "calm-river"));
+    expect(idle).toContain(join("/root", ".worktrees", "bold-eagle"));
+    expect(idle).not.toContain(join("/root", ".worktrees", "swift-falcon"));
   });
 
   it("handles empty .worktrees/ directory", async () => {
@@ -924,8 +927,8 @@ describe("scanIdleWorktrees", () => {
 
     const idle = await scanIdleWorktrees("/root", store);
     expect(idle).toHaveLength(2);
-    expect(idle).toContain("/root/.worktrees/wt-1");
-    expect(idle).toContain("/root/.worktrees/wt-2");
+    expect(idle).toContain(join("/root", ".worktrees", "wt-1"));
+    expect(idle).toContain(join("/root", ".worktrees", "wt-2"));
   });
 
   it("returns empty array when readdirSync throws", async () => {
@@ -956,9 +959,9 @@ describe("scanIdleWorktrees", () => {
     const store = createMockStore([]);
 
     const idle = await scanIdleWorktrees("/root", store);
-    expect(idle).toEqual(["/root/.worktrees/registered-wt"]);
-    expect(idle).not.toContain("/root/.worktrees/.ai-merge");
-    expect(idle).not.toContain("/root/.worktrees/.fusion-recovery");
+    expect(idle).toEqual([join("/root", ".worktrees", "registered-wt")]);
+    expect(idle).not.toContain(join("/root", ".worktrees", ".ai-merge"));
+    expect(idle).not.toContain(join("/root", ".worktrees", ".fusion-recovery"));
   });
 
   it("does not return unregistered directories for pool rehydration", async () => {
@@ -973,7 +976,7 @@ describe("scanIdleWorktrees", () => {
     ]);
 
     const idle = await scanIdleWorktrees("/root", store);
-    expect(idle).toEqual(["/root/.worktrees/registered-wt"]);
+    expect(idle).toEqual([join("/root", ".worktrees", "registered-wt")]);
   });
 });
 
@@ -1003,8 +1006,8 @@ describe("cleanupOrphanedWorktrees", () => {
       (c) => typeof c[0] === "string" && (c[0] as string).includes("worktree remove"),
     );
     expect(removeCalls).toHaveLength(2);
-    expect(removeCalls[0][0]).toContain("/root/.worktrees/orphan-1");
-    expect(removeCalls[1][0]).toContain("/root/.worktrees/orphan-2");
+    expect(removeCalls[0][0]).toContain("orphan-1");
+    expect(removeCalls[1][0]).toContain("orphan-2");
   });
 
   it("preserves worktrees assigned to in-progress/in-review tasks", async () => {
@@ -1120,11 +1123,11 @@ describe("cleanupOrphanedWorktrees", () => {
   });
 
   it("excludes internal containers while still removing genuine unregistered orphans", async () => {
-    mockedReaddirSync.mockReturnValue([
-      makeDirEntry(".ai-merge"),
-      makeDirEntry(".fusion-recovery"),
-      makeDirEntry("broken-wt"),
-    ] as any);
+    mockedReaddirSync.mockImplementation((path) =>
+      String(path).endsWith("broken-wt")
+        ? [] as any
+        : [makeDirEntry(".ai-merge"), makeDirEntry(".fusion-recovery"), makeDirEntry("broken-wt")] as any,
+    );
     mockRegisteredWorktrees("/root", []);
 
     const store = createMockStore([]);
@@ -1132,18 +1135,15 @@ describe("cleanupOrphanedWorktrees", () => {
     const cleaned = await cleanupOrphanedWorktrees("/root", store);
 
     expect(cleaned).toBe(1);
-    expect(mockedRmSync).toHaveBeenCalledWith("/root/.worktrees/broken-wt", {
-      recursive: true,
-      force: true,
-    });
-    expect(mockedRmSync).not.toHaveBeenCalledWith("/root/.worktrees/.ai-merge", expect.anything());
-    expect(mockedRmSync).not.toHaveBeenCalledWith("/root/.worktrees/.fusion-recovery", expect.anything());
+    expect(mockedRmdirSync).toHaveBeenCalledWith(join("/root", ".worktrees", "broken-wt"));
+    expect(mockedRmdirSync).not.toHaveBeenCalledWith(join("/root", ".worktrees", ".ai-merge"));
+    expect(mockedRmdirSync).not.toHaveBeenCalledWith(join("/root", ".worktrees", ".fusion-recovery"));
   });
 
   it("removes unregistered directories even when stale active task metadata references them", async () => {
-    mockedReaddirSync.mockReturnValue([
-      makeDirEntry("broken-wt"),
-    ] as any);
+    mockedReaddirSync.mockImplementation((path) =>
+      String(path).endsWith("broken-wt") ? [] as any : [makeDirEntry("broken-wt")] as any,
+    );
     mockRegisteredWorktrees("/root", []);
 
     const store = createMockStore([
@@ -1153,13 +1153,23 @@ describe("cleanupOrphanedWorktrees", () => {
     const cleaned = await cleanupOrphanedWorktrees("/root", store);
 
     expect(cleaned).toBe(1);
-    expect(mockedRmSync).toHaveBeenCalledWith("/root/.worktrees/broken-wt", {
-      recursive: true,
-      force: true,
-    });
+    expect(mockedRmdirSync).toHaveBeenCalledWith(join("/root", ".worktrees", "broken-wt"));
     expect(mockedPruneWorktreeAdminEntries).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: "pool-cleanup-orphan", target: "/root/.worktrees/broken-wt" }),
+      expect.objectContaining({ reason: "pool-cleanup-orphan", target: join("/root", ".worktrees", "broken-wt") }),
     );
+  });
+
+  it("preserves an unregistered orphan when it contains unverified user content", async () => {
+    mockedReaddirSync.mockImplementation((path) =>
+      String(path).endsWith("broken-wt") ? [makeDirEntry("user-notes")] as any : [makeDirEntry("broken-wt")] as any,
+    );
+    mockRegisteredWorktrees("/root", []);
+
+    const cleaned = await cleanupOrphanedWorktrees("/root", createMockStore([]));
+
+    expect(cleaned).toBe(0);
+    expect(mockedRmdirSync).not.toHaveBeenCalled();
+    expect(mockedPruneWorktreeAdminEntries).not.toHaveBeenCalled();
   });
 });
 
@@ -1167,68 +1177,69 @@ describe("reapOrphanWorktrees", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRegisteredWorktrees("/root", []);
-    mockedExistsSync.mockImplementation((path) => String(path) === "/root/.worktrees");
+    mockedExistsSync.mockImplementation((path) => String(path) === join("/root", ".worktrees"));
     mockedLstatSync.mockReturnValue({ isDirectory: () => true, isSymbolicLink: () => false } as any);
   });
 
   it("excludes internal containers while removing half-initialized task worktrees", async () => {
-    mockedReaddirSync.mockReturnValue([
-      makeDirEntry(".ai-merge"),
-      makeDirEntry(".fusion-recovery"),
-      makeDirEntry("half-built"),
-    ] as any);
+    mockedReaddirSync.mockImplementation((path) =>
+      String(path).endsWith("half-built")
+        ? [] as any
+        : [makeDirEntry(".ai-merge"), makeDirEntry(".fusion-recovery"), makeDirEntry("half-built")] as any,
+    );
 
     const removed = await reapOrphanWorktrees("/root");
 
     expect(removed).toBe(1);
-    expect(mockedRmSync).toHaveBeenCalledWith("/root/.worktrees/half-built", { recursive: true, force: true });
-    expect(mockedRmSync).not.toHaveBeenCalledWith("/root/.worktrees/.ai-merge", expect.anything());
-    expect(mockedRmSync).not.toHaveBeenCalledWith("/root/.worktrees/.fusion-recovery", expect.anything());
+    expect(mockedRmdirSync).toHaveBeenCalledWith(resolve("/root/.worktrees/half-built"));
+    expect(mockedRmdirSync).not.toHaveBeenCalledWith(resolve("/root/.worktrees/.ai-merge"));
+    expect(mockedRmdirSync).not.toHaveBeenCalledWith(resolve("/root/.worktrees/.fusion-recovery"));
   });
 
-  // FN-6782 follow-up: a directory whose `.git` points to a missing admin entry is leak
-  // residue (invisible to `git worktree list`/`prune`), not "partially registered". It
-  // must be reaped — otherwise it collides with freshly generated worktree names and
-  // breaks `execute`. Previously the reaper skipped on mere `.git` presence.
-  it("reaps a dir with a dangling .git pointer (admin gitdir missing)", async () => {
+  /*
+  FNXC:WorktreeCleanupDataSafety 2026-08-18-15:44:
+  A dangling `.git` pointer proves only that registration is gone; it does not prove the remaining
+  source files are disposable. Automatic reaping must preserve that directory for recovery.
+  */
+  it("preserves a dir with a dangling .git pointer when source content cannot be proven disposable", async () => {
     mockedReaddirSync.mockReturnValue([makeDirEntry("leaked-wt")] as any);
     // `.git` is a link FILE (not a dir); the worktree dir itself is a dir.
     mockedLstatSync.mockImplementation((p: any) =>
-      (String(p).endsWith("/.git")
+      (String(p).endsWith(".git")
         ? { isDirectory: () => false, isSymbolicLink: () => false }
         : { isDirectory: () => true, isSymbolicLink: () => false }) as any,
     );
-    mockedReadFileSync.mockReturnValue("gitdir: /root/.git/worktrees/leaked-wt\n" as any);
+    mockedReadFileSync.mockReturnValue(`gitdir: ${resolve("/root/.git/worktrees/leaked-wt")}\n` as any);
     mockedExistsSync.mockImplementation((p) => {
       const s = String(p);
       // .worktrees root exists; the .git link file exists; the gitdir target does NOT.
-      return s === "/root/.worktrees" || s === "/root/.worktrees/leaked-wt/.git";
-    });
-
-    const removed = await reapOrphanWorktrees("/root");
-
-    expect(removed).toBe(1);
-    expect(mockedRmSync).toHaveBeenCalledWith("/root/.worktrees/leaked-wt", { recursive: true, force: true });
-  });
-
-  it("skips a dir with a valid .git pointer (admin gitdir exists)", async () => {
-    mockedReaddirSync.mockReturnValue([makeDirEntry("live-wt")] as any);
-    mockedLstatSync.mockImplementation((p: any) =>
-      (String(p).endsWith("/.git")
-        ? { isDirectory: () => false, isSymbolicLink: () => false }
-        : { isDirectory: () => true, isSymbolicLink: () => false }) as any,
-    );
-    mockedReadFileSync.mockReturnValue("gitdir: /root/.git/worktrees/live-wt\n" as any);
-    mockedExistsSync.mockImplementation((p) => {
-      const s = String(p);
-      // The gitdir target exists too → treat as (maybe) registered, leave it alone.
-      return s === "/root/.worktrees" || s === "/root/.worktrees/live-wt/.git" || s === "/root/.git/worktrees/live-wt";
+      return s === join("/root", ".worktrees") || s === join("/root", ".worktrees", "leaked-wt", ".git");
     });
 
     const removed = await reapOrphanWorktrees("/root");
 
     expect(removed).toBe(0);
-    expect(mockedRmSync).not.toHaveBeenCalledWith("/root/.worktrees/live-wt", expect.anything());
+    expect(mockedRmdirSync).not.toHaveBeenCalled();
+  });
+
+  it("skips a dir with a valid .git pointer (admin gitdir exists)", async () => {
+    mockedReaddirSync.mockReturnValue([makeDirEntry("live-wt")] as any);
+    mockedLstatSync.mockImplementation((p: any) =>
+      (String(p).endsWith(".git")
+        ? { isDirectory: () => false, isSymbolicLink: () => false }
+        : { isDirectory: () => true, isSymbolicLink: () => false }) as any,
+    );
+    mockedReadFileSync.mockReturnValue(`gitdir: ${resolve("/root/.git/worktrees/live-wt")}\n` as any);
+    mockedExistsSync.mockImplementation((p) => {
+      const s = String(p);
+      // The gitdir target exists too → treat as (maybe) registered, leave it alone.
+      return s === join("/root", ".worktrees") || s === join("/root", ".worktrees", "live-wt", ".git") || s === resolve("/root/.git/worktrees/live-wt");
+    });
+
+    const removed = await reapOrphanWorktrees("/root");
+
+    expect(removed).toBe(0);
+    expect(mockedRmdirSync).not.toHaveBeenCalledWith(join("/root", ".worktrees", "live-wt"));
   });
 
   it("does NOT reap a dir whose .git is unparseable (conservative — only confirmed-dangling pointers)", async () => {
@@ -1236,20 +1247,20 @@ describe("reapOrphanWorktrees", () => {
     // dangling — reaping on uncertainty could delete a genuinely-live worktree.
     mockedReaddirSync.mockReturnValue([makeDirEntry("maybe-wt")] as any);
     mockedLstatSync.mockImplementation((p: any) =>
-      (String(p).endsWith("/.git")
+      (String(p).endsWith(".git")
         ? { isDirectory: () => false, isSymbolicLink: () => false }
         : { isDirectory: () => true, isSymbolicLink: () => false }) as any,
     );
     mockedReadFileSync.mockReturnValue("not a gitdir pointer at all\n" as any);
     mockedExistsSync.mockImplementation((p) => {
       const s = String(p);
-      return s === "/root/.worktrees" || s === "/root/.worktrees/maybe-wt/.git";
+      return s === join("/root", ".worktrees") || s === join("/root", ".worktrees", "maybe-wt", ".git");
     });
 
     const removed = await reapOrphanWorktrees("/root");
 
     expect(removed).toBe(0);
-    expect(mockedRmSync).not.toHaveBeenCalledWith("/root/.worktrees/maybe-wt", expect.anything());
+    expect(mockedRmdirSync).not.toHaveBeenCalledWith(join("/root", ".worktrees", "maybe-wt"));
   });
 });
 

@@ -1,6 +1,6 @@
 import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmdirSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, isAbsolute } from "node:path";
 import type { SecretsStore, Settings, TaskStore, WorktrunkSettings } from "@fusion/core";
@@ -123,6 +123,20 @@ function getExecErrorOutput(error: unknown): string {
   const stderr = stringifyExecOutput(record.stderr).trim();
   if (stderr) return stderr;
   return stringifyExecOutput(record.message).trim();
+}
+
+/*
+FNXC:WorktreeCleanupDataSafety 2026-08-18-15:44:
+An unregistered directory has no trustworthy Git baseline, so automatic cleanup cannot prove that
+its files are generated or disposable. Remove only a directory proven empty after ownership-aware
+secrets cleanup; any entry or read failure preserves the directory for operator recovery.
+*/
+function removeProvenEmptyUnregisteredWorktree(worktreePath: string): void {
+  const entries = readdirSync(worktreePath);
+  if (entries.length > 0) {
+    throw new Error(`Refusing to remove unregistered worktree with unverified content: ${worktreePath}`);
+  }
+  rmdirSync(worktreePath);
 }
 
 export type GitRepoDetection =
@@ -998,32 +1012,35 @@ export async function cleanupOrphanedWorktrees(
     try {
       if (registeredWorktrees.has(resolve(worktreePath))) {
         const orphanTaskId = `orphan:${basename(worktreePath)}`;
-        try {
-          await cleanupSecretsEnvFile({
-            worktreePath,
-            taskId: orphanTaskId,
-            expectedFingerprint: null,
-            filename: ".env",
-            audit: undefined,
-            logger: worktreePoolLog,
-          });
-        } catch (error) {
-          worktreePoolLog.warn(
-            `secrets-env cleanup failed for registered orphan ${worktreePath}: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
+        await cleanupSecretsEnvFile({
+          worktreePath,
+          taskId: orphanTaskId,
+          expectedFingerprint: null,
+          filename: ".env",
+          audit: undefined,
+          logger: worktreePoolLog,
+        });
 
         await removeWorktreeViaBackend({
           rootDir,
           worktreePath,
           settings: settings ?? {},
           reason: RemovalReason.PoolPrune,
+          force: false,
         });
       } else {
         if (!isInsideWorktreesDir(rootDir, worktreePath, settings)) {
           throw new Error(`Refusing to remove path outside .worktrees: ${worktreePath}`);
         }
-        rmSync(worktreePath, { recursive: true, force: true });
+        await cleanupSecretsEnvFile({
+          worktreePath,
+          taskId: `orphan:${basename(worktreePath)}`,
+          expectedFingerprint: null,
+          filename: ".env",
+          audit: undefined,
+          logger: worktreePoolLog,
+        });
+        removeProvenEmptyUnregisteredWorktree(worktreePath);
         await pruneWorktreeAdminEntries({
           rootDir,
           reason: "pool-cleanup-orphan",
@@ -1146,13 +1163,9 @@ export async function reapOrphanWorktrees(
     // This guards against races where git registered the worktree between our list
     // call and now, or against a broken repo whose porcelain is unreliable.
     //
-    // FN-6782 follow-up: a *dangling* `.git` (file present, but the admin entry it
-    // points to is gone) is NOT "partially registered" — it is leak residue from a
-    // worktree whose admin entry was pruned while the directory survived. Such a dir
-    // is invisible to `git worktree list`/`prune` yet collides with freshly generated
-    // worktree names and breaks `execute` (cleanup can't `git worktree remove` a path
-    // git never registered). Only skip when the gitdir target actually exists; reap
-    // dangling pointers like any other half-initialized orphan.
+    // A dangling `.git` pointer confirms stale registration but not disposable source content.
+    // Preserve both valid and dangling worktree-shaped directories; acquisition can relocate a
+    // collision into the recovery container without deleting it.
     const dotGit = join(resolvedFull, ".git");
     if (existsSync(dotGit)) {
       if (!dotGitPointerIsDangling(dotGit)) {
@@ -1161,25 +1174,21 @@ export async function reapOrphanWorktrees(
         worktreePoolLog.debug(`reapOrphanWorktrees: skipping ${name} (has .git entry but not in registered list — may be partially registered)`);
         continue;
       }
-      worktreePoolLog.debug(`reapOrphanWorktrees: ${name} has a dangling .git pointer (admin entry missing) — treating as orphan`);
-      // fall through to removal
+      worktreePoolLog.warn(`reapOrphanWorktrees: preserving ${name} (dangling .git pointer with unverified content)`);
+      continue;
     }
 
     // This directory is on disk but has no valid .git entry and is not a registered
     // worktree — it is a half-initialized / leaked orphan.  Remove it.
     try {
-      try {
-        await cleanupSecretsEnvFile({
-          worktreePath: resolvedFull,
-          taskId: `orphan:${name}`,
-          expectedFingerprint: null,
-          filename: ".env",
-          logger: worktreePoolLog,
-        });
-      } catch (error) {
-        worktreePoolLog.warn(`secrets-env cleanup failed for orphan ${name}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      rmSync(resolvedFull, { recursive: true, force: true });
+      await cleanupSecretsEnvFile({
+        worktreePath: resolvedFull,
+        taskId: `orphan:${name}`,
+        expectedFingerprint: null,
+        filename: ".env",
+        logger: worktreePoolLog,
+      });
+      removeProvenEmptyUnregisteredWorktree(resolvedFull);
       await pruneWorktreeAdminEntries({
         rootDir: projectRoot,
         reason: "pool-reap-orphan",

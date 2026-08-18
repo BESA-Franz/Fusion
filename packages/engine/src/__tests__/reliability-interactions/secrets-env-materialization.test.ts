@@ -95,7 +95,7 @@ describe("reliability interactions: secrets env materialization", () => {
     expect(readFileSync(join(worktree, "unrelated.txt"), "utf8")).toBe("dirt\n");
   });
 
-  it("orphan reap reclaims orphaned env artifacts", async () => {
+  it("orphan reap preserves env artifacts when their fingerprint cannot be verified", async () => {
     const root = tmpRepo();
     const worktreesDir = join(root, ".worktrees");
     const orphan = join(worktreesDir, "ghost");
@@ -104,7 +104,8 @@ describe("reliability interactions: secrets env materialization", () => {
     writeFileSync(join(orphan, ".fusion-secrets-env.fingerprint"), "abc\n.env\n");
 
     const removed = await reapOrphanWorktrees(root);
-    expect(removed).toBe(1);
-    expect(existsSync(orphan)).toBe(false);
+    expect(removed).toBe(0);
+    expect(existsSync(orphan)).toBe(true);
+    expect(readFileSync(join(orphan, ".env"), "utf8")).toBe("A=1\n");
   });
 });

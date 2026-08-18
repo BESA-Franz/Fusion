@@ -213,6 +213,7 @@ export interface WorktreeRemoveInput {
   worktreePath: string;
   branch?: string;
   taskId?: string;
+  force?: boolean;
 }
 
 export interface WorktreeSyncInput {
@@ -652,8 +653,9 @@ export class NativeWorktreeBackend implements WorktreeBackend {
   }
 
   async remove(input: WorktreeRemoveInput): Promise<void> {
+    const forceArg = input.force === false ? "" : " --force";
     try {
-      await execAsync(`git worktree remove --force ${quoteShellArg(input.worktreePath)}`, {
+      await execAsync(`git worktree remove${forceArg} ${quoteShellArg(input.worktreePath)}`, {
         cwd: input.rootDir,
         encoding: "utf-8",
         timeout: REMOVE_TIMEOUT_MS,
@@ -661,6 +663,14 @@ export class NativeWorktreeBackend implements WorktreeBackend {
       });
       return;
     } catch (error) {
+      /*
+      FNXC:WorktreeCleanupDataSafety 2026-08-18-15:44:
+      Pool and orphan cleanup must preserve modified, untracked, ignored, or unreadable content. A
+      non-forced Git removal is the proof boundary: if Git refuses or leaves residue, do not convert
+      that refusal into recursive filesystem deletion. Explicit executor-owned force paths retain
+      the legacy fallback for hard cancellation and disposal.
+      */
+      if (input.force === false) throw error;
       if (!isRecoverableNativeWorktreeRemoveError(error)) {
         throw error;
       }
@@ -914,7 +924,7 @@ export class WorktrunkWorktreeBackend implements WorktreeBackend {
   async remove(input: WorktreeRemoveInput): Promise<void> {
     const target = input.branch ?? input.worktreePath;
     try {
-      await this.runWorktrunk(["remove", "--foreground", target], {
+      await this.runWorktrunk(["remove", "--foreground", ...(input.force === true ? ["--force"] : []), target], {
         cwd: input.rootDir,
         operation: "remove",
       });
@@ -1124,15 +1134,19 @@ export async function removeWorktree(input: {
   }
 
   const backend = resolveWorktreeBackend(input.settings, { logger, audit: input.audit });
+  const defensivePoolRemoval = input.reason === RemovalReason.PoolPrune;
   const removeInput: WorktreeRemoveInput = {
     rootDir: input.rootDir,
     worktreePath: input.worktreePath,
     taskId: input.taskId,
+    // Native keeps its historical forced default outside defensive pool cleanup. Worktrunk only
+    // receives --force from an explicitly authorized caller.
+    force: input.force ?? (backend.kind === "native" && !defensivePoolRemoval),
   };
 
-  if (input.force === false || typeof input.timeout === "number") {
+  if (typeof input.timeout === "number") {
     // Backwards-compatible helper signature for callers that carried raw git flags/timeouts.
-    // Current backend remove implementations are forceful and use backend-owned timeouts.
+    // Current backend remove implementations use backend-owned timeouts.
   }
 
   try {

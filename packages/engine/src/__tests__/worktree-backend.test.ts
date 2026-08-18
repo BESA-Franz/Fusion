@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { resolve } from "node:path";
 import {
   ActiveSessionWorktreeRemovalError,
   NativeWorktreeBackend,
@@ -172,6 +173,29 @@ describe("NativeWorktreeBackend", () => {
     expect(pruneWorktreeAdminEntriesMock).not.toHaveBeenCalled();
   });
 
+  it("preserves modified or untracked content when defensive removal disables force", async () => {
+    const dirtyError = {
+      message: "fatal: '/repo/.worktrees/fn-1' contains modified or untracked files",
+      stderr: "fatal: modified or untracked files",
+    };
+    execMock.mockRejectedValueOnce(dirtyError);
+
+    await expect(
+      new NativeWorktreeBackend().remove({
+        rootDir: "/repo",
+        worktreePath: "/repo/.worktrees/fn-1",
+        force: false,
+      }),
+    ).rejects.toBe(dirtyError);
+
+    expect(execMock).toHaveBeenCalledWith(
+      'git worktree remove "/repo/.worktrees/fn-1"',
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+    expect(rmMock).not.toHaveBeenCalled();
+    expect(pruneWorktreeAdminEntriesMock).not.toHaveBeenCalled();
+  });
+
   it("falls back to filesystem removal and prunes admin entries when native remove leaves a non-empty directory", async () => {
     const audit = { git: vi.fn().mockResolvedValue(undefined) };
     execMock.mockRejectedValueOnce({
@@ -313,7 +337,7 @@ describe("NativeWorktreeBackend", () => {
     });
 
     expect(result).toEqual({ path: "/repo/.worktrees/fn-1", branch: "fusion/fn-1" });
-    expect(tryRemoveStaleLockMock).toHaveBeenCalledWith({ lockPath: "/repo/.git/worktrees/fn-1/index.lock" });
+    expect(tryRemoveStaleLockMock).toHaveBeenCalledWith({ lockPath: resolve("/repo/.git/worktrees/fn-1/index.lock") });
     expect(audit.git).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({ type: "worktree:stale-lock-detected" }),
@@ -487,7 +511,7 @@ describe("NativeWorktreeBackend", () => {
     const backend = new NativeWorktreeBackend({ settings: { worktreesDir: "../{repo}.worktrees" } as any });
     await expect(
       backend.resolveWorktreePath({ rootDir: "/repo/project", worktreeName: "fn-1", branch: "fusion/fn-1" }),
-    ).resolves.toBe("/repo/project.worktrees/fn-1");
+    ).resolves.toBe(resolve("/repo/project.worktrees/fn-1"));
   });
 });
 
@@ -741,6 +765,23 @@ describe("WorktrunkWorktreeBackend", () => {
     );
   });
 
+  it("adds Worktrunk force only when the caller explicitly authorizes it", async () => {
+    execMock.mockResolvedValue({ stdout: "", stderr: "" });
+    const backend = new WorktrunkWorktreeBackend({ binaryPath: "worktrunk" });
+
+    await backend.remove({
+      rootDir: "/repo",
+      worktreePath: "/repo/.worktrees/fn-1",
+      branch: "fusion/fn-1",
+      force: true,
+    });
+
+    expect(execMock).toHaveBeenCalledWith(
+      '"worktrunk" "remove" "--foreground" "--force" "fusion/fn-1"',
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+  });
+
   it("treats remove not-found style failures as idempotent success", async () => {
     execMock.mockRejectedValue({ stderr: "branch not found", status: 1 });
     const backend = new WorktrunkWorktreeBackend({ binaryPath: "worktrunk" });
@@ -838,7 +879,7 @@ describe("WorktrunkWorktreeBackend", () => {
 
     await expect(
       backend.resolveWorktreePath({ rootDir: "/repo/project", worktreeName: "ignored", branch: "fusion/fn-1" }),
-    ).resolves.toBe("/repo/project.fusion-fn-1");
+    ).resolves.toBe(resolve("/repo/project.fusion-fn-1"));
     expect(execMock).toHaveBeenCalledWith(
       '"worktrunk" "config" "show" "--format" "json"',
       expect.objectContaining({ cwd: "/repo/project", timeout: 5000, maxBuffer: 10485760 }),
@@ -851,7 +892,7 @@ describe("WorktrunkWorktreeBackend", () => {
 
     await expect(
       backend.resolveWorktreePath({ rootDir: "/repo/project", worktreeName: "ignored", branch: "fusion/fn-1" }),
-    ).resolves.toBe("/repo/project/.worktrees/fusion-fn-1");
+    ).resolves.toBe(resolve("/repo/project/.worktrees/fusion-fn-1"));
   });
 
   it("prunes by listing worktrees and removing worktrunk managed entries", async () => {
