@@ -76,6 +76,7 @@ export function parseShortstatSummary(statsOutput: string): { filesChanged: numb
 }
 
 export function quoteArg(value: string): string {
+  if (process.platform === "win32") return JSON.stringify(value);
   return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
 }
 
