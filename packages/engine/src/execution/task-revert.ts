@@ -78,7 +78,13 @@ export class TaskRevertError extends Error {
 }
 
 function quoteShellArg(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+  /*
+  FNXC:TaskRevertWindows 2026-08-18-18:48:
+  Task-revert sends refs, SHAs, ranges, and commit messages through the native backend shell.
+  cmd.exe treats POSIX single quotes as argument content, breaking both dry-run and apply paths.
+  Keep escaped POSIX quoting on Unix and use backend-compatible double quotes on Windows.
+  */
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 // FNXC:TaskRevert 2026-07-04-00:00:

@@ -1,5 +1,5 @@
 import { execSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -48,13 +48,13 @@ describeIfGit("task-revert workspace real-git scenarios", { timeout: 30_000 }, (
 
   function subRepoFixture(workspaceRoot: string, repoRel: string, initialFile: string, initialContent: string): string {
     const repoRootDir = join(workspaceRoot, repoRel);
-    git(workspaceRoot, `mkdir -p ${repoRel}`);
+    mkdirSync(repoRootDir, { recursive: true });
     git(repoRootDir, "git init -b main");
     git(repoRootDir, 'git config user.email "test@example.com"');
     git(repoRootDir, 'git config user.name "Test User"');
     git(repoRootDir, "git config commit.gpgsign false");
     writeFileSync(join(repoRootDir, initialFile), initialContent);
-    git(repoRootDir, `git add ${initialFile} && git commit -m 'init'`);
+    git(repoRootDir, `git add ${initialFile} && git commit -m ${JSON.stringify("init")}`);
     return repoRootDir;
   }
 

@@ -1,5 +1,5 @@
 import { exec, execSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -52,13 +52,13 @@ describeIfGit("prepareWorkspaceRevertPrBranches real-git scenarios", { timeout: 
 
   function subRepoFixture(workspaceRoot: string, repoRel: string, initialFile: string, initialContent: string): string {
     const repoRootDir = join(workspaceRoot, repoRel);
-    git(workspaceRoot, `mkdir -p ${repoRel}`);
+    mkdirSync(repoRootDir, { recursive: true });
     git(repoRootDir, "git init -b main");
     git(repoRootDir, 'git config user.email "test@example.com"');
     git(repoRootDir, 'git config user.name "Test User"');
     git(repoRootDir, "git config commit.gpgsign false");
     writeFileSync(join(repoRootDir, initialFile), initialContent);
-    git(repoRootDir, `git add ${initialFile} && git commit -m 'init'`);
+    git(repoRootDir, `git add ${initialFile} && git commit -m ${JSON.stringify("init")}`);
     return repoRootDir;
   }
 
@@ -340,7 +340,7 @@ describeIfGit("prepareWorkspaceRevertPrBranches real-git scenarios", { timeout: 
       if (!injected && options?.cwd === repoA && /git checkout -B/.test(command)) {
         injected = true;
         writeFileSync(join(repoB, "b.ts"), "line1\nfeature-a-modified-by-b\n");
-        execSync("git commit -am 'feat(FN-B): modify same region in repo-b'", { cwd: repoB, stdio: "pipe" });
+        execSync(`git commit -am ${JSON.stringify("feat(FN-B): modify same region in repo-b")}`, { cwd: repoB, stdio: "pipe" });
       }
       return realExecAsync(command, options as never);
     }) as typeof realExecAsync;

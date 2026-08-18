@@ -18,6 +18,10 @@ function git(repo: string, command: string): string {
   return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
+function quote(value: string): string {
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 function makeTask(overrides: Partial<Task>): Task {
   return {
     id: "FN-901",
@@ -48,14 +52,14 @@ describeIfGit("task-revert real-git scenarios", { timeout: 30_000 }, () => {
     git(repo, 'git config user.name "Test User"');
     git(repo, "git config commit.gpgsign false");
     writeFileSync(join(repo, "foo.ts"), "line1\n");
-    git(repo, "git add foo.ts && git commit -m 'init'");
+    git(repo, `git add foo.ts && git commit -m ${quote("init")}`);
     return repo;
   }
 
   it("attribution: squash task resolves the single commitSha", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-901): add feature a'");
+    git(repo, `git add foo.ts && git commit -m ${quote("feat(FN-901): add feature a")}`);
     const sha = git(repo, "git rev-parse HEAD");
 
     const task = makeTask({ mergeDetails: { commitSha: sha } });
@@ -71,11 +75,11 @@ describeIfGit("task-revert real-git scenarios", { timeout: 30_000 }, () => {
     const repo = repoFixture();
     const rebaseBase = git(repo, "git rev-parse HEAD");
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git commit -am 'feat(FN-901): part 1'");
+    git(repo, `git commit -am ${quote("feat(FN-901): part 1")}`);
     writeFileSync(join(repo, "other.ts"), "unrelated\n");
-    git(repo, "git add other.ts && git commit -m 'chore: unrelated foreign commit'");
+    git(repo, `git add other.ts && git commit -m ${quote("chore: unrelated foreign commit")}`);
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\nfeature-a-more\n");
-    git(repo, "git commit -am 'more work' -m 'Fusion-Task-Id: FN-901'");
+    git(repo, `git commit -am ${quote("more work")} -m ${quote("Fusion-Task-Id: FN-901")}`);
     const head = git(repo, "git rev-parse HEAD");
 
     const task = makeTask({ mergeDetails: { commitSha: head, rebaseBaseSha: rebaseBase } });
@@ -90,7 +94,7 @@ describeIfGit("task-revert real-git scenarios", { timeout: 30_000 }, () => {
   it("attribution: lineage fallback used when mergeDetails absent", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-901): add feature a'");
+    git(repo, `git add foo.ts && git commit -m ${quote("feat(FN-901): add feature a")}`);
     const sha = git(repo, "git rev-parse HEAD");
 
     const task = makeTask({ mergeDetails: undefined });
@@ -136,7 +140,7 @@ describeIfGit("task-revert real-git scenarios", { timeout: 30_000 }, () => {
   it("clean revert: creates a revert(FN-xxxx) commit with Fusion-Task-Id trailer and reverts file content", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-901): add feature a'");
+    git(repo, `git add foo.ts && git commit -m ${quote("feat(FN-901): add feature a")}`);
     const sha = git(repo, "git rev-parse HEAD");
 
     const task = makeTask({ column: "done", mergeDetails: { commitSha: sha, mergeTargetBranch: "main" } });
@@ -161,12 +165,12 @@ describeIfGit("task-revert real-git scenarios", { timeout: 30_000 }, () => {
   it("conflict detection: a later task touching the same region classifies as conflicting and leaves tree+HEAD untouched", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-901): add feature a'");
+    git(repo, `git add foo.ts && git commit -m ${quote("feat(FN-901): add feature a")}`);
     const shaA = git(repo, "git rev-parse HEAD");
 
     // Task B later modifies the exact same region touched by task A.
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a-modified-by-b\n");
-    git(repo, "git commit -am 'feat(FN-902): modify same region'");
+    git(repo, `git commit -am ${quote("feat(FN-902): modify same region")}`);
 
     const preCallHead = git(repo, "git rev-parse HEAD");
     const preCallStatus = git(repo, "git status --porcelain");
@@ -190,7 +194,7 @@ describeIfGit("task-revert real-git scenarios", { timeout: 30_000 }, () => {
   it("already-reverted / no-op: reverting a task twice reports alreadyReverted without a second commit", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-901): add feature a'");
+    git(repo, `git add foo.ts && git commit -m ${quote("feat(FN-901): add feature a")}`);
     const sha = git(repo, "git rev-parse HEAD");
 
     const task = makeTask({ column: "done", mergeDetails: { commitSha: sha, mergeTargetBranch: "main" } });
@@ -208,7 +212,7 @@ describeIfGit("task-revert real-git scenarios", { timeout: 30_000 }, () => {
   it("dirty-tree refusal: refuses without mutating the tree when a stray change is staged", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-901): add feature a'");
+    git(repo, `git add foo.ts && git commit -m ${quote("feat(FN-901): add feature a")}`);
     const sha = git(repo, "git rev-parse HEAD");
 
     writeFileSync(join(repo, "stray.txt"), "stray change\n");
@@ -223,7 +227,7 @@ describeIfGit("task-revert real-git scenarios", { timeout: 30_000 }, () => {
   it("guard rails: a non-done/archived task is rejected and the source task's column is unaffected", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-901): add feature a'");
+    git(repo, `git add foo.ts && git commit -m ${quote("feat(FN-901): add feature a")}`);
     const sha = git(repo, "git rev-parse HEAD");
 
     const task = makeTask({ column: "in-progress", mergeDetails: { commitSha: sha, mergeTargetBranch: "main" } });
@@ -248,7 +252,7 @@ describeIfGit("task-revert real-git scenarios", { timeout: 30_000 }, () => {
   it("a renamed terminal lane is revertable when the caller supplies resolved columns", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-901): add feature a'");
+    git(repo, `git add foo.ts && git commit -m ${quote("feat(FN-901): add feature a")}`);
     const sha = git(repo, "git rev-parse HEAD");
 
     const task = makeTask({ column: "shipped" as never, mergeDetails: { commitSha: sha, mergeTargetBranch: "main" } });
@@ -265,13 +269,13 @@ describeIfGit("task-revert real-git scenarios", { timeout: 30_000 }, () => {
     the guard did not refuse, not that the revert happened. Asserting the clean-revert result proves both.
     */
     expect(result).toMatchObject({ mode: "git", clean: true });
-    expect(readFileSync(join(repo, "foo.ts"), "utf8")).toBe("line1\n");
+    expect(readFileSync(join(repo, "foo.ts"), "utf8").replace(/\r\n/g, "\n")).toBe("line1\n");
   });
 
   it("resolved columns still REFUSE a live lane, so the gate is not simply widened", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-902): add feature a'");
+    git(repo, `git add foo.ts && git commit -m ${quote("feat(FN-902): add feature a")}`);
     const sha = git(repo, "git rev-parse HEAD");
 
     const task = makeTask({ column: "building" as never, mergeDetails: { commitSha: sha, mergeTargetBranch: "main" } });
@@ -289,7 +293,7 @@ describeIfGit("task-revert real-git scenarios", { timeout: 30_000 }, () => {
   it("guard rails: autoMerge:false returns a needsHuman result instead of force-writing", async () => {
     const repo = repoFixture();
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git add foo.ts && git commit -m 'feat(FN-901): add feature a'");
+    git(repo, `git add foo.ts && git commit -m ${quote("feat(FN-901): add feature a")}`);
     const sha = git(repo, "git rev-parse HEAD");
     const preHead = git(repo, "git rev-parse HEAD");
 
@@ -306,10 +310,10 @@ describeIfGit("task-revert real-git scenarios", { timeout: 30_000 }, () => {
     const repo = repoFixture();
     const rebaseBase = git(repo, "git rev-parse HEAD");
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a\n");
-    git(repo, "git commit -am 'feat(FN-901): part 1' -m 'Fusion-Task-Id: FN-901'");
+    git(repo, `git commit -am ${quote("feat(FN-901): part 1")} -m ${quote("Fusion-Task-Id: FN-901")}`);
     const shaA = git(repo, "git rev-parse HEAD");
     writeFileSync(join(repo, "bar.ts"), "bar-feature\n");
-    git(repo, "git add bar.ts && git commit -m 'feat(FN-901): part 2' -m 'Fusion-Task-Id: FN-901'");
+    git(repo, `git add bar.ts && git commit -m ${quote("feat(FN-901): part 2")} -m ${quote("Fusion-Task-Id: FN-901")}`);
     const shaB = git(repo, "git rev-parse HEAD");
     return { repo, rebaseBase, shaA, shaB };
   }
@@ -398,7 +402,7 @@ describeIfGit("task-revert real-git scenarios", { timeout: 30_000 }, () => {
 
     // Task C later modifies the same region touched by shaA (foo.ts), so reverting shaA conflicts.
     writeFileSync(join(repo, "foo.ts"), "line1\nfeature-a-modified-by-c\n");
-    git(repo, "git commit -am 'feat(FN-903): modify same region as part 1'");
+    git(repo, `git commit -am ${quote("feat(FN-903): modify same region as part 1")}`);
 
     const preCallHead = git(repo, "git rev-parse HEAD");
     const preCallStatus = git(repo, "git status --porcelain");
