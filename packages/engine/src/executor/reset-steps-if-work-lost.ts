@@ -10,6 +10,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { resolveTaskWorkingBranch } from "../worktree/worktree-names.js";
 import { executorLog } from "../logger.js";
+import { quoteShellArg } from "./shell-quote.js";
 
 const execAsync = promisify(exec);
 
@@ -32,11 +33,11 @@ export async function resetStepsIfWorkLost(
   try {
     // Check if the branch has any unique commits vs main
     const { stdout: mergeBaseStdout } = await execAsync(
-      `git merge-base "${branchName}" HEAD 2>/dev/null`,
+      `git merge-base ${quoteShellArg(branchName)} HEAD`,
       { cwd: deps.rootDir, encoding: "utf-8" },
     );
     const { stdout: branchHeadStdout } = await execAsync(
-      `git rev-parse "${branchName}" 2>/dev/null`,
+      `git rev-parse ${quoteShellArg(branchName)}`,
       { cwd: deps.rootDir, encoding: "utf-8" },
     );
     const mergeBase = mergeBaseStdout.trim();
