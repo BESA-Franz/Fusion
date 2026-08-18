@@ -46,11 +46,14 @@ import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 
-/** Shell-quote a single argument for a `git` invocation (mirror of the local
- * helper in branch-conflicts.ts — kept local rather than shared per repo
- * convention). */
+/** Shell-quote a single argument for a native-backend `git` invocation. */
 function quoteShellArg(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+  /*
+  FNXC:MissionValidationWindows 2026-08-18-19:09:
+  cmd.exe preserves POSIX single quotes as SHA characters, so valid ancestry checks
+  become unavailable evidence. Keep POSIX escaping on Unix and use double quotes on Windows.
+  */
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /** Logger for the mission execution loop subsystem. */
