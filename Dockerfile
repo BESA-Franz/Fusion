@@ -78,7 +78,41 @@ ENV PORT=4040
 # reach for `rg` as their primary search tool; without it they silently degrade to slower/partial
 # fallbacks inside the container while working fine on a developer machine that has it installed.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates ripgrep \
+  && apt-get install -y --no-install-recommends git ca-certificates ripgrep curl gnupg \
+  && rm -rf /var/lib/apt/lists/*
+
+# FNXC:DockerRun 2026-08-18-06:40: gh, tailscale, and cloudflared ship in the image.
+# Rationale per tool: `gh` backs Fusion's GitHub integration (githubAuthMode "gh-cli" is a documented
+# option and the auth route tells operators to run `gh auth login`, which is impossible if the binary
+# is absent); `cloudflared` backs the dashboard's remote-access feature, whose installer cannot
+# bootstrap itself reliably inside a slim container; `tailscale` gives the same box a private-network
+# option. All three come from their vendors' own apt repositories with signed keyrings rather than
+# curl-to-shell installers, so upgrades and signature checks follow the normal apt path.
+#
+# NOTE: installing tailscale does NOT make `tailscaled` runnable by itself — the daemon additionally
+# needs `--cap-add NET_ADMIN --device /dev/net/tun` on `docker run`. Shipping the binary is the part
+# the image can own; granting kernel capabilities stays an explicit operator decision.
+#
+# External integration evidence:
+#   gh          — repo https://github.com/cli/cli, docs https://cli.github.com/,
+#                 apt https://cli.github.com/packages, binary `gh`, key
+#                 githubcli-archive-keyring.gpg (vendor-signed; upstream-pending-verification)
+#   tailscale   — repo https://github.com/tailscale/tailscale, docs https://tailscale.com/download/linux,
+#                 apt https://pkgs.tailscale.com/stable/debian, binaries `tailscale`/`tailscaled`,
+#                 key bookworm.noarmor.gpg (vendor-signed; upstream-pending-verification)
+#   cloudflared — repo https://github.com/cloudflare/cloudflared, docs https://pkg.cloudflare.com/,
+#                 apt https://pkg.cloudflare.com/cloudflared, binary `cloudflared`,
+#                 key cloudflare-main.gpg (vendor-signed; upstream-pending-verification)
+RUN install -m 0755 -d /etc/apt/keyrings \
+  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+  && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
+  && curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list -o /etc/apt/sources.list.d/tailscale.list \
+  && curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg \
+  && echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared bookworm main" > /etc/apt/sources.list.d/cloudflared.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends gh tailscale cloudflared \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate

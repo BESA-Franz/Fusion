@@ -132,3 +132,25 @@ test("runner stage installs ca-certificates alongside git", () => {
     "runner stage must install ripgrep — the coding agents Fusion drives use `rg` as their primary search tool",
   );
 });
+
+/*
+FNXC:DockerRun 2026-08-18-06:40:
+The operator tooling the image promises must actually be in it. `gh` backs the gh-cli GitHub auth
+mode, `cloudflared` backs remote access, and `tailscale` is the private-network option; each is
+installed from its vendor's signed apt repository. Assert the repo wiring AND the package names, so
+dropping either half (a keyring without the install, or an install whose repo line was removed) fails
+here instead of at first use inside a container.
+*/
+test("runner stage installs gh, tailscale and cloudflared from vendor repositories", () => {
+  const dockerfile = readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
+  const runnerStage = dockerfile.slice(dockerfile.indexOf("FROM node:22-slim AS runner"));
+
+  for (const [tool, repo] of [
+    ["gh", "https://cli.github.com/packages"],
+    ["tailscale", "https://pkgs.tailscale.com/stable/debian"],
+    ["cloudflared", "https://pkg.cloudflare.com/cloudflared"],
+  ]) {
+    assert.ok(runnerStage.includes(repo), `runner stage must configure the ${tool} apt repository (${repo})`);
+    assert.match(runnerStage, new RegExp(`apt-get install[^\n]*(?:\\\n[^\n]*)*\\b${tool}\\b`), `runner stage must install ${tool}`);
+  }
+});
