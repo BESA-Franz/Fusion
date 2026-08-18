@@ -52,6 +52,34 @@ stable value so the token survives restarts. See
 [CLI reference → fn dashboard → Authentication](./cli-reference.md#fn-dashboard)
 for the full flow.
 
+## Provider OAuth logins (Anthropic, OpenAI Codex)
+
+Subscription logins finish on a **loopback callback server that the container runs itself**, on fixed
+ports: `53692` for Anthropic and `1455` for OpenAI Codex. Two things make that unreachable by
+default — the port is not published, and the listener binds `127.0.0.1` *inside* the container, so
+publishing alone still would not deliver traffic arriving on the container's external interface.
+The symptom is a browser that lands on a connection-error page after you approve the login.
+
+Publish both ports and bind the listener to all interfaces:
+
+```bash
+docker run -p 4040:4040 -p 53692:53692 -p 1455:1455 \
+  -e PI_OAUTH_CALLBACK_HOST=0.0.0.0 \
+  -v /path/to/project:/workspace \
+  -v fusion-home:/home/node/.fusion \
+  fusion
+```
+
+The browser callback then completes on its own, with nothing to paste. Both ports are fixed by the
+provider's registered redirect URI, so they cannot be remapped to different host ports — `-p
+53692:53693` will not work.
+
+Without this, the fallback is manual: copy the full URL from the browser's address bar after
+approving and paste it into the login card. Note the callback listener accepts connections from
+outside the container while a login is in flight; it is short-lived and validates the OAuth `state`,
+but prefer publishing these ports only on a trusted network (`-p 127.0.0.1:53692:53692` restricts
+them to the host).
+
 ## Pass additional CLI flags
 
 You can append normal CLI arguments after the image name:

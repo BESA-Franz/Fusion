@@ -1710,9 +1710,14 @@ export const registerAuthRoutes: ApiRouteRegistrar = (ctx) => {
           }
           return await pendingLogin.inputPromise;
         },
-        // AuthStorage.login() forwards callbacks to provider-specific OAuth
-        // implementations verbatim. openai-codex supports this optional hook
-        // to race pasted codes against the localhost callback server.
+        /*
+        FNXC:ProviderAuth 2026-08-18-00:26:
+        `onManualCodeInput` and `onSelect` are dispatched by prompt TYPE in AuthStorage.login()'s
+        pi `AuthInteraction` shim (packages/engine/src/auth/auth-storage.ts), not forwarded
+        verbatim as an older comment here claimed. Both were dead code after login moved to pi's
+        ModelRuntime, which is what broke Codex login: its `select` prompt fell through to
+        `onPrompt` and waited on a paste the UI never asked for.
+        */
         onManualCodeInput: async () => await pendingLogin.inputPromise,
         onProgress: () => {}, // no-op for web UI
         onSelect: async (prompt) => selectOauthOption(storageProvider, prompt),

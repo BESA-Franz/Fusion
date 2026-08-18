@@ -71,6 +71,88 @@ describe("createFusionAuthStorage", () => {
     ]);
   });
 
+  /*
+  FNXC:ProviderAuth 2026-08-18-00:26:
+  REGRESSION: pi's AuthPrompt is a discriminated union and this seam used to flatten every variant
+  into `onPrompt`, discarding `type` and a select's `options`. That took OpenAI Codex login out
+  entirely — its `login()` opens with `prompt({type:"select"})` before any auth URL, so the
+  dashboard answered the method picker with the promise that waits for a pasted code, hung until
+  the route's 30s kickoff timeout, and never opened a browser window.
+
+  Enumerated prompt types: select (chooser, and a fallback that never blocks), manual_code
+  (dedicated channel when present, else the prompt path), text and secret (prompt path).
+  */
+  describe("pi AuthInteraction prompt dispatch", () => {
+    async function runLoginWithPrompt(
+      prompt: Record<string, unknown>,
+      callbacks: Record<string, unknown>,
+    ): Promise<string> {
+      const authStorage = createFusionAuthStorage();
+      let answer = "";
+      authStorage.setModelRuntime({
+        login: async (_provider: string, _type: string, interaction: { prompt: (p: unknown) => Promise<string> }) => {
+          answer = await interaction.prompt(prompt);
+        },
+      } as never);
+      await authStorage.login("openai-codex", callbacks);
+      return answer;
+    }
+
+    it("routes a select prompt to the caller's chooser, not the manual-code wait", async () => {
+      const onSelect = vi.fn(async () => "browser");
+      const onPrompt = vi.fn(async () => new Promise<string>(() => {}) as unknown as string);
+
+      const answer = await runLoginWithPrompt(
+        {
+          type: "select",
+          message: "Select OpenAI Codex login method:",
+          options: [
+            { id: "browser", label: "Browser login (default)" },
+            { id: "device_code", label: "Device code login (headless)" },
+          ],
+        },
+        { onSelect, onPrompt },
+      );
+
+      expect(answer).toBe("browser");
+      expect(onSelect).toHaveBeenCalledOnce();
+      expect(onPrompt).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the first option rather than hanging when no chooser is supplied", async () => {
+      const answer = await runLoginWithPrompt(
+        { type: "select", message: "pick", options: [{ id: "browser" }, { id: "device_code" }] },
+        {},
+      );
+      expect(answer).toBe("browser");
+    });
+
+    it("routes a manual_code prompt to the dedicated manual-code channel", async () => {
+      const onManualCodeInput = vi.fn(async () => "code=abc&state=xyz");
+      const onPrompt = vi.fn(async () => "wrong-channel");
+
+      const answer = await runLoginWithPrompt(
+        { type: "manual_code", message: "Paste the redirect URL" },
+        { onManualCodeInput, onPrompt },
+      );
+
+      expect(answer).toBe("code=abc&state=xyz");
+      expect(onPrompt).not.toHaveBeenCalled();
+    });
+
+    it("keeps text and secret prompts on the prompt path", async () => {
+      for (const type of ["text", "secret"]) {
+        const onPrompt = vi.fn(async () => `answered-${type}`);
+        const answer = await runLoginWithPrompt(
+          { type, message: "enter", placeholder: "here" },
+          { onPrompt, onManualCodeInput: async () => "manual" },
+        );
+        expect(answer, type).toBe(`answered-${type}`);
+        expect(onPrompt, type).toHaveBeenCalledWith({ message: "enter", placeholder: "here" });
+      }
+    });
+  });
+
   it("writes to Fusion auth and reads legacy Pi auth as fallback", async () => {
     const legacyAgentDir = join(homeDir, ".pi", "agent");
     mkdirSync(legacyAgentDir, { recursive: true });

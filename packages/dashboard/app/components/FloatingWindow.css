@@ -271,20 +271,38 @@ outboard targets remain, and they are the pattern to copy wherever a hosted scro
 hot zone actually collide. Tablet retains its existing touch geometry and phones remain full-screen
 sheets below.
 */
-.floating-window--task-detail:not(.floating-window--tablet-viewport) {
+/*
+FNXC:FloatingWindow 2026-08-18-00:26:
+OUTBOARD EAST TARGETS ARE THE SHARED DESKTOP CONTRACT, not a task-detail special case. With
+FN-8015's body gutter deleted, a hosted scrollbar sits flush against the painted right edge, where
+the east/north-east/south-east hit zones used to cover it — the exact grab conflict (issue #2140)
+the gutter existed to prevent. FN-8766 proved the better remedy on Task Detail: let the panel keep
+its full width and move the hit areas OUTSIDE the painted shell, so the scrollbar is fully grabbable
+and nothing is inset. Promoted here for every desktop window rather than waiting for each caller to
+rediscover the conflict.
+
+Requires `overflow: visible` on the host, which stops the window clipping its children — so the body
+and its direct child inherit the corner radius below, since only 8 of ~30 callers used to set that
+themselves and the rest would paint square corners over the rounded shell. Phones re-assert clipping
+(they hide every resize handle, so they need no outboard room) and tablets keep touch geometry.
+*/
+.floating-window:not(.floating-window--tablet-viewport) {
   overflow: visible;
 }
 
-.floating-window--task-detail:not(.floating-window--tablet-viewport) .floating-window__resize-handle--e {
+.floating-window:not(.floating-window--tablet-viewport) .floating-window__resize-handle--e {
   right: calc(var(--space-sm) * -1);
 }
 
-.floating-window--task-detail:not(.floating-window--tablet-viewport) .floating-window__resize-handle--ne {
+.floating-window:not(.floating-window--tablet-viewport) .floating-window__resize-handle--ne,
+.floating-window:not(.floating-window--tablet-viewport) .floating-window__resize-handle--se {
   right: calc(var(--space-lg) * -1);
 }
 
-.floating-window--task-detail:not(.floating-window--tablet-viewport) .floating-window__resize-handle--se {
-  right: calc(var(--space-lg) * -1);
+/* The window no longer clips, so clipping moves to the surfaces that actually paint. */
+.floating-window__body,
+.floating-window__body > * {
+  border-radius: inherit;
 }
 
 /*
@@ -331,6 +349,18 @@ all floating affordances so persisted desktop geometry cannot imply a draggable 
 }
 
 @media (max-width: 767.98px), (max-height: 480px) {
+  /*
+  FNXC:FloatingWindow 2026-08-18-00:26:
+  Phones re-assert clipping for EVERY window. The desktop rule above drops `overflow: hidden` so the
+  east resize targets can sit outside the painted shell, and its `:not(--tablet-viewport)` predicate
+  also matches phones — where those handles are hidden anyway, so the unclipped host buys nothing and
+  a sheet child could paint past the shell. Task Detail already needed this reassertion for its own
+  FN-8766 rule; promoting the outboard targets to every window promotes this with them.
+  */
+  .floating-window {
+    overflow: hidden;
+  }
+
   /*
   FNXC:FloatingWindow 2026-07-12-17:35:
   Mobile keeps the global `styles.css` pan-y lockdown so the dashboard cannot drift, but movable FloatingWindow headers must still resolve to an effective `touch-action: none`. Reassert the drag-handle contract at the mobile breakpoint, excluding full-screen sheet variants, so a single-finger header drag stays on the captured pointermove stream instead of being intersected back into page pan by the ancestor chain. Desktop drag/resize and mobile sheet variants are unchanged.

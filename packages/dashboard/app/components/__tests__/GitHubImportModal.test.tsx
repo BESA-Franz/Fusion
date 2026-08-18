@@ -3217,12 +3217,19 @@ describe("GitHubImportModal", () => {
     expect(baseDeclarations, "base FloatingWindow must provide inherited sheet clipping").toContain("overflow: hidden");
     expect(taskSheetDeclarations, "Task Detail must override its desktop visible-overflow rule on phones").toContain("overflow: hidden !important");
 
-    const desktopTaskDetailDeclarations = ruleDeclarations(
+    /*
+     * FNXC:FloatingWindow 2026-08-18-00:26:
+     * The visible-overflow host that phone sheets must re-clip is now the SHARED desktop rule, not
+     * a task-detail-scoped one: FN-8766's outboard east targets were promoted to every window when
+     * FN-8015's body gutter was deleted. Chat and GitHub Import still must not carry an override of
+     * their own (asserted below) — they inherit the shared desktop rule and the phone reassertion.
+     */
+    const desktopVisibleOverflowHost = ruleDeclarations(
       source,
-      /\.floating-window--task-detail:not\(\.floating-window--tablet-viewport\)\s*\{([^}]*)\}/,
-      "desktop Task Detail",
+      /\n\.floating-window:not\(\.floating-window--tablet-viewport\)\s*\{([^}]*)\}/,
+      "shared desktop window",
     );
-    expect(desktopTaskDetailDeclarations, "Task Detail's phone clipping reassertion needs the desktop override").toContain("overflow: visible");
+    expect(desktopVisibleOverflowHost, "the phone clipping reassertion needs a desktop visible-overflow host").toContain("overflow: visible");
 
     const visibleOverflowSheetHosts = [...source.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
       .filter(([, selector, body]) => /overflow\s*:\s*visible(?:\s*!important)?\s*(?:;|$)/.test(body))

@@ -202,14 +202,28 @@ describe("FloatingWindow", () => {
     }
 
     /*
-    FNXC:TaskDetailLayout 2026-08-17-23:47:
-    FN-8766's outboard east targets survive the gutter removal and are now the sanctioned remedy for a
-    scrollbar/resize collision, so they stay pinned here.
+    FNXC:FloatingWindow 2026-08-18-00:26:
+    FN-8766's outboard east targets are promoted from a task-detail special case to the SHARED
+    desktop contract: with the gutter gone a hosted scrollbar sits flush against the painted edge,
+    and moving the hit areas outside the shell is what keeps it grabbable (issue #2140) without
+    insetting anything. That needs the host to stop clipping, so the body and its direct child take
+    over the corner radius — only 8 of ~30 callers set that themselves, and the rest would paint
+    square corners over the rounded shell.
     */
-    expect(cssRuleContaining(desktopAppCss, ".floating-window--task-detail:not(.floating-window--tablet-viewport) .floating-window__resize-handle--e", "right")).toContain("right: calc(var(--space-sm) * -1);");
-    expect(cssRuleContaining(desktopAppCss, ".floating-window--task-detail:not(.floating-window--tablet-viewport) .floating-window__resize-handle--ne", "right")).toContain("right: calc(var(--space-lg) * -1);");
-    expect(cssRuleContaining(desktopAppCss, ".floating-window--task-detail:not(.floating-window--tablet-viewport) .floating-window__resize-handle--se", "right")).toContain("right: calc(var(--space-lg) * -1);");
-    expect(cssRuleContaining(allAppCss, ".floating-window--task-detail", "overflow: hidden !important;")).toContain("overflow: hidden !important;");
+    expect(cssRuleContaining(desktopAppCss, ".floating-window:not(.floating-window--tablet-viewport)", "overflow: visible;")).toContain("overflow: visible;");
+    expect(cssRuleContaining(desktopAppCss, ".floating-window:not(.floating-window--tablet-viewport) .floating-window__resize-handle--e", "right")).toContain("right: calc(var(--space-sm) * -1);");
+    // The corner targets share one grouped rule, so match the block rather than a bare selector.
+    const outboardCorners = desktopAppCss.match(
+      /\.floating-window:not\(\.floating-window--tablet-viewport\) \.floating-window__resize-handle--ne,[\s\S]*?\}/
+    )?.[0] ?? "";
+    expect(outboardCorners).toContain("right: calc(var(--space-lg) * -1);");
+    expect(outboardCorners).toContain("resize-handle--se");
+    const paintedClipping = floatingWindowCss.match(/\.floating-window__body,\s*\n\.floating-window__body > \*\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(paintedClipping).toContain("border-radius: inherit;");
+
+    // Phones hide every handle, so they need no outboard room and must keep clipping their sheets.
+    const phoneSheet = mediaBlockFor(floatingWindowCss, "(max-width: 767.98px), (max-height: 480px)");
+    expect(cssRuleFor(phoneSheet, ".floating-window")).toContain("overflow: hidden;");
 
     /*
     FNXC:GitHubImport 2026-08-17-23:47:
