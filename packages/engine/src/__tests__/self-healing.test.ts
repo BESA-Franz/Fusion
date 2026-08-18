@@ -142,6 +142,7 @@ vi.mock("../merger.js", () => ({
 }));
 
 import { SelfHealingManager, isBranchAheadOfBase, MAX_AUTO_MERGE_RETRIES } from "../self-healing.js";
+import { shellQuote } from "../self-healing-git-evidence.js";
 import { HEARTBEAT_ERROR_RECOVERY_METADATA_KEY, HEARTBEAT_ERROR_RETRY_EXHAUSTED_PAUSE_REASON, HEARTBEAT_ERROR_UNRECOVERABLE_PAUSE_REASON, readHeartbeatErrorRetryCount } from "../agent-heartbeat.js";
 import { PlanningLifecycleLockTransportError, TaskDeletedError, TaskNotFoundError, type TaskStore, type Settings, type Task, type AgentStore, type Agent, type NotificationProvider } from "@fusion/core";
 import { EventEmitter } from "node:events";
@@ -11072,8 +11073,8 @@ describe("recoverDoneTaskMergeMetadata", () => {
 
     mockedExecSync.mockImplementation((command) => {
       const cmd = String(command);
-      if (cmd.includes("merge-base --is-ancestor 'merge1' HEAD")) return "" as any;
-      if (cmd.includes("log -1 --format=%H%x1f%s%x1f%b 'merge1'")) {
+      if (cmd.includes(`merge-base --is-ancestor ${shellQuote("merge1")} HEAD`)) return "" as any;
+      if (cmd.includes(`log -1 --format=%H%x1f%s%x1f%b ${shellQuote("merge1")}`)) {
         return "merge1\u001ffix(FN-3862): canonical merge\u001fFusion-Task-Id: FN-3862" as any;
       }
       if (cmd.includes("show --shortstat --format= merge1")) {
@@ -11114,8 +11115,8 @@ describe("recoverDoneTaskMergeMetadata", () => {
 
     mockedExecSync.mockImplementation((command) => {
       const cmd = String(command);
-      if (cmd.includes("merge-base --is-ancestor 'merge1' HEAD")) return "" as any;
-      if (cmd.includes("log -1 --format=%H%x1f%s%x1f%b 'merge1'")) return "merge1\u001ffix(FN-4646): canonical merge\u001fFusion-Task-Id: FN-4646-A" as any;
+      if (cmd.includes(`merge-base --is-ancestor ${shellQuote("merge1")} HEAD`)) return "" as any;
+      if (cmd.includes(`log -1 --format=%H%x1f%s%x1f%b ${shellQuote("merge1")}`)) return "merge1\u001ffix(FN-4646): canonical merge\u001fFusion-Task-Id: FN-4646-A" as any;
       if (cmd.includes("show --shortstat --format=") && cmd.includes("merge1")) return "2 files changed, 3 insertions(+), 1 deletion(-)" as any;
       if (cmd.includes("Fusion-Task-Id: FN-4646-A")) return "merge1\u001ffix(FN-4646): canonical merge\n" as any;
       return "" as any;
@@ -11146,8 +11147,8 @@ describe("recoverDoneTaskMergeMetadata", () => {
 
     mockedExecSync.mockImplementation((command) => {
       const cmd = String(command);
-      if (cmd.includes("merge-base --is-ancestor 'merge1' HEAD")) return "" as any;
-      if (cmd.includes("log -1 --format=%H%x1f%s%x1f%b 'merge1'")) return "merge1\u001ffix(FN-4646): canonical merge\u001fFusion-Task-Id: FN-4646-B" as any;
+      if (cmd.includes(`merge-base --is-ancestor ${shellQuote("merge1")} HEAD`)) return "" as any;
+      if (cmd.includes(`log -1 --format=%H%x1f%s%x1f%b ${shellQuote("merge1")}`)) return "merge1\u001ffix(FN-4646): canonical merge\u001fFusion-Task-Id: FN-4646-B" as any;
       if (cmd.includes("show --shortstat --format=") && cmd.includes("merge1")) return "2 files changed, 3 insertions(+), 1 deletion(-)" as any;
       if (cmd.includes("Fusion-Task-Id: FN-4646-B")) return "merge1\u001ffix(FN-4646): canonical merge\n" as any;
       return "" as any;
@@ -11929,7 +11930,7 @@ describe("SelfHealingManager reclaimSelfOwnedBranchConflicts", () => {
 
   it("normalizes an out-of-root self-healing reclaim before persisting it", async () => {
     const outsidePath = "/tmp/legacy-worktrees/recover-fn-8400";
-    const targetPath = "/tmp/test-project/.worktrees/recover-fn-8400";
+    const targetPath = join("/tmp/test-project", ".worktrees", "recover-fn-8400");
     (store.listTasks as any)
       .mockResolvedValueOnce([{ id: "FN-8400", checkedOutBy: null, branch: "fusion/fn-8400", worktree: outsidePath, lineageId: "lin-8400" }])
       .mockResolvedValueOnce([]);
@@ -13447,18 +13448,18 @@ describe("stranded AI merge clean-room recovery", () => {
       if (command.includes("git show -s --format")) {
         return Buffer.from("FN-5858: render headings\x1fFusion-Task-Id: FN-5858\nFusion-Task-Lineage: lineage-5858\n");
       }
-      if (command.includes("git rev-parse --verify 'refs/heads/main'")) return Buffer.from("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n");
-      if (command.includes("git merge-base --is-ancestor 'dddddddddddddddddddddddddddddddddddddddd' 'refs/heads/main'")) {
+      if (command.includes(`git rev-parse --verify ${shellQuote("refs/heads/main")}`)) return Buffer.from("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n");
+      if (command.includes(`git merge-base --is-ancestor ${shellQuote("dddddddddddddddddddddddddddddddddddddddd")} ${shellQuote("refs/heads/main")}`)) {
         throw new Error("not already landed");
       }
-      if (command.includes("git merge-base --is-ancestor 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'dddddddddddddddddddddddddddddddddddddddd'")) {
+      if (command.includes(`git merge-base --is-ancestor ${shellQuote("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")} ${shellQuote("dddddddddddddddddddddddddddddddddddddddd")}`)) {
         return Buffer.from("");
       }
       if (command.includes("git diff-tree")) return Buffer.from("Packages/Editor/file.ts\n");
       if (command.includes("git rev-parse --abbrev-ref HEAD")) return Buffer.from("main\n");
       if (command.includes("git rev-parse HEAD")) return Buffer.from("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n");
       if (command.includes("git status --porcelain")) return Buffer.from("");
-      if (command.includes("git merge --ff-only 'dddddddddddddddddddddddddddddddddddddddd'")) return Buffer.from("");
+      if (command.includes(`git merge --ff-only ${shellQuote("dddddddddddddddddddddddddddddddddddddddd")}`)) return Buffer.from("");
       return Buffer.from("");
     });
 

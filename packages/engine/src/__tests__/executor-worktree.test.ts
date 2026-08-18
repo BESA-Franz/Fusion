@@ -8,6 +8,7 @@ import { TaskExecutor, buildExecutionPrompt, extractWorktreeConflictInfo } from 
 import { createFnAgent } from "../pi.js";
 import { reviewStep as mockedReviewStepFn } from "../execution/reviewer.js";
 import { execSync } from "node:child_process";
+import path from "node:path";
 import { findWorktreeUser, aiMergeTask } from "../merger.js";
 import { WorktreePool } from "../worktree/worktree-pool.js";
 import * as worktreePoolModule from "../worktree/worktree-pool.js";
@@ -478,7 +479,7 @@ describe("TaskExecutor worktree naming", () => {
 
     // The worktree path stored should use the generated name, not the task ID
     expect(store.updateTask).toHaveBeenCalledWith("FN-030", {
-      worktree: "/tmp/test/.worktrees/swift-falcon",
+      worktree: path.join("/tmp/test", ".worktrees", "swift-falcon"),
       branch: "fusion/fn-030",
     });
     expect(mockedGenerateWorktreeName).toHaveBeenCalledWith("/tmp/test", expect.any(Object));
@@ -544,7 +545,7 @@ describe("TaskExecutor worktree naming", () => {
     mockedExistsSync.mockImplementation((path) => String(path).startsWith(stalePath));
     mockedExecSync.mockImplementation((cmd: any) => {
       if (String(cmd) === "git worktree list --porcelain") {
-        return "worktree /tmp/test\nHEAD abc123\nbranch refs/heads/main\n" as any;
+        return `worktree ${path.resolve("/tmp/test")}\nHEAD abc123\nbranch refs/heads/main\n` as any;
       }
       return Buffer.from("");
     });
@@ -586,7 +587,7 @@ describe("TaskExecutor worktree naming", () => {
 
       // Should use task ID (lowercase) as worktree name
       expect(store.updateTask).toHaveBeenCalledWith("FN-042", {
-        worktree: "/tmp/test/.worktrees/fn-042",
+        worktree: path.join("/tmp/test", ".worktrees", "fn-042"),
         branch: "fusion/fn-042",
       });
       // Should NOT call generateWorktreeName when using task-id
@@ -620,7 +621,7 @@ describe("TaskExecutor worktree naming", () => {
       // Should use slugified title as worktree name
       const expectedSlug = slugify("Fix login bug with OAuth");
       expect(store.updateTask).toHaveBeenCalledWith("FN-043", {
-        worktree: `/tmp/test/.worktrees/${expectedSlug}`,
+        worktree: path.join("/tmp/test", ".worktrees", expectedSlug),
         branch: "fusion/fn-043",
       });
       expect(mockedGenerateWorktreeName).not.toHaveBeenCalled();
@@ -654,7 +655,7 @@ describe("TaskExecutor worktree naming", () => {
       // Should slugify the first 60 chars of description when title is empty
       const expectedSlug = slugify(taskDescription.slice(0, 60));
       expect(store.updateTask).toHaveBeenCalledWith("FN-044", {
-        worktree: `/tmp/test/.worktrees/${expectedSlug}`,
+        worktree: path.join("/tmp/test", ".worktrees", expectedSlug),
         branch: "fusion/fn-044",
       });
     });
@@ -675,7 +676,7 @@ describe("TaskExecutor worktree naming", () => {
 
       // Should use generateWorktreeName for random mode
       expect(store.updateTask).toHaveBeenCalledWith("FN-045", {
-        worktree: "/tmp/test/.worktrees/swift-falcon",
+        worktree: path.join("/tmp/test", ".worktrees", "swift-falcon"),
         branch: "fusion/fn-045",
       });
       expect(mockedGenerateWorktreeName).toHaveBeenCalledWith("/tmp/test", expect.any(Object));
@@ -697,7 +698,7 @@ describe("TaskExecutor worktree naming", () => {
 
       // Should default to random naming
       expect(store.updateTask).toHaveBeenCalledWith("FN-046", {
-        worktree: "/tmp/test/.worktrees/swift-falcon",
+        worktree: path.join("/tmp/test", ".worktrees", "swift-falcon"),
         branch: "fusion/fn-046",
       });
       expect(mockedGenerateWorktreeName).toHaveBeenCalledWith("/tmp/test", expect.any(Object));
@@ -733,7 +734,7 @@ describe("TaskExecutor worktree naming", () => {
 
       // Worktree naming preference should not break task startup in recycle mode.
       expect(store.updateTask).toHaveBeenCalledWith("FN-047", {
-        worktree: "/tmp/test/.worktrees/swift-falcon",
+        worktree: path.join("/tmp/test", ".worktrees", "swift-falcon"),
         branch: "fusion/fn-047",
       });
       expect(mockedGenerateWorktreeName).toHaveBeenCalledWith("/tmp/test", expect.any(Object));
@@ -923,7 +924,7 @@ describe("TaskExecutor worktree recovery", () => {
     mockedExecSync.mockImplementation((cmd: string | string[]) => {
       const command = typeof cmd === "string" ? cmd : cmd[0];
       if (command === "git worktree list --porcelain") {
-        return Buffer.from(["worktree /tmp/test", "HEAD abc123", "branch refs/heads/main", ""].join("\n"));
+        return Buffer.from([`worktree ${path.resolve("/tmp/test")}`, "HEAD abc123", "branch refs/heads/main", ""].join("\n"));
       }
       if (command.includes("git worktree add -b")) {
         const error: any = new Error("fatal: not a git repository (or any of the parent directories): .git");
@@ -985,7 +986,7 @@ describe("TaskExecutor worktree recovery", () => {
     expect(store.logEntry).toHaveBeenCalledWith(
       "FN-050",
       expect.stringContaining("Cleaned up conflicting worktree, retrying"),
-      "/tmp/test/.worktrees/swift-falcon",
+      path.join("/tmp/test", ".worktrees", "swift-falcon"),
     );
     expect(store.updateTask).toHaveBeenCalledWith(
       "FN-050",
@@ -1072,7 +1073,7 @@ describe("TaskExecutor worktree recovery", () => {
     store.getSettings.mockResolvedValue({ worktreesDir: ".worktrees" } as any);
     const executor = createWorktreeExecutor(store, "/tmp/test");
     const conflictPath = "/tmp/legacy-worktrees/recover-fn-8400";
-    const targetPath = "/tmp/test/.worktrees/recover-fn-8400";
+    const targetPath = path.resolve("/tmp/test", ".worktrees", "recover-fn-8400");
     vi.spyOn(branchConflictModule, "inspectBranchConflict").mockResolvedValueOnce({
       kind: "reclaimable",
       livePath: conflictPath,
@@ -1104,7 +1105,7 @@ describe("TaskExecutor worktree recovery", () => {
     store.getSettings.mockResolvedValue({ worktreesDir: ".worktrees", worktreeNaming: "task-id" } as any);
     const executor = createWorktreeExecutor(store, "/tmp/test");
     const conflictPath = "/tmp/legacy-worktrees/recover-fn-8400";
-    const pinnedPath = "/tmp/test/.worktrees/fn-8400";
+    const pinnedPath = path.resolve("/tmp/test", ".worktrees", "fn-8400");
     vi.spyOn(branchConflictModule, "inspectBranchConflict").mockResolvedValueOnce({
       kind: "reclaimable",
       livePath: conflictPath,
@@ -1527,7 +1528,7 @@ describe("TaskExecutor worktree recovery", () => {
     store.listTasks.mockResolvedValue([]);
 
     const conflictPath = "/tmp/test/.worktrees/keen-eagle";
-    const freshPath = "/tmp/test/.worktrees/maple-delta";
+    const freshPath = path.join("/tmp/test", ".worktrees", "maple-delta");
     activeSessionRegistry.registerPath(conflictPath, { taskId: "FN-050", kind: "workflow-step", ownerKey: "FN-050/workflow-step" });
     mockedGenerateWorktreeName
       .mockReturnValueOnce("swift-falcon")
@@ -1591,7 +1592,7 @@ describe("TaskExecutor worktree recovery", () => {
     store.listTasks.mockResolvedValue([]);
 
     const conflictPath = "/tmp/test/.worktrees/keen-eagle";
-    const freshPath = "/tmp/test/.worktrees/opal-otter";
+    const freshPath = path.join("/tmp/test", ".worktrees", "opal-otter");
     activeSessionRegistry.registerPath(conflictPath, { taskId: "FN-050", kind: "workflow-step", ownerKey: "FN-050/workflow-step" });
     mockedGenerateWorktreeName
       .mockReturnValueOnce("swift-falcon")
@@ -1616,7 +1617,7 @@ describe("TaskExecutor worktree recovery", () => {
         error.stderr = Buffer.from(error.message);
         throw error;
       }
-      if (command.includes(`git worktree add "/tmp/test/.worktrees/swift-falcon" "fusion/fn-050"`)) {
+      if (command.includes(`git worktree add "${path.join("/tmp/test", ".worktrees", "swift-falcon")}" "fusion/fn-050"`)) {
         const error: any = new Error(
           `fatal: 'fusion/fn-050' is already used by worktree at '${conflictPath}'`,
         );
@@ -2185,15 +2186,15 @@ describe("TaskExecutor worktree recovery", () => {
     const store = createMockStore();
     const fs = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
-    const rootDir = await fs.mkdtemp(`${tmpdir()}/executor-worktree-`);
-    const staleWorktreePath = `${rootDir}/.worktrees/swift-falcon`;
+    const rootDir = await fs.mkdtemp(path.join(tmpdir(), "executor-worktree-"));
+    const staleWorktreePath = path.join(rootDir, ".worktrees", "swift-falcon");
 
     try {
       // Directory exists but is not registered
       mockedExistsSync.mockImplementation((path) => String(path) === staleWorktreePath);
 
       await fs.mkdir(staleWorktreePath, { recursive: true });
-      await fs.writeFile(`${staleWorktreePath}/marker.txt`, "stale");
+      await fs.writeFile(path.join(staleWorktreePath, "marker.txt"), "stale");
 
       // Mock git worktree list to not include our path
       mockedExecSync.mockImplementation((cmd: string | string[]) => {
@@ -2396,7 +2397,7 @@ describe("TaskExecutor dependency-based worktree creation", () => {
     expect(worktreeCreateCalls).toHaveLength(2);
     expect(store.logEntry).toHaveBeenCalledWith(
       "FN-064",
-      expect.stringContaining("Worktree created at /tmp/test/.worktrees/swift-falcon"),
+      expect.stringContaining(`Worktree created at ${path.join("/tmp/test", ".worktrees", "swift-falcon")}`),
       undefined,
       expect.objectContaining({ agentId: "executor" }),
     );
