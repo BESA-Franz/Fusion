@@ -105,6 +105,19 @@ export function shellQuote(value: string): string {
   return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+export async function listFusionBranchRefs(rootDir: string): Promise<string[]> {
+  /*
+  FNXC:SelfHealingBranchInventoryWindows 2026-08-18-19:34:
+  for-each-ref's format must be one native-shell argument. POSIX single quotes
+  are literal under cmd.exe and otherwise leak into every returned ref name.
+  */
+  const { stdout } = await execAsync(
+    `git for-each-ref --format=${shellQuote("%(refname:short)")} refs/heads/fusion/`,
+    { cwd: rootDir, timeout: 30_000, maxBuffer: 1024 * 1024 },
+  );
+  return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
 export function parseShortstat(output: string): Pick<LandedTaskCommit, "filesChanged" | "insertions" | "deletions"> {
   const normalized = output.trim().replace(/\n/g, " ");
   const filesMatch = normalized.match(/(\d+) files? changed/);

@@ -123,7 +123,7 @@ import { clearBlockedStatusOnly, filterPathsByIgnoreList, getUnmetSchedulingDepe
 import { runSurfacingSweep, hours, type SurfacingCycle } from "./surfacing-sweeps.js";
 /* U4 substrate PR1: the git-evidence readers and their helpers now live in
    self-healing-git-evidence.ts. Imported back here because call sites remain. */
-import { SelfHealingGitEvidence, execAsync, shellQuote } from "./self-healing-git-evidence.js";
+import { SelfHealingGitEvidence, execAsync, listFusionBranchRefs, shellQuote } from "./self-healing-git-evidence.js";
 import { evaluateParkedAgentTaskLink, PARKED_AGENT_LINK_FRESH_RUN_MS } from "./agents/task-agent-sync.js";
 import { classifyTerminalFailureAutoRecoveryForTask, describeSelfHealingNoActionWedge, describeTaskWedge } from "./notification/task-wedge-notification.js";
 import {
@@ -5614,11 +5614,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
       const allTasks = await this.store.listTasks({ slim: true, includeArchived: false });
       const tasks = allTasks.filter((task) => rebindReviewColumns.has(task.column));
-      const fusionRefOutput = await execAsync("git for-each-ref --format='%(refname:short)' refs/heads/fusion/", {
-        cwd: this.options.rootDir,
-        timeout: 30_000,
-      }).catch(() => ({ stdout: "" }));
-      const fusionBranches = fusionRefOutput.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+      const fusionBranches = await listFusionBranchRefs(this.options.rootDir).catch(() => []);
 
       for (const task of tasks) {
         if (options?.includeTaskIds && !options.includeTaskIds.has(task.id)) continue;
