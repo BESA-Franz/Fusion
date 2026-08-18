@@ -40,27 +40,31 @@ export async function resolveCapturedBaseCommitSha(
 ): Promise<string | undefined> {
   const branch = integrationBranch.trim() || "main";
   /*
-  FNXC:Workspace 2026-06-22-09:00:
-  Shell-quote with a real single-quoted POSIX literal, NOT JSON.stringify. A
-  JSON double-quoted string still lets bash expand `$(...)`, backticks, and `$VAR`
-  inside it; JSON.stringify is not a shell-quoting function. Git ref names can't
-  legally contain backticks so there's no live injection path today, but
-  single-quoting is the idiomatic safe form and stays correct if a caller ever
-  passes a less-constrained string. A single quote inside the value is escaped as
-  the standard `'\''` close-reopen sequence.
+  FNXC:BaseCommitCaptureWindows 2026-08-18-19:05:
+  The POSIX-only `2>/dev/null || ...` command and single-quoted refs fail through
+  cmd.exe, causing feature branches to fall back to HEAD instead of their fork point.
+  Probe local then origin sequentially and quote for the native backend shell.
   */
-  const shellSingleQuote = (value: string): string => `'${value.replace(/'/g, "'\\''")}'`;
-  const localRef = shellSingleQuote(branch);
-  const originRef = shellSingleQuote(`origin/${branch}`);
+  const shellQuote = (value: string): string => (
+    process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, "'\\''")}'`
+  );
+  const refs = [shellQuote(branch), shellQuote(`origin/${branch}`)];
   let baseCommitSha: string | undefined;
-  try {
-    const { stdout } = await execAsync(
-      `git merge-base HEAD ${localRef} 2>/dev/null || git merge-base HEAD ${originRef}`,
-      { cwd: worktreePath, encoding: "utf-8" },
-    );
-    baseCommitSha = stdout.trim() || undefined;
-  } catch (err: unknown) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
+  let lastMergeBaseError: unknown;
+  for (const ref of refs) {
+    try {
+      const { stdout } = await execAsync(`git merge-base HEAD ${ref}`, {
+        cwd: worktreePath,
+        encoding: "utf-8",
+      });
+      baseCommitSha = stdout.trim() || undefined;
+      if (baseCommitSha) break;
+    } catch (err: unknown) {
+      lastMergeBaseError = err;
+    }
+  }
+  if (!baseCommitSha && lastMergeBaseError) {
+    const errorMessage = lastMergeBaseError instanceof Error ? lastMergeBaseError.message : String(lastMergeBaseError);
     logger?.warn(`merge-base failed, falling back to HEAD: ${errorMessage}`);
   }
 

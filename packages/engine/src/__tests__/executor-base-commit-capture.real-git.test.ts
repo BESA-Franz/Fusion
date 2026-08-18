@@ -16,6 +16,10 @@ function git(repo: string, command: string): string {
   return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
+function quote(value: string): string {
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 function createStore(): TaskStore & EventEmitter {
   const emitter = new EventEmitter();
   return Object.assign(emitter, {
@@ -55,12 +59,12 @@ describeIfGit("captureBaseCommitSha (real git)", () => {
     git(repo, 'git config user.name "Test"');
 
     writeFileSync(path.join(repo, "file.txt"), "init\n", "utf-8");
-    git(repo, "git add file.txt && git commit -m 'init'");
+    git(repo, `git add file.txt && git commit -m ${quote("init")}`);
 
     git(repo, "git checkout -b fusion/fn-test-4383");
     for (let i = 1; i <= 17; i += 1) {
       writeFileSync(path.join(repo, `branch-${i}.txt`), `branch ${i}\n`, "utf-8");
-      git(repo, `git add branch-${i}.txt && git commit -m 'branch ${i}'`);
+      git(repo, `git add branch-${i}.txt && git commit -m ${quote(`branch ${i}`)}`);
     }
 
     const store = createStore();
@@ -71,7 +75,7 @@ describeIfGit("captureBaseCommitSha (real git)", () => {
     expect(firstBase).toBeTruthy();
 
     writeFileSync(path.join(repo, "branch-18.txt"), "branch 18\n", "utf-8");
-    git(repo, "git add branch-18.txt && git commit -m 'branch 18'");
+    git(repo, `git add branch-18.txt && git commit -m ${quote("branch 18")}`);
 
     // Resume of the same task: baseCommitSha must be preserved so diff math
     // stays stable across sessions (FN-4309/FN-4383).

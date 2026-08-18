@@ -12,6 +12,10 @@ function git(repo: string, command: string): string {
   return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
+function quote(value: string): string {
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 describeIfGit("resolveCapturedBaseCommitSha real-git scenarios", { timeout: 30_000 }, () => {
   const dirs: string[] = [];
   afterEach(() => {
@@ -30,7 +34,7 @@ describeIfGit("resolveCapturedBaseCommitSha real-git scenarios", { timeout: 30_0
     git(origin, 'git config user.email "test@example.com"');
     git(origin, 'git config user.name "Test User"');
     writeFileSync(join(origin, "README.md"), "init\n");
-    git(origin, "git add README.md && git commit -m 'init'");
+    git(origin, `git add README.md && git commit -m ${quote("init")}`);
     return origin;
   }
 
@@ -54,7 +58,7 @@ describeIfGit("resolveCapturedBaseCommitSha real-git scenarios", { timeout: 30_0
 
     // Local main advances by a merged-but-unpushed predecessor task commit.
     writeFileSync(join(clone, "predecessor.txt"), "FN-5936 work\n");
-    git(clone, "git add predecessor.txt && git commit -m 'FN-5936: predecessor task'");
+    git(clone, `git add predecessor.txt && git commit -m ${quote("FN-5936: predecessor task")}`);
     const localMainTip = git(clone, "git rev-parse HEAD");
 
     // New task branch forks from local main (prepareForTask behavior).
@@ -71,7 +75,7 @@ describeIfGit("resolveCapturedBaseCommitSha real-git scenarios", { timeout: 30_0
 
     git(clone, "git checkout -B fusion/fn-100-test main");
     writeFileSync(join(clone, "feature.txt"), "feature\n");
-    git(clone, "git add feature.txt && git commit -m 'FN-100: feature'");
+    git(clone, `git add feature.txt && git commit -m ${quote("FN-100: feature")}`);
 
     const captured = await resolveCapturedBaseCommitSha(clone);
     expect(captured).toBe(forkPoint);
@@ -97,7 +101,7 @@ describeIfGit("resolveCapturedBaseCommitSha real-git scenarios", { timeout: 30_0
     git(repo, 'git config user.email "test@example.com"');
     git(repo, 'git config user.name "Test User"');
     writeFileSync(join(repo, "README.md"), "init\n");
-    git(repo, "git add README.md && git commit -m 'init'");
+    git(repo, `git add README.md && git commit -m ${quote("init")}`);
     const head = git(repo, "git rev-parse HEAD");
 
     const captured = await resolveCapturedBaseCommitSha(repo);
