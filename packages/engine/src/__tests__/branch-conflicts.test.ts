@@ -53,6 +53,7 @@ import { existsSync } from "node:fs";
 import {
   BranchConflictError,
   assertCleanBranchAtBase,
+  classifyForeignCommits,
   inspectBranchConflict,
   listUniqueBranchCommits,
   reportBranchAttribution,
@@ -438,6 +439,40 @@ describe("branch-conflicts", () => {
       mainRef: "main",
       degraded: true,
     });
+  });
+
+  it("uses a native-shell-safe patch-id stream when foreign commit cherry classification fails", async () => {
+    mockedExecSync.mockImplementation((cmd: string | string[]) => {
+      const command = typeof cmd === "string" ? cmd : cmd[0];
+      if (command === "git cherry 'main' 'feature' 'base123'") {
+        throw new Error("cherry unavailable");
+      }
+      if (command === "git log -p --format=%H 'main' | git patch-id --stable") {
+        return Buffer.from("patch123 upstream456\n");
+      }
+      if (command === "git show 'foreign123' | git patch-id --stable") {
+        return Buffer.from("patch123 foreign123\n");
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const foreignCommit = {
+      sha: "foreign123",
+      subject: "feat(FN-4412): foreign",
+      foreignTaskId: "FN-4412",
+    };
+    const result = await classifyForeignCommits({
+      repoDir: "/tmp/repo",
+      branchName: "feature",
+      baseSha: "base123",
+      foreignCommits: [foreignCommit],
+      mainRef: "main",
+    });
+
+    expect(result).toEqual({ alreadyUpstream: [foreignCommit], unique: [] });
+    expect(mockedExecSync.mock.calls.flatMap((call) => call).map(String)).not.toEqual(
+      expect.arrayContaining([expect.stringContaining("while read")]),
+    );
   });
 
   it.each([

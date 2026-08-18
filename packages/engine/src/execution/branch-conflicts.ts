@@ -545,9 +545,16 @@ async function classifyForeignCommitsViaPatchId(
   mainRef: string,
   commits: BranchCrossContaminationCommit[],
 ): Promise<ClassifyForeignCommitsResult> {
+  /*
+  FNXC:BranchContaminationPatchIdWindows 2026-08-18-20:02:
+  This fallback runs through the native shell. A POSIX `while read` loop is not
+  available under cmd.exe, so Windows silently produced an empty upstream patch
+  set and classified cherry-equivalent foreign commits as unique. `git log -p`
+  emits the same commit-delimited patch stream and works in both native shells.
+  */
   const upstreamPatchIdsOutput = await runGit(
     repoDir,
-    `git rev-list ${quoteShellArg(mainRef)} | while read c; do git show "$c" | git patch-id --stable; done`,
+    `git log -p --format=%H ${quoteShellArg(mainRef)} | git patch-id --stable`,
   ).catch(() => "");
 
   const upstreamPatchIds = new Set(
@@ -575,9 +582,8 @@ async function classifyForeignCommitsViaPatchId(
 export async function classifyForeignCommits(
   input: ClassifyForeignCommitsInput,
 ): Promise<ClassifyForeignCommitsResult> {
-  const resolvedIntegrationBranch = await resolveIntegrationBranch(input.repoDir, undefined);
   const { repoDir, branchName, baseSha, foreignCommits } = input;
-  const mainRef = input.mainRef?.trim() || resolvedIntegrationBranch;
+  const mainRef = input.mainRef?.trim() || await resolveIntegrationBranch(input.repoDir, undefined);
   const targetBySha = new Map(foreignCommits.map((commit) => [commit.sha, commit]));
   if (targetBySha.size === 0) {
     return { alreadyUpstream: [], unique: [] };
@@ -678,9 +684,8 @@ export async function classifyMisroutedForeignCommit(
 export async function classifyForeignOnlyContamination(
   input: ClassifyForeignOnlyContaminationInput,
 ): Promise<ClassifyForeignOnlyContaminationResult> {
-  const resolvedIntegrationBranch = await resolveIntegrationBranch(input.repoDir, undefined);
   const { repoDir, branchName, baseSha, taskId } = input;
-  const mainRef = input.mainRef?.trim() || resolvedIntegrationBranch;
+  const mainRef = input.mainRef?.trim() || await resolveIntegrationBranch(input.repoDir, undefined);
   // FN-5090 hotfix: stale baseSha (older than the actual fork point with main) caused
   // classifyForeignOnlyContamination to see commits that have since been merged into main
   // as "foreign", returning kind:"ambiguous" and stranding the task. Prefer the live
@@ -928,7 +933,7 @@ async function isZeroUniqueCommitBranchViaPatchIdFallback(
 
   const upstreamPatchIdsOutput = await runGit(
     repoDir,
-    `git rev-list ${quoteShellArg(mainRef)} | while read c; do git show "$c" | git patch-id --stable; done`,
+    `git log -p --format=%H ${quoteShellArg(mainRef)} | git patch-id --stable`,
   ).catch(() => "");
 
   const upstreamPatchIds = new Set(
