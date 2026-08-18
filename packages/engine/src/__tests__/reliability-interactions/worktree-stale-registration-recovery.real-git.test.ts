@@ -56,7 +56,7 @@ describe.skipIf(!hasGit)("reliability interactions: worktree stale registration 
 
     const porcelain = git(root, "git worktree list --porcelain");
     const resolvedWorktreePath = await realpath(worktreePath);
-    expect(porcelain).toContain(`worktree ${resolvedWorktreePath}`);
+    expect(porcelain).toContain(`worktree ${resolvedWorktreePath.replaceAll("\\", "/")}`);
   });
 
   it("recovered path composes with FN-4954 pool acquire/release contract", async () => {
