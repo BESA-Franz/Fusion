@@ -618,6 +618,110 @@ describe("ModelOnboardingModal", () => {
     });
   });
 
+  /*
+  FNXC:ProviderAuth 2026-08-18-03:05:
+  A paste-back login must stay visible for its whole duration. Previously the pre-flight confirm
+  warned about paste-back and vanished, the card shrank to a disabled "Waiting for login…" chip, and
+  the paste field rendered inline below the fold of a scrolling modal — so an operator returning from
+  the browser had nowhere obvious to paste and no sign of what was being waited on.
+  */
+  describe("AI Setup step — persistent paste-back login dialog", () => {
+    async function startManualCodeLogin() {
+      // requiresManualCode is what routes a provider through the confirm + persistent dialog path.
+      mockFetchAuthStatus.mockImplementation(() => Promise.resolve({
+        providers: [{ id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", requiresManualCode: true }],
+      }));
+      mockLoginProvider.mockResolvedValue({
+        url: "https://claude.ai/oauth/authorize?state=abc",
+        instructions: "Complete login in your browser.",
+        manualCode: { prompt: "Paste the final redirect URL", placeholder: "http://localhost:*/callback?code=…" },
+      });
+      mockConfirm.mockResolvedValue(true);
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+      await waitFor(() => expect(screen.getByTestId("onboarding-provider-card-anthropic")).toBeTruthy());
+
+      const card = screen.getByTestId("onboarding-provider-card-anthropic");
+      const login = [...card.querySelectorAll("button")].find((b) => /^login$/i.test(b.textContent ?? ""));
+      fireEvent.click(login!);
+      return card;
+    }
+
+    it("keeps a dialog with the paste field open once the login starts", async () => {
+      await startManualCodeLogin();
+
+      const dialog = await screen.findByTestId("provider-login-dialog-anthropic");
+      expect(dialog).toBeTruthy();
+      // The paste target is in the dialog, not only inline in the card behind it.
+      expect(within(dialog).getByTestId("provider-login-dialog-manual-code")).toBeTruthy();
+      // And the flow's current step is stated rather than implied by a disabled chip.
+      expect(dialog.textContent).toMatch(/Approve the sign-in in your browser/);
+      expect(dialog.textContent).toMatch(/Hand the authorization back to Fusion/);
+      // A lost sign-in tab is recoverable without restarting the flow.
+      expect(within(dialog).getByRole("button", { name: /Open the sign-in page again/i })).toBeTruthy();
+    });
+
+    it("shows only one paste field for the flow", async () => {
+      await startManualCodeLogin();
+      await screen.findByTestId("provider-login-dialog-anthropic");
+
+      expect(screen.queryByTestId("onboarding-manual-code-anthropic")).toBeNull();
+      expect(screen.getAllByTestId("provider-login-dialog-manual-code")).toHaveLength(1);
+      // Instructions likewise appear once — the card's copy is suppressed while the dialog shows them.
+      expect(screen.queryByTestId("onboarding-login-instructions-anthropic")).toBeNull();
+    });
+
+    /*
+    FNXC:ProviderAuth 2026-08-18-04:20:
+    A portal moves the DOM node but NOT the React tree. While the dialog was rendered inside the
+    host FloatingWindow's children, every pointerdown in the dialog bubbled (through the React tree)
+    to the window's raise-to-front handler, which claimed a fresh nextFloatingZ() and painted the
+    window OVER the dialog — so the next click hit the window instead ("any click goes to the dialog
+    below"). The dialog must therefore be a SIBLING of the window, and must swallow pointer events.
+    */
+    it("does not let its pointer events reach the host floating window", async () => {
+      await startManualCodeLogin();
+      const dialog = await screen.findByTestId("provider-login-dialog-anthropic");
+
+      const hostWindow = document.querySelector(".floating-window");
+      expect(hostWindow, "onboarding still renders inside a FloatingWindow").toBeTruthy();
+      // Sibling, not descendant: containment is what allowed React-tree bubbling to the window.
+      expect(hostWindow!.contains(dialog)).toBe(false);
+
+      const windowPointerDown = vi.fn();
+      hostWindow!.addEventListener("pointerdown", windowPointerDown);
+      fireEvent.pointerDown(within(dialog).getByTestId("provider-login-dialog-manual-code"));
+      expect(windowPointerDown).not.toHaveBeenCalled();
+    });
+
+    it("uses the shared modal spacing primitives instead of bespoke padding", async () => {
+      await startManualCodeLogin();
+      const dialog = await screen.findByTestId("provider-login-dialog-anthropic");
+
+      // .modal-header / .modal-actions already carry var(--modal-padding); hand-rolled padding drifts.
+      expect(dialog.querySelector(".provider-login-dialog > .modal-header")).toBeTruthy();
+      expect(dialog.querySelector(".provider-login-dialog > .modal-actions")).toBeTruthy();
+    });
+
+    it("keeps the dialog open on failure so the reason can be read", async () => {
+      mockConfirm.mockResolvedValue(true);
+      mockFetchAuthStatus.mockImplementation(() => Promise.resolve({
+        providers: [{ id: "anthropic", name: "Anthropic", authenticated: false, type: "oauth", requiresManualCode: true }],
+      }));
+      mockLoginProvider.mockRejectedValue(new Error("Login initiation timed out"));
+
+      render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);
+      await waitFor(() => expect(screen.getByTestId("onboarding-provider-card-anthropic")).toBeTruthy());
+      const card = screen.getByTestId("onboarding-provider-card-anthropic");
+      fireEvent.click([...card.querySelectorAll("button")].find((b) => /^login$/i.test(b.textContent ?? ""))!);
+
+      const dialog = await screen.findByTestId("provider-login-dialog-anthropic");
+      await waitFor(() => {
+        expect(within(dialog).getByTestId("provider-login-dialog-error").textContent).toMatch(/Login initiation timed out/);
+      });
+    });
+  });
+
   describe("AI Setup step", () => {
     it("shows OAuth providers with Login button", async () => {
       render(<ModelOnboardingModal onComplete={vi.fn()} addToast={vi.fn()} projectId="proj_123" />);

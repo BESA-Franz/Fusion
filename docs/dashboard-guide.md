@@ -2038,6 +2038,31 @@ The dashboard's CSS is split into a global stylesheet (`packages/dashboard/app/s
 
 **Rule:** New CSS for a component goes in `app/components/ComponentName.css`, NOT `styles.css`. Only design tokens, primitives (`.btn`, `.card`, `.modal`, `.form-input`), and cross-component `@media` overrides belong in the global file.
 
+### Dialog anatomy: spacing and stacking
+
+Two rules that a new dialog gets wrong the same way every time. Both were paid for by the Set Up AI
+paste-back login dialog (2026-08-18): it shipped with insets that matched nothing else in the app,
+and it sank behind the modal that opened it.
+
+**Spacing comes from the primitives, not from your component.** A dialog panel is
+`<div class="modal your-dialog">` with a `.modal-header` and a `.modal-actions` row; both already
+carry `var(--modal-padding)`. Give the middle region ONE inset from the same token and let its
+children sit flush inside it. Do not hand-roll header/action padding for a new dialog, and do not
+pad each child (steps, form, error line) separately — that is exactly how the login dialog's rows
+drifted out of alignment with each other and with every other dialog. Variant-specific overrides of
+the primitives (embedded, tablet, phone sheet) are legitimate and several exist; a brand-new dialog
+inventing its own base spacing is not.
+
+**A portaled dialog must be a sibling of any FloatingWindow it opens over, and must stop pointer
+propagation.** `createPortal` moves the DOM node to `<body>` but NOT the React tree, so events raised
+inside the dialog still bubble to whatever component rendered it. Every FloatingWindow raises itself
+to a fresh `nextFloatingZ()` on pointerdown/focus, so a dialog portaled from inside a window's
+subtree lifts that window above itself on the first click — after which every click lands on the
+window behind. Render such a dialog outside the `<FloatingWindow>` element (a sibling in the same
+fragment), claim `nextFloatingZ()` once on open like `ConfirmDialog` does, and `stopPropagation()`
+on the overlay's pointer/mouse/focus handlers. The last part is enforced for every portaled
+`.modal-overlay` by a ratchet in `packages/dashboard/app/components/__tests__/FloatingWindow.test.tsx`.
+
 ### Browser-safe core imports
 
 Dashboard browser code may value-import only browser-safe `@fusion/core` leaf modules. Vite aliases the package root to `packages/core/src/types.ts`; do not bypass that boundary with a relative `core/src` import unless the leaf is listed in [`scripts/lib/dashboard-browser-safe-core-modules.json`](../scripts/lib/dashboard-browser-safe-core-modules.json). In particular, use `near-duplicate-canonical.ts`, not `near-duplicate.ts`, because the latter reaches Node-only duplicate detection dependencies.

@@ -30,6 +30,7 @@ import { ClaudeCliProviderCard } from "./ClaudeCliProviderCard";
 import { CursorCliProviderCard } from "./CursorCliProviderCard";
 import { LlamaCppProviderCard } from "./LlamaCppProviderCard";
 import { LoginInstructions } from "./LoginInstructions";
+import { ProviderLoginDialog, type ProviderLoginPhase } from "./ProviderLoginDialog";
 import { OAuthManualCodeForm } from "./OAuthManualCodeForm";
 import { OnboardingDisclosure } from "./OnboardingDisclosure";
 import { CustomProviderForm } from "./CustomProviderForm";
@@ -812,6 +813,17 @@ export function ModelOnboardingModal({
   const [deviceCodes, setDeviceCodes] = useState<Record<string, OAuthDeviceCodeInfo>>({});
   const [manualCodeInputs, setManualCodeInputs] = useState<Record<string, string>>({});
   const [manualCodeSubmitInProgress, setManualCodeSubmitInProgress] = useState<string | null>(null);
+  /* FNXC:ProviderAuth 2026-08-18-03:05: auth URL per in-flight login, so the dialog can re-open a lost sign-in tab. */
+  const [loginAuthUrls, setLoginAuthUrls] = useState<Record<string, string>>({});
+  /*
+  FNXC:ProviderAuth 2026-08-18-03:05:
+  Which provider's paste-back login dialog is open, and its terminal error if it failed. Visibility
+  is explicit state rather than derived from the in-flight flags, because the dialog must OUTLIVE the
+  flow on failure: the operator needs to read why it failed, and a toast is gone before they are back
+  from the browser tab they were signing in on.
+  */
+  const [loginDialogProvider, setLoginDialogProvider] = useState<string | null>(null);
+  const [loginErrors, setLoginErrors] = useState<Record<string, string>>({});
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [saving, setSaving] = useState(false);
@@ -1378,6 +1390,21 @@ export function ModelOnboardingModal({
         if (!shouldContinue) {
           return;
         }
+        /*
+        FNXC:ProviderAuth 2026-08-18-03:05:
+        Hand the operator straight from the warning into the persistent dialog, so the paste field and
+        the flow's current step are on screen from the moment the browser tab opens — not buried in the
+        provider card below the fold of a scrolling modal.
+        */
+        setLoginErrors((prev) => {
+          if (!(providerId in prev)) {
+            return prev;
+          }
+          const next = { ...prev };
+          delete next[providerId];
+          return next;
+        });
+        setLoginDialogProvider(providerId);
       }
 
       // Clear any previous terminal outcome before starting a new login attempt
@@ -1396,6 +1423,20 @@ export function ModelOnboardingModal({
           delete next[providerId];
           lastAutoCopiedDeviceCodesRef.current = next;
         }
+        /*
+        FNXC:ProviderAuth 2026-08-18-03:05:
+        The dialog's own state dies with the flow it belongs to. Clearing the auth URL is what
+        dismisses the dialog, so it must be cleared everywhere this teardown runs (success, cancel,
+        timeout, failure) or a finished login would leave a stuck modal over the dashboard.
+        */
+        setLoginAuthUrls((prev) => {
+          if (!(providerId in prev)) {
+            return prev;
+          }
+          const next = { ...prev };
+          delete next[providerId];
+          return next;
+        });
         setLoginInstructions((prev) => {
           if (!(providerId in prev)) {
             return prev;
@@ -1448,6 +1489,13 @@ export function ModelOnboardingModal({
         if (deviceCode && providerId === "github-copilot") {
           setDeviceCodes((prev) => ({ ...prev, [providerId]: deviceCode }));
         }
+        /*
+        FNXC:ProviderAuth 2026-08-18-03:05:
+        Retain the auth URL so ProviderLoginDialog can re-open it. The sign-in tab is easy to lose
+        behind the dashboard or dismiss by accident, and without the URL the only recovery was to
+        cancel and restart the whole flow.
+        */
+        setLoginAuthUrls((prev) => ({ ...prev, [providerId]: appendTokenQuery(deviceCode?.verificationUri ?? url) }));
         if (providerId !== "github-copilot" || !deviceCode) {
           openExternalUrl(appendTokenQuery(deviceCode?.verificationUri ?? url));
         }
@@ -1467,6 +1515,7 @@ export function ModelOnboardingModal({
               provider.id === providerId ? { ...provider, loginInProgress: false } : provider,
             ));
             setLoginOutcomes((prev) => ({ ...prev, [providerId]: "timeout" }));
+            setLoginErrors((prev) => ({ ...prev, [providerId]: t("setup.loginTimedOut", "Login timed out. Please try again.") }));
             clearAuthLoginUiState();
             addToast(t("setup.loginTimedOut", "Login timed out. Please try again."), "warning");
             return;
@@ -1486,6 +1535,7 @@ export function ModelOnboardingModal({
               }
               setAuthActionInProgress(null);
               setLoginOutcomes((prev) => ({ ...prev, [providerId]: "success" }));
+              setLoginDialogProvider((current) => (current === providerId ? null : current));
               clearAuthLoginUiState();
               if (providerId === "github") {
                 setGitHubSkippedState(false);
@@ -1502,6 +1552,7 @@ export function ModelOnboardingModal({
               }
               setAuthActionInProgress(null);
               setLoginOutcomes((prev) => ({ ...prev, [providerId]: "failed" }));
+              setLoginErrors((prev) => ({ ...prev, [providerId]: t("setup.loginDidNotComplete", "Login did not complete. Please try again.") }));
               clearAuthLoginUiState();
               addToast(t("setup.loginDidNotComplete", "Login did not complete. Please try again."), "error");
             }
@@ -1520,7 +1571,9 @@ export function ModelOnboardingModal({
           setLoginOutcomes((prev) => ({ ...prev, [providerId]: "pending" }));
           void loadAuthStatus();
         } else {
-          addToast(err instanceof Error ? err.message : t("setup.loginFailed", "Login failed"), "error");
+          const failureText = err instanceof Error ? err.message : t("setup.loginFailed", "Login failed");
+          addToast(failureText, "error");
+          setLoginErrors((prev) => ({ ...prev, [providerId]: failureText }));
           setLoginOutcomes((prev) => ({ ...prev, [providerId]: "failed" }));
         }
         setAuthActionInProgress(null);
@@ -2415,13 +2468,25 @@ export function ModelOnboardingModal({
             </div>
           </div>
         )}
-        {(authActionInProgress === provider.id || showRemoteLoginInProgress) && loginInstructions[provider.id] && (
+        {/*
+        FNXC:ProviderAuth 2026-08-18-03:05:
+        Same rule as the paste field below: the dialog already shows these instructions, and rendering
+        them here too printed the same paragraph twice — once in the dialog and once in the card
+        visible around its edges.
+        */}
+        {(authActionInProgress === provider.id || showRemoteLoginInProgress) && loginInstructions[provider.id] && loginDialogProvider !== provider.id && (
           <LoginInstructions
             instructions={loginInstructions[provider.id]}
             data-testid={`onboarding-login-instructions-${provider.id}`}
           />
         )}
-        {(authActionInProgress === provider.id || showRemoteLoginInProgress) && manualCodeConfigs[provider.id] && (
+        {/*
+        FNXC:ProviderAuth 2026-08-18-03:05:
+        The card keeps its own paste field only for flows the dialog is NOT showing (e.g. a remote
+        login adopted from another surface). Rendering both would put two inputs for the same code on
+        screen, one of them hidden behind the dialog.
+        */}
+        {(authActionInProgress === provider.id || showRemoteLoginInProgress) && manualCodeConfigs[provider.id] && loginDialogProvider !== provider.id && (
           <OAuthManualCodeForm
             value={manualCodeInputs[provider.id] ?? ""}
             onChange={(value) => setManualCodeInputs((prev) => ({ ...prev, [provider.id]: value }))}
@@ -2449,6 +2514,7 @@ export function ModelOnboardingModal({
   };
 
   return (
+    <>
     <FloatingWindow
       windowKey="model-onboarding"
       title={t("setup.titleAiSetup", "Set Up AI")}
@@ -3611,6 +3677,61 @@ export function ModelOnboardingModal({
           </Suspense>
         </ErrorBoundary>
       )}
+
     </FloatingWindow>
+
+      {/*
+      FNXC:ProviderAuth 2026-08-18-04:20:
+      RENDERED OUTSIDE THE FLOATINGWINDOW SUBTREE, DELIBERATELY. A portal relocates the DOM node but
+      not the React tree, and FloatingWindow raises itself to a fresh `nextFloatingZ()` on every
+      pointerdown/focus that reaches it — so while this lived inside the window's children, every
+      click in the dialog lifted the window above it and the following click landed on the window
+      instead. As a sibling, dialog events never reach the window's raise handler. Keep it here.
+      */}
+      {loginDialogProvider && (() => {
+        const dialogProvider = authProviders.find((entry) => entry.id === loginDialogProvider);
+        const manualCode = manualCodeConfigs[loginDialogProvider];
+        const failure = loginErrors[loginDialogProvider];
+        const phase: ProviderLoginPhase = dialogProvider?.authenticated
+          ? "succeeded"
+          : failure
+            ? "failed"
+            : manualCodeSubmitInProgress === loginDialogProvider
+              ? "submitting"
+              : "waiting";
+        return (
+          <ProviderLoginDialog
+            data-testid={`provider-login-dialog-${loginDialogProvider}`}
+            providerName={dialogProvider?.name ?? loginDialogProvider}
+            authUrl={loginAuthUrls[loginDialogProvider]}
+            instructions={loginInstructions[loginDialogProvider]}
+            phase={phase}
+            errorMessage={failure}
+            manualCode={{
+              prompt: manualCode?.prompt ?? t("setup.pasteRedirectUrl", "Paste the final redirect URL or authorization code"),
+              placeholder: manualCode?.placeholder,
+              helpText: manualCode?.helpText,
+            }}
+            codeValue={manualCodeInputs[loginDialogProvider] ?? ""}
+            onCodeChange={(value) => setManualCodeInputs((prev) => ({ ...prev, [loginDialogProvider]: value }))}
+            onSubmitCode={() => void handleSubmitManualCode(loginDialogProvider)}
+            onOpenAuthUrl={() => {
+              const url = loginAuthUrls[loginDialogProvider];
+              if (url) {
+                openExternalUrl(url);
+              }
+            }}
+            onCancel={() => {
+              const closing = loginDialogProvider;
+              setLoginDialogProvider(null);
+              // A still-running flow must be cancelled server-side, or its slot blocks the retry with a 409.
+              if (authActionInProgress === closing) {
+                void handleCancelLogin(closing);
+              }
+            }}
+          />
+        );
+      })()}
+    </>
   );
 }

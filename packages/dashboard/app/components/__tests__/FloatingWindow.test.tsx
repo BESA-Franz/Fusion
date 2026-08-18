@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadAllAppCss, loadStylesCss } from "../../test/cssFixture";
@@ -238,6 +240,34 @@ describe("FloatingWindow", () => {
     // Headerless and chat variants replace only body overflow.
     expect(cssRuleFor(floatingWindowCss, ".floating-window--headerless .floating-window__body")).toContain("overflow: hidden;");
     expect(cssRuleFor(floatingWindowCss, ".floating-window--chat.floating-window--headerless .floating-window__body")).toContain("overflow: hidden;");
+  });
+
+  /*
+  FNXC:FloatingWindow 2026-08-18-04:20:
+  RATCHET: a portaled `.modal-overlay` must swallow its own pointer events.
+
+  `createPortal` relocates the DOM node but NOT the React tree, so events raised inside a portaled
+  dialog still bubble to whichever component rendered it. Every FloatingWindow raises itself to a
+  fresh `nextFloatingZ()` on pointerdown/focus, so a dialog portaled from inside a window's subtree
+  lifts that window ABOVE itself on first click — after which clicks land on the window behind
+  (reported on the Set Up AI login dialog as "it keeps getting covered … any click goes to the dialog
+  below"). Two things prevent it: render the dialog as a SIBLING of the window, and stop propagation
+  at the overlay. This asserts the second for every such component, since the first is per-caller.
+  */
+  it("keeps every portaled modal overlay from leaking pointer events to its host", () => {
+    const componentsDir = resolve(__dirname, "..");
+    const offenders: string[] = [];
+    let checked = 0;
+
+    for (const file of readdirSync(componentsDir).filter((name) => name.endsWith(".tsx"))) {
+      const source = readFileSync(resolve(componentsDir, file), "utf8");
+      if (!source.includes("createPortal") || !source.includes("modal-overlay")) continue;
+      checked++;
+      if (!source.includes("stopPropagation")) offenders.push(file);
+    }
+
+    expect(checked, "expected portaled overlay components to scan").toBeGreaterThan(0);
+    expect(offenders, "portaled overlays must stop pointer propagation to their React-tree host").toEqual([]);
   });
 
   /*
