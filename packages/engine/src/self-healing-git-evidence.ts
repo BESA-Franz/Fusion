@@ -96,7 +96,13 @@ export function escapeRegex(value: string): string {
 }
 
 export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  /*
+  FNXC:SelfHealingEvidenceWindows 2026-08-18-18:56:
+  Evidence readers and their self-healing callers use the native backend shell for Git arguments.
+  cmd.exe preserves POSIX single quotes as argument content, turning valid proof into false absence.
+  Keep escaped POSIX quoting on Unix and use backend-compatible double quotes on Windows.
+  */
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 export function parseShortstat(output: string): Pick<LandedTaskCommit, "filesChanged" | "insertions" | "deletions"> {

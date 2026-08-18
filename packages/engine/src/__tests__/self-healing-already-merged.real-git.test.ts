@@ -16,6 +16,10 @@ function git(repo: string, command: string): string {
   return execSync(command, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
+function quote(value: string): string {
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 type TaskMap = Map<string, Task>;
 
 function makeTask(overrides: Partial<Task> & Pick<Task, "id">): Task {
@@ -98,7 +102,7 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     git(repo, "git init -b main");
     git(repo, 'git config user.email "test@example.com"');
     git(repo, 'git config user.name "Test"');
-    git(repo, "git commit --allow-empty -m 'init'");
+    git(repo, `git commit --allow-empty -m ${quote("init")}`);
     return repo;
   }
 
@@ -106,7 +110,7 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "file.txt"), "trailer\n", "utf-8");
-    git(repo, "git add src/file.txt && git commit -m 'feat: landed' -m 'Fusion-Task-Id: FN-TEST-1'");
+    git(repo, `git add src/file.txt && git commit -m ${quote("feat: landed")} -m ${quote("Fusion-Task-Id: FN-TEST-1")}`);
     const landedSha = git(repo, "git rev-parse HEAD");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-test-1");
@@ -155,12 +159,12 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
       git(repo, "git checkout -b fusion/fn-test-2");
       mkdirSync(path.join(repo, "src"), { recursive: true });
       writeFileSync(path.join(repo, "src", "patch.txt"), "patch-a\n", "utf-8");
-      git(repo, "git add src/patch.txt && git commit -m 'task branch commit'");
+      git(repo, `git add src/patch.txt && git commit -m ${quote("task branch commit")}`);
       const branchTip = git(repo, "git rev-parse HEAD");
       git(repo, "git checkout main");
       mkdirSync(path.join(repo, "src"), { recursive: true });
       writeFileSync(path.join(repo, "src", "patch.txt"), "patch-a\n", "utf-8");
-      git(repo, "git add src/patch.txt && git commit -m 'land equivalent change'");
+      git(repo, `git add src/patch.txt && git commit -m ${quote("land equivalent change")}`);
       const landedSha = git(repo, "git rev-parse HEAD");
 
       const worktreePath = path.join(repo, ".worktrees", "fn-test-2");
@@ -188,13 +192,13 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     git(repo, "git checkout -b fusion/fn-test-tree");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "tree-equal.txt"), "line-1\nline-2\n", "utf-8");
-    git(repo, "git add src/tree-equal.txt && git commit -m 'branch aggregate change'");
+    git(repo, `git add src/tree-equal.txt && git commit -m ${quote("branch aggregate change")}`);
     git(repo, "git checkout main");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "tree-equal.txt"), "line-1\n", "utf-8");
-    git(repo, "git add src/tree-equal.txt && git commit -m 'main part 1'");
+    git(repo, `git add src/tree-equal.txt && git commit -m ${quote("main part 1")}`);
     writeFileSync(path.join(repo, "src", "tree-equal.txt"), "line-1\nline-2\n", "utf-8");
-    git(repo, "git add src/tree-equal.txt && git commit -m 'main part 2'");
+    git(repo, `git add src/tree-equal.txt && git commit -m ${quote("main part 2")}`);
     const landedSha = git(repo, "git rev-parse HEAD");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-test-tree");
@@ -224,7 +228,7 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     git(repo, "git checkout -b fusion/fn-test-3");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "no-match.txt"), "branch-only\n", "utf-8");
-    git(repo, "git add src/no-match.txt && git commit -m 'branch only'");
+    git(repo, `git add src/no-match.txt && git commit -m ${quote("branch only")}`);
     git(repo, "git checkout main");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-test-3");
@@ -250,11 +254,11 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "other.txt"), "other\n", "utf-8");
-    git(repo, "git add src/other.txt && git commit -m 'feat: unrelated generic tip'");
+    git(repo, `git add src/other.txt && git commit -m ${quote("feat: unrelated generic tip")}`);
     const unrelatedSha = git(repo, "git rev-parse HEAD");
 
     writeFileSync(path.join(repo, "src", "misbound.txt"), "landed\n", "utf-8");
-    git(repo, "git add src/misbound.txt && git commit -m 'feat: landed' -m 'Fusion-Task-Id: FN-TEST-MISBOUND'");
+    git(repo, `git add src/misbound.txt && git commit -m ${quote("feat: landed")} -m ${quote("Fusion-Task-Id: FN-TEST-MISBOUND")}`);
     const landedSha = git(repo, "git rev-parse HEAD");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-test-misbound");
@@ -284,7 +288,7 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "previous-tip.txt"), "previous landed task\n", "utf-8");
-    git(repo, "git add src/previous-tip.txt && git commit -m 'feat: previous landed' -m 'Fusion-Task-Id: FN-7477'");
+    git(repo, `git add src/previous-tip.txt && git commit -m ${quote("feat: previous landed")} -m ${quote("Fusion-Task-Id: FN-7477")}`);
     const previousLandedSha = git(repo, "git rev-parse HEAD");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-7486-noop");
@@ -292,7 +296,7 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     git(repo, `git branch fusion/fn-7486-noop ${previousLandedSha}`);
     git(repo, `git worktree add ${JSON.stringify(worktreePath)} fusion/fn-7486-noop`);
     writeFileSync(path.join(repo, "src", "unrelated-after-noop.txt"), "unrelated after no-op branch\n", "utf-8");
-    git(repo, "git add src/unrelated-after-noop.txt && git commit -m 'feat: unrelated after noop branch'");
+    git(repo, `git add src/unrelated-after-noop.txt && git commit -m ${quote("feat: unrelated after noop branch")}`);
 
     const tasks: TaskMap = new Map([
       ["FN-7486-NOOP", makeTask({ id: "FN-7486-NOOP", column: "in-review", status: "failed", mergeRetries: 3, paused: false, baseBranch: "main", branch: "fusion/fn-7486-noop", worktree: worktreePath })],
@@ -325,12 +329,12 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     mkdirSync(path.join(repo, "src"), { recursive: true });
     git(repo, "git checkout -b fusion/fn-7143");
     writeFileSync(path.join(repo, "src", "foreign-tip.txt"), "foreign\n", "utf-8");
-    git(repo, "git add src/foreign-tip.txt && git commit -m 'feat: foreign branch work' -m 'Fusion-Task-Id: FN-7187'");
+    git(repo, `git add src/foreign-tip.txt && git commit -m ${quote("feat: foreign branch work")} -m ${quote("Fusion-Task-Id: FN-7187")}`);
 
     git(repo, "git checkout main");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "owned-landed.txt"), "owned landed\n", "utf-8");
-    git(repo, "git add src/owned-landed.txt && git commit -m 'feat: owned landed' -m 'Fusion-Task-Id: FN-7143'");
+    git(repo, `git add src/owned-landed.txt && git commit -m ${quote("feat: owned landed")} -m ${quote("Fusion-Task-Id: FN-7143")}`);
 
     const worktreePath = path.join(repo, ".worktrees", "fn-7143");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
@@ -361,12 +365,12 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     mkdirSync(path.join(repo, "src"), { recursive: true });
     git(repo, "git checkout -b fusion/fn-7143-lineage");
     writeFileSync(path.join(repo, "src", "foreign-lineage-tip.txt"), "foreign lineage\n", "utf-8");
-    git(repo, "git add src/foreign-lineage-tip.txt && git commit -m 'feat: foreign lineage branch work' -m 'Fusion-Task-Lineage: LINEAGE-OTHER'");
+    git(repo, `git add src/foreign-lineage-tip.txt && git commit -m ${quote("feat: foreign lineage branch work")} -m ${quote("Fusion-Task-Lineage: LINEAGE-OTHER")}`);
 
     git(repo, "git checkout main");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "owned-lineage-landed.txt"), "owned lineage landed\n", "utf-8");
-    git(repo, "git add src/owned-lineage-landed.txt && git commit -m 'feat: owned lineage landed' -m 'Fusion-Task-Id: FN-7143-LINEAGE' -m 'Fusion-Task-Lineage: LINEAGE-OWN'");
+    git(repo, `git add src/owned-lineage-landed.txt && git commit -m ${quote("feat: owned lineage landed")} -m ${quote("Fusion-Task-Id: FN-7143-LINEAGE")} -m ${quote("Fusion-Task-Lineage: LINEAGE-OWN")}`);
 
     const worktreePath = path.join(repo, ".worktrees", "fn-7143-lineage");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
@@ -395,11 +399,11 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "other.txt"), "other\n", "utf-8");
-    git(repo, "git add src/other.txt && git commit -m 'feat: unrelated' -m 'Fusion-Task-Id: FN-OTHER'");
+    git(repo, `git add src/other.txt && git commit -m ${quote("feat: unrelated")} -m ${quote("Fusion-Task-Id: FN-OTHER")}`);
     const foreignSha = git(repo, "git rev-parse HEAD");
 
     writeFileSync(path.join(repo, "src", "owned.txt"), "owned\n", "utf-8");
-    git(repo, "git add src/owned.txt && git commit -m 'feat: landed' -m 'Fusion-Task-Id: FN-TEST-FOREIGN-MISBOUND'");
+    git(repo, `git add src/owned.txt && git commit -m ${quote("feat: landed")} -m ${quote("Fusion-Task-Id: FN-TEST-FOREIGN-MISBOUND")}`);
 
     const worktreePath = path.join(repo, ".worktrees", "fn-test-foreign-misbound");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
@@ -430,7 +434,7 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     const repo = setupRepo();
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "idempotent.txt"), "same\n", "utf-8");
-    git(repo, "git add src/idempotent.txt && git commit -m 'feat: done' -m 'Fusion-Task-Id: FN-TEST-4'");
+    git(repo, `git add src/idempotent.txt && git commit -m ${quote("feat: done")} -m ${quote("Fusion-Task-Id: FN-TEST-4")}`);
 
     const worktreePath = path.join(repo, ".worktrees", "fn-test-4");
     mkdirSync(path.dirname(worktreePath), { recursive: true });
@@ -506,7 +510,7 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     git(repo, "git checkout -b fusion/fn-stale");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "stale.txt"), "work\n", "utf-8");
-    git(repo, "git add src/stale.txt && git commit -m 'task work'");
+    git(repo, `git add src/stale.txt && git commit -m ${quote("task work")}`);
     git(repo, "git checkout main");
 
     const worktreePath = path.join(repo, ".worktrees", "fn-stale");
@@ -515,7 +519,7 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
 
     // Simulate the merge-train squash landing on the remote — never fetched locally.
     const landedSha = landOnRemoteMain(remote, (clone) => {
-      git(clone, "git commit --allow-empty -m 'feat: landed' -m 'Fusion-Task-Id: FN-STALE'");
+      git(clone, `git commit --allow-empty -m ${quote("feat: landed")} -m ${quote("Fusion-Task-Id: FN-STALE")}`);
     });
 
     // Local base is stale: neither main nor origin/main has the owned commit yet.
@@ -546,12 +550,12 @@ describeIfGit("SelfHealingManager recoverAlreadyMergedReviewTasks (real git)", (
     git(repo, "git checkout -b fusion/fn-guard");
     mkdirSync(path.join(repo, "src"), { recursive: true });
     writeFileSync(path.join(repo, "src", "guard.txt"), "work\n", "utf-8");
-    git(repo, "git add src/guard.txt && git commit -m 'task work'");
+    git(repo, `git add src/guard.txt && git commit -m ${quote("task work")}`);
     git(repo, "git checkout main");
 
     // Remote base advances, but the landed commit is owned by a DIFFERENT task.
     const foreignSha = landOnRemoteMain(remote, (clone) => {
-      git(clone, "git commit --allow-empty -m 'feat: other' -m 'Fusion-Task-Id: FN-OTHER'");
+      git(clone, `git commit --allow-empty -m ${quote("feat: other")} -m ${quote("Fusion-Task-Id: FN-OTHER")}`);
     });
 
     const tasks: TaskMap = new Map([

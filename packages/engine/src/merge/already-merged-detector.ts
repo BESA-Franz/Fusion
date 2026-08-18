@@ -48,7 +48,13 @@ interface DetectAlreadyLandedInput {
 }
 
 function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  /*
+  FNXC:AlreadyMergedWindows 2026-08-18-18:55:
+  The detector passes refs, regexes, SHAs, and ranges through the native backend shell.
+  cmd.exe preserves POSIX single quotes as argument content, hiding legitimate ownership proof.
+  Keep escaped POSIX quoting on Unix and use backend-compatible double quotes on Windows.
+  */
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function escapeRegex(value: string): string {
@@ -300,10 +306,14 @@ export async function findAlreadyMergedTaskCommit(
       return null;
     }
 
-    const branchPatchIdCommand = `git diff ${shellQuote(branchBase)}..${shellQuote(branchTip)} | git patch-id`;
+    /*
+    FNXC:AlreadyMergedWindowsPipelines 2026-08-18-18:59:
+    Patch-id evidence used a hard-coded /bin/sh and a POSIX-only quoted format argument.
+    Let Node select the native shell and quote each complete Git argument with the shared helper.
+    */
+    const branchPatchIdCommand = `git diff ${shellQuote(`${branchBase}..${branchTip}`)} | git patch-id`;
     const { stdout: branchPatchIdOut } = await execAsync(branchPatchIdCommand, {
       cwd: repoDir,
-      shell: "/bin/sh",
       timeout: 60_000,
       maxBuffer: 32 * 1024 * 1024,
     });
@@ -313,10 +323,9 @@ export async function findAlreadyMergedTaskCommit(
       .find((line) => line.trim().length > 0);
     const branchPatchId = branchPatchIdLine?.trim().split(/\s+/)[0];
     if (branchPatchId) {
-      const basePatchMapCommand = `git log -n 200 -p --format='%H' ${shellQuote(baseBranch)} | git patch-id`;
+      const basePatchMapCommand = `git log -n 200 -p --format=${shellQuote("%H")} ${shellQuote(baseBranch)} | git patch-id`;
       const { stdout: basePatchIdsOut } = await execAsync(basePatchMapCommand, {
         cwd: repoDir,
-        shell: "/bin/sh",
         timeout: 60_000,
         maxBuffer: 32 * 1024 * 1024,
       });
@@ -348,12 +357,12 @@ export async function findAlreadyMergedTaskCommit(
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
 
-    const { stdout: baseTreeStdout } = await execAsync(`git rev-parse ${shellQuote(baseBranch)}^{tree}`, {
+    const { stdout: baseTreeStdout } = await execAsync(`git rev-parse ${shellQuote(`${baseBranch}^{tree}`)}`, {
       cwd: repoDir,
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
     });
-    const { stdout: branchTreeStdout } = await execAsync(`git rev-parse ${shellQuote(treeBranchName)}^{tree}`, {
+    const { stdout: branchTreeStdout } = await execAsync(`git rev-parse ${shellQuote(`${treeBranchName}^{tree}`)}`, {
       cwd: repoDir,
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
