@@ -102,3 +102,28 @@ test("coverage ignores post-install and runner copies while tolerating removed p
     "removed or nonexistent COPY paths must not affect selected workspace coverage",
   );
 });
+
+/*
+FNXC:DockerRun 2026-08-18-05:35:
+The runner stage MUST install ca-certificates. The slim base ships none, and git verifies TLS
+against the system store, so without it every HTTPS clone dies with "server certificate
+verification failed. CAfile: none CRLfile: none" and project setup is impossible in Docker.
+
+This regressed unnoticed because Node carries its OWN bundled CA store: the dashboard, model APIs
+and OAuth token exchanges all worked, so nothing looked wrong until the first clone. Nothing else
+in the image exercises the system trust store, which is exactly why it needs a guard rather than
+relying on someone noticing.
+*/
+test("runner stage installs ca-certificates alongside git", () => {
+  const dockerfile = readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
+  const runnerStage = dockerfile.slice(dockerfile.indexOf("FROM node:22-slim AS runner"));
+  assert.ok(runnerStage.length > 0, "runner stage must exist");
+
+  const aptInstall = runnerStage.match(/apt-get install[^\n]*(?:\\\n[^\n]*)*/)?.[0] ?? "";
+  assert.match(aptInstall, /\bgit\b/, "runner stage must install git");
+  assert.match(
+    aptInstall,
+    /\bca-certificates\b/,
+    "runner stage must install ca-certificates — git cannot verify HTTPS remotes without a system CA bundle",
+  );
+});

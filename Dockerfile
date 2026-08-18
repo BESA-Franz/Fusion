@@ -68,8 +68,14 @@ LABEL org.opencontainers.image.description="AI-orchestrated task board"
 ENV NODE_ENV=production
 ENV PORT=4040
 
+# FNXC:DockerRun 2026-08-18-05:35: ca-certificates is REQUIRED, not optional hardening. The slim
+# base ships zero CA certificates, and git verifies TLS against the SYSTEM store — so every HTTPS
+# clone failed with "server certificate verification failed. CAfile: none CRLfile: none", which
+# breaks project setup outright (operator report). It hid behind Node, which carries its own bundled
+# CA store: the dashboard, model APIs, and OAuth token exchanges all worked, so the image looked
+# healthy right up until the first clone.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git \
+  && apt-get install -y --no-install-recommends git ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
