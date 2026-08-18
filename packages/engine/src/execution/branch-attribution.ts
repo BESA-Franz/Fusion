@@ -85,7 +85,13 @@ export interface BranchRangeAttributionOptions {
 }
 
 function quoteShellArg(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+  /*
+  FNXC:BranchAttributionWindows 2026-08-18-16:36:
+  Attribution is a safety boundary: if cmd.exe receives POSIX single quotes literally, every
+  range lookup fails and callers can fall back to a broad raw diff that includes foreign files.
+  Keep escaped POSIX quoting on Unix and use the native-backend double-quote form on Windows.
+  */
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function extractAttributedTaskId(body: string): string | null {

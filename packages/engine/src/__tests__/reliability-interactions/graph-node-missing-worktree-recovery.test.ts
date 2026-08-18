@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { dirname, join } from "node:path";
 import type { TaskDetail } from "@fusion/core";
 import "../executor-test-helpers.js";
 import { PLAN_REVIEW_PROVIDER_FAILURE_HOLD_VALUE } from "../../workflows/workflow-graph-executor.js";
@@ -325,7 +326,7 @@ describe("Plan Review missing-worktree repo-root fallback (FN-7996)", () => {
     // Not the stale path, and — the point of the change — not the shared repo root either.
     expect(captured.worktreePath).not.toBe("/tmp/stale-wt");
     expect(captured.worktreePath).not.toBe("/tmp/test");
-    expect(captured.worktreePath).toContain("/tmp/test/.worktrees/");
+    expect(dirname(captured.worktreePath)).toBe(join("/tmp/test", ".worktrees"));
     expect(store.logEntry).toHaveBeenCalledWith(
       live.id,
       expect.stringContaining("re-acquiring a task worktree instead of running in the shared checkout"),
