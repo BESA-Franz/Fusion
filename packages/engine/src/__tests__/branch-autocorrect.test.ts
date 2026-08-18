@@ -52,6 +52,10 @@ function execError(stderr: string): Error & { stderr: string } {
   return error;
 }
 
+function quoted(value: string): string {
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 describe("attemptBranchAutocorrect", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -81,7 +85,7 @@ describe("attemptBranchAutocorrect", () => {
     const result = await attemptBranchAutocorrect({ worktreePath: "/tmp/wt", observedBranch: "lemon-sage", expectedBranch: "fusion/fn-2", rootDir: "/tmp" });
 
     expect(result).toEqual({ status: "renamed" });
-    expect(mockedExec.mock.calls.map((c: unknown[]) => c[0])).toContain("git branch -M 'lemon-sage' 'fusion/fn-2'");
+    expect(mockedExec.mock.calls.map((c: unknown[]) => c[0])).toContain(`git branch -M ${quoted("lemon-sage")} ${quoted("fusion/fn-2")}`);
   });
 
   it("falls back to plain checkout when branch has upstream and expected ref exists", async () => {
@@ -93,9 +97,9 @@ describe("attemptBranchAutocorrect", () => {
     const result = await attemptBranchAutocorrect({ worktreePath: "/tmp/wt", observedBranch: "lemon-sage", expectedBranch: "fusion/fn-2", rootDir: "/tmp" });
     expect(result).toEqual({ status: "checked-out" });
     expect(mockedExec.mock.calls.map((c: unknown[]) => c[0])).toEqual([
-      "git rev-parse --abbrev-ref --symbolic-full-name 'lemon-sage'@{u}",
-      "git show-ref --verify --quiet 'refs/heads/fusion/fn-2'",
-      "git checkout 'fusion/fn-2' --",
+      `git rev-parse --abbrev-ref --symbolic-full-name ${quoted("lemon-sage")}@{u}`,
+      `git show-ref --verify --quiet ${quoted("refs/heads/fusion/fn-2")}`,
+      `git checkout ${quoted("fusion/fn-2")} --`,
     ]);
   });
 

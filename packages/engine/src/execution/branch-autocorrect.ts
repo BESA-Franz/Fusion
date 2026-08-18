@@ -18,7 +18,13 @@ export type BranchAutocorrectResult = {
 };
 
 function quoteShellArg(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+  /*
+  FNXC:BranchAutocorrectWindows 2026-08-18-16:41:
+  cmd.exe treats POSIX single quotes as ref characters, so an existing expected branch appears
+  unavailable and autocorrect fails instead of checking it out. Preserve POSIX quoting on Unix
+  and use the native-backend double-quote form on Windows.
+  */
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 async function runGit(command: string, worktreePath: string): Promise<{ ok: true; stdout: string } | { ok: false; reason: string }> {
