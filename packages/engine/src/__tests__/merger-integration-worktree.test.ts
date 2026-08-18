@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   createMockStore,
   mockedExec,
+  mockedExecFile,
   mockedExecSync,
   mockedCreateFnAgent,
   setupHappyPathExecSync,
@@ -446,6 +447,15 @@ describe("acquireReuseHandoff", () => {
       worktreePath: "/tmp/task-worktree",
       branch: "fusion/fn-5279",
     });
+    expect(mockedExecFile.mock.calls.some(([file, args]) =>
+      file === "git"
+      && Array.isArray(args)
+      && args[0] === "stash"
+      && args[1] === "store"
+      && args[2] === "-m"
+      && String(args[3]).startsWith("fusion-reuse-handoff-autostash:FN-5279:")
+      && args[4] === stashSha
+    )).toBe(true);
     expect(auditEmit).toHaveBeenCalledWith({
       type: "merge:reuse-handoff-autostash",
       target: "/tmp/task-worktree",

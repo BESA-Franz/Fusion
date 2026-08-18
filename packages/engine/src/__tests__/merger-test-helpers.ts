@@ -145,7 +145,7 @@ import {
 } from "../merger.js";
 import { mergerLog } from "../logger.js";
 import { createFnAgent } from "../pi.js";
-import { execSync, exec } from "node:child_process";
+import { execSync, exec, execFile } from "node:child_process";
 import * as core from "@fusion/core";
 import { type TaskStore, type Task, DEFAULT_SETTINGS } from "@fusion/core";
 
@@ -185,6 +185,7 @@ export type { ConflictCategory, Task };
 export const mockedCreateFnAgent = vi.mocked(createFnAgent);
 export const mockedExecSync = vi.mocked(execSync);
 export const mockedExec = vi.mocked(exec);
+export const mockedExecFile = vi.mocked(execFile);
 const { existsSync: mockedExistsSyncRaw, readFileSync: mockedReadFileSyncRaw } = await import("node:fs");
 export const mockedExistsSync = vi.mocked(mockedExistsSyncRaw);
 export const mockedReadFileSync = vi.mocked(mockedReadFileSyncRaw);
