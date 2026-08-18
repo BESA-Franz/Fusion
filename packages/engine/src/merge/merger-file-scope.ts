@@ -5,13 +5,14 @@
  */
 import type { Task, TaskStore } from "@fusion/core";
 import { promisify } from "node:util";
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { matchGlob } from "./merger-glob.js";
 import { mergerLog } from "../logger.js";
 import { resolveMergePolicy, type MergeFileScopeMode } from "./merge-trait.js";
 import type { RunAuditor } from "../util/run-audit.js";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export interface DiffFileEntry {
   file: string;
@@ -148,8 +149,11 @@ export type StagedFilesReader = (cwd: string) => Promise<string[]>;
  */
 export function createCommitRangeFilesReader(fromSha: string, toSha: string): StagedFilesReader {
   return async (cwd) => {
-    const { stdout } = await execAsync(`git diff --name-only ${fromSha}..${toSha}`, { cwd, encoding: "utf-8" });
-    return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const { stdout } = await execFileAsync("git", ["diff", "--name-only", "-z", `${fromSha}..${toSha}`, "--"], {
+      cwd,
+      encoding: "utf-8",
+    });
+    return stdout.split("\0").filter((path) => path.length > 0);
   };
 }
 
