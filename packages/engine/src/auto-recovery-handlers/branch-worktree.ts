@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import type { Task, TaskStore } from "@fusion/core";
@@ -15,6 +15,7 @@ import { createLogger, type Logger } from "../logger.js";
 import type { RunAuditor } from "../util/run-audit.js";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const baseLog = createLogger("auto-recovery:branch-worktree");
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = 10 * 1024 * 1024;
@@ -55,13 +56,19 @@ export class BranchWorktreeAutoRecoveryHandler {
     return stdout.trim();
   }
 
-  private quote(value: string): string {
-    return `'${value.replace(/'/g, `'\\''`)}'`;
+  private async runGitArgs(repoDir: string, args: readonly string[]): Promise<string> {
+    const { stdout } = await execFileAsync("git", [...args], {
+      cwd: repoDir,
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
+      encoding: "utf-8",
+    });
+    return stdout.trim();
   }
 
   private async hasBranchRef(repoDir: string, branchName: string): Promise<boolean> {
     try {
-      await this.runGit(repoDir, `git rev-parse --verify ${this.quote(`refs/heads/${branchName}`)}`);
+      await this.runGitArgs(repoDir, ["rev-parse", "--verify", `refs/heads/${branchName}`]);
       return true;
     } catch {
       return false;
@@ -70,7 +77,7 @@ export class BranchWorktreeAutoRecoveryHandler {
 
   private async getTipSha(repoDir: string, branchName: string): Promise<string | undefined> {
     try {
-      return await this.runGit(repoDir, `git rev-parse --verify ${this.quote(`refs/heads/${branchName}`)}`);
+      return await this.runGitArgs(repoDir, ["rev-parse", "--verify", `refs/heads/${branchName}`]);
     } catch {
       return undefined;
     }
@@ -101,7 +108,7 @@ export class BranchWorktreeAutoRecoveryHandler {
   private async resolveContaminationBase(worktreePath: string, fallback: string): Promise<string> {
     for (const ref of ["main", "origin/main"] as const) {
       try {
-        const out = await this.runGit(worktreePath, `git merge-base HEAD ${ref}`);
+        const out = await this.runGitArgs(worktreePath, ["merge-base", "HEAD", ref]);
         if (out) return out;
       } catch {
         // Try the next bounded ref before using the caller-supplied fallback.
@@ -383,7 +390,7 @@ export class BranchWorktreeAutoRecoveryHandler {
       if (!isLiveOwned) {
         if (existsSync(conflictingWorktreePath)) {
           try {
-            await execAsync(`git worktree remove --force ${this.quote(conflictingWorktreePath)}`, {
+            await execFileAsync("git", ["worktree", "remove", "--force", conflictingWorktreePath], {
               cwd: repoDir,
               timeout: GIT_TIMEOUT_MS,
               maxBuffer: GIT_MAX_BUFFER,
@@ -394,7 +401,7 @@ export class BranchWorktreeAutoRecoveryHandler {
           }
         }
         try {
-          await execAsync("git worktree prune", {
+          await execFileAsync("git", ["worktree", "prune"], {
             cwd: repoDir,
             timeout: GIT_TIMEOUT_MS,
             maxBuffer: GIT_MAX_BUFFER,
@@ -403,7 +410,7 @@ export class BranchWorktreeAutoRecoveryHandler {
           // best-effort
         }
         try {
-          await execAsync(`git branch -D ${this.quote(branchName)}`, {
+          await execFileAsync("git", ["branch", "-D", branchName], {
             cwd: repoDir,
             timeout: GIT_TIMEOUT_MS,
             maxBuffer: GIT_MAX_BUFFER,

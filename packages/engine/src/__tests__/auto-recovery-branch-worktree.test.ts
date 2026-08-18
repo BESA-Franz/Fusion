@@ -65,26 +65,37 @@ describe("BranchWorktreeAutoRecoveryHandler", () => {
 
   it("resolves contamination refs with separate local-first probes", async () => {
     const f = createFixtures();
-    const runGit = vi.spyOn(f.handler as any, "runGit")
+    const runGitArgs = vi.spyOn(f.handler as any, "runGitArgs")
       .mockRejectedValueOnce(new Error("no local main"))
       .mockResolvedValueOnce("origin-main-sha");
 
     await expect((f.handler as any).resolveContaminationBase("C:/fixture", "stored-base"))
       .resolves.toBe("origin-main-sha");
-    expect(runGit.mock.calls).toEqual([
-      ["C:/fixture", "git merge-base HEAD main"],
-      ["C:/fixture", "git merge-base HEAD origin/main"],
+    expect(runGitArgs.mock.calls).toEqual([
+      ["C:/fixture", ["merge-base", "HEAD", "main"]],
+      ["C:/fixture", ["merge-base", "HEAD", "origin/main"]],
     ]);
-    expect(runGit.mock.calls.flat().join(" ")).not.toMatch(/2>\/dev\/null|\|\|/);
   });
 
   it("uses the stored fallback only after both contamination refs fail", async () => {
     const f = createFixtures();
-    const runGit = vi.spyOn(f.handler as any, "runGit").mockRejectedValue(new Error("missing ref"));
+    const runGitArgs = vi.spyOn(f.handler as any, "runGitArgs").mockRejectedValue(new Error("missing ref"));
 
     await expect((f.handler as any).resolveContaminationBase("C:/fixture", "stored-base"))
       .resolves.toBe("stored-base");
-    expect(runGit).toHaveBeenCalledTimes(2);
+    expect(runGitArgs).toHaveBeenCalledTimes(2);
+  });
+
+  it("passes branch refs as argv instead of POSIX-quoted shell text", async () => {
+    const f = createFixtures();
+    const runGitArgs = vi.spyOn(f.handler as any, "runGitArgs").mockResolvedValue("tip-sha");
+
+    await expect((f.handler as any).hasBranchRef("C:/fixture", "fusion/fn-4993")).resolves.toBe(true);
+    await expect((f.handler as any).getTipSha("C:/fixture", "fusion/fn-4993")).resolves.toBe("tip-sha");
+    expect(runGitArgs.mock.calls).toEqual([
+      ["C:/fixture", ["rev-parse", "--verify", "refs/heads/fusion/fn-4993"]],
+      ["C:/fixture", ["rev-parse", "--verify", "refs/heads/fusion/fn-4993"]],
+    ]);
   });
 
   it("requeues on fully-subsumed", async () => {
