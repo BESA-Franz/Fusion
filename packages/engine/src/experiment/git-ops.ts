@@ -1,5 +1,5 @@
 import { commitIdentityArgs, resolveCommitIdentity } from "../git-identity.js";
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
   ExperimentFinalizeBranchExistsError,
@@ -7,7 +7,7 @@ import {
   ExperimentFinalizeMergeBaseError,
 } from "./finalize-types.js";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = 10 * 1024 * 1024;
 
@@ -29,9 +29,8 @@ export interface GitOps {
 }
 
 async function runGit(cwd: string, args: string[]): Promise<string> {
-  const command = `git ${args.join(" ")}`;
   try {
-    const { stdout } = await execAsync(command, {
+    const { stdout } = await execFileAsync("git", args, {
       cwd,
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: GIT_MAX_BUFFER,
@@ -42,7 +41,7 @@ async function runGit(cwd: string, args: string[]): Promise<string> {
     const stderr = err.stderr?.trim();
     const stdout = err.stdout?.trim();
     const detail = stderr || stdout || err.message;
-    throw new Error(`Git command failed (${command}): ${detail}`);
+    throw new Error(`Git command failed (${["git", ...args].join(" ")}): ${detail}`);
   }
 }
 
@@ -57,14 +56,14 @@ export function defaultGitOps(cwd: string): GitOps {
     async commit(message: string) {
       // FNXC:GitIdentity 2026-08-18-07:55: explicit identity — experiment commits must not depend on
       // ambient git config either (a host without one cannot commit at all).
-      await runGit(cwd, [...commitIdentityArgs(resolveCommitIdentity()), "commit", "-m", JSON.stringify(message)]);
+      await runGit(cwd, [...commitIdentityArgs(resolveCommitIdentity()), "commit", "-m", message]);
       return await runGit(cwd, ["rev-parse", "HEAD"]);
     },
     async resetHard(ref: string) {
       await runGit(cwd, ["reset", "--hard", ref]);
     },
     async stashPush(message: string) {
-      const output = await runGit(cwd, ["stash", "push", "-m", JSON.stringify(message)]);
+      const output = await runGit(cwd, ["stash", "push", "-m", message]);
       if (output.includes("No local changes to save")) {
         return null;
       }
