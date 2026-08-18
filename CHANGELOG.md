@@ -2,6 +2,58 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
+## 0.77.0-beta.2
+
+### Highlights
+
+- Docker images now clone over HTTPS, build without OOM, and ship gh, ripgrep, and cloudflared
+- A provider's first-ever login no longer fails silently with "Login did not complete"
+- Fusion sets its own git identity, so auto-merge no longer stalls on hosts with no git config
+- Paused projects stop the periodic git churn behind 61-70% engine CPU
+- ACP agents such as Hermes ACP and Prime can now call Fusion's fn_* custom tools
+
+### New
+
+- ACP runtimes can expose Fusion custom tools (fn_*) to external agents such as Hermes ACP and Prime, over a per-session authenticated bridge.
+- The Docker image ships the GitHub CLI, tailscale, and cloudflared alongside git and ripgrep, so gh-cli auth and dashboard remote access work in a container. Running tailscaled still needs `--cap-add NET_ADMIN --device /dev/net/tun`.
+- Grok 4.6 is available in the built-in Grok catalog across every model picker.
+- Mailbox messages and chat conversations now have archive and restore views.
+- Managers can review and coach evaluation results for agents in their reporting tree.
+
+### Fixed
+
+- A provider's first login on a fresh install (new container, new machine, wiped ~/.fusion) completed OAuth but wrote nothing and reported a generic failure. Login failures now surface the server's own reason, so an OAuth state mismatch reads as a stale-tab instruction.
+- OpenAI Codex login never opened a browser: its first prompt asks Browser vs Device code, and that choice was answered with the paste-code wait until the 30s timeout.
+- Provider sign-in now uses a persistent dialog that keeps the paste field, status, and Submit button visible, in both first-run onboarding and Settings. A second account keeps its own inline field.
+- Onboarding offers a default model as soon as a provider connects, instead of staying on "No models available yet", and marks itself complete even if the settings write fails.
+- Browser first-run no longer shows the "Connect remote Fusion server" card, which only applies to the native shell.
+- HTTPS git clones in Docker failed with "server certificate verification failed" because the image carried no CA certificates, making project setup impossible in a container.
+- The Docker image build no longer runs out of memory on a stock 8GB Docker Desktop VM, and a fresh named volume now starts up with correct permissions for embedded Postgres. Bind mounts still need a host-side `chown -R 1000:1000`.
+- Merge commits, merger amends, and experiment git operations now carry an explicit identity: your commitAuthor settings, else the acting agent, else Fusion. Set `commitAuthorEnabled: false` to keep ambient git config.
+- Typing in the Quick Add model dropdown filter box narrows the model list again, and the collapse/expand toggle in model dropdowns works.
+- The Quick Add model menu labels the merger row "Merger" with spacing matching the other roles.
+- New Task inherits the workflow selected in Board or List.
+- Task detail shows the Recommendations tab only when that completed task actually has recommendations.
+- Floating windows have even space on the right and bottom edges, with resize handles on the east, north-east, and south-east edges of every desktop floating window.
+- Gridlock alerts no longer repeat when detection briefly clears.
+- Mission reconciliation no longer fails every cycle with an internal scheduler error, and one bad slice no longer takes down the pass.
+- Approval audit timelines stay in lifecycle order when events share a timestamp.
+- Recovery rebounds and in-review branch rebinds keep the task's checkout instead of losing it to the idle sweep.
+
+### Breaking
+
+- Stuck-task tagging is gone from the dashboard: no Stuck badges, no stuck card styling, no footer stuck count. The timeout setting remains and engine recovery sweeps still use it.
+
+### Performance
+
+- Self-healing no longer runs its periodic git sweeps on paused projects, and git-heavy repair steps drop to at most hourly on active ones, with done-task merge recovery capped at 25 candidates per cycle. Database and filesystem housekeeping keeps its normal cadence.
+- The scheduler reads each task's workflow selection once per poll tick instead of about six times, cutting CPU and health-API latency.
+
+### Internal
+
+- Bundled Pi runtime upgraded from 0.82.1 to 0.84.1 for updated provider and model support.
+- Removed stale taskStuck exports, aliases, and TypeScript path mappings left behind by the dashboard helper deletion.
+
 ## 0.77.0-beta.1
 
 ### Highlights

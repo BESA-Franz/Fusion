@@ -1,5 +1,103 @@
 # @runfusion/fusion
 
+## 0.77.0-beta.2
+
+### Minor Changes
+
+- 5e95a93: summary: Add Grok 4.6 to the built-in Grok model catalog across every model picker.
+  category: feature
+  dev: Registers Grok 4.6 in `GROK_PROVIDER_REGISTRATION` in `packages/core/src/ai/grok-provider.ts`, which fans out through `seedDashboardProviders` and `pi.ts`.
+- 5e95a93: summary: Add archive and restore views for mailbox messages and chat conversations.
+  category: feature
+  dev: Adds project.messages.archived via migration 0058 and POST /messages/:id/archive|unarchive routes.
+- 5e95a93: summary: Let managers review and coach evaluation results for agents in their reporting tree.
+  category: feature
+  dev: Adds `fn_agent_read_evaluations` and `fn_agent_evaluation_followup`, reusing the management-subtree boundary and action-gate classification.
+- 725b0a3: summary: ACP runtimes can now expose Fusion custom tools (fn\_\*) to external agents such as Hermes ACP and Prime.
+  category: feature
+  dev: AcpRuntimeAdapter starts a per-session loopback tool bridge and registers it as a stdio MCP server in session/new.mcpServers when the engine passes customTools; the bridge authenticates requests with a per-session bearer token, threads the real MCP request id as the toolCallId, and is disposed on session/new failure and session teardown. Build copies mcp-schema-server.cjs beside dist (tsc does not copy .cjs assets).
+- 2eae0b2: summary: Remove stuck-task tagging from the dashboard — no more Stuck badges, card styling, or footer stuck count.
+  category: feature
+  dev: "Deletes utils/taskStuck.ts, the stuck ExecutorStats field, and taskStuckTimeoutMs prop plumbing; the setting remains and engine recovery sweeps still consume it. Also repoints the FN-6756 liveness ratchet at the extracted executor session facades."
+
+### Patch Changes
+
+- 189087a: summary: The Docker image now ships gh, tailscale, and cloudflared alongside git and ripgrep.
+  category: feature
+  dev: Runner stage adds the GitHub CLI (backs `githubAuthMode: "gh-cli"`, which the auth route tells operators to set up with `gh auth login`), cloudflared (backs dashboard remote access, whose in-app installer cannot bootstrap itself reliably in a slim container), and tailscale, each from its vendor's signed apt repository rather than a curl-to-shell installer. Installing tailscale does not make `tailscaled` runnable on its own — that still needs `--cap-add NET_ADMIN --device /dev/net/tun` at `docker run`. Package names and repo URLs are asserted in scripts/**tests**/dockerfile-workspace-manifests.test.mjs.
+- aedee4b: summary: The Docker image now ships ripgrep, so coding agents can search at full speed in a container.
+  category: fix
+  dev: Adds `ripgrep` to the runner stage apt install alongside git and ca-certificates, and extends the runner-stage assertion in scripts/**tests**/dockerfile-workspace-manifests.test.mjs to cover it. Agents reach for `rg` first and silently degrade to slower or partial fallbacks when it is absent, which only shows up in the container because developer machines have it installed.
+- bb11e49: summary: Fix OpenAI Codex login never opening a browser window, and document OAuth callback ports for Docker.
+  category: fix
+  dev: pi's `AuthPrompt` is a discriminated union (text/secret/select/manual_code); `FusionAuthStorage.login`'s interaction shim flattened all four into `onPrompt`, so Codex's opening `select` ("Browser" vs "Device code") was answered with the pasted-code wait and hung until the route's 30s kickoff timeout. The shim now dispatches by type, reviving the route's existing `onSelect`/`onManualCodeInput` handlers. Separately, FN-8766's outboard east/NE/SE resize targets are promoted from Task Detail to every desktop FloatingWindow now that FN-8015's body gutter is gone, with body-level `border-radius: inherit` replacing host clipping and phones re-asserting `overflow: hidden`.
+- 37bd6ee: summary: Fix Docker image build failing on memory and first-run container startup failing on volume permissions.
+  category: fix
+  dev: Builder runs `pnpm build` with `NODE_OPTIONS=--max-old-space-size=6144` (dashboard vite build OOMed at V8's default old-space on a stock 8GB Docker Desktop VM, exit 134). Runner pre-creates `/home/node/.fusion` owned by `node` so a fresh named volume inherits ownership and embedded Postgres `initdb` succeeds; bind mounts still require a host-side `chown -R 1000:1000`. Also drops the dependency-graph plugin's stale `taskStuck` tsconfig path mapping.
+- 3105b06: summary: Fix HTTPS git clones failing in Docker with "server certificate verification failed".
+  category: fix
+  dev: The runner stage installed `git` but not `ca-certificates`, and the slim base ships zero CA certificates. git verifies TLS against the SYSTEM trust store, so every HTTPS clone failed and project setup was impossible in a container. It stayed hidden because Node carries its own bundled CA store — the dashboard, model APIs, and OAuth token exchanges all worked. Guarded by a new assertion in scripts/**tests**/dockerfile-workspace-manifests.test.mjs.
+- 9eae6b9: summary: Fix a provider's first-ever login silently failing with "Login did not complete" on a fresh install.
+  category: fix
+  dev: `FusionAuthStorage.modify()` resolved its write target with `creating: false` and returned before invoking the callback whenever the provider had no credential row yet. That is the seam pi persists a completed login through (`Models.login` -> `credentials.modify(provider.id, ...)`), so a first login finished its OAuth, exchanged the code, took and released the lock file, wrote nothing, and resolved as success — leaving the dashboard poll to report the generic failure. Only reproduces on a store with no existing row, so long-lived installs (where the path is a refresh) were unaffected while every new container/machine/wiped `~/.fusion` could never complete a first login for any provider. Also surfaces the server's own `loginError` through `describeLoginFailure` instead of the generic sentence, so an `OAuth state mismatch` reads as a stale-tab instruction.
+- 9db2565: summary: Fix uneven right/bottom space around floating windows and drop the remote-server prompt from browser onboarding.
+  category: fix
+  dev: Deletes FN-8015's shared `margin-inline-end` gutter on `.floating-window__body` plus its five piecemeal zeroing overrides and GitHub Import's borrowed-inset compensation; a scrollbar/resize-target collision is now fixed per-caller with FN-8766's outboard east handles. The hosted Set Up AI modal re-asserts `width/height: 100%` under `.floating-window--model-onboarding` (its standalone `85vh` rule tied on specificity and won on source order). The "Connect remote Fusion server" card now also requires `shellState.host !== "web"` — `desktopMode` is undefined in a browser, so web first-run showed a native-shell hand-off form.
+- 1da6375: summary: Fusion now sets its own git identity for commits, attributing them to the agent that did the work.
+  category: fix
+  dev: Merge commits, the merger's `--amend`, and experiment git-ops all relied on ambient `user.name`/`user.email`; only workspace-fence-ref.ts passed an explicit identity. On a host with no git identity — container, CI, fresh machine — git refuses with "Author identity unknown" and an auto-merge stalls at `status:merging` with nothing surfaced. New `resolveCommitIdentity` in packages/engine/src/git-identity.ts resolves operator `commitAuthor*` settings > acting agent (`Name (Fusion) <slug@agents.fusion.local>`) > `Fusion <noreply@runfusion.ai>`, applied via `mergerCommitEnv` (author AND committer) and via `-c` args for the two paths that build their own argv. `commitAuthorEnabled: false` opts out and restores ambient config.
+- 0159ef8: summary: Prevent repeated gridlock alerts when detection briefly clears.
+  category: fix
+  dev: Preserves the wall-clock ntfy cooldown across transient gridlock detector clears.
+- 889728b: summary: Onboarding now offers a default model as soon as a provider connects, instead of staying empty.
+  category: fix
+  dev: `availableModels` was fetched at mount and re-fetched only for custom providers, so on a fresh install the Default Model section stayed on "No models available yet. Connect a provider above to see model options." after an OAuth login or API-key save, and no default was ever offered. Both connect paths now refresh the catalogue; once a provider is connected with nothing chosen, the section retitles to "Choose your default model" and scrolls into view once (guarded — JSDOM and non-DOM hosts have no scrollIntoView). Completion is also marked in a `finally` so a failed settings write cannot strand onboarding as unfinished.
+- 83a33be: summary: Show a persistent sign-in dialog during provider logins, with the paste field and status always visible.
+  category: fix
+  dev: New `ProviderLoginDialog` replaces the vanishing pre-flight confirm plus card-inline paste field for `requiresManualCode` OAuth flows. It is rendered as a SIBLING of the onboarding FloatingWindow (a portal moves the DOM node but not the React tree, so events bubbled to the window's raise-to-front handler and lifted it above the dialog), claims `nextFloatingZ()` once on open, and stops pointer propagation — now ratcheted for every portaled `.modal-overlay` in FloatingWindow.test.tsx. Spacing uses the shared `.modal-header`/`.modal-actions` primitives with `var(--modal-padding)` on every row; the paste field sinks to `var(--bg)` because `.form-input` and `.modal` both resolve to `var(--surface)`; the paste region is pinned outside the scroll area so Submit cannot scroll out of reach. Dialog anatomy rules documented in docs/dashboard-guide.md.
+- 5e95a93: summary: Fix the Quick Add model dropdown filter box so typing narrows the model list.
+  category: fix
+  dev: The quick-entry model menu's blanket onMouseDown preventDefault crossed the React portal boundary and suppressed focus on CustomModelDropdown's search input.
+- 7c1d062: summary: Settings authentication now uses the same persistent sign-in dialog as first-run onboarding.
+  category: fix
+  dev: Wires `ProviderLoginDialog` into SettingsModal/AuthenticationSection for `requiresManualCode` OAuth flows. Settings keys every flow by `stateKey` (`providerId`, or `providerId[instance]` for a named credential instance), so `loginDialog` carries `{ stateKey, providerId, instanceId, providerName }` and the row suppresses its own instructions/paste field only for the key the dialog owns — a sibling account keeps its inline field. Rendered outside `renderModalShell` because the modal presentation is a FloatingWindow and a portaled dialog inside its React subtree lifts the window above itself on first click.
+- 5e95a93: summary: Upgrade the bundled Pi runtime to 0.84.1 for updated provider and model support.
+  category: internal
+  dev: Advance the exact Pi closure from 0.82.1 to 0.84.1 and guard pi-client, pi-protocol, and pi-telemetry.
+- 5e95a93: summary: Quick Add model menu now labels the merger row “Merger” with spacing matching other roles.
+  category: fix
+  dev: Adds the tasks.modelMerger translation key for the top-level Quick Add menu row.
+- 5e95a93: summary: Fix the collapse/expand toggle in model selection dropdowns.
+  category: fix
+  dev: Stop portal-bound pointer and mouse events before document-level outside-close handlers can unmount CustomModelDropdown.
+- 5e95a93: summary: Show the task Recommendations tab only when a completed task has recommendations.
+  category: fix
+  dev: TaskDetailModal gates hasRecommendations on task-owned recommendations (fullDetail?.id === task.id, else the live prop); tab reconciliation waits for that same proof, not detailLoading.
+- 5e95a93: summary: Fix mission reconciliation failing every cycle with an internal scheduler error.
+  category: fix
+  dev: Preserves the listFeatures receiver and contains per-slice failures in Scheduler.reconcileActiveMissionAutomation.
+- 2160f75: summary: Keep approval audit timelines in lifecycle order when events share a timestamp.
+  category: fix
+  dev: `getApprovalAuditHistory` now applies an event lifecycle-rank tiebreak before audit ID.
+- 0a50e21: summary: New Task now inherits the workflow selected in Board or List.
+  category: fix
+  dev: Routes New Task opens through the useModalManager.openNewTask inheritance seam.
+- 5f29935: summary: Progress-preserving recovery rebounds now keep the task's checkout instead of leaving it to the idle sweep.
+  category: fix
+  dev: "Ten self-healing rebounds gained `preserveWorktree: true`; deliberate discards carry a `worktree-discard-intended` marker enforced by a new ratchet test."
+- 95466b7: summary: Remove stale taskStuck package exports and build/test aliases after deleting the dashboard helper.
+  category: fix
+  dev: "Cleans dashboard and dependency-graph configuration so no published export, Vite/Vitest alias, or TypeScript path points at the removed app/utils/taskStuck module."
+- 0540686: summary: Cut scheduler CPU and health-API latency by reading each task's workflow selection once per poll tick.
+  category: performance
+  dev: Adds a strictly per-tick/per-pass selection cache threaded through `resolveTaskParkedColumns` and the escalation/hydration sweeps in the scheduler; each task's `task_workflow_selection` is read at most once per tick instead of ~6x, eliminating the Drizzle SQL-query storm without any schema or resolver-behavior change.
+- c84924b: summary: Stop periodic self-healing git churn on paused projects and bound repair sweeps so health/UI stay fast.
+  category: performance
+  dev: SelfHealingManager no longer arms its periodic-maintenance setInterval when the project is paused (globalPause/enginePaused), and clears it on a pause transition, re-arming on unpause — so `git worktree prune` / `git worktree list --porcelain` / `git branch --list 'fusion/*'` no longer fire every maintenance cycle on paused projects (the production git storm behind 61-70% engine CPU). Batch-1 git-churn steps are demoted to at-most-hourly on active projects via a coarse-cadence gate, and `recoverDoneTaskMergeMetadata` is capped at 25 candidates/cycle (was O(done_tasks) x git per cycle). Pure-DB/FS housekeeping (task-lifecycle retention, GitHub check-state retention, symbol-lock reconcile, WAL checkpoint, operational/agent-log prune) still runs on the fast cadence under pause.
+- 3e6eea5: summary: Keep a task's live worktree through in-review branch rebinds instead of losing it to the idle sweep.
+  category: fix
+  dev: "`task:auto-rebind-applied` now records `preservedWorktree`; adds the reliability-lane worktree lifecycle certification suite."
+
 ## 0.77.0-beta.1
 
 ### Patch Changes
