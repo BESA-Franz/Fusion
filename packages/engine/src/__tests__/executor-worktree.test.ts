@@ -21,6 +21,7 @@ import type { Task, TaskDetail } from "@fusion/core";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { StepSessionExecutor } from "../execution/step-session-executor.js";
 import { executorLog } from "../logger.js";
+import { quoteShellArg } from "../executor/shell-quote.js";
 import { withRateLimitRetry } from "../errors/rate-limit-retry.js";
 import { runVerificationCommand as mockedRunVerificationCommand } from "../execution/verification-utils.js";
 import { __resetSandboxBackendForTests, __setSandboxBackendForTests } from "../sandbox/index.js";
@@ -2943,8 +2944,8 @@ describe("fresh worktree integration rebase", () => {
     await (executor as any).rebaseNewWorktreeOntoRemote("/repo/.worktrees/fn-8839", "fusion/fn-8839", "FN-8839");
 
     const commands = mockedExec.mock.calls.map(([command]) => String(command));
-    expect(commands).toContain("git fetch 'origin' 'develop'");
-    expect(commands).toContain("git rebase 'origin/develop'");
+    expect(commands).toContain(`git fetch ${quoteShellArg("origin")} ${quoteShellArg("develop")}`);
+    expect(commands).toContain(`git rebase ${quoteShellArg("origin/develop")}`);
     expect(commands).not.toContain(expect.stringContaining("rev-parse --abbrev-ref HEAD"));
     expect(commands).not.toContain(expect.stringContaining("origin/HEAD"));
     expect(store.logEntry).toHaveBeenCalledWith(
@@ -2971,8 +2972,8 @@ describe("fresh worktree integration rebase", () => {
 
     expect(mockedExec.mock.calls.map(([command]) => String(command))).toEqual(expect.arrayContaining([
       "git symbolic-ref --short refs/remotes/origin/HEAD",
-      "git fetch 'origin' 'release'",
-      "git rebase 'origin/release'",
+      `git fetch ${quoteShellArg("origin")} ${quoteShellArg("release")}`,
+      `git rebase ${quoteShellArg("origin/release")}`,
     ]));
 
     resetExecutorMocks();
@@ -2989,8 +2990,8 @@ describe("fresh worktree integration rebase", () => {
     await (createWorktreeExecutor(fallbackStore, "/repo") as any).rebaseNewWorktreeOntoRemote("/worktree", "fusion/fn-8839", "FN-8839");
 
     const fallbackCommands = mockedExec.mock.calls.map(([command]) => String(command));
-    expect(fallbackCommands).toContain("git fetch 'origin' 'main'");
-    expect(fallbackCommands).toContain("git rebase 'origin/main'");
+    expect(fallbackCommands).toContain(`git fetch ${quoteShellArg("origin")} ${quoteShellArg("main")}`);
+    expect(fallbackCommands).toContain(`git rebase ${quoteShellArg("origin/main")}`);
     expect(fallbackCommands).not.toContain(expect.stringContaining("rev-parse --abbrev-ref HEAD"));
   });
 
@@ -3024,8 +3025,8 @@ describe("fresh worktree integration rebase", () => {
     await expect((executor as any).rebaseNewWorktreeOntoRemote("/worktree", "fusion/fn-8839", "FN-8839")).resolves.toBeUndefined();
 
     const commands = mockedExec.mock.calls.map(([command]) => String(command));
-    expect(commands).toContain("git fetch 'origin' 'develop'");
-    expect(commands).not.toContain("git rebase 'origin/develop'");
+    expect(commands).toContain(`git fetch ${quoteShellArg("origin")} ${quoteShellArg("develop")}`);
+    expect(commands).not.toContain(`git rebase ${quoteShellArg("origin/develop")}`);
     expect(store.logEntry).toHaveBeenCalledWith(
       "FN-8839",
       "Could not refresh new worktree rebase target origin/develop — fetch failed; kept local base.",
@@ -3049,7 +3050,7 @@ describe("fresh worktree integration rebase", () => {
     await Promise.resolve();
 
     const commands = mockedExec.mock.calls.map(([command]) => String(command));
-    expect(commands).toContain("git rebase 'origin/develop'");
+    expect(commands).toContain(`git rebase ${quoteShellArg("origin/develop")}`);
     expect(commands).not.toContain("git rebase --abort");
   });
 
@@ -3060,7 +3061,7 @@ describe("fresh worktree integration rebase", () => {
       worktreeRebaseRemote: "origin",
       integrationBranch: "develop",
     });
-    mockGitCommands((command) => command === "git rebase 'origin/develop'" || command === "git rebase --abort"
+    mockGitCommands((command) => command === `git rebase ${quoteShellArg("origin/develop")}` || command === "git rebase --abort"
       ? new Error("conflict")
       : null);
     const executor = createWorktreeExecutor(store, "/repo");
