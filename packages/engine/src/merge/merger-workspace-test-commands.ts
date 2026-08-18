@@ -13,7 +13,7 @@ const BOUNDED_GIT_DIFF_MAX_BUFFER = 10 * 1024 * 1024;
 
 /** Shell-safe single-argument quoting for command composition. */
 function quoteArg(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 /** Result of inferring a default test command */

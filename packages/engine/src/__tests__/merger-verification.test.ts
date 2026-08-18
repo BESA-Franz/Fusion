@@ -181,6 +181,9 @@ const { existsSync: mockedExistsSyncRaw, readFileSync: mockedReadFileSyncRaw, re
 const mockedExistsSync = vi.mocked(mockedExistsSyncRaw);
 const mockedReadFileSync = vi.mocked(mockedReadFileSyncRaw);
 const mockedReaddirSync = vi.mocked(mockedReaddirSyncRaw);
+const quoteArg = (value: string) => process.platform === "win32"
+  ? JSON.stringify(value)
+  : `'${value.replace(/'/g, "'\\''")}'`;
 
 function createMockStore(taskOverrides: Partial<Task> = {}, allTasks: Task[] = []) {
   const baseTask: Task = {
@@ -2913,7 +2916,7 @@ describe("mapChangedFilesToPackageNames", () => {
 
   it("assigns to the longest matching prefix", () => {
     mockedReadFileSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, "/");
       if (path.includes("plugins/examples/foo")) return JSON.stringify({ name: "@fusion/example-foo" });
       if (path.includes("plugins")) return JSON.stringify({ name: "@fusion/plugins" });
       return JSON.stringify({ name: "unknown" });
@@ -2960,7 +2963,7 @@ describe("inferDefaultTestCommand — pnpm workspace scoping", () => {
 
   it("returns pnpm test (unscoped/inferred) when no git context provided", () => {
     mockedExistsSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, "/");
       return path.includes("pnpm-lock.yaml") || path.includes("pnpm-workspace.yaml");
     });
 
@@ -2971,7 +2974,7 @@ describe("inferDefaultTestCommand — pnpm workspace scoping", () => {
 
   it("returns scoped command (inferred-scoped) when monorepo + git context + 1 changed package", () => {
     mockedExistsSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, "/");
       // workspace files exist; package.json for dashboard exists
       if (path.includes("pnpm-lock.yaml")) return true;
       if (path.includes("pnpm-workspace.yaml")) return true;
@@ -2979,7 +2982,7 @@ describe("inferDefaultTestCommand — pnpm workspace scoping", () => {
       return false;
     });
     mockedReadFileSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, "/");
       if (path.includes("pnpm-workspace.yaml")) {
         return `packages:\n  - "packages/*"\n`;
       }
@@ -3000,25 +3003,25 @@ describe("inferDefaultTestCommand — pnpm workspace scoping", () => {
     });
 
     const result = inferDefaultTestCommand("/tmp/root", undefined, undefined, "main", "fusion/fn-123");
-    expect(result?.command).toBe(`pnpm --filter '...@fusion/dashboard' test`);
+    expect(result?.command).toBe(`pnpm --filter ${quoteArg("...@fusion/dashboard")} test`);
     expect(result?.command).not.toMatch(/\.\.\.\^/);
     expect(result?.testSource).toBe("inferred-scoped");
     expect(mockedExecSync).toHaveBeenCalledWith(
-      "git diff --name-only 'main'...'fusion/fn-123'",
+      `git diff --name-only ${quoteArg("main")}...${quoteArg("fusion/fn-123")}`,
       expect.objectContaining({ cwd: "/tmp/root", encoding: "utf-8" }),
     );
   });
 
   it("returns command with 2 filters when 2 packages are changed", () => {
     mockedExistsSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, "/");
       if (path.includes("pnpm-lock.yaml")) return true;
       if (path.includes("pnpm-workspace.yaml")) return true;
       if (path.includes("package.json")) return true;
       return false;
     });
     mockedReadFileSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, "/");
       if (path.includes("pnpm-workspace.yaml")) return `packages:\n  - "packages/*"\n`;
       if (path.includes("dashboard/package.json")) return JSON.stringify({ name: "@fusion/dashboard" });
       if (path.includes("engine/package.json")) return JSON.stringify({ name: "@fusion/engine" });
@@ -3038,7 +3041,7 @@ describe("inferDefaultTestCommand — pnpm workspace scoping", () => {
 
     const result = inferDefaultTestCommand("/tmp/root", undefined, undefined, "main", "fusion/fn-123");
     expect(result?.command).toBe(
-      "pnpm --filter '...@fusion/dashboard' --filter '...@fusion/engine' test",
+      `pnpm --filter ${quoteArg("...@fusion/dashboard")} --filter ${quoteArg("...@fusion/engine")} test`,
     );
     expect(result?.command).not.toMatch(/\.\.\.\^/);
     expect(result?.testSource).toBe("inferred-scoped");
@@ -3046,11 +3049,11 @@ describe("inferDefaultTestCommand — pnpm workspace scoping", () => {
 
   it("keeps a metacharacter package name shell-quoted inside a dependents selector", () => {
     mockedExistsSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, "/");
       return path.includes("pnpm-lock.yaml") || path.includes("pnpm-workspace.yaml") || path.includes("package.json");
     });
     mockedReadFileSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, "/");
       if (path.includes("pnpm-workspace.yaml")) return `packages:\n  - "packages/*"\n`;
       if (path.includes("dashboard/package.json")) return JSON.stringify({ name: "@evil/pkg'; rm -rf /" });
       return JSON.stringify({ name: "unknown" });
@@ -3063,20 +3066,20 @@ describe("inferDefaultTestCommand — pnpm workspace scoping", () => {
       : "");
 
     const result = inferDefaultTestCommand("/tmp/root", undefined, undefined, "main", "fusion/fn-123");
-    expect(result?.command).toBe("pnpm --filter '...@evil/pkg'\\''; rm -rf /' test");
+    expect(result?.command).toBe(`pnpm --filter ${quoteArg("...@evil/pkg'; rm -rf /")} test`);
     expect(result?.command).not.toMatch(/\.\.\.\^/);
   });
 
   it("falls back to pnpm test (inferred) when all changes are root-only files", () => {
     mockedExistsSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, "/");
       if (path.includes("pnpm-lock.yaml")) return true;
       if (path.includes("pnpm-workspace.yaml")) return true;
       if (path.includes("package.json")) return true;
       return false;
     });
     mockedReadFileSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, "/");
       if (path.includes("pnpm-workspace.yaml")) return `packages:\n  - "packages/*"\n`;
       return JSON.stringify({ name: "unknown" });
     });
@@ -3099,7 +3102,7 @@ describe("inferDefaultTestCommand — pnpm workspace scoping", () => {
 
   it("falls back to pnpm test (inferred) when no git context", () => {
     mockedExistsSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, "/");
       return path.includes("pnpm-lock.yaml") || path.includes("pnpm-workspace.yaml");
     });
 
@@ -3111,7 +3114,7 @@ describe("inferDefaultTestCommand — pnpm workspace scoping", () => {
 
   it("explicit testCommand always wins over scoping", () => {
     mockedExistsSync.mockImplementation((p: any) => {
-      const path = String(p);
+      const path = String(p).replace(/\\/g, "/");
       return path.includes("pnpm-lock.yaml") || path.includes("pnpm-workspace.yaml");
     });
 
