@@ -7,11 +7,150 @@ name: Test Release
 
 on:
   workflow_dispatch:
+    inputs:
+      authorized_windows_runtime_only:
+        description: "Build only the commit-bound authorized Windows runtime artifact"
+        type: boolean
+        default: false
 
 jobs:
+  build-authorized-windows-runtime:
+    name: Build Authorized Windows Runtime
+    if: ${{ inputs.authorized_windows_runtime_only == true }}
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Verify immutable clean source
+        id: source
+        shell: pwsh
+        run: |
+          $commit = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($commit -notmatch '^[0-9a-f]{40}$') {
+            throw "Checkout did not resolve to a full commit."
+          }
+          $dirty = @(git status --porcelain --untracked-files=all)
+          if ($dirty.Count -ne 0) {
+            throw "Checkout is not clean; refusing to authorize a runtime artifact."
+          }
+          "FUSION_RUNTIME_COMMIT=$commit" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Setup Node and install dependencies
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Verify HybridExecutor error sink
+        run: pnpm --filter @fusion/engine exec vitest run src/__tests__/hybrid-executor.test.ts --silent=passed-only --reporter=dot
+
+      - name: Verify PostgreSQL schema 0060
+        run: pnpm --filter @fusion/core exec vitest run src/__tests__/postgres/schema-applier.test.ts --silent=passed-only --reporter=dot
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build runtime once
+        run: pnpm build:full
+
+      - name: Package and authorize runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactRoot = Join-Path $env:RUNNER_TEMP 'fusion-runtime-artifact'
+          $packRoot = Join-Path $env:RUNNER_TEMP 'fusion-runtime-pack'
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'fusion-runtime-extract'
+          $verifyRoot = Join-Path $env:RUNNER_TEMP 'fusion-runtime-verify'
+          New-Item -ItemType Directory -Force -Path $artifactRoot, $packRoot, $extractRoot, $verifyRoot | Out-Null
+
+          $build = [string]((Get-Content -Raw -LiteralPath 'packages/cli/dist/client/version.json' | ConvertFrom-Json).version)
+          if ($build -notmatch '^[A-Za-z0-9._-]+$') {
+            throw "Generated build identity is invalid."
+          }
+          $packageVersion = [string]((Get-Content -Raw -LiteralPath 'packages/cli/package.json' | ConvertFrom-Json).version)
+          if ($packageVersion -ne '0.77.0-beta.2') {
+            throw "Unexpected runtime package version: $packageVersion"
+          }
+          if (-not (Test-Path -LiteralPath 'packages/core/src/postgres/migrations/0060_fn_9059_workspace_coordination_leases.sql' -PathType Leaf)) {
+            throw 'Required PostgreSQL migration 0060 is absent.'
+          }
+
+          pnpm --filter @runfusion/fusion pack --pack-destination $packRoot
+          if ($LASTEXITCODE -ne 0) { throw 'pnpm pack failed.' }
+          $tarballs = @(Get-ChildItem -LiteralPath $packRoot -Filter '*.tgz' -File)
+          if ($tarballs.Count -ne 1) { throw "Expected exactly one packed CLI tarball, found $($tarballs.Count)." }
+          tar -xf $tarballs[0].FullName -C $extractRoot
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime package extraction failed.' }
+
+          $packageRoot = Join-Path $extractRoot 'package'
+          foreach ($relativePath in @('bin.mjs', 'package.json', 'dist/client/version.json')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $relativePath) -PathType Leaf)) {
+              throw "Packed runtime is incomplete: $relativePath"
+            }
+          }
+          $artifactName = "fusion-runtime-build-$build.zip"
+          $artifactPath = Join-Path $artifactRoot $artifactName
+          Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $artifactPath -CompressionLevel Optimal
+          Expand-Archive -LiteralPath $artifactPath -DestinationPath $verifyRoot
+          foreach ($relativePath in @('bin.mjs', 'package.json', 'dist/client/version.json')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $verifyRoot $relativePath) -PathType Leaf)) {
+              throw "Runtime ZIP is incomplete: $relativePath"
+            }
+          }
+          $verifiedBuild = [string]((Get-Content -Raw -LiteralPath (Join-Path $verifyRoot 'dist/client/version.json') | ConvertFrom-Json).version)
+          if ($verifiedBuild -ne $build) { throw 'Runtime ZIP build identity changed during packaging.' }
+
+          $artifactSha = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToUpperInvariant()
+          $receiptPath = Join-Path $artifactRoot "fusion-runtime-build-authorization-$build.json"
+          $receipt = [ordered]@{
+            schemaVersion = 1
+            receiptType = 'fusion-runtime-build-authorization'
+            status = 'authorized'
+            commit = $env:FUSION_RUNTIME_COMMIT
+            artifactSha256 = $artifactSha
+            build = $build
+            packageVersion = $packageVersion
+            schemaBaselineVersion = '0060'
+            sourceTree = [ordered]@{ clean = $true }
+            requiredFixes = [ordered]@{
+              hybridExecutorErrorSink = [ordered]@{
+                status = 'passed'
+                sourceCommit = $env:FUSION_RUNTIME_COMMIT
+                sourceFile = 'packages/engine/src/concurrency/hybrid-executor.ts'
+                testFile = 'packages/engine/src/__tests__/hybrid-executor.test.ts'
+              }
+            }
+            workflow = [ordered]@{
+              repository = $env:GITHUB_REPOSITORY
+              runId = $env:GITHUB_RUN_ID
+              runAttempt = $env:GITHUB_RUN_ATTEMPT
+            }
+            authorizedAt = [DateTimeOffset]::UtcNow.ToString('o')
+            secretsRecorded = $false
+          }
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($receiptPath, (($receipt | ConvertTo-Json -Depth 8) + "`n"), $utf8NoBom)
+          $receiptSha = (Get-FileHash -LiteralPath $receiptPath -Algorithm SHA256).Hash.ToUpperInvariant()
+          [System.IO.File]::WriteAllText("$artifactPath.sha256", "$artifactSha  $artifactName`n", $utf8NoBom)
+          [System.IO.File]::WriteAllText("$receiptPath.sha256", "$receiptSha  $([System.IO.Path]::GetFileName($receiptPath))`n", $utf8NoBom)
+
+          "FUSION_RUNTIME_BUILD=$build" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload authorized runtime
+        uses: actions/upload-artifact@v7
+        with:
+          name: fusion-authorized-windows-runtime-${{ env.FUSION_RUNTIME_BUILD }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/fusion-runtime-artifact/*.zip
+            ${{ runner.temp }}/fusion-runtime-artifact/*.zip.sha256
+            ${{ runner.temp }}/fusion-runtime-artifact/*.json
+            ${{ runner.temp }}/fusion-runtime-artifact/*.json.sha256
+
   # ── Build and test platform-specific binaries ─────────────────────────
   build-binaries:
     name: Build & Test ${{ matrix.target }}
+    if: ${{ inputs.authorized_windows_runtime_only != true }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -117,6 +256,7 @@ jobs:
   # embedded-postgres does not publish a native Windows ARM64 payload.
   build-desktop-windows:
     name: Build Desktop Windows EXE
+    if: ${{ inputs.authorized_windows_runtime_only != true }}
     runs-on: windows-latest
 
     steps:
@@ -174,6 +314,7 @@ jobs:
   # ── Build macOS desktop artifacts ────────────────────────────────────
   build-desktop-macos:
     name: Build Desktop macOS DMG/ZIP
+    if: ${{ inputs.authorized_windows_runtime_only != true }}
     runs-on: macos-latest
 
     steps:
@@ -276,6 +417,7 @@ jobs:
   # ── Build Linux desktop artifacts ────────────────────────────────────
   build-desktop-linux:
     name: Build Desktop Linux Artifacts
+    if: ${{ inputs.authorized_windows_runtime_only != true }}
     runs-on: ubuntu-latest
 
     steps:
@@ -380,6 +522,7 @@ jobs:
   # and is tracked separately from sideload release artifacts.
   build-android:
     name: Build Android APK/AAB
+    if: ${{ inputs.authorized_windows_runtime_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Job-level env mirrors the desktop signing pattern: step `if:` conditions
@@ -516,6 +659,7 @@ jobs:
   # ── Collect all artifacts ─────────────────────────────────────────────
   collect:
     name: Collect Artifacts
+    if: ${{ inputs.authorized_windows_runtime_only != true }}
     needs: [build-binaries, build-desktop-windows, build-desktop-macos, build-desktop-linux, build-android]
     runs-on: ubuntu-latest
 
