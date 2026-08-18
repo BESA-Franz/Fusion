@@ -232,8 +232,8 @@ export function AppModals({
     modalManager.closeSetupWizard();
   }, [modalManager.closeSetupWizard, removeNav]);
 
-  const handleOpenNewTask = useCallback(() => {
-    modalManager.openNewTask();
+  const handleOpenNewTask = useCallback((workflowId?: string | null) => {
+    modalManager.openNewTask(workflowId);
   }, [modalManager]);
 
   const handleOpenGitHubImport = useCallback(() => {

@@ -1249,8 +1249,8 @@ function AppInner() {
     handleTaskViewChange("command-center");
   }, [handleTaskViewChange]);
 
-  const openNewTaskWithNav = useCallback(() => {
-    modalManager.openNewTask();
+  const openNewTaskWithNav = useCallback((workflowId?: string | null) => {
+    modalManager.openNewTask(workflowId);
     pushNav({ type: "modal", close: modalManager.closeNewTask });
   }, [modalManager, pushNav]);
 

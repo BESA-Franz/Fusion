@@ -190,7 +190,7 @@ export interface MainContentProps {
   openTaskDetailInMainPanel: (task: Task | TaskDetail, initialTab?: DetailTaskTab) => void;
   openGroupModalWithNav: (groupId: string) => void;
   handleBoardQuickCreate: (input: TaskCreateInput) => Promise<Task>;
-  openNewTaskWithNav: () => void;
+  openNewTaskWithNav: (workflowId?: string | null) => void;
   subtaskBreakdownEnabled: boolean;
   openSubtaskBreakdownWithNav: (description: string, workflowId?: string | null) => void;
   toggleAutoMerge: () => Promise<void>;

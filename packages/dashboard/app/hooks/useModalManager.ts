@@ -4,6 +4,7 @@ import type { Task, TaskDetail } from "@fusion/core";
 import type { SectionId } from "../components/SettingsModal";
 import type { ToastType } from "./useToast";
 import { removeScopedItem } from "../utils/projectStorage";
+import { readBoardWorkflowSelection } from "../utils/boardWorkflowSelection";
 import { applyLocalTaskPatch } from "./useTasks";
 
 /*
@@ -292,16 +293,26 @@ export function useModalManager(options: UseModalManagerOptions): ModalManager {
       modelOnboardingOpen,
   );
 
+  /*
+  FNXC:TaskWorkflowSelection 2026-08-18-03:33:
+  The New Task dialog must inherit the currently selected board workflow on every open surface.
+  Explicit workflow ids and explicit null take precedence, while the aggregate sentinel never crosses
+  this task-creation boundary.
+  */
+  const resolveNewTaskInitialWorkflowId = useCallback((workflowId: unknown): string | null | undefined => {
+    if (typeof workflowId === "string" || workflowId === null) return workflowId;
+    return readBoardWorkflowSelection(options.projectId) ?? undefined;
+  }, [options.projectId]);
   const openNewTask = useCallback((workflowId?: string | null) => {
     setNewTaskInitialDescription(null);
-    setNewTaskInitialWorkflowId(workflowId);
+    setNewTaskInitialWorkflowId(resolveNewTaskInitialWorkflowId(workflowId));
     setNewTaskModalOpen(true);
-  }, []);
+  }, [resolveNewTaskInitialWorkflowId]);
   const openNewTaskWithDescription = useCallback((description: string) => {
     setNewTaskInitialDescription(description);
-    setNewTaskInitialWorkflowId(undefined);
+    setNewTaskInitialWorkflowId(resolveNewTaskInitialWorkflowId(undefined));
     setNewTaskModalOpen(true);
-  }, []);
+  }, [resolveNewTaskInitialWorkflowId]);
   const closeNewTask = useCallback(() => {
     setNewTaskModalOpen(false);
     setNewTaskInitialDescription(null);

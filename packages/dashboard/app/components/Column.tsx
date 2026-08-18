@@ -130,7 +130,7 @@ interface ColumnProps {
   onOpenGroupModal?: (groupId: string) => void;
   addToast: (message: string, type?: ToastType) => void;
   onQuickCreate?: (input: TaskCreateInput) => Promise<Task | void>;
-  onNewTask?: () => void;
+  onNewTask?: (workflowId?: string | null) => void;
   autoMerge?: boolean;
   /** Project merge strategy for Task Detail-equivalent card context actions. */
   mergeStrategy?: string;
@@ -924,7 +924,7 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, showWorktree
           </label>
         )}
         {onNewTask && (
-          <button className="btn btn-task-create btn-sm" onClick={onNewTask}>
+          <button className="btn btn-task-create btn-sm" onClick={() => onNewTask()}>
             + {t("column.newTask", "New Task")}
           </button>
         )}

@@ -1914,6 +1914,7 @@ describe("ListView", () => {
 
   it("shows all workflows in ListView without submitting the aggregate sentinel", async () => {
     const mockOnQuickCreate = vi.fn().mockResolvedValue({ id: "FN-new" });
+    const mockOnNewTask = vi.fn();
     vi.mocked(fetchBoardWorkflows).mockResolvedValue({
       flagEnabled: true,
       defaultWorkflowId: "builtin:coding",
@@ -1931,6 +1932,7 @@ describe("ListView", () => {
         createMockTask({ id: "FN-003", column: "triage", title: "Stale workflow task" }),
       ],
       onQuickCreate: mockOnQuickCreate,
+      onNewTask: mockOnNewTask,
     });
 
     await selectWorkflow(ALL_WORKFLOWS_BOARD_VIEW_ID);
@@ -1940,6 +1942,9 @@ describe("ListView", () => {
     expect(screen.getByText("Stale workflow task")).toBeInTheDocument();
     expect(screen.getByTestId("workflow-switcher")).toHaveTextContent("All workflows");
     expect(screen.queryByTestId(`workflow-switcher-edit-${ALL_WORKFLOWS_BOARD_VIEW_ID}`)).toBeNull();
+
+    fireEvent.click(screen.getByText("+ New Task"));
+    expect(mockOnNewTask).toHaveBeenCalledWith(undefined);
 
     fireEvent.change(screen.getByTestId("quick-entry-input"), { target: { value: "Aggregate quick add" } });
     fireEvent.keyDown(screen.getByTestId("quick-entry-input"), { key: "Enter" });
@@ -3204,16 +3209,16 @@ describe("ListView", () => {
     expect(screen.getAllByRole("row").filter((r) => r.getAttribute("data-id"))).toHaveLength(1);
   });
 
-  it("calls onNewTask when + New Task button is clicked", () => {
+  it("forwards the selected workflow rather than a click event when + New Task is clicked", () => {
     const mockOnNewTask = vi.fn();
 
     renderListView({ onNewTask: mockOnNewTask });
 
-    const newTaskButton = screen.getByText("+ New Task");
-    fireEvent.click(newTaskButton);
+    fireEvent.click(screen.getByText("+ New Task"));
 
-    expect(mockOnNewTask).toHaveBeenCalled();
+    expect(mockOnNewTask).toHaveBeenCalledWith("builtin:coding");
   });
+
 
   it("keeps Bulk Edit, View, and + New Task together in the desktop sidebar controls", () => {
     renderListView({}, { openViewOptions: false });

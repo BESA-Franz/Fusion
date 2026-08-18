@@ -284,7 +284,7 @@ interface ListViewProps {
   openMobileTasksInPopup?: boolean;
   addToast: (message: string, type?: ToastType) => void;
   globalPaused?: boolean;
-  onNewTask?: () => void;
+  onNewTask?: (workflowId?: string | null) => void;
   onQuickCreate?: (input: TaskCreateInput) => Promise<Task | void>;
   availableModels?: ModelInfo[];
   favoriteProviders?: string[];
@@ -2814,7 +2814,10 @@ export function ListView({
         {t("listView.viewOptions", "View")}
       </button>
       {onNewTask ? (
-        <button className="btn btn-task-create btn-sm list-new-task-action" onClick={onNewTask}>
+        <button
+          className="btn btn-task-create btn-sm list-new-task-action"
+          onClick={() => onNewTask(isAllWorkflowsSelected ? undefined : selectedWorkflow?.id)}
+        >
           {t("listView.newTask", "+ New Task")}
         </button>
       ) : null}
