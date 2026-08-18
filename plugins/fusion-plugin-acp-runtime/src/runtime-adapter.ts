@@ -18,6 +18,7 @@ import {
 } from "./provider.js";
 import { buildSpawnEnv } from "./process-manager.js";
 import { buildPromptBlocks, extractPromptImagesFromOptions } from "./prompt-builder.js";
+import { startFusionToolBridge, type FusionToolBridge, type ToolLike } from "./tool-bridge.js";
 import type {
   AgentRuntime,
   AgentRuntimeOptions,
@@ -88,29 +89,56 @@ export class AcpRuntimeAdapter implements AgentRuntime {
     // caller supplied them (U10 — Route A); absent/empty keeps the Route B
     // read-only ask posture. Tool calls still route through the U5 permission floor.
     //
+    // FNXC:AcpCustomTools 2026-08-16-00:30:
+    // Engine customTools (fn_*) ride the same mcpServers channel: a loopback tool
+    // bridge is started in-process and registered as a stdio MCP server so any
+    // ACP agent (Hermes ACP, Prime, ...) can invoke Fusion closures. The bridge
+    // is disposed on session/new failure and on session teardown.
+    //
     // FNXC:GrokAcp 2026-07-11-14:00:
     // Callers (Grok runtime) may also pass `_meta` (pluginDirs / rules /
     // systemPromptOverride) via options.sessionMeta so agent-specific skill and
     // prompt setup rides on session/new without a second protocol hop.
+    let toolBridge: FusionToolBridge | null = null;
+    let toolBridgeFailure: "mcp-schema-server-missing" | "bridge-start-failed" | undefined;
     let sessionId: string;
+    const customTools = Array.isArray(options.customTools) ? (options.customTools as ToolLike[]) : [];
     try {
+      if (customTools.length > 0) {
+        try {
+          toolBridge = await startFusionToolBridge(customTools);
+        } catch (error) {
+          toolBridgeFailure = (error as { code?: string }).code === "mcp-schema-server-missing"
+            ? "mcp-schema-server-missing"
+            : "bridge-start-failed";
+          options.onText?.(`FUSION_TOOL_BRIDGE_FAILED: ${toolBridgeFailure}`);
+        }
+      }
       const sessionMeta =
         options && typeof options === "object" && "sessionMeta" in options
           ? (options as { sessionMeta?: Record<string, unknown> }).sessionMeta
           : undefined;
       const opened = await newAcpSession(connection, {
         cwd: options.cwd,
-        mcpServers: options.mcpServers,
+        mcpServers: [...(options.mcpServers ?? []), ...(toolBridge ? [toolBridge.mcpServer] : [])],
         meta: sessionMeta,
       });
       sessionId = opened.sessionId;
     } catch (err) {
-      // Don't leak the subprocess if session/new fails after a good handshake.
+      // Don't leak the subprocess or the bridge if session/new fails after a
+      // good handshake.
+      await toolBridge?.dispose();
       connection.dispose();
       throw err;
     }
 
     let disposed = false;
+    let bridgeDisposePromise: Promise<void> | undefined;
+    let disposePromise = Promise.resolve();
+    const disposeBridge = (): Promise<void> => {
+      bridgeDisposePromise ??= toolBridge?.dispose() ?? Promise.resolve();
+      return bridgeDisposePromise;
+    };
     const session: AcpSession = {
       model,
       systemPrompt: options.systemPrompt,
@@ -118,6 +146,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
       cwd: options.cwd,
       lastModelDescription: `acp/${model}`,
       callbacks,
+      fusionToolBridgeError: toolBridgeFailure ? { reasonCode: toolBridgeFailure } : undefined,
       // Persist the per-run gate (KTD3) so U5/U7 can reach the live action gate.
       gate: options.actionGateContext,
       connection,
@@ -125,12 +154,19 @@ export class AcpRuntimeAdapter implements AgentRuntime {
       // turn that trips the per-turn output cap can't latch and suppress every
       // subsequent turn (FIX 1).
       resetTurn,
+      disposeBridge,
+      get disposePromise() {
+        return disposePromise;
+      },
       dispose: () => {
         if (disposed) return;
         disposed = true;
         // Drain in-flight permission requests BEFORE the registry kill so a
         // blocked agent is released (KTD4a — the SIGKILL is still authoritative).
         cancelPending();
+        // Close the loopback tool bridge so no port or schema outlives the
+        // session (idempotent).
+        disposePromise = disposeBridge();
         connection.dispose();
       },
     };
@@ -184,6 +220,7 @@ export class AcpRuntimeAdapter implements AgentRuntime {
     if (acp.connection && acp.sessionId) {
       await cancelAcpSession(acp.connection, acp.sessionId);
     }
+    await acp.disposeBridge?.();
     session.dispose();
   }
 }

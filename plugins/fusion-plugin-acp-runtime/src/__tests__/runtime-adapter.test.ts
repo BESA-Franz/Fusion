@@ -1,8 +1,10 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { AcpRuntimeAdapter } from "../runtime-adapter.js";
 import { killAllProcesses, activeProcessCount } from "../process-manager.js";
+import * as provider from "../provider.js";
+import * as toolBridge from "../tool-bridge.js";
 import type { AcpSession, AgentRuntimeOptions } from "../types.js";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/echo-agent.mjs", import.meta.url));
@@ -119,6 +121,145 @@ describe("AcpRuntimeAdapter (U3)", () => {
       expect(adapter.describeModel(session)).toBe("acp/echo-agent");
     } finally {
       await adapter.dispose(session);
+    }
+  });
+});
+
+describe("AcpRuntimeAdapter custom-tools bridge (FNXC:AcpCustomTools)", () => {
+  it("keeps the ACP session alive when the custom-tools bridge cannot start", async () => {
+    let captured: { mcpServers?: unknown[] } | undefined;
+    const onText = vi.fn();
+    const adapter = makeAdapter();
+    const bridgeSpy = vi.spyOn(toolBridge, "startFusionToolBridge").mockRejectedValue(new Error("bind failed"));
+    const providerSpy = vi.spyOn(provider, "newAcpSession").mockImplementation(async (_connection, opts) => {
+      captured = opts;
+      return { sessionId: "degraded-session" };
+    });
+    try {
+      const { session } = await adapter.createSession(makeOptions({
+        onText,
+        customTools: [{ name: "fn_task_list", execute: async () => "ok" }],
+      }));
+      expect(session.sessionId).toBe("degraded-session");
+      expect(session.fusionToolBridgeError).toEqual({ reasonCode: "bridge-start-failed" });
+      expect(captured?.mcpServers ?? []).toHaveLength(0);
+      expect(onText).toHaveBeenCalledWith("FUSION_TOOL_BRIDGE_FAILED: bridge-start-failed");
+      await adapter.dispose(session);
+    } finally {
+      providerSpy.mockRestore();
+      bridgeSpy.mockRestore();
+    }
+  });
+
+  it("registers the tool bridge in session/new mcpServers when customTools are provided", async () => {
+    let captured: { mcpServers?: unknown[] } | undefined;
+    const spy = vi
+      .spyOn(provider, "newAcpSession")
+      .mockImplementation(async (_connection, opts) => {
+        captured = opts;
+        return { sessionId: "bridge-test-session" };
+      });
+    const adapter = makeAdapter();
+    let session: AcpSession | undefined;
+    try {
+      const created = await adapter.createSession(
+        makeOptions({
+          customTools: [
+            {
+              name: "fn_heartbeat_done",
+              description: "Finish heartbeat",
+              parameters: { type: "object", properties: {} },
+              execute: async () => ({ text: "ok" }),
+            },
+          ],
+        }),
+      );
+      session = created.session;
+      expect(captured?.mcpServers).toHaveLength(1);
+      expect(captured?.mcpServers?.[0]).toMatchObject({
+        name: "fusion-custom-tools",
+        command: process.execPath,
+      });
+      const bridgeUrl = (captured?.mcpServers?.[0] as { env?: Array<{ name: string; value: string }> }).env?.find(
+        (entry) => entry.name === "FUSION_ACP_TOOL_BRIDGE_URL",
+      )?.value;
+      expect(bridgeUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      await adapter.dispose(session);
+      await expect(fetch(`${bridgeUrl}/tool-call`)).rejects.toThrow();
+    } finally {
+      // Dispose in finally so a failed assertion cannot leak the bridge/socket.
+      if (session) await adapter.dispose(session);
+      spy.mockRestore();
+    }
+  });
+
+  it("direct session.dispose exposes completion of bridge shutdown", async () => {
+    let captured: { mcpServers?: unknown[] } | undefined;
+    const spy = vi.spyOn(provider, "newAcpSession").mockImplementation(async (_connection, opts) => {
+      captured = opts;
+      return { sessionId: "direct-dispose-session" };
+    });
+    let session: AcpSession | undefined;
+    try {
+      session = (await makeAdapter().createSession(
+        makeOptions({ customTools: [{ name: "fn_direct_dispose", execute: async () => "ok" }] }),
+      )).session as AcpSession;
+      const bridgeUrl = (captured?.mcpServers?.[0] as { env: Array<{ name: string; value: string }> })
+        .env.find((entry) => entry.name === "FUSION_ACP_TOOL_BRIDGE_URL")!.value;
+      session.dispose();
+      await expect(session.disposePromise).resolves.toBeUndefined();
+      await expect(fetch(`${bridgeUrl}/tool-call`)).rejects.toThrow();
+    } finally {
+      session?.dispose();
+      await session?.disposePromise;
+      spy.mockRestore();
+    }
+  });
+
+  it("does not add a bridge when no customTools are supplied", async () => {
+    let captured: { mcpServers?: unknown[] } | undefined;
+    const spy = vi
+      .spyOn(provider, "newAcpSession")
+      .mockImplementation(async (_connection, opts) => {
+        captured = opts;
+        return { sessionId: "plain-session" };
+      });
+    const adapter = makeAdapter();
+    try {
+      const { session } = await adapter.createSession(makeOptions());
+      expect(captured?.mcpServers ?? []).toHaveLength(0);
+      await adapter.dispose(session);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("disposes the bridge when session/new fails", async () => {
+    const spy = vi
+      .spyOn(provider, "newAcpSession")
+      .mockImplementation(async () => {
+        throw new Error("session/new failed");
+      });
+    const adapter = makeAdapter();
+    try {
+      await expect(
+        adapter.createSession(
+          makeOptions({
+            customTools: [
+              {
+                name: "fn_task_list",
+                description: "List",
+                parameters: {},
+                execute: async () => ({ text: "ok" }),
+              },
+            ],
+          }),
+        ),
+      ).rejects.toThrow(/session\/new failed/);
+      // The subprocess must be cleaned up even though session/new failed.
+      expect(activeProcessCount()).toBe(0);
+    } finally {
+      spy.mockRestore();
     }
   });
 });
