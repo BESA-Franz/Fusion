@@ -16,7 +16,13 @@ const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = 10 * 1024 * 1024;
 
 function quote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+  /*
+  FNXC:ForeignOnlyDiscardWindows 2026-08-18-18:45:
+  cmd.exe treats POSIX single quotes as branch-name characters. A failed delete was also swallowed,
+  allowing task ownership to be cleared while the foreign-only branch remained. Use native quoting
+  on Windows and require confirmed branch deletion before mutating task state.
+  */
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export interface RecoverForeignOnlyContaminationDeps {
@@ -109,7 +115,19 @@ export async function recoverForeignOnlyContamination(
   }
 
   await execAsync("git worktree prune", { cwd: deps.repoDir, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER }).catch(() => undefined);
-  await execAsync(`git branch -D ${quote(task.branch)}`, { cwd: deps.repoDir, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER }).catch(() => undefined);
+  const branchDeleted = await execAsync(`git branch -D ${quote(task.branch)}`, {
+    cwd: deps.repoDir,
+    timeout: GIT_TIMEOUT_MS,
+    maxBuffer: GIT_MAX_BUFFER,
+  }).then(() => true).catch(() => false);
+  if (!branchDeleted) {
+    await deps.runAudit.database({
+      type: "task:auto-recover-foreign-only-contamination-skipped",
+      target: task.id,
+      metadata: { reason: "branch-discard-failed", kind: classification.kind },
+    });
+    return { recovered: false, reason: "branch-discard-failed" };
+  }
 
   /* FNXC:WorkflowResolvedColumns 2026-07-30-19:55 (#2808 review — coderabbit): census-invisible moveTask
        DESTINATION — a call argument, not a comparison, so the census never scored it. This requeue is not a

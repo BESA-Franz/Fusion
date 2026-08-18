@@ -9,6 +9,10 @@ import { activeSessionRegistry } from "../../agents/active-session-registry.js";
 
 const execAsync = promisify(exec);
 
+function quote(value: string): string {
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 async function run(command: string, cwd: string): Promise<string> {
   const { stdout } = await execAsync(command, { cwd, encoding: "utf-8" });
   return stdout.trim();
@@ -27,16 +31,16 @@ describe("reliability interaction: foreign-only contamination recovery", () => {
     dirs.push(repoDir);
     await run("git init -b main", repoDir);
     await run("git config user.email test@example.com", repoDir);
-    await run("git config user.name 'Test User'", repoDir);
+    await run(`git config user.name ${quote("Test User")}`, repoDir);
     await writeFile(path.join(repoDir, "note.txt"), "base\n", "utf-8");
-    await run("git add note.txt && git commit -m 'chore: base'", repoDir);
+    await run(`git add note.txt && git commit -m ${quote("chore: base")}`, repoDir);
     const baseSha = await run("git rev-parse HEAD", repoDir);
 
     await run("git checkout -b fusion/fn-y", repoDir);
     await appendFile(path.join(repoDir, "note.txt"), "foreign-1\n", "utf-8");
-    await run("git add note.txt && git commit -m 'feat(FN-7001): y1' -m 'Fusion-Task-Id: FN-7001'", repoDir);
+    await run(`git add note.txt && git commit -m ${quote("feat(FN-7001): y1")} -m ${quote("Fusion-Task-Id: FN-7001")}`, repoDir);
     await appendFile(path.join(repoDir, "note.txt"), "foreign-2\n", "utf-8");
-    await run("git add note.txt && git commit -m 'fix(FN-7001): y2' -m 'Fusion-Task-Id: FN-7001'", repoDir);
+    await run(`git add note.txt && git commit -m ${quote("fix(FN-7001): y2")} -m ${quote("Fusion-Task-Id: FN-7001")}`, repoDir);
 
     await run("git checkout -b fusion/fn-x", repoDir);
     await run("git checkout main", repoDir);
@@ -95,5 +99,55 @@ describe("reliability interaction: foreign-only contamination recovery", () => {
     expect(result.recovered).toBe(false);
     expect(result.reason).toBe("active-session");
     expect(store.moveTask).not.toHaveBeenCalled();
+  });
+
+  it("deletes the foreign-only branch before clearing task ownership", async () => {
+    const { repoDir, baseSha, worktreePath } = await setupRepo();
+    await run(`git worktree remove --force ${quote(worktreePath)}`, repoDir);
+    const store = {
+      moveTask: vi.fn(async () => {}),
+      updateTask: vi.fn(async () => {}),
+    } as any;
+    const runAudit = { database: vi.fn(async () => {}), git: vi.fn(), filesystem: vi.fn(), sandbox: vi.fn() } as any;
+
+    const result = await recoverForeignOnlyContamination({
+      id: "FN-8003",
+      branch: "fusion/fn-x",
+      worktree: worktreePath,
+      baseCommitSha: baseSha,
+      baseBranch: "main",
+      executionStartBranch: "fusion/fn-y",
+    } as any, { repoDir, taskStore: store, runAudit, integrationBranch: "main" });
+
+    expect(result).toEqual({ recovered: true, subtype: "branch-discard" });
+    await expect(run("git show-ref --verify refs/heads/fusion/fn-x", repoDir)).rejects.toThrow();
+    expect(store.updateTask).toHaveBeenCalledWith("FN-8003", expect.objectContaining({ branch: null, worktree: null }));
+  });
+
+  it("preserves task ownership when the foreign-only branch cannot be deleted", async () => {
+    const { repoDir, baseSha } = await setupRepo();
+    const store = {
+      moveTask: vi.fn(async () => {}),
+      updateTask: vi.fn(async () => {}),
+    } as any;
+    const runAudit = { database: vi.fn(async () => {}), git: vi.fn(), filesystem: vi.fn(), sandbox: vi.fn() } as any;
+
+    const result = await recoverForeignOnlyContamination({
+      id: "FN-8004",
+      branch: "fusion/fn-x",
+      worktree: path.join(repoDir, "missing-worktree"),
+      baseCommitSha: baseSha,
+      baseBranch: "main",
+      executionStartBranch: "fusion/fn-y",
+    } as any, { repoDir, taskStore: store, runAudit, integrationBranch: "main" });
+
+    expect(result).toEqual({ recovered: false, reason: "branch-discard-failed" });
+    expect(await run("git show-ref --verify refs/heads/fusion/fn-x", repoDir)).toContain("refs/heads/fusion/fn-x");
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(store.updateTask).not.toHaveBeenCalled();
+    expect(runAudit.database).toHaveBeenCalledWith(expect.objectContaining({
+      type: "task:auto-recover-foreign-only-contamination-skipped",
+      metadata: expect.objectContaining({ reason: "branch-discard-failed" }),
+    }));
   });
 });
