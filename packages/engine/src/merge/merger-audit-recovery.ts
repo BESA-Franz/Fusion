@@ -188,5 +188,5 @@ async function runGit(rootDir: string, command: string, timeoutMs: number): Prom
 }
 
 function quoteArg(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, "'\\''")}'`;
 }
