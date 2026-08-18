@@ -9,7 +9,8 @@ vi.mock("node:child_process", async () => {
     const callback = typeof opts === "function" ? opts : cb;
     const options = typeof opts === "function" ? {} : (opts ?? {});
     try {
-      const out = execSyncFn(cmd, { ...options, stdio: ["pipe", "pipe", "pipe"] });
+      const commandForMock = process.platform === "win32" ? cmd.replace(/"([^"]*)"/g, "'$1'") : cmd;
+      const out = execSyncFn(commandForMock, { ...options, stdio: ["pipe", "pipe", "pipe"] });
       const stdout = out === undefined ? "" : out.toString();
       if (typeof callback === "function") callback(null, stdout, "");
     } catch (err) {

@@ -26,9 +26,9 @@ describe("inspectBranchConflict zero-unique behavior", () => {
     dirs.push(repoDir);
     await run("git init -b main", repoDir);
     await run("git config user.email test@example.com", repoDir);
-    await run("git config user.name 'Test User'", repoDir);
+    await run('git config user.name "Test User"', repoDir);
     await writeFile(path.join(repoDir, "note.txt"), "base\n", "utf-8");
-    await run("git add note.txt && git commit -m 'chore: base'", repoDir);
+    await run('git add note.txt && git commit -m "chore: base"', repoDir);
     return repoDir;
   }
 
@@ -50,7 +50,7 @@ describe("inspectBranchConflict zero-unique behavior", () => {
     await run("git checkout -b fusion/fn-9001", repoDir);
     await appendFile(path.join(repoDir, "note.txt"), "change\n", "utf-8");
     await run("git add note.txt", repoDir);
-    await run("git commit -m 'feat(FN-9001): change' -m 'Fusion-Task-Id: FN-9001'", repoDir);
+    await run('git commit -m "feat(FN-9001): change" -m "Fusion-Task-Id: FN-9001"', repoDir);
     const branchCommit = await run("git rev-parse HEAD", repoDir);
     await run("git checkout main", repoDir);
     await run(`git cherry-pick ${branchCommit}`, repoDir);
@@ -69,7 +69,7 @@ describe("inspectBranchConflict zero-unique behavior", () => {
     await run("git checkout -b fusion/fn-9001", repoDir);
     await appendFile(path.join(repoDir, "note.txt"), "unique\n", "utf-8");
     await run("git add note.txt", repoDir);
-    await run("git commit -m 'feat(FN-9001): unique' -m 'Fusion-Task-Id: FN-9001'", repoDir);
+    await run('git commit -m "feat(FN-9001): unique" -m "Fusion-Task-Id: FN-9001"', repoDir);
     await run("git checkout main", repoDir);
 
     const livePath = path.join(repoDir, "wt-live-9001-unique");
@@ -86,7 +86,7 @@ describe("inspectBranchConflict zero-unique behavior", () => {
     await run("git checkout -b topic/other", repoDir);
     await appendFile(path.join(repoDir, "note.txt"), "other\n", "utf-8");
     await run("git add note.txt", repoDir);
-    await run("git commit -m 'chore: other work'", repoDir);
+    await run('git commit -m "chore: other work"', repoDir);
     await run("git checkout main", repoDir);
 
     const livePath = path.join(repoDir, "wt-live-other");

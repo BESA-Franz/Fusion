@@ -124,7 +124,13 @@ interface UniqueBranchCommitListResult {
 }
 
 function quoteShellArg(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+  /*
+  FNXC:WorktreeBranchCollisionWindows 2026-08-18-16:08:
+  Bare-branch recovery runs through cmd.exe on Windows, where POSIX single quotes become part of
+  the ref and make every existing branch look missing. Keep POSIX quoting on Unix and use the
+  backend-compatible JSON/double-quote form only for cmd.exe.
+  */
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 async function runGit(repoDir: string, command: string): Promise<string> {

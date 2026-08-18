@@ -17,11 +17,11 @@ describe("classifyMisroutedForeignCommit", () => {
       git(dir, 'git config user.email "test@example.com"');
       git(dir, 'git config user.name "Test"');
       writeFileSync(join(dir, "README.md"), "init\n");
-      git(dir, "git add README.md && git commit -m 'init'");
+      git(dir, 'git add README.md && git commit -m "init"');
       mkdirSync(join(dir, ".changeset"), { recursive: true });
       writeFileSync(join(dir, ".changeset", "fn-1234-fix.md"), "patch\n");
       git(dir, "git add .changeset/fn-1234-fix.md");
-      git(dir, "git commit -m 'chore: changeset only' -m 'Fusion-Task-Id: FN-1234'");
+      git(dir, 'git commit -m "chore: changeset only" -m "Fusion-Task-Id: FN-1234"');
       const sha = git(dir, "git rev-parse HEAD");
 
       const result = await classifyMisroutedForeignCommit({
@@ -48,7 +48,7 @@ describe("classifyMisroutedForeignCommit", () => {
       git(dir, "git commit --allow-empty -m init");
       mkdirSync(join(dir, ".changeset"), { recursive: true });
       writeFileSync(join(dir, ".changeset", "fn-7777-feature.md"), "minor\n");
-      git(dir, "git add .changeset/fn-7777-feature.md && git commit -m 'feat(fn-7777): add feature' ");
+      git(dir, 'git add .changeset/fn-7777-feature.md && git commit -m "feat(fn-7777): add feature"');
       const sha = git(dir, "git rev-parse HEAD");
 
       const result = await classifyMisroutedForeignCommit({
@@ -73,13 +73,13 @@ describe("classifyMisroutedForeignCommit", () => {
       git(dir, 'git config user.email "test@example.com"');
       git(dir, 'git config user.name "Test"');
       writeFileSync(join(dir, "README.md"), "init\n");
-      git(dir, "git add README.md && git commit -m 'init'");
+      git(dir, 'git add README.md && git commit -m "init"');
       mkdirSync(join(dir, ".changeset"), { recursive: true });
       mkdirSync(join(dir, "packages", "engine", "src"), { recursive: true });
       writeFileSync(join(dir, ".changeset", "fn-4321-fix.md"), "patch\n");
       writeFileSync(join(dir, "packages", "engine", "src", "executor.ts"), "x\n");
       git(dir, "git add .changeset/fn-4321-fix.md packages/engine/src/executor.ts");
-      git(dir, "git commit -m 'fix(FN-4321): mixed paths' -m 'Fusion-Task-Id: FN-4321'");
+      git(dir, 'git commit -m "fix(FN-4321): mixed paths" -m "Fusion-Task-Id: FN-4321"');
       const sha = git(dir, "git rev-parse HEAD");
 
       const result = await classifyMisroutedForeignCommit({
@@ -106,7 +106,7 @@ describe("classifyMisroutedForeignCommit", () => {
       git(dir, "git commit --allow-empty -m init");
       mkdirSync(join(dir, ".changeset"), { recursive: true });
       writeFileSync(join(dir, ".changeset", "fn-9000-fix.md"), "patch\n");
-      git(dir, "git add .changeset/fn-9000-fix.md && git commit -m 'test(FN-9000): same task' ");
+      git(dir, 'git add .changeset/fn-9000-fix.md && git commit -m "test(FN-9000): same task"');
       const sha = git(dir, "git rev-parse HEAD");
 
       const result = await classifyMisroutedForeignCommit({

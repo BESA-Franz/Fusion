@@ -25,11 +25,12 @@ describe("classifyForeignOnlyContamination", () => {
     dirs.push(repoDir);
 
     await run("git init -b main", repoDir);
+    await run("git config core.autocrlf false", repoDir);
     await run("git config user.email test@example.com", repoDir);
-    await run("git config user.name 'Test User'", repoDir);
+    await run('git config user.name "Test User"', repoDir);
 
     await writeFile(path.join(repoDir, "note.txt"), "base\n", "utf-8");
-    await run("git add note.txt && git commit -m 'chore: base'", repoDir);
+    await run('git add note.txt && git commit -m "chore: base"', repoDir);
     const baseSha = await run("git rev-parse HEAD", repoDir);
 
     await run("git checkout -b feature", repoDir);
@@ -81,8 +82,7 @@ describe("classifyForeignOnlyContamination", () => {
       mainRef: "main",
     });
 
-    expect(["clean", "foreign-only-already-upstream"]).toContain(result.kind);
-    expect(result.uniqueShas).toEqual([]);
+    expect(result).toMatchObject({ kind: "foreign-only-already-upstream", uniqueShas: [] });
     if (result.kind === "clean") {
       expect(result.foreignCommitCount).toBe(0);
       expect(result.alreadyUpstreamShas).toEqual([]);

@@ -34,10 +34,10 @@ describe("branch contamination recovery classification", () => {
 
     await run("git init -b main", repoDir);
     await run("git config user.email test@example.com", repoDir);
-    await run("git config user.name 'Test User'", repoDir);
+    await run('git config user.name "Test User"', repoDir);
 
     await writeFile(path.join(repoDir, "note.txt"), "base\n", "utf-8");
-    await run("git add note.txt && git commit -m 'chore: base'", repoDir);
+    await run('git add note.txt && git commit -m "chore: base"', repoDir);
     const baseSha = await run("git rev-parse HEAD", repoDir);
 
     await run("git checkout -b feature", repoDir);
@@ -156,7 +156,7 @@ describe("branch contamination recovery classification", () => {
     const foreign = await makeCommit(repoDir, "foreign-mixed", "feat(FN-4367): dependency change", "FN-4367");
     await appendFile(path.join(repoDir, "note.txt"), "own\n", "utf-8");
     await run("git add note.txt", repoDir);
-    await run("git commit -m 'feat(FN-4488): own work' -m 'Fusion-Task-Id: FN-4488'", repoDir);
+    await run('git commit -m "feat(FN-4488): own work" -m "Fusion-Task-Id: FN-4488"', repoDir);
 
     const result = await classifyBootstrapMisbinding({
       repoDir,
@@ -175,7 +175,7 @@ describe("branch contamination recovery classification", () => {
     const foreign = await makeCommit(repoDir, "foreign-mixed-2", "feat(FN-4367): dependency change", "FN-4367");
     await appendFile(path.join(repoDir, "note.txt"), "refactor\n", "utf-8");
     await run("git add note.txt", repoDir);
-    await run("git commit -m 'refactor: unattributed cleanup'", repoDir);
+    await run('git commit -m "refactor: unattributed cleanup"', repoDir);
 
     const result = await classifyBootstrapMisbinding({
       repoDir,
@@ -279,7 +279,7 @@ describe("branch contamination recovery classification", () => {
     const foreign = await makeCommit(repoDir, "foreign-e", "feat(FN-4412): upstream duplicate", "FN-4412", "foreign.txt");
     await appendFile(path.join(repoDir, "own.txt"), "own-work\n", "utf-8");
     await run("git add own.txt", repoDir);
-    await run("git commit -m 'feat(FN-4428): own work' -m 'Fusion-Task-Id: FN-4428'", repoDir);
+    await run('git commit -m "feat(FN-4428): own work" -m "Fusion-Task-Id: FN-4428"', repoDir);
 
     await run("git checkout main", repoDir);
     await run(`git cherry-pick ${foreign.sha}`, repoDir);

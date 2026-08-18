@@ -49,7 +49,14 @@ export interface RefreshReusedWorktreeBaseInput {
 }
 
 function quote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  /*
+  FNXC:WorktreeBaseRefreshWindows 2026-08-18-16:05:
+  Node selects cmd.exe for exec() on Windows, where POSIX single quotes are literal characters.
+  JSON-style double quoting is understood by cmd.exe and keeps refs such as main^{commit} valid
+  instead of silently degrading every Windows refresh to base-unresolvable. Preserve the stronger
+  POSIX single-quote behavior on Unix shells.
+  */
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 async function git(cwd: string, command: string): Promise<string> {

@@ -27,9 +27,9 @@ describe("inspectBranchConflict ghost references", () => {
     dirs.push(repoDir);
     await run("git init -b main", repoDir);
     await run("git config user.email test@example.com", repoDir);
-    await run("git config user.name 'Test User'", repoDir);
+    await run('git config user.name "Test User"', repoDir);
     await writeFile(path.join(repoDir, "note.txt"), "base\n", "utf-8");
-    await run("git add note.txt && git commit -m 'chore: base'", repoDir);
+    await run('git add note.txt && git commit -m "chore: base"', repoDir);
     return repoDir;
   }
 
@@ -60,7 +60,7 @@ describe("inspectBranchConflict ghost references", () => {
     const staleStartPoint = await run("git rev-parse HEAD", repoDir);
     for (let i = 0; i < 5; i += 1) {
       await appendFile(path.join(repoDir, "note.txt"), `m${i}\n`, "utf-8");
-      await run(`git add note.txt && git commit -m 'chore: main-${i}'`, repoDir);
+      await run(`git add note.txt && git commit -m "chore: main-${i}"`, repoDir);
     }
     await run("git branch fusion/fn-9999", repoDir);
     const livePath = path.join(repoDir, "wt-live");
@@ -109,7 +109,7 @@ describe("inspectBranchConflict ghost references", () => {
     await run("git checkout -b topic/other", repoDir);
     await appendFile(path.join(repoDir, "note.txt"), "foreign\n", "utf-8");
     await run("git add note.txt", repoDir);
-    await run("git commit -m 'chore: foreign work'", repoDir);
+    await run('git commit -m "chore: foreign work"', repoDir);
     await run("git checkout main", repoDir);
     const livePath = path.join(repoDir, "wt-foreign");
     await run(`git worktree add ${JSON.stringify(livePath)} topic/other`, repoDir);
