@@ -10,7 +10,7 @@ import { mergerLog } from "../logger.js";
 const execAsync = promisify(exec);
 
 function quoteArg(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  return process.platform === "win32" ? JSON.stringify(value) : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 /**
