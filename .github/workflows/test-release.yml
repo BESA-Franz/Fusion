@@ -97,10 +97,9 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $packageStartedMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
           $artifactRoot = Join-Path $env:RUNNER_TEMP 'fusion-runtime-artifact'
-          $packRoot = Join-Path $env:RUNNER_TEMP 'fusion-runtime-pack'
-          $extractRoot = Join-Path $env:RUNNER_TEMP 'fusion-runtime-extract'
+          $packageRoot = Join-Path $env:RUNNER_TEMP 'fusion-runtime-deploy'
           $verifyRoot = Join-Path $env:RUNNER_TEMP 'fusion-runtime-verify'
-          New-Item -ItemType Directory -Force -Path $artifactRoot, $packRoot, $extractRoot, $verifyRoot | Out-Null
+          New-Item -ItemType Directory -Force -Path $artifactRoot, $verifyRoot | Out-Null
 
           $build = [string]((Get-Content -Raw -LiteralPath 'packages/cli/dist/client/version.json' | ConvertFrom-Json).version)
           if ($build -notmatch '^[A-Za-z0-9._-]+$') {
@@ -114,22 +113,20 @@ jobs:
             throw 'Required PostgreSQL migration 0060 is absent.'
           }
 
-          pnpm --filter @runfusion/fusion pack --pack-destination $packRoot
-          if ($LASTEXITCODE -ne 0) { throw 'pnpm pack failed.' }
-          $tarballs = @(Get-ChildItem -LiteralPath $packRoot -Filter '*.tgz' -File)
-          if ($tarballs.Count -ne 1) { throw "Expected exactly one packed CLI tarball, found $($tarballs.Count)." }
-          tar -xf $tarballs[0].FullName -C $extractRoot
-          if ($LASTEXITCODE -ne 0) { throw 'Runtime package extraction failed.' }
-
-          $packageRoot = Join-Path $extractRoot 'package'
-          foreach ($relativePath in @('bin.mjs', 'package.json', 'dist/client/version.json')) {
+          # FNXC:RuntimeAuthorization 2026-08-19-05:06:
+          # Deploy the lockfile-resolved production tree into the authorized artifact. The target
+          # machine must never borrow dependencies from the previously installed Fusion runtime.
+          pnpm --config.node-linker=hoisted --filter @runfusion/fusion deploy --prod --legacy $packageRoot
+          if ($LASTEXITCODE -ne 0) { throw 'Self-contained runtime deployment failed.' }
+          foreach ($relativePath in @('bin.mjs', 'package.json', 'dist/client/version.json', 'node_modules/typescript/package.json')) {
             if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $relativePath) -PathType Leaf)) {
-              throw "Packed runtime is incomplete: $relativePath"
+              throw "Deployed runtime is incomplete: $relativePath"
             }
           }
           $artifactName = "fusion-runtime-build-$build.zip"
           $artifactPath = Join-Path $artifactRoot $artifactName
-          Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $artifactPath -CompressionLevel Optimal
+          tar.exe -a -c -f $artifactPath -C $packageRoot .
+          if ($LASTEXITCODE -ne 0) { throw 'Self-contained runtime ZIP creation failed.' }
           Expand-Archive -LiteralPath $artifactPath -DestinationPath $verifyRoot
           foreach ($relativePath in @('bin.mjs', 'package.json', 'dist/client/version.json')) {
             if (-not (Test-Path -LiteralPath (Join-Path $verifyRoot $relativePath) -PathType Leaf)) {
@@ -138,6 +135,12 @@ jobs:
           }
           $verifiedBuild = [string]((Get-Content -Raw -LiteralPath (Join-Path $verifyRoot 'dist/client/version.json') | ConvertFrom-Json).version)
           if ($verifiedBuild -ne $build) { throw 'Runtime ZIP build identity changed during packaging.' }
+          $runtimeVerificationJson = & node scripts/verify-windows-runtime-package.mjs $verifyRoot --expected-build $build
+          if ($LASTEXITCODE -ne 0) { throw 'Extracted runtime dependency or boot verification failed.' }
+          $runtimeVerification = $runtimeVerificationJson | ConvertFrom-Json
+          if ($runtimeVerification.bootSmoke -ne 'passed' -or [int]$runtimeVerification.productionDependencyCount -lt 1) {
+            throw 'Extracted runtime verification result is incomplete.'
+          }
 
           $artifactSha = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToUpperInvariant()
           $receiptPath = Join-Path $artifactRoot "fusion-runtime-build-authorization-$build.json"
@@ -175,6 +178,13 @@ jobs:
                 sourceCommit = $env:FUSION_RUNTIME_COMMIT
                 sourceFile = 'packages/engine/src/concurrency/hybrid-executor.ts'
                 testFile = 'packages/engine/src/__tests__/hybrid-executor.test.ts'
+              }
+              selfContainedWindowsRuntime = [ordered]@{
+                status = 'passed'
+                sourceCommit = $env:FUSION_RUNTIME_COMMIT
+                dependencyMode = 'artifact-contained'
+                productionDependencyCount = [int]$runtimeVerification.productionDependencyCount
+                verificationScript = 'scripts/verify-windows-runtime-package.mjs'
               }
             }
             workflow = [ordered]@{

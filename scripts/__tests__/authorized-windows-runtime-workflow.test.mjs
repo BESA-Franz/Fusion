@@ -49,12 +49,33 @@ test("runtime authorization binds the exact artifact, commit, fix proof, and sch
   assert.match(commands, /schemaVersion = 1/);
   assert.match(commands, /artifactSha256 = \$artifactSha/);
   assert.match(commands, /sourceCommit = \$env:FUSION_RUNTIME_COMMIT/);
+  assert.match(commands, /selfContainedWindowsRuntime = \[ordered\]@\{/);
+  assert.match(commands, /dependencyMode = 'artifact-contained'/);
+  assert.match(commands, /productionDependencyCount = \[int\]\$runtimeVerification\.productionDependencyCount/);
   assert.match(commands, /schemaBaselineVersion = '0060'/);
   assert.match(commands, /durationMs = \$overallDurationMs/);
   assert.match(commands, /stages = \[ordered\]@\{/);
   assert.match(commands, /workspaceBuild = \[ordered\]@\{ restored = \$false; skippedPackages = 0 \}/);
   assert.match(commands, /secretsRecorded = \$false/);
   assert.match(commands, /Get-FileHash -LiteralPath \$receiptPath -Algorithm SHA256/);
+});
+
+/*
+FNXC:RuntimeAuthorization 2026-08-19-05:06:
+An authorized Windows runtime must carry its own production dependency tree and pass a boot
+smoke from the extracted ZIP. Reusing node_modules from the previously installed runtime can
+authorize a package that repeatedly exits with ERR_MODULE_NOT_FOUND before health is available.
+*/
+test("authorized Windows runtime is self-contained and boot-smoked after extraction", () => {
+  const runtimeJob = workflow.jobs?.["build-authorized-windows-runtime"];
+  const commands = (runtimeJob?.steps ?? []).map((step) => step.run ?? "").join("\n");
+
+  assert.match(commands, /pnpm --config\.node-linker=hoisted --filter @runfusion\/fusion deploy --prod --legacy \$packageRoot/);
+  assert.match(commands, /tar\.exe -a -c -f \$artifactPath -C \$packageRoot \./);
+  assert.match(commands, /verify-windows-runtime-package\.mjs/);
+  assert.ok(commands.indexOf("Expand-Archive") < commands.indexOf("verify-windows-runtime-package.mjs"));
+  assert.doesNotMatch(commands, /Compress-Archive/);
+  assert.doesNotMatch(commands, /node_modules.*previous|current.*node_modules/i);
 });
 
 /*
