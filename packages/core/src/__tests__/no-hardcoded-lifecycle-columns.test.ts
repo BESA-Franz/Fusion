@@ -185,15 +185,31 @@ export function collect(sf: ts.SourceFile, columnId: string, file: string, sites
  * not nodes — so prose quoting an old comparison is excluded by construction rather than by a
  * pattern that has to anticipate it.
  */
-function comparisonSites(columnId: string): Site[] {
-  const sites: Site[] = [];
+/*
+FNXC:LifecycleColumnRatchet 2026-08-19-05:34:
+The four gate cases must share one source census and one parse per relevant file. Re-reading and
+re-parsing the complete repository once per column exceeded the 15-second per-case gate timeout
+under normal parallel gate load even though the unchanged ratchet passed alone after 26 seconds.
+Perform the shared census while the suite is loaded so repository size and parallel machine load do
+not consume one assertion's timeout; this does not change the files, syntax or ceilings inspected.
+*/
+function measureComparisonSites(): ReadonlyMap<string, readonly Site[]> {
+  const next = new Map<string, Site[]>(GOVERNED_IDS.map((id) => [id, []]));
   for (const file of sourceFiles()) {
     const text = readFileSync(file, "utf-8");
-    if (!text.includes(columnId)) continue;
+    const relevantIds = GOVERNED_IDS.filter((id) => text.includes(id));
+    if (relevantIds.length === 0) continue;
     const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-    collect(sf, columnId, relative(REPO_ROOT, file), sites);
+    const relativeFile = relative(REPO_ROOT, file);
+    for (const id of relevantIds) collect(sf, id, relativeFile, next.get(id)!);
   }
-  return sites;
+  return next;
+}
+
+const measuredSites = measureComparisonSites();
+
+function comparisonSites(columnId: string): readonly Site[] {
+  return measuredSites.get(columnId) ?? [];
 }
 
 /**
